@@ -1,0 +1,56 @@
+[package]
+name = "fava"
+version = "0.1.0"
+
+authors = [
+  "Yongjin Park <ypp@stat.ubc.ca>",
+]
+
+edition = "2021"
+
+readme = "README.md"
+
+categories = ["command-line-utilities", "science"]
+
+[dependencies]
+anyhow = "1.0.86"
+bio = "2.0.1"
+bio-types = "1.0.4"
+cast = "0.3.0"
+clap = { version = "4.5.16", features = ["derive"] }
+env_logger = "0.11.5"
+fast-float = "0.2.0"
+log = "0.4.22"
+rayon = "1.10.0"
+rust-htslib = "0.47.0"
+# anyhow = "1.0.86"
+# clap = { version = "4.5.16", features = ["derive"] }
+# coitrees = "0.4.0"
+# flate2 = "1.0.32"
+# granges = "0.2.2"
+# rayon = "1.10.0"
+# rust-htslib = "0.47.0"
+# text-colorizer = "1.0.0"
+
+# [[bin]]
+# name = "bam2bed"
+# path = "src/bam2bed/main.rs"
+
+[[bin]]
+name = "gff2bed"
+path = "src/gff2bed/main.rs"
+
+[[bin]]
+name = "bam2bed"
+path = "src/bam2bed/main.rs"
+
+
+
+# itertools = "0.13.0"
+# noodles = { version = "0.79.0", features = ["gff", "bgzf", "sam"] }
+# noodles = { version = "0.79.0", features = ["gff", "bgzf", "sam"] }
+# openblas = "0.0.1"
+# tch = "0.17.0"
+# arrayvec = "0"
+# ndarray = "0.16.1"
+# ndarray-linalg = { version = "0.16.0", features = ["intel-mkl-static"] }
