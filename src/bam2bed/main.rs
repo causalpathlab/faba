@@ -1,28 +1,20 @@
 use anyhow::{self, Context, Error, Result};
 
-use bio;
-use bio::alphabets::dna::revcomp;
+// use bio;
 // use bio_types::annot::spliced::SeqSplicedStranded;
-use bio_types::sequence;
+// use bio_types::sequence;
 
-use bam::ext::BamRecordExtensions;
-use bio_types::sequence::SequenceRead;
-
-use rust_htslib::bam::Read;
-
+// use bio::alphabets::dna::revcomp;
 use clap::{Args, Parser, Subcommand};
 
-use rust_htslib::{bam, bgzf};
-use std::borrow::{Borrow, BorrowMut};
+use rust_htslib::bam::ext::BamRecordExtensions;
+use rust_htslib::bam::{self, Read};
 
-use std::collections::HashMap;
 use std::path::Path;
 
 use std::cmp::{max, min};
 
-use rust_htslib::bam::pileup;
-
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
 use std::{str, thread};
 
 // use env_logger;
@@ -49,10 +41,15 @@ struct DnaFreq {
     gpos: i64,  // genomic position
 }
 
+struct DnaFreqVecs {
+    forward: Vec<DnaFreq>,
+    reverse: Vec<DnaFreq>,
+}
+
 fn get_dna_freq(
     arc_bam: &Arc<Mutex<bam::IndexedReader>>,
     region: (&str, i64, i64),
-) -> Result<Vec<DnaFreq>> {
+) -> Result<DnaFreqVecs> {
     let (_, lb, ub) = region;
 
     let mut bam_reader = arc_bam.lock().expect("unable to lock the reader");
@@ -66,10 +63,19 @@ fn get_dna_freq(
     }
 
     let nn = max(ub - lb, 0i64) as usize;
-    let mut ret = Vec::with_capacity(nn);
+    let mut reverse_freq = Vec::with_capacity(nn);
+    let mut forward_freq = Vec::with_capacity(nn);
 
     for g in lb..ub {
-        ret.push(DnaFreq {
+        forward_freq.push(DnaFreq {
+            a: 0,
+            t: 0,
+            g: 0,
+            c: 0,
+            tot: 0,
+            gpos: g,
+        });
+        reverse_freq.push(DnaFreq {
             a: 0,
             t: 0,
             g: 0,
@@ -90,10 +96,7 @@ fn get_dna_freq(
                     continue;
                 }
 
-                let seq = match rec.is_reverse() {
-                    true => revcomp(rec.seq().as_bytes()),
-                    _ => rec.seq().as_bytes(),
-                };
+                let seq = rec.seq().as_bytes();
 
                 for [rpos, gpos] in rec.aligned_pairs() {
                     let (r, g, v) = (rpos as usize, gpos as usize, gpos - lb);
@@ -104,14 +107,18 @@ fn get_dna_freq(
 
                     let bp = seq[r];
 
-                    let freq = &mut ret[v as usize];
+                    let freq = match rec.is_reverse() {
+                        true => &mut reverse_freq[v as usize],
+                        _ => &mut forward_freq[v as usize],
+                    };
+
                     debug_assert_eq!(freq.gpos, gpos);
                     freq.tot += 1;
                     match bp {
-                        b'A' => freq.a += 1,
-                        b'T' => freq.t += 1,
-                        b'G' => freq.g += 1,
-                        b'C' => freq.c += 1,
+                        b'A' | b'a' => freq.a += 1,
+                        b'T' | b't' => freq.t += 1,
+                        b'G' | b'g' => freq.g += 1,
+                        b'C' | b'c' => freq.c += 1,
                         _ => (),
                     }
                 }
@@ -122,7 +129,45 @@ fn get_dna_freq(
         }
     }
 
-    Ok(ret)
+    // This doesn't take into account strand information and duplicates
+    //
+    // for pp in bam_reader.pileup() {
+    //     let pileup = pp.expect("failed to instantiate pileup");
+    //     let gpos = pileup.pos() as i64; // this is u32, so might not be ideal
+    //     if gpos < lb || gpos >= ub {
+    //         continue;
+    //     }
+    //     let v = gpos - lb;
+    //     let freq = &mut ret[v as usize];
+    //     debug_assert_eq!(freq.gpos, gpos);
+
+    //     for aa in pileup.alignments() {
+    //         if aa.is_del() || aa.is_refskip() {
+    //             continue;
+    //         }
+
+    //         let r = aa.qpos().unwrap();
+    //         let bp = aa.record().seq()[r];
+
+    //         // if aa.record().is_reverse() {
+    //         //     dbg!(aa.record());
+    //         // }
+
+    //         freq.tot += 1;
+    //         match bp {
+    //             b'A' | b'a' => freq.a += 1,
+    //             b'T' | b't' => freq.t += 1,
+    //             b'G' | b'g' => freq.g += 1,
+    //             b'C' | b'c' => freq.c += 1,
+    //             _ => (),
+    //         }
+    //     }
+    // }
+
+    Ok(DnaFreqVecs {
+        forward: forward_freq,
+        reverse: reverse_freq,
+    })
 }
 
 fn main() -> anyhow::Result<()> {
@@ -141,6 +186,7 @@ fn main() -> anyhow::Result<()> {
     let bam_file_fg = args.fg_bam.as_ref();
     let _ = check_bam_index(bam_file_fg, None);
 
+    dbg!(&bam_file_fg);
     dbg!(&bam_file_bg);
 
     // shared index reader
@@ -165,28 +211,28 @@ fn main() -> anyhow::Result<()> {
     // br.fetch((chr_name, lb, ub))?;
     // let _ = get_dna_freq(&mut br, lb, ub);
 
-    thread::spawn(move || {
-        let region = (chr_name, lb, ub);
-        let count_bg = get_dna_freq(&arc_bam_bg, region).unwrap();
-        let count_fg = get_dna_freq(&arc_bam_fg, region).unwrap();
+    // thread::spawn(move || {
+    let region = (chr_name, lb, ub);
+    let count_bg = get_dna_freq(&arc_bam_bg, region).unwrap();
+    let count_fg = get_dna_freq(&arc_bam_fg, region).unwrap();
 
-        //
-        for (r, g) in (lb..ub).enumerate() {
-            let bg = &count_bg[r];
-            let fg = &count_fg[r];
-            debug_assert_eq!(g, bg.gpos);
-            debug_assert_eq!(g, fg.gpos);
+    //
+    for (r, g) in (lb..ub).enumerate() {
+        let bg = &count_bg.forward[r];
+        let fg = &count_fg.forward[r];
+        debug_assert_eq!(g, bg.gpos);
+        debug_assert_eq!(g, fg.gpos);
 
-            dbg!(bg);
-            dbg!(fg);
-        }
-    });
+        dbg!(bg);
+        dbg!(fg);
+    }
+    // });
 
     Ok(())
 }
 
 fn check_bam_index(bam_file_name: &str, idx_file_name: Option<&str>) -> anyhow::Result<Box<str>> {
-    log::info!("Checking BAM index");
+    // log::info!("Checking BAM index");
 
     let idx_file = match idx_file_name {
         Some(x) => String::from(x),
@@ -201,11 +247,11 @@ fn check_bam_index(bam_file_name: &str, idx_file_name: Option<&str>) -> anyhow::
         .expect("failed to figure out number of cores")
         .get();
 
-    log::info!(
-        "Creating a new index file {} using {} cores",
-        &idx_file,
-        &ncore
-    );
+    // log::info!(
+    //     "Creating a new index file {} using {} cores",
+    //     &idx_file,
+    //     &ncore
+    // );
 
     // need to build an index for this bam file
     bam::index::build(

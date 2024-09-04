@@ -1,4 +1,4 @@
-# FAVA BETA
+# FAVA BEAN
 
-Feature Accessibility profiling and Variant Alignment for Bayesian EpiTranscriptomic Analysis
+Filtering Accessibility with Variant Alignment for Bayesian Epitranscriptomic Analysis
 
