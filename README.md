@@ -1,4 +1,10 @@
-# FAVA BEAN
+# FAVA BEANS
 
-Filtering Accessibility with Variant Alignment for Bayesian Epitranscriptomic Analysis
+Filtering Alignments to expedite Bayesian Analysis in Base-pair-resolution Editing site Aggregation and Sifting
+
+Filtering Alignments to expedite Variant Associations in Base-pair-resolution Editing site Aggregation and Sifting
+
+
+
+
 
