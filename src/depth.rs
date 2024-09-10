@@ -2,7 +2,7 @@ use anyhow;
 use clap::Args;
 
 #[derive(Args)]
-pub struct AggArgs {
+pub struct DepthArgs {
     /// GFF file
     #[arg(short, long)]
     gff: Box<str>,
@@ -11,6 +11,7 @@ pub struct AggArgs {
     output: Box<str>,
 }
 
-pub fn run_agg(args: &AggArgs) -> anyhow::Result<()> {
+pub fn run_depth(args: &DepthArgs) -> anyhow::Result<()> {
     Ok(())
 }
+

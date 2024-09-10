@@ -1,8 +1,8 @@
-# FAVA BEANS
+# FAVA BEAN
 
-Filtering Alignments to expedite Bayesian Analysis in Base-pair-resolution Editing site Aggregation and Sifting
+Filtering Alignment data for Variant Analysis
 
-Filtering Alignments to expedite Variant Associations in Base-pair-resolution Editing site Aggregation and Sifting
+
 
 
 
