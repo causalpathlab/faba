@@ -1,15 +1,13 @@
+use crate::util::bam::*;
 use rust_htslib::bam::{self, ext::BamRecordExtensions, record::Aux, Read};
 use std::cmp::max;
 use std::collections::HashMap;
-use std::hash::Hash;
-use std::str;
 use std::sync::{Arc, Mutex};
 
 ///
-/// DNA frequency
-///
+/// DNA base-level frequency
 #[derive(Debug)]
-pub struct DnaFreq {
+pub struct DnaBaseFreq {
     a: f32,
     t: f32,
     g: f32,
@@ -25,7 +23,10 @@ pub enum Dna {
     C,
 }
 
-impl DnaFreq {
+impl DnaBaseFreq {
+    /// Identify most frequent allele and report it with empirical
+    /// frequency. Caveat: We may have ambiguous results if two or
+    /// more alelles tie.
     pub fn major_allele_frequency(&self) -> Option<(Dna, f32)> {
         let tot = self.total();
         if tot > 0f32 {
@@ -44,16 +45,17 @@ impl DnaFreq {
             None
         }
     }
+
+    /// Total number of reads mapped on this BP
     pub fn total(&self) -> f32 {
         self.a + self.t + self.g + self.c
     }
 }
 
-///
 /// Extract DNA base pair frequency tables in multi-threaded visits
+/// over BAM file reader. Here, we only go through aligned reads.
 ///
-///
-pub fn get_dna_freq(
+pub fn get_dna_base_freq(
     arc_bam: &Arc<Mutex<bam::IndexedReader>>,
     region: (&str, i64, i64),
 ) -> anyhow::Result<DnaFreqMap> {
@@ -141,28 +143,10 @@ pub fn get_dna_freq(
     Ok(ret)
 }
 
-#[derive(Debug, PartialEq, Eq, Hash, Clone)]
-pub enum Sample {
-    Combined,
-    Barcode(Box<str>),
-}
-
-///
-/// display sample names
-///
-impl std::fmt::Display for Sample {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Sample::Combined => write!(f, "."),
-            Sample::Barcode(barcode) => write!(f, "{}", barcode),
-        }
-    }
-}
-
 /// DNA frequency map from forward and reverse strands
 pub struct DnaFreqMap {
-    forward: HashMap<usize, Vec<DnaFreq>>,
-    reverse: HashMap<usize, Vec<DnaFreq>>,
+    forward: HashMap<usize, Vec<DnaBaseFreq>>,
+    reverse: HashMap<usize, Vec<DnaBaseFreq>>,
     samp2id: HashMap<Sample, usize>,
     id2samp: Vec<Sample>,
 }
@@ -211,14 +195,14 @@ impl DnaFreqMap {
                 .or_insert_with(|| Vec::with_capacity(nn));
 
             for g in lb..ub {
-                forward_freq.push(DnaFreq {
+                forward_freq.push(DnaBaseFreq {
                     a: 0f32,
                     t: 0f32,
                     g: 0f32,
                     c: 0f32,
                     gpos: g,
                 });
-                reverse_freq.push(DnaFreq {
+                reverse_freq.push(DnaBaseFreq {
                     a: 0f32,
                     t: 0f32,
                     g: 0f32,
@@ -231,22 +215,22 @@ impl DnaFreqMap {
         }
     }
 
-    pub fn get_forward(&self, key: &Sample) -> Option<&Vec<DnaFreq>> {
+    pub fn get_forward(&self, key: &Sample) -> Option<&Vec<DnaBaseFreq>> {
         self.samp2id.get(&key).and_then(|id| self.forward.get(id))
     }
 
-    pub fn get_reverse(&self, key: &Sample) -> Option<&Vec<DnaFreq>> {
+    pub fn get_reverse(&self, key: &Sample) -> Option<&Vec<DnaBaseFreq>> {
         self.samp2id.get(&key).and_then(|id| self.reverse.get(id))
     }
 
-    pub fn get_forward_bp_mut(&mut self, key: &Sample, at: usize) -> Option<&mut DnaFreq> {
+    pub fn get_forward_bp_mut(&mut self, key: &Sample, at: usize) -> Option<&mut DnaBaseFreq> {
         self.samp2id
             .get(&key)
             .and_then(|id| self.forward.get_mut(id))
             .and_then(|vv| vv.get_mut(at))
     }
 
-    pub fn get_reverse_bp_mut(&mut self, key: &Sample, at: usize) -> Option<&mut DnaFreq> {
+    pub fn get_reverse_bp_mut(&mut self, key: &Sample, at: usize) -> Option<&mut DnaBaseFreq> {
         self.samp2id
             .get(&key)
             .and_then(|id| self.reverse.get_mut(id))

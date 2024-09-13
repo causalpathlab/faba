@@ -1,7 +1,29 @@
 use rust_htslib::bam;
-use std::thread;
+use std::hash::Hash;
 use std::path::Path;
+use std::thread;
 
+/// BAM file sample name
+///
+#[derive(Debug, PartialEq, Eq, Hash, Clone)]
+pub enum Sample {
+    Combined,
+    Barcode(Box<str>),
+}
+
+/// Display sample names
+///
+impl std::fmt::Display for Sample {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Sample::Combined => write!(f, "."),
+            Sample::Barcode(barcode) => write!(f, "{}", barcode),
+        }
+    }
+}
+
+/// Check random access BAM index
+///
 pub fn check_bam_index(
     bam_file_name: &str,
     idx_file_name: Option<&str>,

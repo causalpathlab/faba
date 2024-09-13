@@ -2,7 +2,6 @@ mod aggregate;
 mod depth;
 mod sift;
 mod util;
-mod dnafreq;
 
 use anyhow;
 use clap::{Parser, Subcommand};
@@ -35,9 +34,8 @@ fn main() -> anyhow::Result<()> {
 
     match &cli.commands {
         Commands::Compare(args) => {
-            sift::run_case_control(args)?;
+            sift::compare::run(args)?;
         }
-
         Commands::Aggregate(args) => {
             //
         }

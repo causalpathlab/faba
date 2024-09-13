@@ -10,7 +10,7 @@ edition = "2021"
 
 readme = "README.md"
 
-categories = ["command-line-utilities", "science"]
+categories = ["command-line-utilities", "science", "bioinformatics"]
 
 [dependencies]
 anyhow = "1.0.86"
@@ -18,8 +18,8 @@ rust-htslib = "0.47.0"
 rayon = "1.10.0"
 clap = { version = "4.5.16", features = ["derive"] }
 fastapprox = "0.3.1"
+bio = "2.0.1"
 
-# bio = "2.0.1"
 # bio-types = "1.0.4"
 # env_logger = "0.11.5"
 # fast-float = "0.2.0"
@@ -27,7 +27,7 @@ fastapprox = "0.3.1"
 
 
 [[bin]]
-name = "favabean"
+name = "fababean"
 path = "src/main.rs"
 
 # [[bin]]

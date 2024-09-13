@@ -1,4 +1,5 @@
-use anyhow;
+pub mod run;
+
 use clap::Args;
 
 #[derive(Args)]
@@ -10,8 +11,3 @@ pub struct DepthArgs {
     #[arg(short, long)]
     output: Box<str>,
 }
-
-pub fn run_depth(args: &DepthArgs) -> anyhow::Result<()> {
-    Ok(())
-}
-

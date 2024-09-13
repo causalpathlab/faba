@@ -1,6 +1,6 @@
-# FAVA BEAN
+# FABA BEAN
 
-Filtering Alignment data for Variant Analysis
+Filtering Alignment data for Base-level Analysis
 
 
 

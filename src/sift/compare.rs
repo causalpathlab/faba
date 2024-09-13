@@ -1,47 +1,26 @@
+use crate::util::bam::*;
+use crate::util::dna::*;
+use crate::util::misc::make_intervals;
+
 use anyhow;
-use clap::Args;
 
-#[derive(Args)]
-pub struct CaseControlArgs {
-    /// foreground BAM file
-    #[arg(short, long)]
-    fg_bam: Box<str>,
-
-    /// background BAM file
-    #[arg(short, long)]
-    bg_bam: Box<str>,
-
-    /// foreground BAI file (default: <FG_BAM>.bai)
-    #[arg(long)]
-    fg_bai: Option<Box<str>>,
-
-    /// background BAI file (default: <BG_BAM>.bai)
-    #[arg(long)]
-    bg_bai: Option<Box<str>>,
-
-    /// number of threads
-    #[arg(short, long)]
-    threads: Option<usize>,
-
-    /// block size (default: 10000)
-    #[arg(long)]
-    bsize: Option<usize>,
-
-    /// output file header
-    #[arg(short, long)]
-    output: Option<Box<str>>,
-}
-
-use crate::dnafreq::*;
-use crate::util::check_bam_index;
-use fastapprox::faster as fa;
 use rayon::prelude::*;
 use rust_htslib::bam::{self, Read};
 use std::cmp::min;
 use std::sync::{Arc, Mutex};
 use std::{str, thread};
 
-pub fn run_case_control(args: &CaseControlArgs) -> anyhow::Result<()> {
+use super::CaseControlArgs as RunArgs;
+
+/// Sift through BAM records to identify potential variant sites.  The
+/// resulting sites may not be necessarily true hits, but they can
+/// form a good starting candidate pool.
+///
+/// Later, routines in `aggregate` could revisit them all, regardless
+/// of significance levels, and collect sufficient statistics for
+/// further tests.
+///
+pub fn run(args: &RunArgs) -> anyhow::Result<()> {
     // Visit all the alignments and figure out
 
     let nthread_max = thread::available_parallelism()
@@ -89,6 +68,8 @@ pub fn run_case_control(args: &CaseControlArgs) -> anyhow::Result<()> {
     // TODO: scan to figure out potential variant sites
     // MAF in one side != MAF in the other side
 
+    // Make a list of variant sites: chr, lb, ub
+
     for (chr, blocks) in jobs {
         let chr_name = *(chr.as_ref());
 
@@ -96,8 +77,8 @@ pub fn run_case_control(args: &CaseControlArgs) -> anyhow::Result<()> {
             let region = (chr_name, *lb, *ub);
 
             if let (Ok(fg), Ok(bg)) = (
-                get_dna_freq(&arc_bam_fg, region),
-                get_dna_freq(&arc_bam_bg, region),
+                get_dna_base_freq(&arc_bam_fg, region),
+                get_dna_base_freq(&arc_bam_bg, region),
             ) {
                 for s in fg.samples() {
                     if !bg.has_sample(s) {
@@ -125,9 +106,9 @@ pub fn run_case_control(args: &CaseControlArgs) -> anyhow::Result<()> {
                                 {
                                     //
                                 } else {
-				    dbg!(fg_bp);
-				    dbg!(bg_bp);
-				}
+                                    dbg!(fg_bp);
+                                    dbg!(bg_bp);
+                                }
                             }
                         }
                     }
@@ -178,39 +159,23 @@ pub fn run_case_control(args: &CaseControlArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Other utilities
-/// make a vector of intervals
-fn make_intervals(max_size: i64, block_size: i64) -> Vec<(i64, i64)> {
-    let mut jobs = vec![];
-    for lb in (0..max_size).step_by(block_size as usize) {
-        let ub = min(max_size, lb + block_size);
-        jobs.push((lb, ub));
-    }
-    return jobs;
-}
 
-/// a wrapper for input frequency stat argument
-pub struct FreqStat<'a> {
-    fg: &'a DnaFreq,
-    bg: &'a DnaFreq,
-}
+// /// statistical assessment of variant calling
+// /// by computing vanilla Bayes factor
+// pub fn local_bayes_factor(stat: FreqStat) -> f32 {
+//     let fg = stat.fg;
+//     let bg = stat.bg;
 
-/// statistical assessment of variant calling
-/// by computing vanilla Bayes factor
-pub fn local_bayes_factor(stat: FreqStat) -> f32 {
-    let fg = stat.fg;
-    let bg = stat.bg;
+//     let a0 = 0.25f32;
 
-    let a0 = 0.25f32;
+//     let lgamma_ratio = |a: f32, b: f32, pc: f32| -> f32 {
+//         fa::ln_gamma(a + pc) + fa::ln_gamma(b + pc) - fa::ln_gamma(a + b + pc + pc)
+//     };
 
-    let lgamma_ratio = |a: f32, b: f32, pc: f32| -> f32 {
-        fa::ln_gamma(a + pc) + fa::ln_gamma(b + pc) - fa::ln_gamma(a + b + pc + pc)
-    };
-
-    // lgamma_ratio(fg.a, bg.a, a0)
-    //     + lgamma_ratio(fg.t, bg.t, a0)
-    //     + lgamma_ratio(fg.g, bg.g, a0)
-    //     + lgamma_ratio(fg.c, bg.c, a0)
-    // - lgamma_ratio(fg.tot, bg.tot, a0 * 4.)
-    0f32
-}
+//     // lgamma_ratio(fg.a, bg.a, a0)
+//     //     + lgamma_ratio(fg.t, bg.t, a0)
+//     //     + lgamma_ratio(fg.g, bg.g, a0)
+//     //     + lgamma_ratio(fg.c, bg.c, a0)
+//     // - lgamma_ratio(fg.tot, bg.tot, a0 * 4.)
+//     0f32
+// }
