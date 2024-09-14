@@ -1,3 +1,4 @@
+use crate::sift::rules;
 use crate::util::bam::*;
 use crate::util::dna::*;
 use crate::util::misc::make_intervals;
@@ -7,6 +8,7 @@ use anyhow;
 use rayon::prelude::*;
 use rust_htslib::bam::{self, Read};
 use std::cmp::min;
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::{str, thread};
 
@@ -20,12 +22,12 @@ use super::CaseControlArgs as RunArgs;
 /// of significance levels, and collect sufficient statistics for
 /// further tests.
 ///
-pub fn run(args: &RunArgs) -> anyhow::Result<()> {
+/// So, we just need to return a vector of (chr: Box<str>, lb: i64, ub: i64)
+///
+pub fn search(args: &RunArgs) -> anyhow::Result<()> {
     // Visit all the alignments and figure out
 
-    let nthread_max = thread::available_parallelism()
-        .expect("failed to figure out number of cores")
-        .get();
+    let nthread_max = thread::available_parallelism()?.get();
 
     let nthread = match args.threads {
         Some(x) => min(nthread_max, x),
@@ -65,117 +67,49 @@ pub fn run(args: &RunArgs) -> anyhow::Result<()> {
         .build_global()
         .unwrap();
 
-    // TODO: scan to figure out potential variant sites
-    // MAF in one side != MAF in the other side
-
-    // Make a list of variant sites: chr, lb, ub
-
-    for (chr, blocks) in jobs {
-        let chr_name = *(chr.as_ref());
+    // Step 1. Find variable base positions
+    let find_variable_positions = |chr_name: &str,
+                                   blocks: &Vec<(i64, i64)>,
+                                   arc_bam: Arc<Mutex<bam::IndexedReader>>|
+     -> HashSet<i64> {
+        let arc_var_pos = Arc::new(Mutex::new(HashSet::new()));
 
         blocks.iter().par_bridge().for_each(|(lb, ub)| {
             let region = (chr_name, *lb, *ub);
+            let base_filter = rules::BaseFilters::new();
+            let mut temp = vec![];
 
-            if let (Ok(fg), Ok(bg)) = (
-                get_dna_base_freq(&arc_bam_fg, region),
-                get_dna_base_freq(&arc_bam_bg, region),
-            ) {
-                for s in fg.samples() {
-                    if !bg.has_sample(s) {
-                        continue;
-                    }
-
-                    if let (Some(stat1), Some(stat0)) = (fg.get_forward(s), bg.get_forward(s)) {
-                        debug_assert_eq!(stat1.len(), stat0.len());
-                    }
-
-                    if let (Some(stat1), Some(stat0)) = (fg.get_reverse(s), bg.get_reverse(s)) {
-                        debug_assert_eq!(stat1.len(), stat0.len());
-
-                        let nn = stat1.len();
-                        for j in 0..nn {
-                            let fg_bp = &stat1[j];
-                            let bg_bp = &stat0[j];
-
-                            if let (Some(maf_fg), Some(maf_bg)) = (
-                                fg_bp.major_allele_frequency(),
-                                bg_bp.major_allele_frequency(),
-                            ) {
-                                if (maf_fg.0 == maf_bg.0)
-                                    && (maf_fg.1 > 0.9f32 && maf_bg.1 > 0.9f32)
-                                {
-                                    //
-                                } else {
-                                    dbg!(fg_bp);
-                                    dbg!(bg_bp);
-                                }
+            if let Ok(freq_map) = get_dna_base_freq(&arc_bam, region) {
+                for samp in freq_map.samples() {
+                    if let Some(stats) = freq_map.get_forward(samp) {
+                        for bs in stats {
+                            if base_filter.is_variable(bs) {
+                                temp.push(bs.position());
                             }
                         }
                     }
-
-                    //
                 }
-                // For each sample, we collect statistics
-                // for s in fg.forward.keys() {
-                //     if let (Some(stat1), Some(stat0)) = (fg.get_forward(s), bg.get_forward(s)) {
-                //         debug_assert_eq!(stat1.len(), stat0.len());
-                //         let nn = stat1.len();
-                //         for j in 0..nn {
-                //             let fg_bp = &stat1[j];
-                //             let bg_bp = &stat0[j];
+            }
 
-                //             if fg_bp.tot + bg_bp.tot < 2f32 {
-                //                 continue;
-                //             }
-
-                //             // todo: major allele frequency difference
-
-                //             let score = local_bayes_factor(FreqStat {
-                //                 fg: fg_bp,
-                //                 bg: bg_bp,
-                //             });
-
-                //             if score > 3f32 {
-                //                 dbg!(s);
-                //                 dbg!(score);
-                //                 dbg!(&stat1[j]);
-                //                 dbg!(&stat0[j]);
-                //             }
-                //         }
-                //     }
-                // }
-
-                // // ignore empty block
-                // for j in 0..bg.forward.len() {
-                //     if bg.forward[j].tot > 0 && fg.forward[j].tot > 0 {
-                //         //
-                //     }
-                // }
+            let mut ret = arc_var_pos.lock().unwrap();
+            for j in temp {
+                ret.insert(j);
             }
         });
-        dbg!((&chr_name, blocks.len()));
+
+        let ret = arc_var_pos.lock().expect("").clone();
+        ret
+    };
+
+    for (chr, blocks) in jobs {
+        // Step 1. Make a list of variant sites: chr, lb, ub applying
+        // a set of simple rules.
+        let fg_var_positions = find_variable_positions(chr.as_ref(), &blocks, arc_bam_fg.clone());
+
+        let bg_var_positions = find_variable_positions(chr.as_ref(), &blocks, arc_bam_bg.clone());
+
+        // Step 2. Output BED format
     }
 
     Ok(())
 }
-
-
-// /// statistical assessment of variant calling
-// /// by computing vanilla Bayes factor
-// pub fn local_bayes_factor(stat: FreqStat) -> f32 {
-//     let fg = stat.fg;
-//     let bg = stat.bg;
-
-//     let a0 = 0.25f32;
-
-//     let lgamma_ratio = |a: f32, b: f32, pc: f32| -> f32 {
-//         fa::ln_gamma(a + pc) + fa::ln_gamma(b + pc) - fa::ln_gamma(a + b + pc + pc)
-//     };
-
-//     // lgamma_ratio(fg.a, bg.a, a0)
-//     //     + lgamma_ratio(fg.t, bg.t, a0)
-//     //     + lgamma_ratio(fg.g, bg.g, a0)
-//     //     + lgamma_ratio(fg.c, bg.c, a0)
-//     // - lgamma_ratio(fg.tot, bg.tot, a0 * 4.)
-//     0f32
-// }
