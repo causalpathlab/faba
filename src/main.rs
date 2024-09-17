@@ -10,7 +10,7 @@ use clap::{Parser, Subcommand};
 #[command(version, about, long_about=None)]
 #[command(propagate_version = true)]
 ///
-/// favabean
+/// fababean
 ///
 struct Cli {
     #[command(subcommand)]
@@ -27,14 +27,14 @@ enum Commands {
     Depth(depth::DepthArgs),
 }
 
-/// main CLI for FAVA
+/// main CLI
 ///
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match &cli.commands {
         Commands::Compare(args) => {
-            sift::compare::search(args)?;
+            // sift::compare::search(args)?;
         }
         Commands::Aggregate(args) => {
             //

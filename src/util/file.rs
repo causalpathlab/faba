@@ -1,4 +1,4 @@
-use anyhow::{self};
+use anyhow;
 
 use rust_htslib::bgzf;
 use std::fs::File;
@@ -8,6 +8,7 @@ use std::path::Path;
 ///
 /// Read every line of the input_file into memory
 ///
+#[allow(dead_code)]
 pub fn read_lines(input_file: &str) -> anyhow::Result<Vec<Box<str>>> {
     // Any better solution without using Box?
     let buf: Box<dyn BufRead> = match Path::new(input_file).extension().and_then(|x| x.to_str()) {
