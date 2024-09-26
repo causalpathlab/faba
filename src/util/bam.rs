@@ -7,7 +7,7 @@ use std::thread;
 ///
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 #[allow(dead_code)]
-pub enum Sample {
+pub enum BamSample {
     Combined,
     Barcode(Box<str>),
 }
@@ -15,11 +15,11 @@ pub enum Sample {
 /// Display sample names
 ///
 #[allow(dead_code)]
-impl std::fmt::Display for Sample {
+impl std::fmt::Display for BamSample {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Sample::Combined => write!(f, "."),
-            Sample::Barcode(barcode) => write!(f, "{}", barcode),
+            BamSample::Combined => write!(f, "."),
+            BamSample::Barcode(barcode) => write!(f, "{}", barcode),
         }
     }
 }

@@ -13,7 +13,7 @@ pub enum Dna {
     C,
 }
 
-#[allow(dead_code)]
+#[derive(Debug, Clone)]
 pub struct DnaBaseStat {
     data: [(Dna, f32); 4],
     gpos: i64,
@@ -138,17 +138,17 @@ pub fn get_dna_base_freq(
 
     // map: sample -> forward/reverse frequency vectors
     let mut ret = DnaStatMap::new();
-    ret.new_sample(&Sample::Combined, lb, ub);
+    ret.new_sample(&BamSample::Combined, lb, ub);
     // dbg!("added combined");
 
     for rec in bam_records {
-        let mut sample_id = Sample::Combined;
+        let mut sample_id = BamSample::Combined;
 
         // https://docs.rs/rust-htslib/0.47.0/rust_htslib/bam/record/enum.Aux.html
         // extract 10x cell barcode
         if let Ok(aux) = rec.aux(b"CB") {
             if let Aux::String(cb) = aux {
-                sample_id = Sample::Barcode(cb.into());
+                sample_id = BamSample::Barcode(cb.into());
                 if !ret.has_sample(&sample_id) {
                     // dbg!("added new cell barcode");
                     ret.new_sample(&sample_id, lb, ub);
@@ -203,8 +203,8 @@ pub fn get_dna_base_freq(
 pub struct DnaStatMap {
     forward: HashMap<usize, Vec<DnaBaseStat>>,
     reverse: HashMap<usize, Vec<DnaBaseStat>>,
-    samp2id: HashMap<Sample, usize>,
-    id2samp: Vec<Sample>,
+    samp2id: HashMap<BamSample, usize>,
+    id2samp: Vec<BamSample>,
 }
 
 #[allow(dead_code)]
@@ -222,11 +222,11 @@ impl DnaStatMap {
         }
     }
 
-    pub fn has_sample(&self, key: &Sample) -> bool {
+    pub fn has_sample(&self, key: &BamSample) -> bool {
         self.samp2id.contains_key(key)
     }
 
-    pub fn samples(&self) -> &Vec<Sample> {
+    pub fn samples(&self) -> &Vec<BamSample> {
         &self.id2samp
     }
 
@@ -234,7 +234,7 @@ impl DnaStatMap {
     //     self.id2samp.len()
     // }
 
-    pub fn new_sample(&mut self, key: &Sample, lb: i64, ub: i64) {
+    pub fn new_sample(&mut self, key: &BamSample, lb: i64, ub: i64) {
         if !self.has_sample(&key) {
             let id = self.id2samp.len();
             self.samp2id.insert(key.clone(), id); //
@@ -264,22 +264,22 @@ impl DnaStatMap {
         }
     }
 
-    pub fn get_forward(&self, key: &Sample) -> Option<&Vec<DnaBaseStat>> {
+    pub fn get_forward(&self, key: &BamSample) -> Option<&Vec<DnaBaseStat>> {
         self.samp2id.get(&key).and_then(|id| self.forward.get(id))
     }
 
-    pub fn get_reverse(&self, key: &Sample) -> Option<&Vec<DnaBaseStat>> {
+    pub fn get_reverse(&self, key: &BamSample) -> Option<&Vec<DnaBaseStat>> {
         self.samp2id.get(&key).and_then(|id| self.reverse.get(id))
     }
 
-    pub fn get_forward_base_mut(&mut self, key: &Sample, at: usize) -> Option<&mut DnaBaseStat> {
+    pub fn get_forward_base_mut(&mut self, key: &BamSample, at: usize) -> Option<&mut DnaBaseStat> {
         self.samp2id
             .get(&key)
             .and_then(|id| self.forward.get_mut(id))
             .and_then(|vv| vv.get_mut(at))
     }
 
-    pub fn get_reverse_base_mut(&mut self, key: &Sample, at: usize) -> Option<&mut DnaBaseStat> {
+    pub fn get_reverse_base_mut(&mut self, key: &BamSample, at: usize) -> Option<&mut DnaBaseStat> {
         self.samp2id
             .get(&key)
             .and_then(|id| self.reverse.get_mut(id))
