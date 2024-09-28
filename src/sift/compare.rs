@@ -50,26 +50,13 @@ pub fn search_case_control(args: &RunArgs) -> anyhow::Result<()> {
     bam_bg.sweep_variable_positions();
 
     // update variable positions to each other
-    bam_bg.add_missing_positions(&bam_fg);
-    bam_fg.add_missing_positions(&bam_bg);
+    bam_bg.add_missed_positions(&bam_fg);
+    bam_fg.add_missed_positions(&bam_bg);
 
     println!("Collecting sufficient statistics");
 
-    // For each variable position
-
-    // let  = bam_sifter_bg.get_forward_variable_positions();
-
-    // Combine these positions
-
-    // for (chr, blocks) in jobs {
-    //     // Step 1. Make a list of variant sites: chr, lb, ub applying
-    //     // a set of simple rules.
-    //     let fg_var_positions = find_variable_positions(chr.as_ref(), &blocks, arc_bam_fg.clone());
-
-    //     let bg_var_positions = find_variable_positions(chr.as_ref(), &blocks, arc_bam_bg.clone());
-
-    //     // Step 2. Output BED format
-    // }
+    bam_fg.populate_statistics();
+    bam_bg.populate_statistics();
 
     Ok(())
 }

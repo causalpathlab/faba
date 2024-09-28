@@ -13,6 +13,11 @@ struct DirectedPositions {
     reverse_positions: Vec<i64>,
 }
 
+struct DirectedStats {
+    forward: HashMap<(BamSample, Box<str>), Vec<DnaBaseStat>>,
+    reverse: HashMap<(BamSample, Box<str>), Vec<DnaBaseStat>>,
+}
+
 struct DirectedSets {
     forward_positions: HashSet<i64>,
     reverse_positions: HashSet<i64>,
@@ -23,8 +28,8 @@ pub struct BamSifter {
     jobs: Vec<(Box<str>, Vec<(i64, i64)>)>,
     forward_variable_map: HashMap<Box<str>, HashSet<i64>>,
     reverse_variable_map: HashMap<Box<str>, HashSet<i64>>,
-    forward_stat_map: HashMap<Box<str>, HashMap<BamSample, Vec<DnaBaseStat>>>,
-    reverse_stat_map: HashMap<Box<str>, HashMap<BamSample, Vec<DnaBaseStat>>>,
+    forward_stat: HashMap<(BamSample, Box<str>), Vec<DnaBaseStat>>,
+    reverse_stat: HashMap<(BamSample, Box<str>), Vec<DnaBaseStat>>,
 }
 
 #[allow(dead_code)]
@@ -71,8 +76,8 @@ impl BamSifter {
             jobs: chr_interval_jobs,
             forward_variable_map: HashMap::new(),
             reverse_variable_map: HashMap::new(),
-            forward_stat_map: HashMap::new(),
-            reverse_stat_map: HashMap::new(),
+            forward_stat: HashMap::new(),
+            reverse_stat: HashMap::new(),
         }
     }
 
@@ -85,6 +90,12 @@ impl BamSifter {
                     .insert(chr.clone(), var_positions.reverse_positions);
             }
         }
+    }
+
+    /// add (potentially) missed variable positions
+    pub fn add_missed_positions(&mut self, other: &BamSifter) {
+        self.add_forward_positions(other.get_forward_variable_positions());
+        self.add_reverse_positions(other.get_reverse_variable_positions());
     }
 
     fn add_forward_positions(&mut self, new_pos_to_add: &HashMap<Box<str>, HashSet<i64>>) {
@@ -103,11 +114,6 @@ impl BamSifter {
         }
     }
 
-    pub fn add_missing_positions(&mut self, other: &BamSifter) {
-        self.add_forward_positions(other.get_forward_variable_positions());
-        self.add_reverse_positions(other.get_reverse_variable_positions());
-    }
-
     pub fn get_forward_variable_positions(&self) -> &HashMap<Box<str>, HashSet<i64>> {
         &self.forward_variable_map
     }
@@ -116,40 +122,40 @@ impl BamSifter {
         &self.reverse_variable_map
     }
 
-    /// Sift bases within the given region by checking `is_variable`
-    ///
-    /// * `chr_name` - chromosome/sequence name
-    /// * `start` - lower bound
-    /// * `end` - upper bound
-    ///
-    fn get_statistics(&self, chr_name: &str, start: i64, end: i64) -> anyhow::Result<()> {
-        let region = (chr_name, start, end);
+    pub fn populate_statistics(&mut self) {
+        let fstat_arc = Arc::new(Mutex::new(&mut self.forward_stat));
+        let rstat_arc = Arc::new(Mutex::new(&mut self.reverse_stat));
 
-        // todo: collect statistics
+        for (chr, positions) in self.forward_variable_map.iter() {
+            positions.iter().par_bridge().for_each(|x| {
+                let _chr = chr.as_ref();
+                let _bp = *x;
+                let region = (_chr, _bp, _bp + 1);
 
-        if let Ok(freq_map) = get_dna_base_freq(&self.arc_bam, region) {
-            for samp in freq_map.samples() {
-                if let Some(stat) = freq_map.get_forward(samp) {
-                    for bs in stat {
-                        // let x = b.bi_allelic_stat();
-                        // x.a1;
-                        // x.a2;
-                        // x.n1;
-                        // x.n2;
-                        bs.position();
-                        // b.get(b)
+                let mut fstat = fstat_arc.lock().expect("unable to lock fstat");
+                let mut rstat = rstat_arc.lock().expect("unable to lock rstat");
+
+                if let Ok(freq_map) = get_dna_base_freq(&self.arc_bam, region) {
+                    for samp in freq_map.samples() {
+                        let fstat_vec = fstat.entry((samp.clone(), chr.clone())).or_insert(vec![]);
+
+                        if let Some(statvec) = freq_map.get_forward(samp) {
+                            for bs in statvec {
+                                fstat_vec.push(bs.clone());
+                            }
+                        }
+
+                        let rstat_vec = rstat.entry((samp.clone(), chr.clone())).or_insert(vec![]);
+
+                        if let Some(statvec) = freq_map.get_reverse(samp) {
+                            for bs in statvec {
+                                rstat_vec.push(bs.clone());
+                            }
+                        }
                     }
                 }
-            }
+            });
         }
-
-        Ok(())
-    }
-
-    fn populate_statistics() {
-
-        // let forward_var_pos = Arc::new(Mutex::new(HashSet::new()));
-        // let reverse_var_pos = Arc::new(Mutex::new(HashSet::new()));
     }
 
     /// Sift bases within the given region by checking `is_variable`
@@ -171,6 +177,7 @@ impl BamSifter {
 
         if let Ok(freq_map) = get_dna_base_freq(&self.arc_bam, region) {
             for samp in freq_map.samples() {
+                // forward direction : 5 -> 3
                 if let Some(stats) = freq_map.get_forward(samp) {
                     for bs in stats {
                         if base_filter.is_variable(bs) {
@@ -179,6 +186,7 @@ impl BamSifter {
                     }
                 }
 
+                // reverse direction : 3 -> 5
                 if let Some(stats) = freq_map.get_reverse(samp) {
                     for bs in stats {
                         if base_filter.is_variable(bs) {
@@ -217,6 +225,12 @@ impl BamSifter {
             .iter()
             .par_bridge()
             .try_for_each(|(lb, ub)| -> anyhow::Result<()> {
+
+		// todo: reduce cloning
+
+
+
+
                 if let Ok(positions) = self.variable_bases(chr_name, *lb, *ub) {
                     match forward_var_pos.try_lock() {
                         Ok(mut ret) => {

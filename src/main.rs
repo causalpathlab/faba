@@ -34,7 +34,7 @@ fn main() -> anyhow::Result<()> {
 
     match &cli.commands {
         Commands::Compare(args) => {
-            // sift::compare::search(args)?;
+            sift::compare::search_case_control(args)?;
         }
         Commands::Aggregate(args) => {
             //
