@@ -110,7 +110,7 @@ pub struct BiAllele {
 /// over BAM file reader. Here, we only go through aligned reads.
 ///
 pub fn get_dna_base_freq(
-    arc_bam: &Arc<Mutex<bam::IndexedReader>>,
+    arc_bam: &Arc<Mutex<&mut bam::IndexedReader>>,
     region: (&str, i64, i64),
 ) -> anyhow::Result<DnaStatMap> {
     let (_, lb, ub) = region;

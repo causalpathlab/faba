@@ -24,7 +24,7 @@ struct DirectedSets {
 }
 
 pub struct BamSifter {
-    arc_bam: Arc<Mutex<bam::IndexedReader>>,
+    bam_reader: bam::IndexedReader,
     jobs: Vec<(Box<str>, Vec<(i64, i64)>)>,
     forward_variable_map: HashMap<Box<str>, HashSet<i64>>,
     reverse_variable_map: HashMap<Box<str>, HashSet<i64>>,
@@ -69,10 +69,8 @@ impl BamSifter {
             .expect(&format!("failed to generate index for: {}", bam_file));
 
         BamSifter {
-            arc_bam: Arc::new(Mutex::new(
-                bam::IndexedReader::from_path_and_index(bam_file, &index_file)
-                    .expect("failed to create indexed reader"),
-            )),
+            bam_reader: bam::IndexedReader::from_path_and_index(bam_file, &index_file)
+                .expect("failed to create indexed reader"),
             jobs: chr_interval_jobs,
             forward_variable_map: HashMap::new(),
             reverse_variable_map: HashMap::new(),
@@ -81,15 +79,70 @@ impl BamSifter {
         }
     }
 
-    pub fn sweep_variable_positions(&mut self) {
+    /// Sweep all the blocks to identify variable positions. This will
+    /// fill in the found variable positions in forward_variable_map
+    /// and reverse_variable_map.
+    ///
+    pub fn sweep_variable_positions(&mut self) -> anyhow::Result<()> {
         for (chr, blocks) in self.jobs.iter() {
-            if let Ok(var_positions) = self.find_variable_positions(chr, blocks) {
-                self.forward_variable_map
-                    .insert(chr.clone(), var_positions.forward_positions);
-                self.reverse_variable_map
-                    .insert(chr.clone(), var_positions.reverse_positions);
-            }
+            let fvar_set = self
+                .forward_variable_map
+                .entry(chr.clone())
+                .or_insert(HashSet::new());
+
+            let rvar_set = self
+                .reverse_variable_map
+                .entry(chr.clone())
+                .or_insert(HashSet::new());
+
+            let forward_arc = Arc::new(Mutex::new(fvar_set));
+            let reverse_arc = Arc::new(Mutex::new(rvar_set));
+
+            let bam_arc = Arc::new(Mutex::new(&mut self.bam_reader));
+
+            blocks
+                .iter()
+                .par_bridge()
+                .try_for_each(|(lb, ub)| -> anyhow::Result<()> {
+                    let region = (chr.as_ref(), *lb, *ub);
+                    let base_filter = rules::BaseFilters::new();
+                    let mut forward = vec![];
+                    let mut reverse = vec![];
+
+                    if let Ok(freq_map) = get_dna_base_freq(&bam_arc, region) {
+                        for samp in freq_map.samples() {
+                            // forward direction : 5 -> 3
+                            if let Some(stats) = freq_map.get_forward(samp) {
+                                for bs in stats {
+                                    if base_filter.is_variable(bs) {
+                                        forward.push(bs.position());
+                                    }
+                                }
+                            }
+                            // reverse direction : 3 -> 5
+                            if let Some(stats) = freq_map.get_reverse(samp) {
+                                for bs in stats {
+                                    if base_filter.is_variable(bs) {
+                                        reverse.push(bs.position());
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    forward_arc
+                        .lock()
+                        .expect("failed to lock forward")
+                        .extend(forward);
+                    reverse_arc
+                        .lock()
+                        .expect("failed to lock reverse")
+                        .extend(reverse);
+
+                    Ok(())
+                })?;
         }
+        Ok(())
     }
 
     /// add (potentially) missed variable positions
@@ -122,9 +175,14 @@ impl BamSifter {
         &self.reverse_variable_map
     }
 
+    /// Populate statistics. This will accumulate sufficient
+    /// statistics of the variable positions previously found by
+    /// [`sweep_variable_positions`].
+    ///
     pub fn populate_statistics(&mut self) {
         let fstat_arc = Arc::new(Mutex::new(&mut self.forward_stat));
         let rstat_arc = Arc::new(Mutex::new(&mut self.reverse_stat));
+        let bam_arc = Arc::new(Mutex::new(&mut self.bam_reader));
 
         for (chr, positions) in self.forward_variable_map.iter() {
             positions.iter().par_bridge().for_each(|x| {
@@ -135,7 +193,7 @@ impl BamSifter {
                 let mut fstat = fstat_arc.lock().expect("unable to lock fstat");
                 let mut rstat = rstat_arc.lock().expect("unable to lock rstat");
 
-                if let Ok(freq_map) = get_dna_base_freq(&self.arc_bam, region) {
+                if let Ok(freq_map) = get_dna_base_freq(&bam_arc, region) {
                     for samp in freq_map.samples() {
                         let fstat_vec = fstat.entry((samp.clone(), chr.clone())).or_insert(vec![]);
 
@@ -156,121 +214,5 @@ impl BamSifter {
                 }
             });
         }
-    }
-
-    /// Sift bases within the given region by checking `is_variable`
-    ///
-    /// * `chr_name` - chromosome/sequence name
-    /// * `start` - lower bound
-    /// * `end` - upper bound
-    ///
-    fn variable_bases(
-        &self,
-        chr_name: &str,
-        start: i64,
-        end: i64,
-    ) -> anyhow::Result<DirectedPositions> {
-        let region = (chr_name, start, end);
-        let base_filter = rules::BaseFilters::new();
-        let mut forward = vec![];
-        let mut reverse = vec![];
-
-        if let Ok(freq_map) = get_dna_base_freq(&self.arc_bam, region) {
-            for samp in freq_map.samples() {
-                // forward direction : 5 -> 3
-                if let Some(stats) = freq_map.get_forward(samp) {
-                    for bs in stats {
-                        if base_filter.is_variable(bs) {
-                            forward.push(bs.position());
-                        }
-                    }
-                }
-
-                // reverse direction : 3 -> 5
-                if let Some(stats) = freq_map.get_reverse(samp) {
-                    for bs in stats {
-                        if base_filter.is_variable(bs) {
-                            reverse.push(bs.position());
-                        }
-                    }
-                }
-            }
-        } else {
-            return Err(anyhow::anyhow!("empty stat map"));
-        }
-
-        Ok(DirectedPositions {
-            forward_positions: forward,
-            reverse_positions: reverse,
-        })
-    }
-
-    /// Sift all blocks
-    ///
-    /// * `chr_name` - chromosome/sequence name
-    /// * `blocks` - genomic intervals
-    ///
-    fn find_variable_positions(
-        &self,
-        chr_name: &str,
-        blocks: &Vec<(i64, i64)>,
-    ) -> anyhow::Result<DirectedSets> {
-        //
-        // keep track of genomic locations
-        let forward_var_pos = Arc::new(Mutex::new(HashSet::new()));
-
-        let reverse_var_pos = Arc::new(Mutex::new(HashSet::new()));
-
-        blocks
-            .iter()
-            .par_bridge()
-            .try_for_each(|(lb, ub)| -> anyhow::Result<()> {
-
-		// todo: reduce cloning
-
-
-
-
-                if let Ok(positions) = self.variable_bases(chr_name, *lb, *ub) {
-                    match forward_var_pos.try_lock() {
-                        Ok(mut ret) => {
-                            for j in positions.forward_positions.iter() {
-                                ret.insert(*j);
-                            }
-                        }
-                        Err(_) => {
-                            return Err(anyhow::anyhow!("failed to lock forward"));
-                        }
-                    };
-
-                    match reverse_var_pos.try_lock() {
-                        Ok(mut ret) => {
-                            for j in positions.reverse_positions.iter() {
-                                ret.insert(*j);
-                            }
-                        }
-                        Err(_) => {
-                            return Err(anyhow::anyhow!("failed to lock reverse"));
-                        }
-                    };
-                }
-
-                Ok(())
-            })?;
-
-        let forward = forward_var_pos
-            .lock()
-            .expect("failed to copy forward")
-            .clone();
-
-        let reverse = reverse_var_pos
-            .lock()
-            .expect("failed to copy reverse")
-            .clone();
-
-        Ok(DirectedSets {
-            forward_positions: forward,
-            reverse_positions: reverse,
-        })
     }
 }
