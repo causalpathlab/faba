@@ -109,6 +109,9 @@ pub struct BiAllele {
 /// Extract DNA base pair frequency tables in multi-threaded visits
 /// over BAM file reader. Here, we only go through aligned reads.
 ///
+/// * `arc_bam` - Arc, Mutex of indexed BAM reader
+/// * `region` - a genomic region triplet
+/// 
 pub fn get_dna_base_freq(
     arc_bam: &Arc<Mutex<&mut bam::IndexedReader>>,
     region: (&str, i64, i64),
