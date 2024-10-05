@@ -1,0 +1,15 @@
+[package]
+name = 'faba'
+version = '0.1.0'
+edition = '2021'
+
+[lib]
+crate-type = [ 'staticlib' ]
+name = 'faba'
+
+[dependencies]
+anyhow = "1.0.89"
+bio = "2.0.3"
+extendr-api = '*'
+rayon = "1.10.0"
+rust-htslib = "0.47.0"
