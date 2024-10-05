@@ -1,27 +1,11 @@
 use crate::util::misc::make_intervals;
 
-use anyhow;
 use rayon::prelude::*;
 use rust_htslib::bam::{self, Read};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use crate::sift::*;
-
-struct DirectedPositions {
-    forward_positions: Vec<i64>,
-    reverse_positions: Vec<i64>,
-}
-
-struct DirectedStats {
-    forward: HashMap<(BamSample, Box<str>), Vec<DnaBaseStat>>,
-    reverse: HashMap<(BamSample, Box<str>), Vec<DnaBaseStat>>,
-}
-
-struct DirectedSets {
-    forward_positions: HashSet<i64>,
-    reverse_positions: HashSet<i64>,
-}
 
 pub struct BamSifter {
     bam_reader: bam::IndexedReader,
@@ -38,9 +22,9 @@ impl BamSifter {
     /// create a wrapper for BAM file sifting routines
     ///
     /// * `bam_file` - alignment file name
-    /// * `bai_file` - index file name
+    /// * `index_file` - index file name
     ///
-    pub fn from_file(bam_file: &str, bai_file: Option<&str>, block_size: Option<usize>) -> Self {
+    pub fn from_file(bam_file: &str, index_file: &str, block_size: Option<usize>) -> Self {
         //
         let block_size = match block_size {
             Some(x) => x as i64,
@@ -64,10 +48,6 @@ impl BamSifter {
             chr_interval_jobs.push((chr_name, make_intervals(max_size, block_size)));
         }
 
-        // check index for a fast look-up
-        let index_file = check_bam_index(bam_file, bai_file)
-            .expect(&format!("failed to generate index for: {}", bam_file));
-
         BamSifter {
             bam_reader: bam::IndexedReader::from_path_and_index(bam_file, &index_file)
                 .expect("failed to create indexed reader"),
@@ -83,7 +63,7 @@ impl BamSifter {
     /// fill in the found variable positions in forward_variable_map
     /// and reverse_variable_map.
     ///
-    pub fn sweep_variable_positions(&mut self) -> anyhow::Result<()> {
+    pub fn sweep_variable_positions(&mut self) {
         for (chr, blocks) in self.jobs.iter() {
             let fvar_set = self
                 .forward_variable_map
@@ -100,49 +80,43 @@ impl BamSifter {
 
             let bam_arc = Arc::new(Mutex::new(&mut self.bam_reader));
 
-            blocks
-                .iter()
-                .par_bridge()
-                .try_for_each(|(lb, ub)| -> anyhow::Result<()> {
-                    let region = (chr.as_ref(), *lb, *ub);
-                    let base_filter = rules::BaseFilters::new();
-                    let mut forward = vec![];
-                    let mut reverse = vec![];
+            blocks.iter().par_bridge().for_each(|(lb, ub)| {
+                let region = (chr.as_ref(), *lb, *ub);
+                let base_filter = rules::BaseFilters::new();
+                let mut forward = vec![];
+                let mut reverse = vec![];
 
-                    if let Ok(freq_map) = get_dna_base_freq(&bam_arc, region) {
-                        for samp in freq_map.samples() {
-                            // forward direction : 5 -> 3
-                            if let Some(stats) = freq_map.get_forward(samp) {
-                                for bs in stats {
-                                    if base_filter.is_variable(bs) {
-                                        forward.push(bs.position());
-                                    }
+                if let Ok(freq_map) = get_dna_base_freq(&bam_arc, region) {
+                    for samp in freq_map.samples() {
+                        // forward direction : 5 -> 3
+                        if let Some(stats) = freq_map.get_forward(samp) {
+                            for bs in stats {
+                                if base_filter.is_variable(bs) {
+                                    forward.push(bs.position());
                                 }
                             }
-                            // reverse direction : 3 -> 5
-                            if let Some(stats) = freq_map.get_reverse(samp) {
-                                for bs in stats {
-                                    if base_filter.is_variable(bs) {
-                                        reverse.push(bs.position());
-                                    }
+                        }
+                        // reverse direction : 3 -> 5
+                        if let Some(stats) = freq_map.get_reverse(samp) {
+                            for bs in stats {
+                                if base_filter.is_variable(bs) {
+                                    reverse.push(bs.position());
                                 }
                             }
                         }
                     }
+                }
 
-                    forward_arc
-                        .lock()
-                        .expect("failed to lock forward")
-                        .extend(forward);
-                    reverse_arc
-                        .lock()
-                        .expect("failed to lock reverse")
-                        .extend(reverse);
-
-                    Ok(())
-                })?;
+                forward_arc
+                    .lock()
+                    .expect("failed to lock forward")
+                    .extend(forward);
+                reverse_arc
+                    .lock()
+                    .expect("failed to lock reverse")
+                    .extend(reverse);
+            });
         }
-        Ok(())
     }
 
     /// add (potentially) missed variable positions
