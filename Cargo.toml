@@ -1,0 +1,72 @@
+[package]
+name = "faba"
+version = "0.14.0"
+edition = "2021"
+rust-version = "1.91"
+license = "MIT"
+authors = ["Yongjin Park <ypp@stat.ubc.ca> <yongjin.park@ubc.ca>"]
+description = "Feature statistics Accumulator for Base-pair-level Analysis — BAM to per-cell sparse matrices"
+repository = "https://github.com/causalpathlab/faba"
+homepage = "https://github.com/causalpathlab/faba"
+readme = "README.md"
+keywords = ["genomics", "rna", "bam", "single-cell", "epitranscriptomics"]
+categories = ["science", "command-line-utilities"]
+exclude = [
+    "**/.claude/**",
+    "**/.DS_Store",
+    "reference/**",
+    "*.bam",
+    "*.bai",
+    "*.gz",
+    "*.fa",
+    "*.fai",
+]
+
+[lib]
+# The library surface carries the editing statistics, shared by the binary's
+# editing caller and the integration tests under `tests/`. Its module docs use
+# illustrative math blocks, not runnable examples, so doctests are disabled.
+doctest = false
+
+[[bin]]
+name = "faba"
+path = "src/main.rs"
+
+[features]
+default = []
+# No `cuda` / `metal`: faba reads BAM files and writes sparse matrices, and
+# nothing on that path touches a GPU. The model-fitting subcommands that did
+# now live in senna (legume-rs).
+#
+# Forward data-beans's optional `hdf5` feature so `cargo install faba --features hdf5`
+# enables the HDF5 backend + .h5/.h5ad readers (requires libhdf5 on the build host).
+hdf5 = ["data-beans/hdf5"]
+
+[dependencies]
+data-beans = { version = "0.6.9", features = ["aux"] }
+legume-genomic-types = "0.4.0"
+legume-numeric = { version = "0.8.10", features = ["matrix", "param", "candle"] }
+
+anyhow = "1.0"
+clap = { version = "4.5.20", features = ["derive"] }
+flate2 = "1.0.34"
+num_cpus = "1.16.0"
+rayon = "1.10.0"
+tempfile = "3.2"
+rand = "0.10.1"
+rand_distr = "0.6"
+
+indicatif = { version = "^0.18", features = ["rayon"] }
+log = "0.4"
+
+statrs = { version = "0.18", default-features = false }
+coitrees = "0.4"
+parquet = "59"
+
+rustc-hash = "2.1"
+dashmap = { version = "6.1.0", features = ["rayon"] }
+rust-htslib = "1.0"
+arrow = "59"
+
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"

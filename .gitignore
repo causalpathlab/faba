@@ -1,0 +1,9 @@
+/target
+**/*.rs.bk
+.DS_Store
+*.bam
+*.bai
+*.fa
+*.fai
+*.gz
+reference/
