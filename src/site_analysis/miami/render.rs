@@ -11,7 +11,6 @@ use super::palette::{self, Palette, Rgb};
 use crate::site_analysis::pileup::fmt_thousands;
 use std::fmt::Write as _;
 
-
 /// Per-cell-type data for one panel.
 pub struct PanelData {
     pub celltype: Box<str>,
