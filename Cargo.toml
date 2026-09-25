@@ -1,6 +1,6 @@
 [package]
 name = "faba"
-version = "0.14.1"
+version = "0.14.2"
 edition = "2021"
 rust-version = "1.91"
 license = "MIT"
@@ -44,7 +44,7 @@ hdf5 = ["data-beans/hdf5"]
 
 [dependencies]
 data-beans = { version = "0.6.9", features = ["aux"] }
-legume-genomic-types = "0.4.0"
+legume-genomic-types = "0.4.1"
 legume-numeric = { version = "0.8.10", features = ["matrix", "param", "candle"] }
 
 anyhow = "1.0"
