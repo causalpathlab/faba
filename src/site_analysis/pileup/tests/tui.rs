@@ -149,3 +149,25 @@ fn renders_both_tracks_with_coordinates() {
     let mut one = one;
     screen(&mut one, 12, 6);
 }
+
+#[test]
+fn saves_the_window() {
+    let (m, s) = (positions(), sites());
+    let mut v = view(&m, &s);
+    screen(&mut v, 100, 24);
+    press(&mut v, KeyCode::Char('+'));
+    let svg = v.figure();
+    assert!(svg.contains("matrix (sum)") && svg.contains("sites (count)"));
+    assert!(svg.contains("bp per bar"));
+    let dir = tempfile::tempdir().unwrap();
+    let prefix = dir.path().join("pile1.png");
+    press(&mut v, KeyCode::Char('s'));
+    for _ in 0..40 {
+        press(&mut v, KeyCode::Backspace);
+    }
+    for ch in prefix.to_str().unwrap().chars() {
+        press(&mut v, KeyCode::Char(ch));
+    }
+    press(&mut v, KeyCode::Enter);
+    assert!(dir.path().join("pile1.pdf").exists() && dir.path().join("pile1.png").exists());
+}

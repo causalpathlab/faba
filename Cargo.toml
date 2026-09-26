@@ -45,6 +45,10 @@ hdf5 = ["data-beans/hdf5"]
 [dependencies]
 data-beans = { version = "0.6.16", default-features = false, features = ["aux", "tui"] }
 ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
+# Figures: one SVG per view, converted to PDF and PNG.
+usvg = "0.45"
+resvg = { version = "0.45", default-features = false, features = ["text", "system-fonts", "memmap-fonts"] }
+svg2pdf = { version = "0.13", default-features = false, features = ["text"] }
 legume-genomic-types = "0.4.1"
 legume-numeric = { version = "0.8.10", features = ["matrix", "param", "candle"] }
 

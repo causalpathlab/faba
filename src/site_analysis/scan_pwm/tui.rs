@@ -17,6 +17,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use crate::data::dna::DnaBaseCount;
+use crate::figure::{self, Anchor, Canvas, SavePrompt, ACCENT, INK, MUTED};
 
 /// Logo order: alphabetical, as sequence logos are usually keyed.
 const BASES: [char; 4] = ['A', 'C', 'G', 'T'];
@@ -118,6 +119,7 @@ pub struct PwmView {
     cursor: usize,
     /// First column on screen, when they do not all fit.
     offset: usize,
+    save: SavePrompt,
     done: bool,
 }
 
@@ -136,6 +138,7 @@ impl PwmView {
             mode: Mode::Bits,
             cursor: window.max(0) as usize,
             offset: 0,
+            save: SavePrompt::new("pwm_logo"),
             done: false,
         }
     }
@@ -171,6 +174,64 @@ impl PwmView {
         spans.push(dim(" IC ".into()));
         spans.push(Span::raw(format!("{:.3} bits", col.bits())));
         Line::from(spans)
+    }
+
+    /// The logo as a figure: letters stretched to their heights.
+    fn figure(&self) -> String {
+        let n = self.columns.len().max(1);
+        let (left, top, cw, ph) = (56.0, 40.0, (560.0 / n as f64).clamp(8.0, 40.0), 200.0);
+        let width = left + cw * n as f64 + 20.0;
+        let mut c = Canvas::new(width, top + ph + 56.0);
+        c.bold(16.0, 22.0, &self.title, 12.0, Anchor::Start, INK);
+        let top_value = self.mode.top();
+        for f in [0.0, 0.5, 1.0] {
+            let y = top + ph - f * ph;
+            c.line(left - 4.0, y, left, y, INK, 0.6);
+            c.text(
+                left - 7.0,
+                y + 3.0,
+                &format!("{}", f * top_value),
+                8.0,
+                Anchor::End,
+                MUTED,
+            );
+        }
+        c.line(left, top, left, top + ph, INK, 0.6);
+        c.line(left, top + ph, left + cw * n as f64, top + ph, INK, 0.6);
+        c.vtext(18.0, top + ph / 2.0, self.mode.name(), 9.0, MUTED);
+        for (j, col) in self.columns.iter().enumerate() {
+            let x = left + j as f64 * cw;
+            let heights = col.heights(self.mode);
+            let mut order: Vec<usize> = (0..4).collect();
+            order.sort_by(|&a, &b| heights[a].total_cmp(&heights[b]));
+            let fill = if self.rel(j) == 0 { ACCENT } else { INK };
+            let mut y = top + ph;
+            for &b in &order {
+                let h = heights[b] / top_value * ph;
+                y -= h;
+                c.glyph(x + 0.5, y, cw - 1.0, h, BASES[b], fill);
+            }
+            let rel = self.rel(j);
+            if rel % 5 == 0 || n <= 25 {
+                c.text(
+                    x + cw / 2.0,
+                    top + ph + 13.0,
+                    &rel.to_string(),
+                    8.0,
+                    Anchor::Middle,
+                    INK,
+                );
+            }
+        }
+        c.text(
+            left + cw * n as f64 / 2.0,
+            top + ph + 32.0,
+            "position relative to the site",
+            8.0,
+            Anchor::Middle,
+            MUTED,
+        );
+        c.finish()
     }
 
     /// Draw the stacks into `area`: letters over all rows but the last two
@@ -279,7 +340,16 @@ impl Screen for PwmView {
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
+        if self.save.active() {
+            if let Some(prefix) = self.save.handle(key) {
+                let result = figure::save(&self.figure(), &prefix);
+                self.save.report(result);
+            }
+            return;
+        }
+        self.save.dismiss();
         match key.code {
+            KeyCode::Char('s') => self.save.open(),
             KeyCode::Left | KeyCode::Char('h') => self.move_cursor(-1),
             KeyCode::Right | KeyCode::Char('l') => self.move_cursor(1),
             KeyCode::Home => self.cursor = 0,
@@ -318,15 +388,16 @@ impl Screen for PwmView {
         frame.render_widget(block, body);
         self.render_logo(frame.buffer_mut(), inner);
         frame.render_widget(Paragraph::new(self.stats_line()), stats);
-        frame.render_widget(
+        let help = self.save.footer().unwrap_or_else(|| {
             help_line(&[
                 ("←/→", "position"),
                 ("0", "site"),
                 ("m", "bits/frequency"),
+                ("s", "save"),
                 ("q", "quit"),
-            ]),
-            footer,
-        );
+            ])
+        });
+        frame.render_widget(help, footer);
     }
 }
 

@@ -642,15 +642,17 @@ permissive end, because that is where the trade-off is decided. Editing modaliti
 bin), then sweep `max_pv`, `min_log_odds`, `min_fold`, `min_coverage`, `min_converted`,
 `min_edit_ratio` and `min_cells`; `count` and `apa` sweep `min_cells` and `min_counts` per gene
 unit, and `count` also `min_genes_per_cell`. No error rate is estimated: how a marginal p-value or
-any other column should be calibrated is left to the user, with the table as the evidence.
+any other column should be calibrated is left to the user, with the table as the evidence. The
+same panels are drawn to `{prefix}.qc_report.pdf` and `.png`.
 
-**`-I/--interactive`.** Both commands can open a full-screen view of the site thresholds
-*combined*, where the sweep moves them one at a time. Each knob is a row with its threshold, the
+**`qc -I/--interactive`.** Opens a full-screen view of the site thresholds *combined*, where the
+`qc-report` sweep moves them one at a time. Each knob is a row with its threshold, the
 sites it drops alone and the sites for which it is the first failing check, beside a histogram of the
 column it cuts; the sites that pass every other knob are drawn in front, and the bars the
 threshold drops are drawn in the accent colour. Every count is decided by the same rule `qc`
-applies, so the view cannot disagree with the written fileset. Under `qc`, Enter applies the
-thresholds on screen; under `qc-report`, Enter prints the matching `faba qc` flags. Without a
+applies, so the view cannot disagree with the written fileset. Enter applies the thresholds on
+screen; `p` prints the matching `faba qc` flags and writes nothing; `s` saves the view as a PDF
+and PNG under a name it asks for. Nothing is written until the thresholds are applied. Without a
 terminal on stdin and stdout the view is skipped and the `--site-*` values are used as given.
 
 ---

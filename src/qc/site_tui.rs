@@ -1,5 +1,4 @@
-//! Full-screen site-threshold picker for `faba qc --interactive` and
-//! `faba qc-report --interactive`.
+//! Full-screen site-threshold picker for `faba qc --interactive`.
 //!
 //! One row per [`Criterion`] beside a histogram of the column it cuts, for
 //! one editing modality at a time. The thresholds are shared across
@@ -22,6 +21,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use rustc_hash::FxHashMap;
+
+use crate::figure::{self, Anchor, Bars, Canvas, SavePrompt, INK, MUTED};
 
 use super::args::SiteFilterArgs;
 use super::layout::{file_name, SITE_MODALITIES};
@@ -347,20 +348,20 @@ enum Mode {
     Edit(String),
 }
 
-/// What Enter does.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Purpose {
-    /// `faba qc`: apply the thresholds.
-    Apply,
-    /// `faba qc-report`: print the matching `faba qc` flags.
-    Explore,
+/// How the user left the picker.
+#[derive(Debug, Clone)]
+enum Outcome {
+    /// Enter: cut with these thresholds.
+    Apply(SiteFilterArgs),
+    /// `p`: print the matching flags and write nothing.
+    Print(SiteFilterArgs),
+    Cancel,
 }
 
 /// State of the picker, independent of the terminal so it can be tested.
 struct SitePicker<'a> {
     title: String,
     views: Vec<SiteView<'a>>,
-    purpose: Purpose,
     filter: SiteFilterArgs,
     initial: SiteFilterArgs,
     modality: usize,
@@ -372,16 +373,12 @@ struct SitePicker<'a> {
     column: Column,
     tally: Tally,
     mode: Mode,
-    decision: Option<Option<SiteFilterArgs>>,
+    save: SavePrompt,
+    decision: Option<Outcome>,
 }
 
 impl<'a> SitePicker<'a> {
-    fn new(
-        title: &str,
-        views: Vec<SiteView<'a>>,
-        filter: SiteFilterArgs,
-        purpose: Purpose,
-    ) -> Self {
+    fn new(title: &str, views: Vec<SiteView<'a>>, filter: SiteFilterArgs) -> Self {
         assert!(!views.is_empty(), "no site table to pick thresholds on");
         let c = views[0].criteria[0];
         let column = Column::new(&views[0], c, c.scales()[0]);
@@ -389,7 +386,6 @@ impl<'a> SitePicker<'a> {
         Self {
             title: title.to_string(),
             views,
-            purpose,
             initial: filter.clone(),
             filter,
             modality: 0,
@@ -399,6 +395,7 @@ impl<'a> SitePicker<'a> {
             column,
             tally,
             mode: Mode::Browse,
+            save: SavePrompt::new("qc_sites"),
             decision: None,
         }
     }
@@ -552,6 +549,127 @@ impl<'a> SitePicker<'a> {
         lines
     }
 
+    /// The current view as a figure: the threshold table beside the
+    /// focused column's histogram.
+    fn figure(&self) -> String {
+        let c = self.criterion();
+        let view = self.view();
+        let n = view.table.len();
+        let mut canvas = Canvas::new(720.0, 340.0);
+        canvas.bold(16.0, 22.0, &self.title, 12.0, Anchor::Start, INK);
+        canvas.text(
+            16.0,
+            38.0,
+            &format!(
+                "{}: kept {} of {} sites ({:.2}%) in {} of {} genes",
+                view.table.modality,
+                self.tally.kept,
+                n,
+                pct(self.tally.kept, n),
+                self.tally.genes,
+                view.table.n_genes
+            ),
+            9.0,
+            Anchor::Start,
+            MUTED,
+        );
+
+        let (x0, mut y) = (16.0, 66.0);
+        let cols = [
+            (x0, Anchor::Start),
+            (x0 + 150.0, Anchor::End),
+            (x0 + 205.0, Anchor::End),
+            (x0 + 255.0, Anchor::End),
+        ];
+        for (text, (x, a)) in ["threshold", "", "alone", "first"].iter().zip(cols) {
+            canvas.text(x, y, text, 8.0, a, MUTED);
+        }
+        for &k in &view.criteria {
+            y += 16.0;
+            let value = if k.is_off(&self.filter) {
+                "off".to_string()
+            } else {
+                let op = if k.is_max() { "≤" } else { "≥" };
+                format!("{op} {}", k.fmt_short(k.get(&self.filter)))
+            };
+            let colour = if k == c { figure::ACCENT } else { INK };
+            canvas.text(cols[0].0, y, k.label(), 9.0, Anchor::Start, colour);
+            canvas.text(cols[1].0, y, &value, 9.0, Anchor::End, colour);
+            canvas.text(
+                cols[2].0,
+                y,
+                &self.tally.alone[k as usize].to_string(),
+                9.0,
+                Anchor::End,
+                INK,
+            );
+            canvas.text(
+                cols[3].0,
+                y,
+                &self.tally.first[k as usize].to_string(),
+                9.0,
+                Anchor::End,
+                MUTED,
+            );
+        }
+        canvas.text(
+            x0,
+            y + 22.0,
+            "alone: dropped with the others off",
+            7.5,
+            Anchor::Start,
+            MUTED,
+        );
+        canvas.text(
+            x0,
+            y + 33.0,
+            "first: the first check a site fails",
+            7.5,
+            Anchor::Start,
+            MUTED,
+        );
+
+        // Histogram ticks: the smallest value in about six bins.
+        let col = &self.column;
+        let nb = col.hist.counts.len();
+        let mut lowest = vec![f64::INFINITY; nb];
+        for (&d, &b) in col.display.iter().zip(&col.slot) {
+            lowest[b as usize] = lowest[b as usize].min(d as f64);
+        }
+        let every = (nb / 6).max(1);
+        let ticks = (0..nb)
+            .step_by(every)
+            .filter_map(|b| (b..nb).find(|&j| lowest[j].is_finite()))
+            .map(|b| (b, c.fmt_short(lowest[b])))
+            .collect::<Vec<_>>();
+        let pointer = (!c.is_off(&self.filter))
+            .then(|| (col.key_of(c, c.get(&self.filter)) - col.hist.kmin) as usize);
+        let keeps_high = c.keeps_high();
+        let dropped = |b: usize| match pointer {
+            Some(p) => (keeps_high && b < p) || (!keeps_high && b > p),
+            None => false,
+        };
+        let values: Vec<f64> = col.hist.counts.iter().map(|&v| v as f64).collect();
+        let front: Vec<f64> = self.tally.subset.iter().map(|&v| v as f64).collect();
+        Bars {
+            values: &values,
+            front: Some(&front),
+            accent: &dropped,
+            y_scale: self.y_scale,
+            ticks,
+            pointer,
+            marks: Vec::new(),
+            title: format!(
+                "{}: sites passing every other threshold in front",
+                c.label()
+            ),
+            x_title: format!("{} ({} bins)", c.axis(), self.scale().name()),
+            y_title: "sites".into(),
+        }
+        .draw(&mut canvas, 290.0, 50.0, 420.0, 280.0);
+        canvas.finish()
+    }
+
     fn render_hist(&self, frame: &mut Frame, area: Rect) {
         let c = self.criterion();
         let block = panel(format!(" {} ", c.axis()), true);
@@ -615,10 +733,18 @@ impl Screen for SitePicker<'_> {
     }
 
     fn interrupt(&mut self) {
-        self.decision = Some(None);
+        self.decision = Some(Outcome::Cancel);
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
+        if self.save.active() {
+            if let Some(prefix) = self.save.handle(key) {
+                let result = figure::save(&self.figure(), &prefix);
+                self.save.report(result);
+            }
+            return;
+        }
+        self.save.dismiss();
         match &mut self.mode {
             Mode::Edit(buf) => match key.code {
                 KeyCode::Char(ch)
@@ -654,8 +780,10 @@ impl Screen for SitePicker<'_> {
                 KeyCode::Char('y') => self.y_scale = self.y_scale.next(),
                 KeyCode::Char('e') => self.mode = Mode::Edit(String::new()),
                 KeyCode::Char(ch) if ch.is_ascii_digit() => self.mode = Mode::Edit(ch.to_string()),
-                KeyCode::Enter => self.decision = Some(Some(self.filter.clone())),
-                KeyCode::Char('q') | KeyCode::Esc => self.decision = Some(None),
+                KeyCode::Char('s') => self.save.open(),
+                KeyCode::Enter => self.decision = Some(Outcome::Apply(self.filter.clone())),
+                KeyCode::Char('p') => self.decision = Some(Outcome::Print(self.filter.clone())),
+                KeyCode::Char('q') | KeyCode::Esc => self.decision = Some(Outcome::Cancel),
                 _ => {}
             },
         }
@@ -688,11 +816,8 @@ impl Screen for SitePicker<'_> {
         frame.render_widget(Paragraph::new(self.criteria_lines()), inner);
         self.render_hist(frame, right);
 
-        let enter = match self.purpose {
-            Purpose::Apply => "apply",
-            Purpose::Explore => "print flags",
-        };
         let help = match &self.mode {
+            _ if self.save.footer().is_some() => self.save.footer().unwrap_or_default(),
             Mode::Edit(buf) => input_line(
                 &format!("{} {}: ", self.criterion().label(), self.criterion().flag()),
                 buf,
@@ -707,7 +832,9 @@ impl Screen for SitePicker<'_> {
                 ("r", "reset"),
                 ("x/y", "scale"),
                 ("Tab", "modality"),
-                ("Enter", enter),
+                ("s", "save"),
+                ("Enter", "apply"),
+                ("p", "print flags"),
                 ("q", "cancel"),
             ]),
         };
@@ -720,7 +847,10 @@ pub enum Picked {
     /// No terminal, or no site table: the thresholds stand as given.
     Skipped,
     Cancelled,
-    Chosen(SiteFilterArgs),
+    /// Cut with these thresholds.
+    Apply(SiteFilterArgs),
+    /// Print the flags for these thresholds; write nothing.
+    PrintOnly(SiteFilterArgs),
 }
 
 /// Open the picker over the non-empty site tables, in [`SITE_MODALITIES`]
@@ -731,7 +861,6 @@ pub fn run_site_picker(
     tables: &FxHashMap<Box<str>, SiteTable>,
     site_cells: &FxHashMap<Box<str>, FxHashMap<Box<str>, usize>>,
     filter: &SiteFilterArgs,
-    purpose: Purpose,
 ) -> anyhow::Result<Picked> {
     if !tui_available() {
         log::warn!("--interactive needs stdin and stdout on a terminal; skipping the view");
@@ -750,11 +879,12 @@ pub fn run_site_picker(
         log::warn!("--interactive: no editing site table to pick thresholds on");
         return Ok(Picked::Skipped);
     }
-    let mut picker = SitePicker::new(&file_name(input_dir), views, filter.clone(), purpose);
+    let mut picker = SitePicker::new(&file_name(input_dir), views, filter.clone());
     run_screen(&mut picker)?;
-    Ok(match picker.decision.flatten() {
-        Some(f) => Picked::Chosen(f),
-        None => Picked::Cancelled,
+    Ok(match picker.decision {
+        Some(Outcome::Apply(f)) => Picked::Apply(f),
+        Some(Outcome::Print(f)) => Picked::PrintOnly(f),
+        Some(Outcome::Cancel) | None => Picked::Cancelled,
     })
 }
 

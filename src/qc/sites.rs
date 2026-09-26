@@ -375,6 +375,7 @@ impl SiteFilterArgs {
 
     /// Parse `--site-*` flags as `faba qc` would, defaults filling the rest.
     /// Panics (through clap) on a flag it does not know.
+    #[cfg(test)]
     pub fn parse_flags<'a>(flags: impl IntoIterator<Item = &'a str>) -> Self {
         #[derive(clap::Parser)]
         struct Flags {
@@ -386,6 +387,7 @@ impl SiteFilterArgs {
 
     /// The command-line defaults, as `faba qc` uses them with no `--site-*`
     /// flag given.
+    #[cfg(test)]
     pub fn default_values() -> Self {
         Self::parse_flags([])
     }

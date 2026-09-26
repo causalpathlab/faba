@@ -117,3 +117,22 @@ fn a_wide_window_scrolls_to_the_cursor() {
     // A tiny terminal must not panic.
     screen(&mut v, 8, 4);
 }
+
+#[test]
+fn saves_the_logo() {
+    let mut v = PwmView::new("sites", &pwm(), 2);
+    let svg = v.figure();
+    assert!(svg.contains(">A<") && svg.contains(crate::figure::ACCENT));
+    let dir = tempfile::tempdir().unwrap();
+    let prefix = dir.path().join("logo1");
+    press(&mut v, KeyCode::Char('s'));
+    for _ in 0..20 {
+        press(&mut v, KeyCode::Backspace);
+    }
+    for ch in prefix.to_str().unwrap().chars() {
+        press(&mut v, KeyCode::Char(ch));
+    }
+    press(&mut v, KeyCode::Enter);
+    assert!(dir.path().join("logo1.pdf").exists() && dir.path().join("logo1.png").exists());
+    assert!(!v.done());
+}

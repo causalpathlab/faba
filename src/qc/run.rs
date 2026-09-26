@@ -26,7 +26,7 @@ use super::matrix::{
     Written,
 };
 use super::repool::repool_gene_level;
-use super::site_tui::{qc_flags, run_site_picker, Picked, Purpose};
+use super::site_tui::{qc_flags, run_site_picker, Picked};
 use super::sites::{
     accumulate_site_cells, read_site_table, site_matrix_rows, write_site_tables, SiteTable,
 };
@@ -269,10 +269,14 @@ pub fn run_qc(args: &QcArgs) -> anyhow::Result<()> {
     let mut site_args = args.site.clone();
     if args.interactive {
         let (tables, cells) = (&tables, &site_cells);
-        match run_site_picker(&args.input_dir, tables, cells, &args.site, Purpose::Apply)? {
-            Picked::Chosen(f) => {
+        match run_site_picker(&args.input_dir, tables, cells, &args.site)? {
+            Picked::Apply(f) => {
                 info!("site thresholds: {}", qc_flags(&f));
                 site_args = f;
+            }
+            Picked::PrintOnly(f) => {
+                println!("faba qc {} -o {} {}", args.input_dir, out_dir, qc_flags(&f));
+                return Ok(());
             }
             Picked::Cancelled => anyhow::bail!("cancelled at the site thresholds; nothing written"),
             Picked::Skipped => {}

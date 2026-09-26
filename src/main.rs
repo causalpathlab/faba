@@ -5,6 +5,7 @@ mod common;
 mod data;
 mod docs;
 mod editing;
+mod figure;
 mod gene_count;
 mod m6a;
 mod mixture;

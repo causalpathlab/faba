@@ -196,24 +196,12 @@ pub struct QcReportArgs {
         short = 'o',
         long = "output",
         required = true,
-        help = "Output prefix: writes {prefix}.qc_report.parquet"
+        help = "Output prefix: writes {prefix}.qc_report.parquet and the panels as {prefix}.qc_report.pdf/.png"
     )]
     pub output: Box<str>,
 
     #[arg(long = "width", default_value_t = 50, help = "Width of the ASCII bars")]
     pub width: usize,
-
-    #[arg(
-        short = 'I',
-        long = "interactive",
-        default_value_t = false,
-        help = "After the sweep, combine the site thresholds in a full-screen view (needs a terminal)",
-        long_help = "After the sweep, open a full-screen view of the site thresholds combined,\n\
-                     not one at a time: each knob's column as a histogram with live kept and\n\
-                     dropped counts. Enter prints the matching `faba qc` flags on stdout.\n\
-                     Needs stdin and stdout on a terminal; otherwise it is skipped."
-    )]
-    pub interactive: bool,
 
     #[arg(
         long = "quiet",

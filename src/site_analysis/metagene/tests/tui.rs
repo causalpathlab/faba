@@ -126,3 +126,25 @@ fn renders_region_labels_and_the_cursor_readout() {
     assert!(v.shown_merge > 1, "14 columns cannot hold 20 bins");
     screen(&mut v, 8, 4);
 }
+
+#[test]
+fn saves_the_profile() {
+    let h = hist(true);
+    let mut v = MetageneView::new("sites", &h);
+    screen(&mut v, 60, 16);
+    let svg = v.figure();
+    for name in ["5'UTR", "CDS", "3'UTR"] {
+        assert!(svg.contains(name), "{name}");
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let prefix = dir.path().join("mg1");
+    press(&mut v, KeyCode::Char('s'));
+    for _ in 0..20 {
+        press(&mut v, KeyCode::Backspace);
+    }
+    for ch in prefix.to_str().unwrap().chars() {
+        press(&mut v, KeyCode::Char(ch));
+    }
+    press(&mut v, KeyCode::Enter);
+    assert!(dir.path().join("mg1.pdf").exists() && dir.path().join("mg1.png").exists());
+}

@@ -71,7 +71,7 @@ fn picker<'a>(
     start: SiteFilterArgs,
 ) -> SitePicker<'a> {
     let view = SiteView::new(t, n_cells, &start);
-    SitePicker::new("x", vec![view], start, Purpose::Apply)
+    SitePicker::new("x", vec![view], start)
 }
 
 fn press(p: &mut SitePicker, code: KeyCode) {
@@ -241,13 +241,18 @@ fn keys_type_reset_off_and_decide() {
     assert_eq!(p.filter.site_min_coverage, start.site_min_coverage);
     press(&mut p, KeyCode::Enter);
     assert!(p.done());
-    let got = p.decision.clone().flatten().expect("Enter confirms");
+    let Some(Outcome::Apply(got)) = p.decision.clone() else {
+        panic!("Enter applies");
+    };
     assert_eq!(qc_flags(&got), qc_flags(&start));
 
-    let mut q = picker(&t, None, start);
+    let mut q = picker(&t, None, start.clone());
     press(&mut q, KeyCode::Char('q'));
-    assert!(q.done());
-    assert!(q.decision.clone().flatten().is_none());
+    assert!(matches!(q.decision, Some(Outcome::Cancel)));
+
+    let mut r = picker(&t, None, start);
+    press(&mut r, KeyCode::Char('p'));
+    assert!(matches!(r.decision, Some(Outcome::Print(_))));
 }
 
 #[test]
@@ -259,7 +264,7 @@ fn modalities_share_thresholds_but_not_knobs() {
         SiteView::new(&m6a, None, &start),
         SiteView::new(&atoi, None, &start),
     ];
-    let mut p = SitePicker::new("x", views, start, Purpose::Apply);
+    let mut p = SitePicker::new("x", views, start);
     assert!(p.view().criteria.contains(&Criterion::MinFold));
     assert!(!p.view().criteria.contains(&Criterion::MinCells));
     focus_on(&mut p, Criterion::MinFold);
@@ -308,7 +313,7 @@ fn renders_every_knob_and_scale() {
     let t = table(M6A, 600);
     let start = SiteFilterArgs::default_values();
     let view = SiteView::new(&t, Some(cells(t.len())), &start);
-    let mut p = SitePicker::new("input", vec![view], start, Purpose::Explore);
+    let mut p = SitePicker::new("input", vec![view], start);
     let mut term = Terminal::new(TestBackend::new(120, 30)).unwrap();
     for _ in 0..p.view().criteria.len() {
         for _ in 0..3 {
@@ -327,8 +332,30 @@ fn renders_every_knob_and_scale() {
         .collect();
     assert!(text.contains("kept"));
     assert!(text.contains("print flags"));
+    assert!(text.contains("save"));
 
     // A tiny terminal must not panic either.
     let mut small = Terminal::new(TestBackend::new(30, 8)).unwrap();
     small.draw(|f| p.render(f)).unwrap();
+}
+
+#[test]
+fn saves_the_view_as_pdf_and_png() {
+    let t = table(M6A, 600);
+    let mut p = picker(&t, Some(cells(t.len())), SiteFilterArgs::default_values());
+    let dir = tempfile::tempdir().unwrap();
+    let prefix = dir.path().join("view1");
+    press(&mut p, KeyCode::Char('s'));
+    for _ in 0..20 {
+        press(&mut p, KeyCode::Backspace);
+    }
+    for ch in prefix.to_str().unwrap().chars() {
+        press(&mut p, KeyCode::Char(ch));
+    }
+    press(&mut p, KeyCode::Enter);
+    assert!(dir.path().join("view1.pdf").exists());
+    assert!(dir.path().join("view1.png").exists());
+    assert!(!p.done(), "saving does not leave the view");
+    let svg = p.figure();
+    assert!(svg.contains("kept") && svg.contains(figure::ACCENT));
 }

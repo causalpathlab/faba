@@ -23,7 +23,6 @@ use crate::editing::io::write_record_batch;
 use super::args::{QcReportArgs, SiteFilterArgs};
 use super::layout::{scan_input_dir, SITE_MODALITIES};
 use super::matrix::{open_matrix, row_nnz_sum};
-use super::site_tui::{qc_flags, run_site_picker, Picked, Purpose};
 use super::sites::{accumulate_site_cells, read_site_table, SiteTable};
 
 #[derive(Debug, Clone)]
@@ -306,6 +305,82 @@ pub fn print_ascii(rows: &[ReportRow], width: usize) {
     }
 }
 
+/// Every panel of [`print_ascii`] as a figure, three to a row: kept units
+/// per threshold, and the -log10(p) histograms.
+fn report_figure(rows: &[ReportRow]) -> String {
+    use crate::figure::{Anchor, Bars, Canvas, INK};
+    use data_beans::interactive::ui::Scale;
+
+    let mut groups: Vec<(Box<str>, Box<str>)> = Vec::new();
+    for r in rows {
+        let g = (r.modality.clone(), r.criterion.clone());
+        if !groups.contains(&g) {
+            groups.push(g);
+        }
+    }
+    let (pw, ph, per_row) = (260.0, 180.0, 3usize);
+    let n_rows = groups.len().div_ceil(per_row).max(1);
+    let mut c = Canvas::new(pw * per_row as f64 + 20.0, ph * n_rows as f64 + 40.0);
+    c.bold(
+        12.0,
+        22.0,
+        "faba qc-report: what each threshold keeps, the others off",
+        12.0,
+        Anchor::Start,
+        INK,
+    );
+    for (g, (modality, criterion)) in groups.iter().enumerate() {
+        let panel: Vec<&ReportRow> = rows
+            .iter()
+            .filter(|r| &r.modality == modality && &r.criterion == criterion)
+            .collect();
+        let unit = panel.first().map(|r| r.unit).unwrap_or("site");
+        let is_hist = &**criterion == HIST_CRITERION;
+        let values: Vec<f64> = panel.iter().map(|r| r.n_kept as f64).collect();
+        let every = panel.len().div_ceil(6).max(1);
+        let ticks = panel
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| i % every == 0)
+            .map(|(i, r)| (i, fmt_threshold(r.threshold)))
+            .collect();
+        let (title, x_title, y_title) = if is_hist {
+            (
+                format!("{modality}: -log10(p)"),
+                format!("-log10(p), bins of {HIST_BIN}"),
+                "sites".to_string(),
+            )
+        } else {
+            (
+                format!("{modality}: {criterion}"),
+                "threshold".to_string(),
+                format!("kept {unit}s"),
+            )
+        };
+        let (col, row) = (g % per_row, g / per_row);
+        Bars {
+            values: &values,
+            front: None,
+            accent: &|_| false,
+            y_scale: Scale::Linear,
+            ticks,
+            pointer: None,
+            marks: Vec::new(),
+            title,
+            x_title,
+            y_title,
+        }
+        .draw(
+            &mut c,
+            10.0 + pw * col as f64,
+            34.0 + ph * row as f64,
+            pw,
+            ph,
+        );
+    }
+    c.finish()
+}
+
 pub fn run_qc_report(args: &QcReportArgs) -> anyhow::Result<()> {
     let layout = scan_input_dir(&args.input_dir)?;
     let mut rows: Vec<ReportRow> = Vec::new();
@@ -381,14 +456,9 @@ pub fn run_qc_report(args: &QcReportArgs) -> anyhow::Result<()> {
     if !args.quiet {
         print_ascii(&rows, args.width);
     }
-    if args.interactive {
-        let start = SiteFilterArgs::default_values();
-        let purpose = Purpose::Explore;
-        if let Picked::Chosen(f) =
-            run_site_picker(&args.input_dir, &tables, &site_cells, &start, purpose)?
-        {
-            println!("faba qc {} -o <output> {}", args.input_dir, qc_flags(&f));
-        }
+    let figure = format!("{}.qc_report", args.output);
+    for path in crate::figure::save(&report_figure(&rows), &figure)? {
+        info!("wrote {path}");
     }
     Ok(())
 }

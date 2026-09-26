@@ -15,6 +15,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
+use crate::figure::{self, Anchor, Bars, Canvas, SavePrompt, INK, MUTED};
+
 use super::{fmt_thousands, BinEdges};
 
 /// Width of HistPlot's y gutter.
@@ -61,6 +63,7 @@ pub struct PileupView<'a> {
     /// Bars per track in the last frame (one per chart column).
     columns: usize,
     y_scale: Scale,
+    save: SavePrompt,
     done: bool,
 }
 
@@ -83,6 +86,7 @@ impl<'a> PileupView<'a> {
             window: (lo, hi),
             columns: 80,
             y_scale: Scale::Linear,
+            save: SavePrompt::new(&format!("pileup_{title}")),
             done: false,
         }
     }
@@ -159,6 +163,56 @@ impl<'a> PileupView<'a> {
         self.edges().col_of(self.cursor)
     }
 
+    /// The visible window as a figure, one panel per track.
+    fn figure(&self) -> String {
+        let edges = self.edges();
+        let (lo, hi) = self.window;
+        let panel_h = 170.0;
+        let mut c = Canvas::new(720.0, 50.0 + panel_h * self.tracks.len() as f64);
+        c.bold(16.0, 22.0, &self.title, 12.0, Anchor::Start, INK);
+        c.text(
+            16.0,
+            38.0,
+            &format!(
+                "{}:{}-{}, {} bp per bar",
+                self.chr,
+                fmt_thousands(lo),
+                fmt_thousands(hi),
+                self.bin_width()
+            ),
+            9.0,
+            Anchor::Start,
+            MUTED,
+        );
+        let every = (self.columns / 5).max(1);
+        let ticks: Vec<(usize, String)> = (0..self.columns)
+            .step_by(every)
+            .map(|k| (k, fmt_thousands(self.bar_range(k).0)))
+            .collect();
+        for (i, t) in self.tracks.iter().enumerate() {
+            let values = t.bin(&edges);
+            let marks = t
+                .sites_in(lo, hi)
+                .into_iter()
+                .map(|s| edges.col_of(s))
+                .collect();
+            Bars {
+                values: &values,
+                front: None,
+                accent: &|_| false,
+                y_scale: self.y_scale,
+                ticks: ticks.clone(),
+                pointer: None,
+                marks,
+                title: format!("{} ({})", t.label, t.signal),
+                x_title: format!("{} position", self.chr),
+                y_title: t.signal.into(),
+            }
+            .draw(&mut c, 8.0, 44.0 + panel_h * i as f64, 704.0, panel_h);
+        }
+        c.finish()
+    }
+
     fn readout(&self) -> Line<'static> {
         let dim = |t: String| Span::styled(t, DIM);
         let col = self.cursor_col();
@@ -200,7 +254,16 @@ impl Screen for PileupView<'_> {
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
+        if self.save.active() {
+            if let Some(prefix) = self.save.handle(key) {
+                let result = figure::save(&self.figure(), &prefix);
+                self.save.report(result);
+            }
+            return;
+        }
+        self.save.dismiss();
         match key.code {
+            KeyCode::Char('s') => self.save.open(),
             KeyCode::Left | KeyCode::Char('h') => self.move_cursor(-1),
             KeyCode::Right | KeyCode::Char('l') => self.move_cursor(1),
             KeyCode::PageUp => self.move_cursor(-(self.columns as i64) / 2),
@@ -273,17 +336,18 @@ impl Screen for PileupView<'_> {
         }
 
         frame.render_widget(Paragraph::new(self.readout()), readout);
-        frame.render_widget(
+        let help = self.save.footer().unwrap_or_else(|| {
             help_line(&[
                 ("←/→", "bar"),
                 ("n/p", "next/prev site"),
                 ("+/-", "zoom"),
                 ("0", "whole"),
                 ("y", "scale"),
+                ("s", "save"),
                 ("q", "quit"),
-            ]),
-            footer,
-        );
+            ])
+        });
+        frame.render_widget(help, footer);
     }
 }
 

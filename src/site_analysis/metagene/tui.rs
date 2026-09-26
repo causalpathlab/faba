@@ -16,6 +16,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
+use crate::figure::{self, Anchor, Bars, Canvas, SavePrompt, INK, MUTED};
+
 use super::{GeneFeatureHistogram, CDS, NCRNA, UTR3, UTR5};
 
 /// Width of HistPlot's y gutter.
@@ -91,6 +93,7 @@ pub struct MetageneView<'a> {
     /// The bin under the cursor, as `(region, bin)`, so it survives merging.
     cursor: (usize, usize),
     y_scale: Scale,
+    save: SavePrompt,
     done: bool,
 }
 
@@ -113,6 +116,7 @@ impl<'a> MetageneView<'a> {
             shown_merge: 1,
             cursor: (0, 0),
             y_scale: Scale::Linear,
+            save: SavePrompt::new("metagene"),
             done: false,
         };
         view.cursor_to_start();
@@ -175,6 +179,54 @@ impl<'a> MetageneView<'a> {
         self.shown_merge = m;
     }
 
+    /// The shown track as a figure, at the shown merge factor.
+    fn figure(&self) -> String {
+        let bars = self.bars();
+        let values: Vec<f64> = bars.iter().map(|b| b.count as f64).collect();
+        let ticks = bars
+            .iter()
+            .enumerate()
+            .filter(|(i, b)| *i == 0 || bars[i - 1].region != b.region)
+            .map(|(i, b)| (i, REGION_NAMES[b.region].to_string()))
+            .collect();
+        let mut c = Canvas::new(680.0, 300.0);
+        c.bold(16.0, 22.0, &self.title, 12.0, Anchor::Start, INK);
+        let totals: Vec<String> = self
+            .track
+            .regions()
+            .iter()
+            .map(|&r| {
+                format!(
+                    "{} {}",
+                    REGION_NAMES[r],
+                    self.hist.counts[r].iter().sum::<usize>()
+                )
+            })
+            .collect();
+        c.text(
+            16.0,
+            38.0,
+            &format!("sites per region: {}", totals.join(", ")),
+            9.0,
+            Anchor::Start,
+            MUTED,
+        );
+        Bars {
+            values: &values,
+            front: None,
+            accent: &|_| false,
+            y_scale: self.y_scale,
+            ticks,
+            pointer: None,
+            marks: Vec::new(),
+            title: format!("{} bin(s) per bar", self.shown_merge),
+            x_title: "metagene position (MetaPlotR scale)".into(),
+            y_title: "sites".into(),
+        }
+        .draw(&mut c, 8.0, 48.0, 664.0, 244.0);
+        c.finish()
+    }
+
     fn stats_line(&self, bars: &[Bar]) -> Line<'static> {
         let dim = |t: String| Span::styled(t, DIM);
         let Some(b) = bars.get(self.cursor_bar(bars)) else {
@@ -225,7 +277,16 @@ impl Screen for MetageneView<'_> {
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
+        if self.save.active() {
+            if let Some(prefix) = self.save.handle(key) {
+                let result = figure::save(&self.figure(), &prefix);
+                self.save.report(result);
+            }
+            return;
+        }
+        self.save.dismiss();
         match key.code {
+            KeyCode::Char('s') => self.save.open(),
             KeyCode::Left | KeyCode::Char('h') => self.move_cursor(-1),
             KeyCode::Right | KeyCode::Char('l') => self.move_cursor(1),
             KeyCode::Home => self.cursor_to_start(),
@@ -303,15 +364,16 @@ impl Screen for MetageneView<'_> {
         frame.render_widget(Paragraph::new(self.summary_line()), summary);
         let mut keys = vec![
             ("←/→", "bar"),
-            ("[/]", "merge"),
+            ("-/+", "merge"),
             ("a", "fit"),
             ("y", "scale"),
         ];
         if self.has_non_coding() {
             keys.push(("Tab", "track"));
         }
-        keys.push(("q", "quit"));
-        frame.render_widget(help_line(&keys), footer);
+        keys.extend([("s", "save"), ("q", "quit")]);
+        let help = self.save.footer().unwrap_or_else(|| help_line(&keys));
+        frame.render_widget(help, footer);
     }
 }
 
