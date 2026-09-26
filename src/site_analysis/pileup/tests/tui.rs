@@ -182,3 +182,16 @@ fn saves_the_window() {
     press(&mut v, KeyCode::Enter);
     assert!(dir.path().join("pile1.pdf").exists() && dir.path().join("pile1.png").exists());
 }
+
+#[test]
+fn draws_through_the_image_path() {
+    let (m, s) = (positions(), sites());
+    let mut v = view(&m, &s);
+    v.images = Some(ratatui_image::picker::Picker::halfblocks());
+    v.use_images = true;
+    screen(&mut v, 100, 24);
+    assert_eq!(v.plots.len(), 2, "one image per track");
+    press(&mut v, KeyCode::Char('+'));
+    let text = screen(&mut v, 100, 24);
+    assert!(text.contains("image/text"));
+}

@@ -22,7 +22,9 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use rustc_hash::FxHashMap;
 
+use crate::figure::term::{self, PlotImage};
 use crate::figure::{self, Anchor, Bars, Canvas, SavePrompt, INK, MUTED};
+use ratatui_image::picker::Picker;
 
 use super::args::SiteFilterArgs;
 use super::layout::{file_name, SITE_MODALITIES};
@@ -374,6 +376,10 @@ struct SitePicker<'a> {
     tally: Tally,
     mode: Mode,
     save: SavePrompt,
+    /// The terminal's image support; `use_images` draws the histogram with it.
+    images: Option<Picker>,
+    use_images: bool,
+    plot: PlotImage,
     decision: Option<Outcome>,
 }
 
@@ -396,6 +402,9 @@ impl<'a> SitePicker<'a> {
             tally,
             mode: Mode::Browse,
             save: SavePrompt::new("qc_sites"),
+            images: None,
+            use_images: false,
+            plot: PlotImage::default(),
             decision: None,
         }
     }
@@ -629,6 +638,18 @@ impl<'a> SitePicker<'a> {
             MUTED,
         );
 
+        let title = format!(
+            "{}: sites passing every other threshold in front",
+            c.label()
+        );
+        self.draw_hist(&mut canvas, (290.0, 50.0, 420.0, 280.0), title);
+        canvas.finish()
+    }
+
+    /// The focused column's histogram in the box `(x, y, w, h)`, as the
+    /// export and the in-terminal image draw it.
+    fn draw_hist(&self, canvas: &mut Canvas, (x, y, w, h): (f64, f64, f64, f64), title: String) {
+        let c = self.criterion();
         // Histogram ticks: the smallest value in about six bins.
         let col = &self.column;
         let nb = col.hist.counts.len();
@@ -659,18 +680,21 @@ impl<'a> SitePicker<'a> {
             ticks,
             pointer,
             marks: Vec::new(),
-            title: format!(
-                "{}: sites passing every other threshold in front",
-                c.label()
-            ),
+            title,
             x_title: format!("{} ({} bins)", c.axis(), self.scale().name()),
             y_title: "sites".into(),
         }
-        .draw(&mut canvas, 290.0, 50.0, 420.0, 280.0);
+        .draw(canvas, x, y, w, h);
+    }
+
+    /// Just the histogram, sized for an on-screen area.
+    fn hist_svg(&self, w: f64, h: f64) -> String {
+        let mut canvas = Canvas::new(w, h);
+        self.draw_hist(&mut canvas, (0.0, 0.0, w, h), String::new());
         canvas.finish()
     }
 
-    fn render_hist(&self, frame: &mut Frame, area: Rect) {
+    fn render_hist(&mut self, frame: &mut Frame, area: Rect) {
         let c = self.criterion();
         let block = panel(format!(" {} ", c.axis()), true);
         let inner = block.inner(area);
@@ -705,6 +729,15 @@ impl<'a> SitePicker<'a> {
             stats,
         );
 
+        if let Some(picker) = self.images.clone().filter(|_| self.use_images) {
+            let mut image = std::mem::take(&mut self.plot);
+            let drawn = image.render(frame, plot, &picker, |w, h| self.hist_svg(w, h));
+            self.plot = image;
+            if drawn {
+                return;
+            }
+        }
+        let col = &self.column;
         let pointer = (!c.is_off(&self.filter)).then(|| col.key_of(c, c.get(&self.filter)));
         let keeps_high = c.keeps_high();
         let style = |k: i32| match pointer {
@@ -737,6 +770,7 @@ impl Screen for SitePicker<'_> {
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
+        self.plot.invalidate();
         if self.save.active() {
             if let Some(prefix) = self.save.handle(key) {
                 let result = figure::save(&self.figure(), &prefix);
@@ -781,6 +815,7 @@ impl Screen for SitePicker<'_> {
                 KeyCode::Char('e') => self.mode = Mode::Edit(String::new()),
                 KeyCode::Char(ch) if ch.is_ascii_digit() => self.mode = Mode::Edit(ch.to_string()),
                 KeyCode::Char('s') => self.save.open(),
+                KeyCode::Char('i') if self.images.is_some() => self.use_images ^= true,
                 KeyCode::Enter => self.decision = Some(Outcome::Apply(self.filter.clone())),
                 KeyCode::Char('p') => self.decision = Some(Outcome::Print(self.filter.clone())),
                 KeyCode::Char('q') | KeyCode::Esc => self.decision = Some(Outcome::Cancel),
@@ -798,7 +833,14 @@ impl Screen for SitePicker<'_> {
         ])
         .areas(frame.area());
 
-        let scales = format!("x {} · y {}", self.scale().name(), self.y_scale.name());
+        let mut scales = format!("x {} · y {}", self.scale().name(), self.y_scale.name());
+        if self.images.is_some() {
+            scales += if self.use_images {
+                " · image"
+            } else {
+                " · text"
+            };
+        }
         frame.render_widget(header("qc", &self.title, &scales), top);
 
         let mut spans = vec![Span::raw(" ")];
@@ -823,20 +865,28 @@ impl Screen for SitePicker<'_> {
                 buf,
                 &[("Enter", "set"), ("Esc", "back")],
             ),
-            Mode::Browse => help_line(&[
-                ("↑/↓", "knob"),
-                ("←/→", "bin"),
-                ("-/+", "±1"),
-                ("0-9", "type"),
-                ("o", "off"),
-                ("r", "reset"),
-                ("x/y", "scale"),
-                ("Tab", "modality"),
-                ("s", "save"),
-                ("Enter", "apply"),
-                ("p", "print flags"),
-                ("q", "cancel"),
-            ]),
+            Mode::Browse => {
+                let mut keys = vec![
+                    ("↑/↓", "knob"),
+                    ("←/→", "bin"),
+                    ("-/+", "±1"),
+                    ("0-9", "type"),
+                    ("o", "off"),
+                    ("r", "reset"),
+                    ("x/y", "scale"),
+                    ("Tab", "modality"),
+                ];
+                if self.images.is_some() {
+                    keys.push(("i", "image/text"));
+                }
+                keys.extend([
+                    ("s", "save"),
+                    ("Enter", "apply"),
+                    ("p", "print flags"),
+                    ("q", "cancel"),
+                ]);
+                help_line(&keys)
+            }
         };
         frame.render_widget(help, footer);
     }
@@ -880,6 +930,8 @@ pub fn run_site_picker(
         return Ok(Picked::Skipped);
     }
     let mut picker = SitePicker::new(&file_name(input_dir), views, filter.clone());
+    picker.images = term::picker();
+    picker.use_images = picker.images.is_some();
     run_screen(&mut picker)?;
     Ok(match picker.decision {
         Some(Outcome::Apply(f)) => Picked::Apply(f),

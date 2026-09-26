@@ -49,6 +49,10 @@ ratatui = { version = "0.30", default-features = false, features = ["crossterm"]
 usvg = "0.45"
 resvg = { version = "0.45", default-features = false, features = ["text", "system-fonts", "memmap-fonts"] }
 svg2pdf = { version = "0.13", default-features = false, features = ["text"] }
+# Figures drawn as images in terminals that support an image protocol
+# (kitty, iTerm2, sixel); others keep the text plots.
+ratatui-image = { version = "11.1", default-features = false, features = ["crossterm"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
 legume-genomic-types = "0.4.1"
 legume-numeric = { version = "0.8.10", features = ["matrix", "param", "candle"] }
 

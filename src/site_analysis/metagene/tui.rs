@@ -16,7 +16,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
+use crate::figure::term::{self, PlotImage};
 use crate::figure::{self, Anchor, Bars, Canvas, SavePrompt, INK, MUTED};
+use ratatui_image::picker::Picker;
 
 use super::{GeneFeatureHistogram, CDS, NCRNA, UTR3, UTR5};
 
@@ -94,6 +96,10 @@ pub struct MetageneView<'a> {
     cursor: (usize, usize),
     y_scale: Scale,
     save: SavePrompt,
+    /// The terminal's image support; `use_images` draws the track with it.
+    images: Option<Picker>,
+    use_images: bool,
+    plot: PlotImage,
     done: bool,
 }
 
@@ -117,6 +123,9 @@ impl<'a> MetageneView<'a> {
             cursor: (0, 0),
             y_scale: Scale::Linear,
             save: SavePrompt::new("metagene"),
+            images: None,
+            use_images: false,
+            plot: PlotImage::default(),
             done: false,
         };
         view.cursor_to_start();
@@ -181,14 +190,6 @@ impl<'a> MetageneView<'a> {
 
     /// The shown track as a figure, at the shown merge factor.
     fn figure(&self) -> String {
-        let bars = self.bars();
-        let values: Vec<f64> = bars.iter().map(|b| b.count as f64).collect();
-        let ticks = bars
-            .iter()
-            .enumerate()
-            .filter(|(i, b)| *i == 0 || bars[i - 1].region != b.region)
-            .map(|(i, b)| (i, REGION_NAMES[b.region].to_string()))
-            .collect();
         let mut c = Canvas::new(680.0, 300.0);
         c.bold(16.0, 22.0, &self.title, 12.0, Anchor::Start, INK);
         let totals: Vec<String> = self
@@ -211,19 +212,48 @@ impl<'a> MetageneView<'a> {
             Anchor::Start,
             MUTED,
         );
+        let title = format!("{} bin(s) per bar", self.shown_merge);
+        self.draw_track(&mut c, (8.0, 48.0, 664.0, 244.0), None, title);
+        c.finish()
+    }
+
+    /// The shown track's bars in the box `(x, y, w, h)`.
+    fn draw_track(
+        &self,
+        c: &mut Canvas,
+        (x, y, w, h): (f64, f64, f64, f64),
+        pointer: Option<usize>,
+        title: String,
+    ) {
+        let bars = self.bars();
+        let values: Vec<f64> = bars.iter().map(|b| b.count as f64).collect();
+        let ticks = bars
+            .iter()
+            .enumerate()
+            .filter(|(i, b)| *i == 0 || bars[i - 1].region != b.region)
+            .map(|(i, b)| (i, REGION_NAMES[b.region].to_string()))
+            .collect();
         Bars {
             values: &values,
             front: None,
             accent: &|_| false,
             y_scale: self.y_scale,
             ticks,
-            pointer: None,
+            pointer,
             marks: Vec::new(),
-            title: format!("{} bin(s) per bar", self.shown_merge),
+            title,
             x_title: "metagene position (MetaPlotR scale)".into(),
             y_title: "sites".into(),
         }
-        .draw(&mut c, 8.0, 48.0, 664.0, 244.0);
+        .draw(c, x, y, w, h);
+    }
+
+    /// The track with the cursor, sized for an on-screen area.
+    fn track_svg(&self, w: f64, h: f64) -> String {
+        let bars = self.bars();
+        let pointer = (!bars.is_empty()).then(|| self.cursor_bar(&bars));
+        let mut c = Canvas::new(w, h);
+        self.draw_track(&mut c, (0.0, 0.0, w, h), pointer, String::new());
         c.finish()
     }
 
@@ -277,6 +307,7 @@ impl Screen for MetageneView<'_> {
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
+        self.plot.invalidate();
         if self.save.active() {
             if let Some(prefix) = self.save.handle(key) {
                 let result = figure::save(&self.figure(), &prefix);
@@ -287,6 +318,7 @@ impl Screen for MetageneView<'_> {
         self.save.dismiss();
         match key.code {
             KeyCode::Char('s') => self.save.open(),
+            KeyCode::Char('i') if self.images.is_some() => self.use_images ^= true,
             KeyCode::Left | KeyCode::Char('h') => self.move_cursor(-1),
             KeyCode::Right | KeyCode::Char('l') => self.move_cursor(1),
             KeyCode::Home => self.cursor_to_start(),
@@ -316,20 +348,39 @@ impl Screen for MetageneView<'_> {
         };
         let block = panel(format!(" {track_name} track "), true);
         let inner = block.inner(body);
-        let width = inner.width.saturating_sub(GUTTER) as usize;
+        let picker = self.images.clone().filter(|_| self.use_images);
+        // Text bars are a column wide; image bars need about three pixels.
+        let width = match &picker {
+            Some(p) => inner.width as usize * p.font_size().width as usize / 3,
+            None => inner.width.saturating_sub(GUTTER) as usize,
+        };
         self.shown_merge = self
             .merge
             .unwrap_or_else(|| fitting_merge(self.hist, self.track, width));
         let bars = self.bars();
 
-        let extra = format!(
+        let mut extra = format!(
             "{} bins/bar{} · y {}",
             self.shown_merge,
             if self.merge.is_none() { " (fit)" } else { "" },
             self.y_scale.name()
         );
+        if self.images.is_some() {
+            extra += if self.use_images {
+                " · image"
+            } else {
+                " · text"
+            };
+        }
         frame.render_widget(header("metagene", &self.title, &extra), top);
         frame.render_widget(block, body);
+
+        let mut drawn = false;
+        if let Some(picker) = &picker {
+            let mut image = std::mem::take(&mut self.plot);
+            drawn = image.render(frame, inner, picker, |w, h| self.track_svg(w, h));
+            self.plot = image;
+        }
 
         let counts: Vec<usize> = bars.iter().map(|b| b.count).collect();
         let starts: Vec<Option<&str>> = bars
@@ -346,19 +397,21 @@ impl Screen for MetageneView<'_> {
                 .flatten()
                 .map(str::to_string)
         };
-        HistPlot {
-            bins: Binning::with_width(Scale::Linear, 1.0),
-            kmin: 0,
-            counts: &counts,
-            style: &|_| PLAIN,
-            subset: None,
-            y_scale: self.y_scale,
-            pointer: (!bars.is_empty()).then(|| self.cursor_bar(&bars) as i32),
-            marks: Vec::new(),
-            x_label: Some(&label),
-            tick_every: Some(1),
+        if !drawn {
+            HistPlot {
+                bins: Binning::with_width(Scale::Linear, 1.0),
+                kmin: 0,
+                counts: &counts,
+                style: &|_| PLAIN,
+                subset: None,
+                y_scale: self.y_scale,
+                pointer: (!bars.is_empty()).then(|| self.cursor_bar(&bars) as i32),
+                marks: Vec::new(),
+                x_label: Some(&label),
+                tick_every: Some(1),
+            }
+            .render(frame.buffer_mut(), inner);
         }
-        .render(frame.buffer_mut(), inner);
 
         frame.render_widget(Paragraph::new(self.stats_line(&bars)), stats);
         frame.render_widget(Paragraph::new(self.summary_line()), summary);
@@ -371,6 +424,9 @@ impl Screen for MetageneView<'_> {
         if self.has_non_coding() {
             keys.push(("Tab", "track"));
         }
+        if self.images.is_some() {
+            keys.push(("i", "image/text"));
+        }
         keys.extend([("s", "save"), ("q", "quit")]);
         let help = self.save.footer().unwrap_or_else(|| help_line(&keys));
         frame.render_widget(help, footer);
@@ -379,7 +435,10 @@ impl Screen for MetageneView<'_> {
 
 /// Show the profile full screen until the user quits.
 pub fn show_metagene(title: &str, hist: &GeneFeatureHistogram) -> anyhow::Result<()> {
-    run_screen(&mut MetageneView::new(title, hist))
+    let mut view = MetageneView::new(title, hist);
+    view.images = term::picker();
+    view.use_images = view.images.is_some();
+    run_screen(&mut view)
 }
 
 #[cfg(test)]

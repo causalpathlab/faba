@@ -136,3 +136,24 @@ fn saves_the_logo() {
     assert!(dir.path().join("logo1.pdf").exists() && dir.path().join("logo1.png").exists());
     assert!(!v.done());
 }
+
+#[test]
+fn big_letters_are_drawn_from_bitmaps() {
+    assert!(bitmap(0, 3, 0) && bitmap(0, 3, 4), "A's crossbar");
+    assert!(!bitmap(3, 6, 0) && bitmap(3, 6, 2), "T's stem");
+    let mut v = PwmView::new("x", &pwm(), 2);
+    let tall = screen(&mut v, 60, 40);
+    assert!(tall.contains('█'), "{tall}");
+}
+
+#[test]
+fn draws_through_the_image_path() {
+    let mut v = PwmView::new("x", &pwm(), 2);
+    v.images = Some(ratatui_image::picker::Picker::halfblocks());
+    v.use_images = true;
+    screen(&mut v, 60, 20);
+    press(&mut v, KeyCode::Char('i'));
+    assert!(!v.use_images);
+    let text = screen(&mut v, 60, 20);
+    assert!(text.contains("image/text"));
+}

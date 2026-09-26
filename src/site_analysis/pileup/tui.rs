@@ -15,7 +15,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
+use crate::figure::term::{self, PlotImage};
 use crate::figure::{self, Anchor, Bars, Canvas, SavePrompt, INK, MUTED};
+use ratatui_image::picker::Picker;
 
 use super::{fmt_thousands, BinEdges};
 
@@ -74,6 +76,10 @@ pub struct PileupView<'a> {
     save: SavePrompt,
     /// Whether `g` goes back to a gene list.
     back: bool,
+    /// The terminal's image support; `use_images` draws the tracks with it.
+    images: Option<Picker>,
+    use_images: bool,
+    plots: Vec<PlotImage>,
     exit: Option<Exit>,
 }
 
@@ -104,6 +110,9 @@ impl<'a> PileupView<'a> {
             y_scale: Scale::Linear,
             save: SavePrompt::new(&format!("pileup_{title}")),
             back,
+            images: None,
+            use_images: false,
+            plots: Vec::new(),
             exit: None,
         }
     }
@@ -182,7 +191,6 @@ impl<'a> PileupView<'a> {
 
     /// The visible window as a figure, one panel per track.
     fn figure(&self) -> String {
-        let edges = self.edges();
         let (lo, hi) = self.window;
         let panel_h = 170.0;
         let mut c = Canvas::new(720.0, 50.0 + panel_h * self.tracks.len() as f64);
@@ -201,32 +209,57 @@ impl<'a> PileupView<'a> {
             Anchor::Start,
             MUTED,
         );
+        for (i, t) in self.tracks.iter().enumerate() {
+            let title = format!("{} ({})", t.label, t.signal);
+            let panel = (8.0, 44.0 + panel_h * i as f64, 704.0, panel_h);
+            self.draw_track(i, &mut c, panel, None, title);
+        }
+        c.finish()
+    }
+
+    /// Track `i` over the visible window in the box `(x, y, w, h)`.
+    fn draw_track(
+        &self,
+        i: usize,
+        c: &mut Canvas,
+        (x, y, w, h): (f64, f64, f64, f64),
+        pointer: Option<usize>,
+        title: String,
+    ) {
+        let t = &self.tracks[i];
+        let edges = self.edges();
+        let (lo, hi) = self.window;
         let every = (self.columns / 5).max(1);
-        let ticks: Vec<(usize, String)> = (0..self.columns)
+        let ticks = (0..self.columns)
             .step_by(every)
             .map(|k| (k, fmt_thousands(self.bar_range(k).0)))
             .collect();
-        for (i, t) in self.tracks.iter().enumerate() {
-            let values = t.bin(&edges);
-            let marks = t
-                .sites_in(lo, hi)
-                .into_iter()
-                .map(|s| edges.col_of(s))
-                .collect();
-            Bars {
-                values: &values,
-                front: None,
-                accent: &|_| false,
-                y_scale: self.y_scale,
-                ticks: ticks.clone(),
-                pointer: None,
-                marks,
-                title: format!("{} ({})", t.label, t.signal),
-                x_title: format!("{} position", self.chr),
-                y_title: t.signal.into(),
-            }
-            .draw(&mut c, 8.0, 44.0 + panel_h * i as f64, 704.0, panel_h);
+        let values = t.bin(&edges);
+        let marks = t
+            .sites_in(lo, hi)
+            .into_iter()
+            .map(|s| edges.col_of(s))
+            .collect();
+        Bars {
+            values: &values,
+            front: None,
+            accent: &|_| false,
+            y_scale: self.y_scale,
+            ticks,
+            pointer,
+            marks,
+            title,
+            x_title: format!("{} position", self.chr),
+            y_title: t.signal.into(),
         }
+        .draw(c, x, y, w, h);
+    }
+
+    /// Track `i` with the cursor, sized for an on-screen area.
+    fn track_svg(&self, i: usize, w: f64, h: f64) -> String {
+        let mut c = Canvas::new(w, h);
+        let pointer = Some(self.cursor_col());
+        self.draw_track(i, &mut c, (0.0, 0.0, w, h), pointer, String::new());
         c.finish()
     }
 
@@ -271,6 +304,7 @@ impl Screen for PileupView<'_> {
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
+        self.plots.iter_mut().for_each(PlotImage::invalidate);
         if self.save.active() {
             if let Some(prefix) = self.save.handle(key) {
                 let result = figure::save(&self.figure(), &prefix);
@@ -281,6 +315,7 @@ impl Screen for PileupView<'_> {
         self.save.dismiss();
         match key.code {
             KeyCode::Char('s') => self.save.open(),
+            KeyCode::Char('i') if self.images.is_some() => self.use_images ^= true,
             KeyCode::Left | KeyCode::Char('h') => self.move_cursor(-1),
             KeyCode::Right | KeyCode::Char('l') => self.move_cursor(1),
             KeyCode::PageUp => self.move_cursor(-(self.columns as i64) / 2),
@@ -311,7 +346,7 @@ impl Screen for PileupView<'_> {
         self.clamp_window();
         let edges = self.edges();
         let (lo, hi) = self.window;
-        let extra = format!(
+        let mut extra = format!(
             "{}:{}-{}  {} bp/bar · y {}",
             self.chr,
             fmt_thousands(lo),
@@ -319,19 +354,39 @@ impl Screen for PileupView<'_> {
             self.bin_width(),
             self.y_scale.name()
         );
+        if self.images.is_some() {
+            extra += if self.use_images {
+                " · image"
+            } else {
+                " · text"
+            };
+        }
         frame.render_widget(header("pileup", &self.title, &extra), top);
 
         let every = TICK_SPACING.max(self.columns / 5);
-        let label = |k: i32| {
-            let k = k as usize;
-            (k.is_multiple_of(every) && k + 10 < self.columns)
-                .then(|| fmt_thousands(self.bar_range(k).0))
-        };
+        let ticks: Vec<Option<String>> = (0..self.columns)
+            .map(|k| {
+                (k.is_multiple_of(every) && k + 10 < self.columns)
+                    .then(|| fmt_thousands(self.bar_range(k).0))
+            })
+            .collect();
+        let label = |k: i32| ticks.get(k as usize).cloned().flatten();
         let pointer = Some(self.cursor_col() as i32);
-        for (t, &area) in self.tracks.iter().zip(&areas[1..areas.len() - 2]) {
+        let picker = self.images.clone().filter(|_| self.use_images);
+        let mut plots = std::mem::take(&mut self.plots);
+        plots.resize_with(self.tracks.len(), PlotImage::default);
+        for (i, &area) in areas[1..areas.len() - 2].iter().enumerate() {
+            let t = &self.tracks[i];
             let block = panel(format!(" {} · {} ", t.label, t.signal), true);
             let inner = block.inner(area);
             frame.render_widget(block, area);
+            if let Some(picker) = &picker {
+                let this = &*self;
+                if plots[i].render(frame, inner, picker, |w, h| this.track_svg(i, w, h)) {
+                    continue;
+                }
+            }
+            let t = &self.tracks[i];
             let values = t.bin(&edges);
             let marks = t
                 .sites_in(lo, hi)
@@ -352,6 +407,7 @@ impl Screen for PileupView<'_> {
             }
             .render(frame.buffer_mut(), inner);
         }
+        self.plots = plots;
 
         frame.render_widget(Paragraph::new(self.readout()), readout);
         let help = self.save.footer().unwrap_or_else(|| {
@@ -363,6 +419,9 @@ impl Screen for PileupView<'_> {
                 ("y", "scale"),
                 ("s", "save"),
             ];
+            if self.images.is_some() {
+                keys.push(("i", "image/text"));
+            }
             if self.back {
                 keys.push(("g", "genes"));
             }
@@ -383,6 +442,8 @@ pub fn show_pileup(
     back: bool,
 ) -> anyhow::Result<Exit> {
     let mut view = PileupView::new(title, chr, tracks, extent, back);
+    view.images = term::picker();
+    view.use_images = view.images.is_some();
     run_screen(&mut view)?;
     Ok(view.exit.unwrap_or(Exit::Quit))
 }

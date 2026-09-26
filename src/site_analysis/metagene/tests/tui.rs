@@ -148,3 +148,17 @@ fn saves_the_profile() {
     press(&mut v, KeyCode::Enter);
     assert!(dir.path().join("mg1.pdf").exists() && dir.path().join("mg1.png").exists());
 }
+
+#[test]
+fn draws_through_the_image_path() {
+    let h = hist(true);
+    let mut v = MetageneView::new("x", &h);
+    v.images = Some(ratatui_image::picker::Picker::halfblocks());
+    v.use_images = true;
+    let s = screen(&mut v, 80, 16);
+    assert!(s.contains("image"));
+    press(&mut v, KeyCode::Right);
+    screen(&mut v, 80, 16);
+    press(&mut v, KeyCode::Char('i'));
+    assert!(screen(&mut v, 80, 16).contains("· text"));
+}

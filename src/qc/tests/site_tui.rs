@@ -359,3 +359,18 @@ fn saves_the_view_as_pdf_and_png() {
     let svg = p.figure();
     assert!(svg.contains("kept") && svg.contains(figure::ACCENT));
 }
+
+#[test]
+fn draws_through_the_image_path() {
+    let t = table(M6A, 400);
+    let mut p = picker(&t, None, SiteFilterArgs::default_values());
+    p.images = Some(ratatui_image::picker::Picker::halfblocks());
+    p.use_images = true;
+    let mut term = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    term.draw(|f| p.render(f)).unwrap();
+    press(&mut p, KeyCode::Right);
+    term.draw(|f| p.render(f)).unwrap();
+    press(&mut p, KeyCode::Char('i'));
+    assert!(!p.use_images);
+    term.draw(|f| p.render(f)).unwrap();
+}

@@ -5,6 +5,8 @@
 use std::fmt::Write as _;
 use std::sync::{Arc, OnceLock};
 
+pub mod term;
+
 use data_beans::interactive::ui::{compact, input_line, Scale, DIM, HIGHLIGHT};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::text::{Line, Span};
@@ -282,15 +284,19 @@ pub fn strip_extension(prefix: &str) -> &str {
         .unwrap_or(prefix)
 }
 
+/// SVG parsing options, with the system fonts loaded once.
+fn options() -> usvg::Options<'static> {
+    usvg::Options {
+        fontdb: fontdb(),
+        ..usvg::Options::default()
+    }
+}
+
 /// Write `svg` as `{prefix}.pdf` (vector) and `{prefix}.png`; returns the
 /// paths written.
 pub fn save(svg: &str, prefix: &str) -> anyhow::Result<Vec<String>> {
     let prefix = strip_extension(prefix);
-    let opt = usvg::Options {
-        fontdb: fontdb(),
-        ..usvg::Options::default()
-    };
-    let tree = usvg::Tree::from_str(svg, &opt)?;
+    let tree = usvg::Tree::from_str(svg, &options())?;
 
     let pdf = svg2pdf::to_pdf(&tree, Default::default(), Default::default())
         .map_err(|e| anyhow::anyhow!("PDF conversion failed: {e:?}"))?;

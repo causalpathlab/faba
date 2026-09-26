@@ -17,7 +17,9 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use crate::data::dna::DnaBaseCount;
+use crate::figure::term::{self, PlotImage};
 use crate::figure::{self, Anchor, Canvas, SavePrompt, ACCENT, INK, MUTED};
+use ratatui_image::picker::Picker;
 
 /// Logo order: alphabetical, as sequence logos are usually keyed.
 const BASES: [char; 4] = ['A', 'C', 'G', 'T'];
@@ -90,6 +92,28 @@ impl Column {
     }
 }
 
+/// 5x7 bitmaps of the bases, in [`BASES`] order, for letters big enough to
+/// draw in blocks.
+const FONT: [[&str; 7]; 4] = [
+    [
+        ".###.", "#...#", "#...#", "#####", "#...#", "#...#", "#...#",
+    ],
+    [
+        ".###.", "#...#", "#....", "#....", "#....", "#...#", ".###.",
+    ],
+    [
+        ".###.", "#...#", "#....", "#.###", "#...#", "#...#", ".###.",
+    ],
+    [
+        "#####", "..#..", "..#..", "..#..", "..#..", "..#..", "..#..",
+    ],
+];
+
+/// Whether base `b`'s bitmap is inked at `row` (of 7) and `col` (of 5).
+fn bitmap(b: usize, row: usize, col: usize) -> bool {
+    FONT[b][row.min(6)].as_bytes()[col.min(4)] == b'#'
+}
+
 /// Split `rows` whole rows between letters in proportion to `heights`
 /// (largest remainder), so a stack's rows add up to its rounded total.
 fn allot(heights: &[f64; 4], rows: f64) -> [usize; 4] {
@@ -120,6 +144,10 @@ pub struct PwmView {
     /// First column on screen, when they do not all fit.
     offset: usize,
     save: SavePrompt,
+    /// The terminal's image support; `use_images` draws the logo with it.
+    images: Option<Picker>,
+    use_images: bool,
+    plot: PlotImage,
     done: bool,
 }
 
@@ -139,6 +167,9 @@ impl PwmView {
             cursor: window.max(0) as usize,
             offset: 0,
             save: SavePrompt::new("pwm_logo"),
+            images: None,
+            use_images: false,
+            plot: PlotImage::default(),
             done: false,
         }
     }
@@ -178,27 +209,36 @@ impl PwmView {
 
     /// The logo as a figure: letters stretched to their heights.
     fn figure(&self) -> String {
-        let n = self.columns.len().max(1);
-        let (left, top, cw, ph) = (56.0, 40.0, (560.0 / n as f64).clamp(8.0, 40.0), 200.0);
-        let width = left + cw * n as f64 + 20.0;
-        let mut c = Canvas::new(width, top + ph + 56.0);
+        let n = self.columns.len().max(1) as f64;
+        let width = 56.0 + (560.0 / n).clamp(8.0, 40.0) * n + 20.0;
+        let mut c = Canvas::new(width, 330.0);
         c.bold(16.0, 22.0, &self.title, 12.0, Anchor::Start, INK);
+        self.draw_logo(&mut c, (0.0, 30.0, width, 300.0), None);
+        c.finish()
+    }
+
+    /// The logo in the box `(x, y, w, h)`, letters stretched to their
+    /// heights; `cursor` marks a position under the axis.
+    fn draw_logo(
+        &self,
+        c: &mut Canvas,
+        (x0, y0, w, h): (f64, f64, f64, f64),
+        cursor: Option<usize>,
+    ) {
+        let n = self.columns.len().max(1);
+        let (left, top, bottom) = (x0 + 56.0, y0 + 10.0, 50.0);
+        let cw = ((w - 76.0) / n as f64).max(1.0);
+        let ph = (h - 10.0 - bottom).max(1.0);
         let top_value = self.mode.top();
         for f in [0.0, 0.5, 1.0] {
             let y = top + ph - f * ph;
             c.line(left - 4.0, y, left, y, INK, 0.6);
-            c.text(
-                left - 7.0,
-                y + 3.0,
-                &format!("{}", f * top_value),
-                8.0,
-                Anchor::End,
-                MUTED,
-            );
+            let label = format!("{}", f * top_value);
+            c.text(left - 7.0, y + 3.0, &label, 8.0, Anchor::End, MUTED);
         }
         c.line(left, top, left, top + ph, INK, 0.6);
         c.line(left, top + ph, left + cw * n as f64, top + ph, INK, 0.6);
-        c.vtext(18.0, top + ph / 2.0, self.mode.name(), 9.0, MUTED);
+        c.vtext(x0 + 18.0, top + ph / 2.0, self.mode.name(), 9.0, MUTED);
         for (j, col) in self.columns.iter().enumerate() {
             let x = left + j as f64 * cw;
             let heights = col.heights(self.mode);
@@ -207,30 +247,41 @@ impl PwmView {
             let fill = if self.rel(j) == 0 { ACCENT } else { INK };
             let mut y = top + ph;
             for &b in &order {
-                let h = heights[b] / top_value * ph;
-                y -= h;
-                c.glyph(x + 0.5, y, cw - 1.0, h, BASES[b], fill);
+                let lh = heights[b] / top_value * ph;
+                y -= lh;
+                c.glyph(x + 0.5, y, cw - 1.0, lh, BASES[b], fill);
             }
             let rel = self.rel(j);
             if rel % 5 == 0 || n <= 25 {
+                let label = rel.to_string();
                 c.text(
                     x + cw / 2.0,
                     top + ph + 13.0,
-                    &rel.to_string(),
+                    &label,
                     8.0,
                     Anchor::Middle,
                     INK,
                 );
             }
+            if cursor == Some(j) {
+                c.rect(x + 0.5, top + ph + 17.0, cw - 1.0, 3.0, ACCENT);
+            }
         }
+        let mid = left + cw * n as f64 / 2.0;
         c.text(
-            left + cw * n as f64 / 2.0,
-            top + ph + 32.0,
+            mid,
+            top + ph + 34.0,
             "position relative to the site",
             8.0,
             Anchor::Middle,
             MUTED,
         );
+    }
+
+    /// The logo with the cursor, sized for an on-screen area.
+    fn logo_svg(&self, w: f64, h: f64) -> String {
+        let mut c = Canvas::new(w, h);
+        self.draw_logo(&mut c, (0.0, 0.0, w, h), Some(self.cursor));
         c.finish()
     }
 
@@ -267,20 +318,32 @@ impl PwmView {
             order.sort_by(|&a, &b| heights[a].total_cmp(&heights[b]));
             let base = if self.rel(j) == 0 { ACCENTED } else { PLAIN };
             let style = base.add_modifier(Modifier::BOLD);
-            // Smallest at the bottom, tallest on top.
-            let mut y = chart.bottom();
+            // Smallest at the bottom, tallest on top. A letter with room
+            // for it is drawn from its bitmap; a thin one repeats its glyph.
+            let mut bottom = chart.bottom();
             for &b in &order {
-                for _ in 0..alloted[b] {
-                    if y == chart.top() {
-                        break;
-                    }
-                    y -= 1;
-                    for x in x0..(x0 + cw).min(chart.right()) {
-                        buf[(x, y)]
-                            .set_symbol(&BASES[b].to_string())
+                let rows = (alloted[b] as u16).min(bottom - chart.top());
+                let big = cw >= 3 && rows >= 3;
+                for k in 0..rows {
+                    let y = bottom - rows + k;
+                    for dx in 0..cw.min(chart.right().saturating_sub(x0)) {
+                        let symbol = if !big {
+                            BASES[b].to_string()
+                        } else if bitmap(
+                            b,
+                            k as usize * 7 / rows as usize,
+                            dx as usize * 5 / cw as usize,
+                        ) {
+                            "█".to_string()
+                        } else {
+                            continue;
+                        };
+                        buf[(x0 + dx, y)]
+                            .set_symbol(&symbol)
                             .set_style(Style::reset().patch(style));
                     }
                 }
+                bottom -= rows;
             }
         }
 
@@ -340,6 +403,7 @@ impl Screen for PwmView {
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
+        self.plot.invalidate();
         if self.save.active() {
             if let Some(prefix) = self.save.handle(key) {
                 let result = figure::save(&self.figure(), &prefix);
@@ -350,6 +414,7 @@ impl Screen for PwmView {
         self.save.dismiss();
         match key.code {
             KeyCode::Char('s') => self.save.open(),
+            KeyCode::Char('i') if self.images.is_some() => self.use_images ^= true,
             KeyCode::Left | KeyCode::Char('h') => self.move_cursor(-1),
             KeyCode::Right | KeyCode::Char('l') => self.move_cursor(1),
             KeyCode::Home => self.cursor = 0,
@@ -386,16 +451,23 @@ impl Screen for PwmView {
         let block = panel(format!(" {} ", self.mode.name()), true);
         let inner = block.inner(body);
         frame.render_widget(block, body);
-        self.render_logo(frame.buffer_mut(), inner);
+        let mut drawn = false;
+        if let Some(picker) = self.images.clone().filter(|_| self.use_images) {
+            let mut image = std::mem::take(&mut self.plot);
+            drawn = image.render(frame, inner, &picker, |w, h| self.logo_svg(w, h));
+            self.plot = image;
+        }
+        if !drawn {
+            self.render_logo(frame.buffer_mut(), inner);
+        }
         frame.render_widget(Paragraph::new(self.stats_line()), stats);
         let help = self.save.footer().unwrap_or_else(|| {
-            help_line(&[
-                ("←/→", "position"),
-                ("0", "site"),
-                ("m", "bits/frequency"),
-                ("s", "save"),
-                ("q", "quit"),
-            ])
+            let mut keys = vec![("←/→", "position"), ("0", "site"), ("m", "bits/frequency")];
+            if self.images.is_some() {
+                keys.push(("i", "image/text"));
+            }
+            keys.extend([("s", "save"), ("q", "quit")]);
+            help_line(&keys)
         });
         frame.render_widget(help, footer);
     }
@@ -403,7 +475,10 @@ impl Screen for PwmView {
 
 /// Show the logo full screen until the user quits.
 pub fn show_pwm(title: &str, pwm: &[DnaBaseCount], window: i64) -> anyhow::Result<()> {
-    run_screen(&mut PwmView::new(title, pwm, window))
+    let mut view = PwmView::new(title, pwm, window);
+    view.images = term::picker();
+    view.use_images = view.images.is_some();
+    run_screen(&mut view)
 }
 
 #[cfg(test)]
