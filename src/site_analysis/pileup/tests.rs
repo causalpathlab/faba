@@ -115,3 +115,23 @@ fn aggregate_labels() {
     let multi: Vec<Box<str>> = vec!["chr1".into(), "chr2".into()];
     assert_eq!(summarize_chr(&multi).as_ref(), "*");
 }
+
+#[test]
+fn channel_rows_pile_up_the_converted_channel() {
+    assert_eq!(
+        parse_row_name_full("ENSG1_GENE1/m6a/chr1:100/methylated"),
+        Some(("ENSG1_GENE1", "m6a", "chr1", 100))
+    );
+    assert_eq!(
+        parse_row_name_full("ENSG1_GENE1/atoi/chr1:200/edited"),
+        Some(("ENSG1_GENE1", "atoi", "chr1", 200))
+    );
+    assert_eq!(
+        parse_row_name_full("ENSG1_GENE1/m6a/chr1:100/unmethylated"),
+        None
+    );
+    assert_eq!(
+        parse_row_name_full("ENSG1_GENE1/atoi/chr1:200/unedited"),
+        None
+    );
+}

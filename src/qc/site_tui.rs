@@ -602,6 +602,8 @@ impl<'a> SitePicker<'a> {
             y_scale: self.y_scale,
             pointer,
             marks: Vec::new(),
+            x_label: None,
+            tick_every: None,
         }
         .render(frame.buffer_mut(), plot);
     }
