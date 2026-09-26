@@ -201,6 +201,162 @@ impl DropReason {
     }
 }
 
+/// One threshold of [`SiteFilterArgs`]. The variants are in the order
+/// [`SiteFilterArgs::reason`] checks them, so `c as usize` indexes
+/// [`Criterion::ALL`] and the lowest failing one is the recorded reason.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Criterion {
+    MinCoverage,
+    MinConverted,
+    MinEditRatio,
+    MaxEditRatio,
+    MinFold,
+    MinLogOdds,
+    MaxPv,
+    MinCells,
+}
+
+impl Criterion {
+    pub const ALL: [Criterion; 8] = [
+        Criterion::MinCoverage,
+        Criterion::MinConverted,
+        Criterion::MinEditRatio,
+        Criterion::MaxEditRatio,
+        Criterion::MinFold,
+        Criterion::MinLogOdds,
+        Criterion::MaxPv,
+        Criterion::MinCells,
+    ];
+
+    /// The `faba qc` flag that sets it.
+    pub fn flag(self) -> &'static str {
+        match self {
+            Criterion::MinCoverage => "--site-min-coverage",
+            Criterion::MinConverted => "--site-min-converted",
+            Criterion::MinEditRatio => "--site-min-edit-ratio",
+            Criterion::MaxEditRatio => "--site-max-edit-ratio",
+            Criterion::MinFold => "--site-min-fold",
+            Criterion::MinLogOdds => "--site-min-log-odds",
+            Criterion::MaxPv => "--site-max-pv",
+            Criterion::MinCells => "--site-min-cells",
+        }
+    }
+
+    /// The written `reason`; both edit-ratio bounds are `edit_ratio`.
+    pub fn drop_reason(self) -> DropReason {
+        match self {
+            Criterion::MinCoverage => DropReason::Coverage,
+            Criterion::MinConverted => DropReason::Converted,
+            Criterion::MinEditRatio | Criterion::MaxEditRatio => DropReason::EditRatio,
+            Criterion::MinFold => DropReason::Fold,
+            Criterion::MinLogOdds => DropReason::LogOdds,
+            Criterion::MaxPv => DropReason::Pvalue,
+            Criterion::MinCells => DropReason::Cells,
+        }
+    }
+
+    /// Whether the threshold is an upper bound on the raw value.
+    pub fn is_max(self) -> bool {
+        matches!(self, Criterion::MaxPv | Criterion::MaxEditRatio)
+    }
+
+    /// Whether the check runs at all: fold and log odds need a control arm,
+    /// cells a `_site` matrix.
+    pub fn applies(self, t: &SiteTable, has_cells: bool) -> bool {
+        match self {
+            Criterion::MinFold | Criterion::MinLogOdds => t.has_control(),
+            Criterion::MinCells => has_cells,
+            _ => true,
+        }
+    }
+
+    /// Whether site `i` fails this check under `f`.
+    pub fn fails(
+        self,
+        f: &SiteFilterArgs,
+        t: &SiteTable,
+        i: usize,
+        n_cells: Option<usize>,
+    ) -> bool {
+        match self {
+            Criterion::MinCoverage => t.coverage[i] + t.control_coverage[i] < f.site_min_coverage,
+            Criterion::MinConverted => t.converted[i] < f.site_min_converted,
+            Criterion::MinEditRatio => t.edit_ratio[i] < f.site_min_edit_ratio,
+            Criterion::MaxEditRatio => t.edit_ratio[i] > f.site_max_edit_ratio,
+            Criterion::MinFold => t.fold[i] < f.site_min_fold,
+            Criterion::MinLogOdds => t.raw_log_odds[i] < f.site_min_log_odds as f64,
+            Criterion::MaxPv => t.pv[i] > f.site_max_pv,
+            Criterion::MinCells => n_cells.is_some_and(|n| n < f.site_min_cells),
+        }
+    }
+
+    /// The raw value this check tests at site `i`.
+    pub fn raw(self, t: &SiteTable, i: usize, n_cells: Option<usize>) -> f64 {
+        match self {
+            Criterion::MinCoverage => (t.coverage[i] + t.control_coverage[i]) as f64,
+            Criterion::MinConverted => t.converted[i] as f64,
+            Criterion::MinEditRatio | Criterion::MaxEditRatio => t.edit_ratio[i] as f64,
+            Criterion::MinFold => t.fold[i] as f64,
+            Criterion::MinLogOdds => t.raw_log_odds[i],
+            Criterion::MaxPv => t.pv[i] as f64,
+            Criterion::MinCells => n_cells.unwrap_or(0) as f64,
+        }
+    }
+
+    pub fn get(self, f: &SiteFilterArgs) -> f64 {
+        match self {
+            Criterion::MinCoverage => f.site_min_coverage as f64,
+            Criterion::MinConverted => f.site_min_converted as f64,
+            Criterion::MinEditRatio => f.site_min_edit_ratio as f64,
+            Criterion::MaxEditRatio => f.site_max_edit_ratio as f64,
+            Criterion::MinFold => f.site_min_fold as f64,
+            Criterion::MinLogOdds => f.site_min_log_odds as f64,
+            Criterion::MaxPv => f.site_max_pv as f64,
+            Criterion::MinCells => f.site_min_cells as f64,
+        }
+    }
+
+    /// Set the threshold to `raw`, rounded so that a site whose value is
+    /// exactly `raw` stays kept: a lower bound rounds down, an upper bound up.
+    pub fn set(self, f: &mut SiteFilterArgs, raw: f64) {
+        let as_f32 = |x: f64| {
+            let y = x as f32;
+            if self.is_max() && (y as f64) < x {
+                y.next_up()
+            } else if !self.is_max() && (y as f64) > x {
+                y.next_down()
+            } else {
+                y
+            }
+        };
+        let as_count = |x: f64| x.max(0.0).ceil();
+        match self {
+            Criterion::MinCoverage => f.site_min_coverage = as_count(raw) as u64,
+            Criterion::MinConverted => f.site_min_converted = as_count(raw) as u64,
+            Criterion::MinEditRatio => f.site_min_edit_ratio = as_f32(raw),
+            Criterion::MaxEditRatio => f.site_max_edit_ratio = as_f32(raw),
+            Criterion::MinFold => f.site_min_fold = as_f32(raw),
+            Criterion::MinLogOdds => f.site_min_log_odds = as_f32(raw),
+            Criterion::MaxPv => f.site_max_pv = as_f32(raw),
+            Criterion::MinCells => f.site_min_cells = as_count(raw) as usize,
+        }
+    }
+
+    pub fn permissive(self) -> f64 {
+        self.get(&SiteFilterArgs::permissive())
+    }
+
+    /// Whether `f` sets this threshold where it keeps everything.
+    pub fn is_off(self, f: &SiteFilterArgs) -> bool {
+        let (v, off) = (self.get(f), self.permissive());
+        if self.is_max() {
+            v >= off
+        } else {
+            v <= off
+        }
+    }
+}
+
 impl SiteFilterArgs {
     /// Thresholds that keep everything; `qc-report` starts from it and moves
     /// one knob at a time.
@@ -217,37 +373,31 @@ impl SiteFilterArgs {
         }
     }
 
-    /// Verdict for site `i`. `n_cells` is the site's kept-cell count, or
-    /// `None` when no `_site` matrix exists to read it from (the cells check
-    /// is then skipped).
+    /// Parse `--site-*` flags as `faba qc` would, defaults filling the rest.
+    /// Panics (through clap) on a flag it does not know.
+    pub fn parse_flags<'a>(flags: impl IntoIterator<Item = &'a str>) -> Self {
+        #[derive(clap::Parser)]
+        struct Flags {
+            #[command(flatten)]
+            site: SiteFilterArgs,
+        }
+        <Flags as clap::Parser>::parse_from(std::iter::once("faba").chain(flags)).site
+    }
+
+    /// The command-line defaults, as `faba qc` uses them with no `--site-*`
+    /// flag given.
+    pub fn default_values() -> Self {
+        Self::parse_flags([])
+    }
+
+    /// Verdict for site `i`: the first failing [`Criterion`] in check order.
+    /// `n_cells` is the site's kept-cell count, or `None` when no `_site`
+    /// matrix exists to read it from (the cells check is then skipped).
     pub fn reason(&self, t: &SiteTable, i: usize, n_cells: Option<usize>) -> Option<DropReason> {
-        if t.coverage[i] + t.control_coverage[i] < self.site_min_coverage {
-            return Some(DropReason::Coverage);
-        }
-        if t.converted[i] < self.site_min_converted {
-            return Some(DropReason::Converted);
-        }
-        if t.edit_ratio[i] < self.site_min_edit_ratio || t.edit_ratio[i] > self.site_max_edit_ratio
-        {
-            return Some(DropReason::EditRatio);
-        }
-        if t.has_control() {
-            if t.fold[i] < self.site_min_fold {
-                return Some(DropReason::Fold);
-            }
-            if t.raw_log_odds[i] < self.site_min_log_odds as f64 {
-                return Some(DropReason::LogOdds);
-            }
-        }
-        if t.pv[i] > self.site_max_pv {
-            return Some(DropReason::Pvalue);
-        }
-        if let Some(n) = n_cells {
-            if n < self.site_min_cells {
-                return Some(DropReason::Cells);
-            }
-        }
-        None
+        Criterion::ALL
+            .into_iter()
+            .find(|c| c.applies(t, n_cells.is_some()) && c.fails(self, t, i, n_cells))
+            .map(Criterion::drop_reason)
     }
 
     /// Verdicts for every site; `n_cells` is aligned to the table.
