@@ -54,8 +54,8 @@ impl Criterion {
             Criterion::MinFold => "fold",
             Criterion::MinCoverage => "coverage",
             Criterion::MinConverted => "converted",
-            Criterion::MinEditRatio => "edit ratio ≥",
-            Criterion::MaxEditRatio => "edit ratio ≤",
+            Criterion::MinEditRatio => "min edit ratio",
+            Criterion::MaxEditRatio => "max edit ratio",
             Criterion::MinCells => "cells",
         }
     }
@@ -68,7 +68,8 @@ impl Criterion {
             Criterion::MinFold => "signal / control edit rate",
             Criterion::MinCoverage => "signal + control reads",
             Criterion::MinConverted => "converted signal reads",
-            Criterion::MinEditRatio | Criterion::MaxEditRatio => "converted / coverage",
+            Criterion::MinEditRatio => "converted / coverage: low is weak editing",
+            Criterion::MaxEditRatio => "converted / coverage: high is variant-like",
             Criterion::MinCells => "kept cells with a converted read",
         }
     }
@@ -518,7 +519,7 @@ impl<'a> SitePicker<'a> {
     fn criteria_lines(&self) -> Vec<Line<'static>> {
         let dim = |t: String| Span::styled(t, DIM);
         let mut lines = vec![Line::from(dim(format!(
-            "  {:<13}{:>11}{:>9}{:>9}",
+            "  {:<15}{:>11}{:>9}{:>9}",
             "", "threshold", "alone", "first"
         )))];
         for (j, &c) in self.view().criteria.iter().enumerate() {
@@ -533,7 +534,7 @@ impl<'a> SitePicker<'a> {
             lines.push(Line::from(vec![
                 Span::styled(if focused { "▸ " } else { "  " }, HIGHLIGHT),
                 Span::styled(
-                    format!("{:<13}", c.label()),
+                    format!("{:<15}", c.label()),
                     if focused { HIGHLIGHT } else { PLAIN },
                 ),
                 Span::styled(format!("{value:>11}"), value_style),

@@ -374,3 +374,21 @@ fn draws_through_the_image_path() {
     assert!(!p.use_images);
     term.draw(|f| p.render(f)).unwrap();
 }
+
+#[test]
+fn edit_ratio_rows_are_named_by_bound() {
+    let t = table(M6A, 200);
+    let mut p = picker(&t, None, SiteFilterArgs::default_values());
+    let mut term = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    focus_on(&mut p, Criterion::MaxEditRatio);
+    term.draw(|f| p.render(f)).unwrap();
+    let text: String = term
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+    assert!(text.contains("min edit ratio") && text.contains("max edit ratio"));
+    assert!(text.contains("high is variant-like"));
+}
