@@ -27,7 +27,7 @@ const TICK_SPACING: usize = 14;
 
 /// One track: raw `(position, value)` pairs, sorted by position.
 pub struct Track<'a> {
-    pub label: &'static str,
+    pub label: &'a str,
     pub signal: &'static str,
     pub positions: &'a [(i64, f64)],
     /// Bins become `log10(1 + sum)`, as the printed pileup does.
@@ -49,6 +49,14 @@ impl Track<'_> {
     }
 }
 
+/// How the user left the browser.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Exit {
+    Quit,
+    /// `g`: back to the gene list.
+    Genes,
+}
+
 /// State of the browser, independent of the terminal so it can be tested.
 pub struct PileupView<'a> {
     title: String,
@@ -64,11 +72,19 @@ pub struct PileupView<'a> {
     columns: usize,
     y_scale: Scale,
     save: SavePrompt,
-    done: bool,
+    /// Whether `g` goes back to a gene list.
+    back: bool,
+    exit: Option<Exit>,
 }
 
 impl<'a> PileupView<'a> {
-    pub fn new(title: &str, chr: &str, tracks: Vec<Track<'a>>, extent: (i64, i64)) -> Self {
+    pub fn new(
+        title: &str,
+        chr: &str,
+        tracks: Vec<Track<'a>>,
+        extent: (i64, i64),
+        back: bool,
+    ) -> Self {
         let mut sites: Vec<i64> = tracks
             .iter()
             .flat_map(|t| t.positions.iter().map(|p| p.0))
@@ -87,7 +103,8 @@ impl<'a> PileupView<'a> {
             columns: 80,
             y_scale: Scale::Linear,
             save: SavePrompt::new(&format!("pileup_{title}")),
-            done: false,
+            back,
+            exit: None,
         }
     }
 
@@ -246,11 +263,11 @@ impl<'a> PileupView<'a> {
 
 impl Screen for PileupView<'_> {
     fn done(&self) -> bool {
-        self.done
+        self.exit.is_some()
     }
 
     fn interrupt(&mut self) {
-        self.done = true;
+        self.exit = Some(Exit::Quit);
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
@@ -274,7 +291,8 @@ impl Screen for PileupView<'_> {
             KeyCode::Char('-') => self.zoom(2.0),
             KeyCode::Char('0') => self.window = self.extent,
             KeyCode::Char('y') => self.y_scale = self.y_scale.next(),
-            KeyCode::Char('q') | KeyCode::Esc | KeyCode::Enter => self.done = true,
+            KeyCode::Char('g') if self.back => self.exit = Some(Exit::Genes),
+            KeyCode::Char('q') | KeyCode::Esc | KeyCode::Enter => self.exit = Some(Exit::Quit),
             _ => {}
         }
     }
@@ -337,28 +355,36 @@ impl Screen for PileupView<'_> {
 
         frame.render_widget(Paragraph::new(self.readout()), readout);
         let help = self.save.footer().unwrap_or_else(|| {
-            help_line(&[
+            let mut keys = vec![
                 ("←/→", "bar"),
                 ("n/p", "next/prev site"),
                 ("+/-", "zoom"),
                 ("0", "whole"),
                 ("y", "scale"),
                 ("s", "save"),
-                ("q", "quit"),
-            ])
+            ];
+            if self.back {
+                keys.push(("g", "genes"));
+            }
+            keys.push(("q", "quit"));
+            help_line(&keys)
         });
         frame.render_widget(help, footer);
     }
 }
 
-/// Browse full screen until the user quits.
+/// Browse full screen until the user quits or, with `back`, asks for the
+/// gene list.
 pub fn show_pileup(
     title: &str,
     chr: &str,
     tracks: Vec<Track>,
     extent: (i64, i64),
-) -> anyhow::Result<()> {
-    run_screen(&mut PileupView::new(title, chr, tracks, extent))
+    back: bool,
+) -> anyhow::Result<Exit> {
+    let mut view = PileupView::new(title, chr, tracks, extent, back);
+    run_screen(&mut view)?;
+    Ok(view.exit.unwrap_or(Exit::Quit))
 }
 
 #[cfg(test)]

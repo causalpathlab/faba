@@ -102,7 +102,8 @@ pub struct PileupArgs {
         long_help = "Genomic regions to pile up:\n\
                      comma-separated `chr:lb-ub` (`chr17:1000-2000,chr1:50-99`).\n\
                      Selects rows by position, with or without `--genes`.\n\
-                     At least one of `--genes`/`--regions` is required."
+                     At least one of `--genes`/`--regions` is required, except with\n\
+                     `--interactive`, which then opens a gene list to pick from."
     )]
     regions: Vec<Box<str>>,
 
@@ -149,6 +150,19 @@ pub struct PileupArgs {
 
     #[arg(long, help = "Suppress ASCII plot")]
     quiet: bool,
+
+    #[arg(
+        long = "track",
+        value_name = "LABEL=PATTERN",
+        help = "Group input files into a labelled track (repeatable): each file joins the first track whose PATTERN (`*`, `?`) matches its path",
+        long_help = "Group the input files into labelled tracks, e.g.\n\
+                     `--track wt='*_wt_*' --track mut='*_mut_*'`. Each file joins the first\n\
+                     track whose PATTERN matches its path (`*` any run, `?` one character);\n\
+                     files matching none are an error. Without `--track`, every file is\n\
+                     pooled into one `matrix` track. Tracks are drawn, written and browsed\n\
+                     separately; files within a track are pooled per position."
+    )]
+    tracks: Vec<Box<str>>,
 
     #[arg(
         short = 'I',
@@ -418,11 +432,21 @@ impl Selector {
         })
     }
 
+    /// Exactly the gene whose row key is `gene_part`, as a picked catalog
+    /// entry names it.
+    pub(crate) fn exact(gene_part: &str) -> Self {
+        Self {
+            genes: vec![gene_part.into()],
+            gene_syms: vec![gene_part.into()],
+            regions: Vec::new(),
+        }
+    }
+
     pub(crate) fn matches_gene(&self, gene_part: &str) -> bool {
         self.genes
             .iter()
             .zip(&self.gene_syms)
-            .any(|(g, sym)| gene_matches(g, sym, gene_part))
+            .any(|(g, sym)| g.as_ref() == gene_part || gene_matches(g, sym, gene_part))
     }
 
     fn matches_region(&self, chr: &str, pos: i64) -> bool {
@@ -511,7 +535,7 @@ struct BinnedPileup {
     min_pos: i64,
     max_pos: i64,
     num_sites: usize,
-    track_label: &'static str,
+    track_label: Box<str>,
     signal_name: &'static str,
 }
 
@@ -687,6 +711,8 @@ struct GroupedMatrix {
     chr: Box<str>,
     /// celltype label -> sorted `(pos, value)`
     by_group: FxHashMap<Box<str>, Vec<(i64, f64)>>,
+    /// Rows the selection matched, over all files.
+    matched: usize,
 }
 
 fn read_matrix_positions_grouped(
@@ -792,14 +818,6 @@ fn read_matrix_positions_grouped(
         }
     }
 
-    if total_matched == 0 {
-        return Err(anyhow::anyhow!(
-            "no rows matching {} in {} file(s)",
-            selector.describe(),
-            data_files.len()
-        ));
-    }
-
     // The selection can span several genes (and chromosomes); rather than
     // erroring on ambiguity we pile them together and label the aggregate.
     let gene: Box<str> = summarize_genes(&distinct_genes);
@@ -836,15 +854,20 @@ fn read_matrix_positions_grouped(
         gene,
         chr,
         by_group,
+        matched: total_matched,
     })
 }
 
+/// The selection's positions over `data_files`, or `None` when no row matched.
 fn read_matrix_positions(
     data_files: &[Box<str>],
     selector: &Selector,
     signal: &PileupSignal,
-) -> anyhow::Result<MatrixGeneData> {
+) -> anyhow::Result<Option<MatrixGeneData>> {
     let grouped = read_matrix_positions_grouped(data_files, selector, signal, None, &[])?;
+    if grouped.matched == 0 {
+        return Ok(None);
+    }
     // membership = None yields exactly one synthetic "" group.
     let positions = grouped
         .by_group
@@ -852,11 +875,11 @@ fn read_matrix_positions(
         .next()
         .map(|(_, p)| p)
         .unwrap_or_default();
-    Ok(MatrixGeneData {
+    Ok(Some(MatrixGeneData {
         gene: grouped.gene,
         chr: grouped.chr,
         positions,
-    })
+    }))
 }
 
 fn bin_positions_with_extent(
@@ -1028,111 +1051,258 @@ fn write_pileup_tsv(tracks: &[&BinnedPileup], output: &str) -> anyhow::Result<()
     Ok(())
 }
 
-pub fn run_pileup(args: &PileupArgs) -> anyhow::Result<()> {
-    let selector = Selector::build(&args.genes, &args.regions)?;
+/// Whether `text` matches `pattern`, `*` standing for any run of
+/// characters and `?` for one.
+fn wildcard(pattern: &str, text: &str) -> bool {
+    let (p, t): (Vec<char>, Vec<char>) = (pattern.chars().collect(), text.chars().collect());
+    let (mut pi, mut ti, mut star, mut mark) = (0, 0, None, 0);
+    while ti < t.len() {
+        if pi < p.len() && (p[pi] == '?' || p[pi] == t[ti]) {
+            pi += 1;
+            ti += 1;
+        } else if pi < p.len() && p[pi] == '*' {
+            star = Some(pi);
+            mark = ti;
+            pi += 1;
+        } else if let Some(sp) = star {
+            pi = sp + 1;
+            mark += 1;
+            ti = mark;
+        } else {
+            return false;
+        }
+    }
+    p[pi..].iter().all(|&c| c == '*')
+}
 
+/// One labelled group of input matrices.
+struct TrackFiles {
+    label: Box<str>,
+    files: Vec<Box<str>>,
+}
+
+/// The input files grouped by `--track`, in the order the tracks were given;
+/// one `matrix` track of every file without it.
+fn track_files(files: &[Box<str>], specs: &[Box<str>]) -> anyhow::Result<Vec<TrackFiles>> {
+    if specs.is_empty() {
+        return Ok(vec![TrackFiles {
+            label: "matrix".into(),
+            files: files.to_vec(),
+        }]);
+    }
+    let mut groups: Vec<(TrackFiles, &str)> = Vec::new();
+    for spec in specs {
+        let (label, pattern) = spec
+            .split_once('=')
+            .filter(|(l, p)| !l.is_empty() && !p.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("--track {spec}: expected LABEL=PATTERN"))?;
+        let track = TrackFiles {
+            label: label.into(),
+            files: Vec::new(),
+        };
+        groups.push((track, pattern));
+    }
+    let mut unmatched = Vec::new();
+    for f in files {
+        match groups.iter_mut().find(|(_, p)| wildcard(p, f)) {
+            Some((g, _)) => g.files.push(f.clone()),
+            None => unmatched.push(f.as_ref()),
+        }
+    }
+    anyhow::ensure!(
+        unmatched.is_empty(),
+        "no --track pattern matches {}",
+        unmatched.join(", ")
+    );
+    for (g, p) in &groups {
+        anyhow::ensure!(
+            !g.files.is_empty(),
+            "--track {}={p} matches no input file",
+            g.label
+        );
+    }
+    Ok(groups.into_iter().map(|(g, _)| g).collect())
+}
+
+/// A track's label and its sorted `(position, value)` pairs.
+type LabelledPositions = (Box<str>, Vec<(i64, f64)>);
+
+/// One selection loaded for drawing: each labelled matrix track (empty when
+/// none of its files hold the selection), the site annotation, the extent.
+struct Loaded {
+    gene: Box<str>,
+    chr: Box<str>,
+    tracks: Vec<LabelledPositions>,
+    sites: Option<SiteAnnotation>,
+    extent: (i64, i64),
+}
+
+fn load(args: &PileupArgs, groups: &[TrackFiles], selector: &Selector) -> anyhow::Result<Loaded> {
+    let mut label: Option<(Box<str>, Box<str>)> = None;
+    let mut tracks = Vec::with_capacity(groups.len());
+    for g in groups {
+        let positions = match read_matrix_positions(&g.files, selector, &args.signal)? {
+            Some(m) => {
+                label.get_or_insert((m.gene, m.chr));
+                m.positions
+            }
+            None => Vec::new(),
+        };
+        tracks.push((g.label.clone(), positions));
+    }
+    let Some((gene, chr)) = label else {
+        anyhow::bail!(
+            "no rows matching {} in {} file(s)",
+            selector.describe(),
+            args.data_files.len()
+        );
+    };
+    let sites = args
+        .site_file
+        .as_ref()
+        .map(|sf| read_site_annotation(sf, selector, &args.site_signal))
+        .transpose()?;
+    let extent = match &sites {
+        Some(sa) => (sa.gene_start, sa.gene_stop),
+        None => {
+            let all = tracks.iter().flat_map(|(_, p)| p.iter().map(|x| x.0));
+            let lo = all.clone().min().unwrap_or(0);
+            (lo, all.max().unwrap_or(lo))
+        }
+    };
+    Ok(Loaded {
+        gene,
+        chr,
+        tracks,
+        sites,
+        extent,
+    })
+}
+
+/// Browse `loaded` full screen; `back` offers a return to the gene list.
+fn browse(args: &PileupArgs, loaded: &Loaded, back: bool) -> anyhow::Result<tui::Exit> {
+    let is_log = matches!(args.signal, PileupSignal::Log10Sum);
+    let mut tracks: Vec<tui::Track> = loaded
+        .tracks
+        .iter()
+        .map(|(label, positions)| tui::Track {
+            label,
+            signal: args.signal.name(),
+            positions,
+            log: is_log,
+        })
+        .collect();
+    if let Some(sa) = &loaded.sites {
+        tracks.push(tui::Track {
+            label: "sites",
+            signal: args.site_signal.name(),
+            positions: &sa.positions,
+            log: false,
+        });
+    }
+    tui::show_pileup(&loaded.gene, &loaded.chr, tracks, loaded.extent, back)
+}
+
+/// `-I` with no selection: list every gene in the inputs, browse the one
+/// picked, and come back to the list on `g`.
+fn browse_genes(args: &PileupArgs, groups: &[TrackFiles]) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        data_beans::interactive::tui_available(),
+        "--interactive without --genes/--regions needs stdin and stdout on a terminal"
+    );
+    let catalog = picker::gene_catalog(&args.data_files)?;
+    anyhow::ensure!(!catalog.is_empty(), "no site rows in the input files");
+    info!("{} genes with site rows", catalog.len());
+    let mut list = picker::GenePicker::new(&catalog);
+    while let Some(i) = list.pick()? {
+        let loaded = load(args, groups, &Selector::exact(&catalog[i].gene))?;
+        if browse(args, &loaded, true)? == tui::Exit::Quit {
+            break;
+        }
+    }
+    Ok(())
+}
+
+pub fn run_pileup(args: &PileupArgs) -> anyhow::Result<()> {
     // Figure mode is triggered by any figure-only input/output flag.
-    // Otherwise fall through to the original ASCII / TSV path unchanged.
+    // Otherwise fall through to the ASCII / TSV path.
     let figure_mode = args.gtf.is_some()
         || !args.bam_files.is_empty()
         || args.format.is_some()
         || args.svg
         || args.png;
+    let groups = track_files(&args.data_files, &args.tracks)?;
+    if args.interactive && !figure_mode && args.genes.is_empty() && args.regions.is_empty() {
+        return browse_genes(args, &groups);
+    }
+    let selector = Selector::build(&args.genes, &args.regions)?;
     if figure_mode {
         if args.interactive {
             log::warn!("--interactive applies to the ASCII pileup, not the figure; ignoring it");
         }
+        if !args.tracks.is_empty() {
+            log::warn!("--track applies to the ASCII pileup, not the figure; ignoring it");
+        }
         return run_miami_figure(args, &selector);
     }
 
-    // Read sparse matrix data
-    let mtx = read_matrix_positions(&args.data_files, &selector, &args.signal)?;
-    let matrix_num_sites = mtx.positions.len();
-
-    // Determine x-axis extent and build site track if parquet provided
-    let site_annotation = args
-        .site_file
-        .as_ref()
-        .map(|sf| read_site_annotation(sf, &selector, &args.site_signal))
-        .transpose()?;
-
-    let (min_pos, max_pos) = if let Some(ref sa) = site_annotation {
-        (sa.gene_start, sa.gene_stop)
-    } else {
-        let lo = mtx.positions.first().map(|p| p.0).unwrap_or(0);
-        let hi = mtx.positions.last().map(|p| p.0).unwrap_or(0);
-        (lo, hi)
-    };
-
-    let max_sites = site_annotation
-        .as_ref()
-        .map_or(matrix_num_sites, |sa| matrix_num_sites.max(sa.num_sites));
+    let loaded = load(args, &groups, &selector)?;
+    let (min_pos, max_pos) = loaded.extent;
+    let max_sites = loaded
+        .tracks
+        .iter()
+        .map(|(_, p)| p.len())
+        .chain(loaded.sites.iter().map(|sa| sa.num_sites))
+        .max()
+        .unwrap_or(0);
     let effective_bins = args.num_bins.min(max_sites.max(1));
     let is_log = matches!(args.signal, PileupSignal::Log10Sum);
 
-    let matrix_bins =
-        bin_positions_with_extent(&mtx.positions, effective_bins, min_pos, max_pos, is_log);
-
-    let site_pileup = site_annotation.as_ref().map(|sa| BinnedPileup {
-        gene: mtx.gene.clone(),
-        chr: mtx.chr.clone(),
-        bins: bin_positions_with_extent(&sa.positions, effective_bins, min_pos, max_pos, false),
-        sites: distinct_positions(&sa.positions),
-        min_pos,
-        max_pos,
-        num_sites: sa.num_sites,
-        track_label: "sites",
-        signal_name: args.site_signal.name(),
-    });
-
-    // Build matrix pileup after site_pileup to move ownership
-    let matrix_pileup = BinnedPileup {
-        gene: mtx.gene,
-        chr: mtx.chr,
-        bins: matrix_bins,
-        sites: distinct_positions(&mtx.positions),
-        min_pos,
-        max_pos,
-        num_sites: matrix_num_sites,
-        track_label: "matrix",
-        signal_name: args.signal.name(),
-    };
+    let mut pileups: Vec<BinnedPileup> = loaded
+        .tracks
+        .iter()
+        .map(|(label, positions)| BinnedPileup {
+            gene: loaded.gene.clone(),
+            chr: loaded.chr.clone(),
+            bins: bin_positions_with_extent(positions, effective_bins, min_pos, max_pos, is_log),
+            sites: distinct_positions(positions),
+            min_pos,
+            max_pos,
+            num_sites: positions.len(),
+            track_label: label.clone(),
+            signal_name: args.signal.name(),
+        })
+        .collect();
+    if let Some(sa) = &loaded.sites {
+        pileups.push(BinnedPileup {
+            gene: loaded.gene.clone(),
+            chr: loaded.chr.clone(),
+            bins: bin_positions_with_extent(&sa.positions, effective_bins, min_pos, max_pos, false),
+            sites: distinct_positions(&sa.positions),
+            min_pos,
+            max_pos,
+            num_sites: sa.num_sites,
+            track_label: "sites".into(),
+            signal_name: args.site_signal.name(),
+        });
+    }
 
     if !args.quiet {
-        print_vertical_histogram(&matrix_pileup, args.plot_height);
-        if let Some(ref sp) = site_pileup {
-            print_vertical_histogram(sp, args.plot_height);
+        for p in &pileups {
+            print_vertical_histogram(p, args.plot_height);
         }
     }
 
     if args.interactive {
         if data_beans::interactive::tui_available() {
-            let mut tracks = vec![tui::Track {
-                label: "matrix",
-                signal: args.signal.name(),
-                positions: &mtx.positions,
-                log: is_log,
-            }];
-            if let Some(sa) = site_annotation.as_ref() {
-                tracks.push(tui::Track {
-                    label: "sites",
-                    signal: args.site_signal.name(),
-                    positions: &sa.positions,
-                    log: false,
-                });
-            }
-            let chr = matrix_pileup.chr.clone();
-            tui::show_pileup(&matrix_pileup.gene, &chr, tracks, (min_pos, max_pos))?;
+            browse(args, &loaded, false)?;
         } else {
             log::warn!("--interactive needs stdin and stdout on a terminal; skipping the view");
         }
     }
 
     if let Some(ref output) = args.output {
-        let mut tracks: Vec<&BinnedPileup> = vec![&matrix_pileup];
-        if let Some(ref sp) = site_pileup {
-            tracks.push(sp);
-        }
+        let tracks: Vec<&BinnedPileup> = pileups.iter().collect();
         write_pileup_tsv(&tracks, output)?;
         info!("wrote pileup TSV to {}", output);
     }
@@ -1162,6 +1332,12 @@ fn run_miami_figure(args: &PileupArgs, selector: &Selector) -> anyhow::Result<()
         membership.as_ref(),
         &args.top_modality,
     )?;
+    anyhow::ensure!(
+        grouped.matched > 0,
+        "no rows matching {} in {} file(s)",
+        selector.describe(),
+        args.data_files.len()
+    );
 
     // Optional parquet refines gene bounds in figure mode.
     let site_annotation = args
@@ -1329,6 +1505,7 @@ fn slug(s: &str) -> String {
     }
 }
 
+mod picker;
 mod tui;
 
 #[cfg(test)]

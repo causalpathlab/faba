@@ -135,3 +135,42 @@ fn channel_rows_pile_up_the_converted_channel() {
         None
     );
 }
+
+#[test]
+fn wildcard_patterns() {
+    assert!(wildcard("*_wt_*", "out/rep1_wt_m6a_site.zarr.zip"));
+    assert!(!wildcard("*_wt_*", "out/rep1_mut_m6a_site.zarr.zip"));
+    assert!(wildcard("rep?_*", "rep2_x"));
+    assert!(wildcard("*", ""));
+    assert!(!wildcard("a*b", "ac"));
+}
+
+#[test]
+fn track_files_group_in_given_order() {
+    let files: Vec<Box<str>> = ["a_wt_1", "a_mut_1", "b_wt_2"].map(Into::into).to_vec();
+    let one = track_files(&files, &[]).unwrap();
+    assert_eq!(one.len(), 1);
+    assert_eq!(one[0].label.as_ref(), "matrix");
+    let specs: Vec<Box<str>> = ["mut=*_mut_*", "wt=*_wt_*"].map(Into::into).to_vec();
+    let g = track_files(&files, &specs).unwrap();
+    assert_eq!(g[0].label.as_ref(), "mut");
+    assert_eq!(g[0].files.len(), 1);
+    assert_eq!(g[1].files.len(), 2);
+    let bad: Vec<Box<str>> = ["wt=*_wt_*"].map(Into::into).to_vec();
+    assert!(
+        track_files(&files, &bad).is_err(),
+        "a_mut_1 matches no track"
+    );
+    let empty: Vec<Box<str>> = ["wt=*", "none=zzz"].map(Into::into).to_vec();
+    assert!(track_files(&files, &empty).is_err(), "a track with no file");
+    let malformed: Vec<Box<str>> = ["wt"].map(Into::into).to_vec();
+    assert!(track_files(&files, &malformed).is_err());
+}
+
+#[test]
+fn exact_selector_matches_only_its_row_key() {
+    let s = Selector::exact("ENSG1_GENE1");
+    assert!(s.matches_gene("ENSG1_GENE1"));
+    assert!(!s.matches_gene("ENSG2_GENE2"));
+    assert!(!s.matches_gene("ENSG1_GENE10"));
+}

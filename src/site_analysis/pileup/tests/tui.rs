@@ -32,7 +32,7 @@ fn view<'a>(m: &'a [(i64, f64)], s: &'a [(i64, f64)]) -> PileupView<'a> {
             log: false,
         },
     ];
-    PileupView::new("GENE1", "chr1", tracks, EXTENT)
+    PileupView::new("GENE1", "chr1", tracks, EXTENT, false)
 }
 
 fn press(v: &mut PileupView, code: KeyCode) {
@@ -145,9 +145,20 @@ fn renders_both_tracks_with_coordinates() {
             log: false,
         }],
         EXTENT,
+        true,
     );
     let mut one = one;
     screen(&mut one, 12, 6);
+    press(&mut one, KeyCode::Char('g'));
+    assert_eq!(
+        one.exit,
+        Some(Exit::Genes),
+        "g goes back when there is a list"
+    );
+    let (m2, s2) = (positions(), sites());
+    let mut v2 = view(&m2, &s2);
+    press(&mut v2, KeyCode::Char('g'));
+    assert_eq!(v2.exit, None, "and does nothing when there is none");
 }
 
 #[test]
