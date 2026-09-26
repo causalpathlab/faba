@@ -1,6 +1,7 @@
 //! The gene list `faba pileup --interactive` opens when no gene or region
 //! was given: every gene with site rows in the inputs, read off the row
-//! names alone, filtered as you type.
+//! names alone, filtered as you type (`/` starts over). A typed
+//! `chr:start-end` or `chr:pos` opens that locus.
 
 use data_beans::hdf5_io::resolve_backend_file;
 use data_beans::interactive::ui::{
@@ -176,6 +177,11 @@ impl Screen for GenePicker<'_> {
                 self.filter.pop();
                 self.refilter();
             }
+            // As in the browser, `/` starts a search: here, a fresh filter.
+            KeyCode::Char('/') => {
+                self.filter.clear();
+                self.refilter();
+            }
             KeyCode::Char(c) if !c.is_control() => {
                 self.filter.push(c);
                 self.refilter();
@@ -234,7 +240,7 @@ impl Screen for GenePicker<'_> {
         let line = match &self.status {
             Some(msg) => Line::from(Span::styled(format!(" {msg}"), HIGHLIGHT)),
             None => input_line(
-                "gene or chr:start-end: ",
+                "search gene or chr:start-end: ",
                 &self.filter,
                 &[("↑/↓", "move"), ("Enter", "open"), ("Esc", "clear/quit")],
             ),

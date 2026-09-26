@@ -87,3 +87,21 @@ fn a_typed_locus_opens_as_a_locus() {
     assert_eq!(p.filter(), "gene3");
     assert_eq!(p.shown.len(), 1);
 }
+
+#[test]
+fn slash_starts_a_fresh_search() {
+    let c = catalog_from_rows(rows());
+    let mut p = GenePicker::new(&c);
+    for ch in "gene1".chars() {
+        press(&mut p, KeyCode::Char(ch));
+    }
+    assert_eq!(p.shown.len(), 1);
+    press(&mut p, KeyCode::Char('/'));
+    assert_eq!(p.filter(), "");
+    assert_eq!(p.shown.len(), 3);
+    for ch in "gene2".chars() {
+        press(&mut p, KeyCode::Char(ch));
+    }
+    press(&mut p, KeyCode::Enter);
+    assert_eq!(p.decision, Some(Choice::Gene(2)));
+}
