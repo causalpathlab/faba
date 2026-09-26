@@ -7,6 +7,7 @@ use crate::site_analysis::miami::render::{render_miami, FigOpts, PanelData};
 use arrow::array::{Float32Array, Int64Array, StringArray, UInt64Array};
 use clap::Args;
 use data_beans::aux::feature_names::FeatureNameKind;
+use data_beans::aux::feature_rows::{EDITED, METHYLATED, UNEDITED, UNMETHYLATED};
 use data_beans::hdf5_io::resolve_backend_file;
 use data_beans::sparse_io::open_sparse_matrix;
 use genomic_data::bed::Bed;
@@ -149,6 +150,14 @@ pub struct PileupArgs {
     #[arg(long, help = "Suppress ASCII plot")]
     quiet: bool,
 
+    #[arg(
+        short = 'I',
+        long = "interactive",
+        default_value_t = false,
+        help = "Browse the pileup full screen: pan, zoom and jump between sites (needs a terminal; ASCII mode only)"
+    )]
+    interactive: bool,
+
     ///////////////////////
     // Miami figure mode //
     ///////////////////////
@@ -288,6 +297,10 @@ pub struct PileupArgs {
     raster_threshold: usize,
 }
 
+/// Converted-read channels of a site row: the modification signal.
+const CONVERTED: [&str; 2] = [METHYLATED, EDITED];
+const UNCONVERTED: [&str; 2] = [UNMETHYLATED, UNEDITED];
+
 /// Parse a faba row name `gene_key/modality/detail`. `detail` is either
 /// `chr:pos` (site output, e.g. `ENSG00000139618_BRCA2/m6A/chr13:32350000`)
 /// or a bare component ordinal (mixture output, e.g.
@@ -297,7 +310,16 @@ pub struct PileupArgs {
 /// Returns `(gene, modality, chr, pos)`. `modality` is the middle
 /// `/`-delimited token (e.g. `m6A`), used by the figure's
 /// `--top-modality` filter; `chr` is empty for mixture (component) rows.
+///
+/// Site rows written with a channel suffix (`.../chr:pos/methylated`) pile
+/// up their converted channel only: the suffix is dropped from `methylated`
+/// and `edited` rows, and `unmethylated` / `unedited` rows yield `None`.
 fn parse_row_name_full(name: &str) -> Option<(&str, &str, &str, i64)> {
+    let name = match name.rsplit_once('/') {
+        Some((head, channel)) if CONVERTED.contains(&channel) => head,
+        Some((_, channel)) if UNCONVERTED.contains(&channel) => return None,
+        _ => name,
+    };
     let mut parts = name.splitn(3, '/');
     let gene_part = parts.next()?;
     let modality = parts.next()?;
@@ -1017,6 +1039,9 @@ pub fn run_pileup(args: &PileupArgs) -> anyhow::Result<()> {
         || args.svg
         || args.png;
     if figure_mode {
+        if args.interactive {
+            log::warn!("--interactive applies to the ASCII pileup, not the figure; ignoring it");
+        }
         return run_miami_figure(args, &selector);
     }
 
@@ -1077,6 +1102,29 @@ pub fn run_pileup(args: &PileupArgs) -> anyhow::Result<()> {
         print_vertical_histogram(&matrix_pileup, args.plot_height);
         if let Some(ref sp) = site_pileup {
             print_vertical_histogram(sp, args.plot_height);
+        }
+    }
+
+    if args.interactive {
+        if data_beans::interactive::tui_available() {
+            let mut tracks = vec![tui::Track {
+                label: "matrix",
+                signal: args.signal.name(),
+                positions: &mtx.positions,
+                log: is_log,
+            }];
+            if let Some(sa) = site_annotation.as_ref() {
+                tracks.push(tui::Track {
+                    label: "sites",
+                    signal: args.site_signal.name(),
+                    positions: &sa.positions,
+                    log: false,
+                });
+            }
+            let chr = matrix_pileup.chr.clone();
+            tui::show_pileup(&matrix_pileup.gene, &chr, tracks, (min_pos, max_pos))?;
+        } else {
+            log::warn!("--interactive needs stdin and stdout on a terminal; skipping the view");
         }
     }
 
@@ -1280,6 +1328,8 @@ fn slug(s: &str) -> String {
         out
     }
 }
+
+mod tui;
 
 #[cfg(test)]
 mod tests;

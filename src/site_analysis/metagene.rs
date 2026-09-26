@@ -115,6 +115,14 @@ pub struct MetageneArgs {
     print_histogram: bool,
 
     #[arg(
+        short = 'I',
+        long = "interactive",
+        default_value_t = false,
+        help = "After writing, browse the profile full screen (needs a terminal)"
+    )]
+    interactive: bool,
+
+    #[arg(
         long = "max-width",
         default_value_t = 60,
         value_parser = clap::value_parser!(u32).range(1..),
@@ -952,9 +960,18 @@ pub fn run_metagene(args: &MetageneArgs) -> anyhow::Result<()> {
     if args.print_histogram {
         histogram.print(args.max_width as usize);
     }
+    if args.interactive {
+        if data_beans::interactive::tui_available() {
+            tui::show_metagene(&crate::qc::layout::file_name(&args.site_file), &histogram)?;
+        } else {
+            log::warn!("--interactive needs stdin and stdout on a terminal; skipping the view");
+        }
+    }
 
     Ok(())
 }
+
+mod tui;
 
 #[cfg(test)]
 mod tests;

@@ -23,6 +23,7 @@ use crate::editing::io::write_record_batch;
 use super::args::{QcReportArgs, SiteFilterArgs};
 use super::layout::{scan_input_dir, SITE_MODALITIES};
 use super::matrix::{open_matrix, row_nnz_sum};
+use super::site_tui::{qc_flags, run_site_picker, Picked, Purpose};
 use super::sites::{accumulate_site_cells, read_site_table, SiteTable};
 
 #[derive(Debug, Clone)]
@@ -379,6 +380,15 @@ pub fn run_qc_report(args: &QcReportArgs) -> anyhow::Result<()> {
     info!("wrote {} rows to {path}", rows.len());
     if !args.quiet {
         print_ascii(&rows, args.width);
+    }
+    if args.interactive {
+        let start = SiteFilterArgs::default_values();
+        let purpose = Purpose::Explore;
+        if let Picked::Chosen(f) =
+            run_site_picker(&args.input_dir, &tables, &site_cells, &start, purpose)?
+        {
+            println!("faba qc {} -o <output> {}", args.input_dir, qc_flags(&f));
+        }
     }
     Ok(())
 }

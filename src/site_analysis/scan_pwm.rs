@@ -1,3 +1,5 @@
+mod tui;
+
 use super::site_io::*;
 use crate::common::*;
 use crate::data::dna::{Dna, DnaBaseCount};
@@ -70,6 +72,14 @@ pub struct ScanPwmArgs {
         help = "Output file path (TSV, or .gz for gzipped)"
     )]
     output: Box<str>,
+
+    #[arg(
+        short = 'I',
+        long = "interactive",
+        default_value_t = false,
+        help = "After writing, show the PWM as a sequence logo full screen (needs a terminal)"
+    )]
+    interactive: bool,
 }
 
 /// Swap A<->T and G<->C counts to complement a DnaBaseCount.
@@ -267,6 +277,18 @@ pub fn run_scan_pwm(args: &ScanPwmArgs) -> anyhow::Result<()> {
 
     write_pwm(&pwm, args.window, &args.output)?;
     info!("wrote PWM to {}", args.output);
+
+    if args.interactive {
+        if data_beans::interactive::tui_available() {
+            tui::show_pwm(
+                &crate::qc::layout::file_name(&args.site_file),
+                &pwm,
+                args.window,
+            )?;
+        } else {
+            log::warn!("--interactive needs stdin and stdout on a terminal; skipping the view");
+        }
+    }
 
     Ok(())
 }

@@ -170,6 +170,19 @@ pub struct QcArgs {
     )]
     pub block_size: Option<usize>,
 
+    #[arg(
+        short = 'I',
+        long = "interactive",
+        default_value_t = false,
+        help = "Pick the site thresholds in a full-screen view before cutting (needs a terminal)",
+        long_help = "Pick the site thresholds in a full-screen view before cutting.\n\
+                     The view starts from the --site-* values given, shows each knob's column\n\
+                     as a histogram with live kept and dropped counts, and Enter applies the\n\
+                     thresholds on screen. Needs stdin and stdout on a terminal; otherwise the\n\
+                     --site-* values are used as given."
+    )]
+    pub interactive: bool,
+
     #[command(flatten)]
     pub site: SiteFilterArgs,
 }
@@ -189,6 +202,18 @@ pub struct QcReportArgs {
 
     #[arg(long = "width", default_value_t = 50, help = "Width of the ASCII bars")]
     pub width: usize,
+
+    #[arg(
+        short = 'I',
+        long = "interactive",
+        default_value_t = false,
+        help = "After the sweep, combine the site thresholds in a full-screen view (needs a terminal)",
+        long_help = "After the sweep, open a full-screen view of the site thresholds combined,\n\
+                     not one at a time: each knob's column as a histogram with live kept and\n\
+                     dropped counts. Enter prints the matching `faba qc` flags on stdout.\n\
+                     Needs stdin and stdout on a terminal; otherwise it is skipped."
+    )]
+    pub interactive: bool,
 
     #[arg(
         long = "quiet",

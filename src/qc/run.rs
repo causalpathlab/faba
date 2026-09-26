@@ -15,7 +15,7 @@
 use std::sync::Arc;
 
 use crate::common::*;
-use data_beans::qc_lib::{compute_qc, write_qc_report, QcConfig};
+use data_beans::qc_lib::{compute_qc, write_qc_report, QcConfig, QcReport};
 use data_beans::sparse_io_vector::SparseIoVec;
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -26,6 +26,7 @@ use super::matrix::{
     Written,
 };
 use super::repool::repool_gene_level;
+use super::site_tui::{qc_flags, run_site_picker, Picked, Purpose};
 use super::sites::{
     accumulate_site_cells, read_site_table, site_matrix_rows, write_site_tables, SiteTable,
 };
@@ -36,16 +37,35 @@ struct SummaryRow {
     after: (usize, usize, usize),
 }
 
+/// One batch's cell verdicts, held until nothing can cancel the run.
+struct CellDecision {
+    batch: Box<str>,
+    names: Vec<Box<str>>,
+    report: QcReport,
+    kept: Vec<Box<str>>,
+}
+
+impl CellDecision {
+    fn write(&self, out_dir: &str) -> anyhow::Result<()> {
+        let report_path = format!("{out_dir}/{}_cell_qc_report.tsv", self.batch);
+        write_qc_report(&report_path, &self.names, &self.report)?;
+        write_lines(
+            &self.kept,
+            &format!("{out_dir}/{}_cells.tsv.gz", self.batch),
+        )
+    }
+
+    fn keep_set(&self) -> FxHashSet<Box<str>> {
+        self.kept.iter().cloned().collect()
+    }
+}
+
 /// Decide the cells of one batch on its `_count` matrix, through the
 /// data-beans cell QC in one pass: a near-empty floor (the larger of
 /// `--column-nnz-cutoff` and `--qc-min-cell-nnz`), the 2-means suggestion
 /// under `--auto-cutoff`, and the MAD-outlier drops unless `--no-cell-qc`.
-/// Writes the per-cell verdicts and the kept barcodes beside the outputs.
-fn decide_cells(
-    m: &MatrixFile,
-    args: &QcArgs,
-    out_dir: &str,
-) -> anyhow::Result<FxHashSet<Box<str>>> {
+/// The per-cell verdicts and kept barcodes are returned for [`CellDecision::write`].
+fn decide_cells(m: &MatrixFile, args: &QcArgs) -> anyhow::Result<CellDecision> {
     let data = open_matrix(&m.path)?;
     let names = data.column_names()?;
     let mut vec = SparseIoVec::new();
@@ -65,11 +85,6 @@ fn decide_cells(
         ..QcConfig::default()
     };
     let report = compute_qc(&vec, &cfg, args.block_size)?;
-    write_qc_report(
-        &format!("{}/{}_cell_qc_report.tsv", out_dir, m.batch),
-        &names,
-        &report,
-    )?;
 
     let idx = report.emit_idx_unmasked();
     anyhow::ensure!(
@@ -77,17 +92,21 @@ fn decide_cells(
         "{}: no cell survives the cell QC; relax --column-nnz-cutoff / --qc-min-cell-nnz or pass --no-cell-qc",
         m.batch
     );
-    let lines: Vec<Box<str>> = idx.iter().map(|&c| names[c].clone()).collect();
-    write_lines(&lines, &format!("{}/{}_cells.tsv.gz", out_dir, m.batch))?;
+    let kept: Vec<Box<str>> = idx.iter().map(|&c| names[c].clone()).collect();
     info!(
         "{}: kept {} of {} cells (near-empty floor {}, MAD QC {})",
         m.batch,
-        lines.len(),
+        kept.len(),
         names.len(),
         cfg.min_cell_nnz,
         if args.no_cell_qc { "off" } else { "on" }
     );
-    Ok(lines.into_iter().collect())
+    Ok(CellDecision {
+        batch: m.batch.clone(),
+        names,
+        report,
+        kept,
+    })
 }
 
 /// `data-beans squeeze`'s rule for a feature-axis nnz cutoff: an explicit
@@ -184,7 +203,6 @@ pub fn run_qc(args: &QcArgs) -> anyhow::Result<()> {
     if std::path::Path::new(out_dir).exists() && std::fs::read_dir(out_dir)?.next().is_some() {
         anyhow::bail!("output directory {out_dir} already contains files; choose an empty one");
     }
-    std::fs::create_dir_all(out_dir)?;
 
     let layout: InputLayout = scan_input_dir(&args.input_dir)?;
     let batches = layout.batches();
@@ -200,10 +218,13 @@ pub fn run_qc(args: &QcArgs) -> anyhow::Result<()> {
 
     // 1. cells, per batch, on `_count`.
     let mut cells: FxHashMap<Box<str>, FxHashSet<Box<str>>> = FxHashMap::default();
+    let mut decisions: Vec<CellDecision> = Vec::new();
     for b in &batches {
         match layout.matrix(b, "count") {
             Some(m) => {
-                cells.insert(b.clone(), decide_cells(m, args, out_dir)?);
+                let d = decide_cells(m, args)?;
+                cells.insert(b.clone(), d.keep_set());
+                decisions.push(d);
             }
             None => log::warn!(
                 "{b}: no `_count` matrix; keeping every non-empty cell of its other matrices"
@@ -245,13 +266,31 @@ pub fn run_qc(args: &QcArgs) -> anyhow::Result<()> {
             cols,
         });
     }
+    let mut site_args = args.site.clone();
+    if args.interactive {
+        let (tables, cells) = (&tables, &site_cells);
+        match run_site_picker(&args.input_dir, tables, cells, &args.site, Purpose::Apply)? {
+            Picked::Chosen(f) => {
+                info!("site thresholds: {}", qc_flags(&f));
+                site_args = f;
+            }
+            Picked::Cancelled => anyhow::bail!("cancelled at the site thresholds; nothing written"),
+            Picked::Skipped => {}
+        }
+    }
+
+    // Nothing can cancel from here on: write.
+    std::fs::create_dir_all(out_dir)?;
+    for d in &decisions {
+        d.write(out_dir)?;
+    }
     let mut kept_sites: FxHashMap<Box<str>, FxHashSet<Box<str>>> = FxHashMap::default();
     for modality in SITE_MODALITIES {
         let Some(t) = tables.get(*modality) else {
             continue;
         };
         let n_cells = site_cells.get(*modality).map(|acc| t.cells_per_site(acc));
-        let reasons = args.site.reasons(t, n_cells.as_deref());
+        let reasons = site_args.reasons(t, n_cells.as_deref());
         let kept: FxHashSet<Box<str>> = t
             .key
             .iter()

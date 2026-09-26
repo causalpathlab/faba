@@ -644,6 +644,15 @@ bin), then sweep `max_pv`, `min_log_odds`, `min_fold`, `min_coverage`, `min_conv
 unit, and `count` also `min_genes_per_cell`. No error rate is estimated: how a marginal p-value or
 any other column should be calibrated is left to the user, with the table as the evidence.
 
+**`-I/--interactive`.** Both commands can open a full-screen view of the site thresholds
+*combined*, where the sweep moves them one at a time. Each knob is a row with its threshold, the
+sites it drops alone and the sites for which it is the first failing check, beside a histogram of the
+column it cuts; the sites that pass every other knob are drawn in front, and the bars the
+threshold drops are drawn in the accent colour. Every count is decided by the same rule `qc`
+applies, so the view cannot disagree with the written fileset. Under `qc`, Enter applies the
+thresholds on screen; under `qc-report`, Enter prints the matching `faba qc` flags. Without a
+terminal on stdin and stdout the view is skipped and the `--site-*` values are used as given.
+
 ---
 
 ## 9. `all` — the full pipeline
