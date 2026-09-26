@@ -121,7 +121,7 @@ fn counts_agree_with_the_qc_rule() {
                 let dropped = t.len() - kept_linear(&t, Some(&c), &only(k, &p.filter));
                 assert_eq!(p.tally.alone[k as usize], dropped, "alone {k:?}");
             }
-            // `first` refines the written reason: summed per reason it matches.
+            // `reason` refines the written reason: summed per reason it matches.
             let reasons = p.filter.reasons(&t, Some(&c));
             for &k in &p.view().criteria {
                 let r = k.drop_reason();
@@ -129,9 +129,9 @@ fn counts_agree_with_the_qc_rule() {
                 let got: usize = Criterion::ALL
                     .iter()
                     .filter(|x| x.drop_reason() == r)
-                    .map(|x| p.tally.first[*x as usize])
+                    .map(|x| p.tally.reason[*x as usize])
                     .sum();
-                assert_eq!(got, want, "first {r:?}");
+                assert_eq!(got, want, "reason {r:?}");
             }
         }
     }
@@ -391,4 +391,30 @@ fn edit_ratio_rows_are_named_by_bound() {
         .collect();
     assert!(text.contains("min edit ratio") && text.contains("max edit ratio"));
     assert!(text.contains("high is variant-like"));
+}
+
+#[test]
+fn only_is_what_turning_the_threshold_off_keeps() {
+    let t = table(M6A, 1500);
+    let c = cells(t.len());
+    let p = picker(&t, Some(c.clone()), SiteFilterArgs::default_values());
+    let kept = kept_linear(&t, Some(&c), &p.filter);
+    for &k in &p.view().criteria {
+        let mut off = p.filter.clone();
+        k.set(&mut off, k.permissive());
+        let regained = kept_linear(&t, Some(&c), &off) - kept;
+        assert_eq!(p.tally.only[k as usize], regained, "{k:?}");
+    }
+    let mut term = Terminal::new(TestBackend::new(130, 34)).unwrap();
+    let mut p = p;
+    term.draw(|f| p.render(f)).unwrap();
+    let text: String = term
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+    assert!(text.contains("drops only: fail this and pass all others"));
+    assert!(text.contains("reason column"));
 }

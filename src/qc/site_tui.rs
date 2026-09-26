@@ -205,8 +205,12 @@ struct Tally {
     genes: usize,
     /// Sites each criterion drops alone (the others off), by `c as usize`.
     alone: [usize; 8],
-    /// Sites each criterion drops first, by `c as usize`.
-    first: [usize; 8],
+    /// Sites each criterion is the only failed check of: turning it off
+    /// keeps them. By `c as usize`.
+    only: [usize; 8],
+    /// Sites each criterion is the first failed check of, in check order:
+    /// the written `reason`. By `c as usize`.
+    reason: [usize; 8],
     /// Bin counts of the sites that pass every other criterion.
     subset: Vec<usize>,
 }
@@ -226,7 +230,10 @@ impl Tally {
                 t.genes += usize::from(!gene_seen[g]);
                 gene_seen[g] = true;
             } else {
-                t.first[m.trailing_zeros() as usize] += 1;
+                t.reason[m.trailing_zeros() as usize] += 1;
+                if m.count_ones() == 1 {
+                    t.only[m.trailing_zeros() as usize] += 1;
+                }
                 for (b, n) in t.alone.iter_mut().enumerate() {
                     *n += usize::from(m >> b & 1 == 1);
                 }
@@ -350,6 +357,17 @@ enum Mode {
     /// Typing an exact raw threshold for the focused criterion.
     Edit(String),
 }
+
+/// What the table's three counts mean, a line each for the screen and the
+/// figure.
+const LEGEND: [&str; 6] = [
+    "drops alone: dropped if this were the only",
+    "  threshold (the others off)",
+    "drops only: fail this and pass all others;",
+    "  turning this off keeps them",
+    "reason column: its count in the dropped table,",
+    "  which names the first check a site fails",
+];
 
 /// How the user left the picker.
 #[derive(Debug, Clone)]
@@ -518,10 +536,16 @@ impl<'a> SitePicker<'a> {
 
     fn criteria_lines(&self) -> Vec<Line<'static>> {
         let dim = |t: String| Span::styled(t, DIM);
-        let mut lines = vec![Line::from(dim(format!(
-            "  {:<15}{:>11}{:>9}{:>9}",
-            "", "threshold", "alone", "first"
-        )))];
+        let mut lines = vec![
+            Line::from(dim(format!(
+                "  {:<15}{:>11}{:>8}{:>8}{:>8}",
+                "", "", "drops", "drops", "reason"
+            ))),
+            Line::from(dim(format!(
+                "  {:<15}{:>11}{:>8}{:>8}{:>8}",
+                "", "threshold", "alone", "only", "column"
+            ))),
+        ];
         for (j, &c) in self.view().criteria.iter().enumerate() {
             let focused = j == self.focus;
             let (value, value_style) = if c.is_off(&self.filter) {
@@ -538,8 +562,9 @@ impl<'a> SitePicker<'a> {
                     if focused { HIGHLIGHT } else { PLAIN },
                 ),
                 Span::styled(format!("{value:>11}"), value_style),
-                Span::styled(format!("{:>9}", self.tally.alone[c as usize]), ACCENTED),
-                Span::styled(format!("{:>9}", self.tally.first[c as usize]), DIM),
+                Span::styled(format!("{:>8}", self.tally.alone[c as usize]), ACCENTED),
+                Span::styled(format!("{:>8}", self.tally.only[c as usize]), PLAIN),
+                Span::styled(format!("{:>8}", self.tally.reason[c as usize]), DIM),
             ]));
         }
         let n = self.view().table.len();
@@ -554,8 +579,8 @@ impl<'a> SitePicker<'a> {
             Span::raw(format!("{}", self.tally.genes)),
             dim(format!(" / {} genes", self.view().table.n_genes)),
         ]));
-        lines.push(Line::from(dim("  alone: with the others off".into())));
-        lines.push(Line::from(dim("  first: the first check it fails".into())));
+        lines.push(Line::from(""));
+        lines.extend(LEGEND.iter().map(|l| Line::from(dim(format!("  {l}")))));
         lines
     }
 
@@ -584,16 +609,19 @@ impl<'a> SitePicker<'a> {
             MUTED,
         );
 
-        let (x0, mut y) = (16.0, 66.0);
-        let cols = [
-            (x0, Anchor::Start),
-            (x0 + 150.0, Anchor::End),
-            (x0 + 205.0, Anchor::End),
-            (x0 + 255.0, Anchor::End),
+        let (x0, mut y) = (16.0, 60.0);
+        let cols = [x0 + 150.0, x0 + 200.0, x0 + 245.0, x0 + 290.0];
+        let headers = [
+            ("", "threshold"),
+            ("drops", "alone"),
+            ("drops", "only"),
+            ("reason", "column"),
         ];
-        for (text, (x, a)) in ["threshold", "", "alone", "first"].iter().zip(cols) {
-            canvas.text(x, y, text, 8.0, a, MUTED);
+        for (&x, (top, bottom)) in cols.iter().zip(headers) {
+            canvas.text(x, y, top, 8.0, Anchor::End, MUTED);
+            canvas.text(x, y + 10.0, bottom, 8.0, Anchor::End, MUTED);
         }
+        y += 10.0;
         for &k in &view.criteria {
             y += 16.0;
             let value = if k.is_off(&self.filter) {
@@ -603,47 +631,29 @@ impl<'a> SitePicker<'a> {
                 format!("{op} {}", k.fmt_short(k.get(&self.filter)))
             };
             let colour = if k == c { figure::ACCENT } else { INK };
-            canvas.text(cols[0].0, y, k.label(), 9.0, Anchor::Start, colour);
-            canvas.text(cols[1].0, y, &value, 9.0, Anchor::End, colour);
-            canvas.text(
-                cols[2].0,
-                y,
-                &self.tally.alone[k as usize].to_string(),
-                9.0,
-                Anchor::End,
-                INK,
-            );
-            canvas.text(
-                cols[3].0,
-                y,
-                &self.tally.first[k as usize].to_string(),
-                9.0,
-                Anchor::End,
-                MUTED,
-            );
+            canvas.text(x0, y, k.label(), 9.0, Anchor::Start, colour);
+            canvas.text(cols[0], y, &value, 9.0, Anchor::End, colour);
+            let i = k as usize;
+            let counts = [
+                self.tally.alone[i],
+                self.tally.only[i],
+                self.tally.reason[i],
+            ];
+            for (&x, n) in cols[1..].iter().zip(counts) {
+                canvas.text(x, y, &n.to_string(), 9.0, Anchor::End, INK);
+            }
         }
-        canvas.text(
-            x0,
-            y + 22.0,
-            "alone: dropped with the others off",
-            7.5,
-            Anchor::Start,
-            MUTED,
-        );
-        canvas.text(
-            x0,
-            y + 33.0,
-            "first: the first check a site fails",
-            7.5,
-            Anchor::Start,
-            MUTED,
-        );
+        y += 8.0;
+        for line in LEGEND {
+            y += 10.0;
+            canvas.text(x0, y, line, 7.5, Anchor::Start, MUTED);
+        }
 
         let title = format!(
             "{}: sites passing every other threshold in front",
             c.label()
         );
-        self.draw_hist(&mut canvas, (290.0, 50.0, 420.0, 280.0), title);
+        self.draw_hist(&mut canvas, (320.0, 50.0, 390.0, 280.0), title);
         canvas.finish()
     }
 
@@ -852,7 +862,7 @@ impl Screen for SitePicker<'_> {
         frame.render_widget(Line::from(spans), tabs);
 
         let [left, right] =
-            Layout::horizontal([Constraint::Length(48), Constraint::Fill(1)]).areas(body);
+            Layout::horizontal([Constraint::Length(56), Constraint::Fill(1)]).areas(body);
         let block = panel(" site thresholds ".into(), false);
         let inner = block.inner(left);
         frame.render_widget(block, left);
