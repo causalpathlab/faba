@@ -174,3 +174,20 @@ fn exact_selector_matches_only_its_row_key() {
     assert!(!s.matches_gene("ENSG2_GENE2"));
     assert!(!s.matches_gene("ENSG1_GENE10"));
 }
+
+#[test]
+fn queries_parse_as_locus_or_gene() {
+    match parse_query(" chr1:1,000-2,000 ") {
+        Some(Query::Locus(r, false)) => {
+            assert_eq!((r.chr.as_ref(), r.lb, r.ub), ("chr1", 1000, 2000))
+        }
+        _ => panic!("window"),
+    }
+    match parse_query("chr2:1,500") {
+        Some(Query::Locus(r, true)) => assert_eq!((r.lb, r.ub), (1500, 1500)),
+        _ => panic!("position"),
+    }
+    assert!(matches!(parse_query("GENE1"), Some(Query::Gene(g)) if &*g == "GENE1"));
+    assert!(parse_query("chr1:abc").is_none());
+    assert!(parse_query("  ").is_none());
+}

@@ -372,7 +372,7 @@ fn query_symbol(query: &str) -> Box<str> {
 }
 
 /// A `chr:lb-ub` genomic window. Bounds are inclusive.
-struct Region {
+pub(crate) struct Region {
     chr: Box<str>,
     lb: i64,
     ub: i64,
@@ -396,6 +396,42 @@ fn parse_region(spec: &str) -> anyhow::Result<Region> {
         lb,
         ub,
     })
+}
+
+/// Something typed into a `/` search or the gene list.
+pub(crate) enum Query {
+    /// A window, or a single position (`true`).
+    Locus(Region, bool),
+    Gene(Box<str>),
+}
+
+/// Parse `chr:start-end`, `chr:pos` (commas allowed) or a gene name.
+pub(crate) fn parse_query(text: &str) -> Option<Query> {
+    let t: String = text
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != ',')
+        .collect();
+    if t.is_empty() {
+        return None;
+    }
+    match t.split_once(':') {
+        Some((_, range)) if range.contains('-') => {
+            parse_region(&t).ok().map(|r| Query::Locus(r, false))
+        }
+        Some((chr, pos)) => pos
+            .parse::<i64>()
+            .ok()
+            .filter(|_| !chr.is_empty())
+            .map(|p| {
+                let r = Region {
+                    chr: chr.into(),
+                    lb: p,
+                    ub: p,
+                };
+                Query::Locus(r, true)
+            }),
+        None => Some(Query::Gene(t.into())),
+    }
 }
 
 /// Combined gene + region row selector. A row is selected when it
@@ -1179,8 +1215,8 @@ fn load(args: &PileupArgs, groups: &[TrackFiles], selector: &Selector) -> anyhow
     })
 }
 
-/// Browse `loaded` full screen; `back` offers a return to the gene list.
-fn browse(args: &PileupArgs, loaded: &Loaded, back: bool) -> anyhow::Result<tui::Exit> {
+/// Browse `loaded` full screen, with `status` on the footer first.
+fn browse(args: &PileupArgs, loaded: &Loaded, status: Option<String>) -> anyhow::Result<tui::Exit> {
     let is_log = matches!(args.signal, PileupSignal::Log10Sum);
     let mut tracks: Vec<tui::Track> = loaded
         .tracks
@@ -1200,27 +1236,132 @@ fn browse(args: &PileupArgs, loaded: &Loaded, back: bool) -> anyhow::Result<tui:
             log: false,
         });
     }
-    tui::show_pileup(&loaded.gene, &loaded.chr, tracks, loaded.extent, back)
+    tui::show_pileup(
+        &loaded.gene,
+        &loaded.chr,
+        tracks,
+        loaded.extent,
+        true,
+        status,
+    )
 }
 
-/// `-I` with no selection: list every gene in the inputs, browse the one
-/// picked, and come back to the list on `g`.
-fn browse_genes(args: &PileupArgs, groups: &[TrackFiles]) -> anyhow::Result<()> {
-    anyhow::ensure!(
-        data_beans::interactive::tui_available(),
-        "--interactive without --genes/--regions needs stdin and stdout on a terminal"
-    );
-    let catalog = picker::gene_catalog(&args.data_files)?;
-    anyhow::ensure!(!catalog.is_empty(), "no site rows in the input files");
-    info!("{} genes with site rows", catalog.len());
-    let mut list = picker::GenePicker::new(&catalog);
-    while let Some(i) = list.pick()? {
-        let loaded = load(args, groups, &Selector::exact(&catalog[i].gene))?;
-        if browse(args, &loaded, true)? == tui::Exit::Quit {
-            break;
+/// Bases shown around a single searched position.
+const POSITION_FLANK: i64 = 5_000;
+
+/// Where a search led.
+enum Found {
+    View(Loaded),
+    /// Several genes match: show the list filtered by the query.
+    List,
+}
+
+/// Open what `query` names: a locus anywhere, or a gene of `catalog`.
+/// `Err` carries a message for the footer.
+fn search(
+    args: &PileupArgs,
+    groups: &[TrackFiles],
+    catalog: &[picker::GeneEntry],
+    query: &str,
+) -> Result<Found, String> {
+    match parse_query(query) {
+        Some(Query::Locus(r, single)) => {
+            let (lo, hi) = if single {
+                ((r.lb - POSITION_FLANK).max(0), r.ub + POSITION_FLANK)
+            } else {
+                (r.lb, r.ub)
+            };
+            let spec: Box<str> = format!("{}:{lo}-{hi}", r.chr).into();
+            let selector = Selector::build(&[], &[spec]).map_err(|e| e.to_string())?;
+            let mut loaded =
+                load(args, groups, &selector).map_err(|_| format!("no sites in {query}"))?;
+            loaded.extent = (lo, hi);
+            Ok(Found::View(loaded))
+        }
+        Some(Query::Gene(g)) => {
+            let sym = query_symbol(&g);
+            let hits: Vec<&picker::GeneEntry> = catalog
+                .iter()
+                .filter(|e| gene_matches(&g, &sym, &e.gene))
+                .collect();
+            match hits.as_slice() {
+                [] => Err(format!("no gene matches {g}")),
+                [one] => load(args, groups, &Selector::exact(&one.gene))
+                    .map(Found::View)
+                    .map_err(|e| e.to_string()),
+                _ => Ok(Found::List),
+            }
+        }
+        None => Err("nothing to search for".into()),
+    }
+}
+
+/// Browse interactively, starting from `first` (a selection given on the
+/// command line) or from the gene list. The list is read from the inputs'
+/// row names the first time it is needed.
+fn interactive(
+    args: &PileupArgs,
+    groups: &[TrackFiles],
+    first: Option<Loaded>,
+) -> anyhow::Result<()> {
+    let catalog: std::cell::OnceCell<Vec<picker::GeneEntry>> = std::cell::OnceCell::new();
+    let catalog = || -> anyhow::Result<&[picker::GeneEntry]> {
+        if catalog.get().is_none() {
+            eprintln!("reading genes from {} file(s) ...", args.data_files.len());
+            let list = picker::gene_catalog(&args.data_files)?;
+            anyhow::ensure!(!list.is_empty(), "no site rows in the input files");
+            let _ = catalog.set(list);
+        }
+        Ok(catalog.get().map(Vec::as_slice).unwrap_or_default())
+    };
+    let mut filter = String::new();
+    let mut current = first;
+    let mut status: Option<String> = None;
+    loop {
+        let loaded = match current.take() {
+            Some(l) => l,
+            None => {
+                let genes = catalog()?;
+                let mut list = picker::GenePicker::new(genes);
+                list.set_filter(&filter);
+                list.set_status(status.take());
+                let choice = list.pick()?;
+                filter = list.filter().to_string();
+                match choice {
+                    picker::Choice::Quit => return Ok(()),
+                    picker::Choice::Gene(i) => {
+                        load(args, groups, &Selector::exact(&genes[i].gene))?
+                    }
+                    picker::Choice::Locus(q) => match search(args, groups, genes, &q) {
+                        Ok(Found::View(l)) => l,
+                        Ok(Found::List) => continue,
+                        Err(msg) => {
+                            status = Some(msg);
+                            continue;
+                        }
+                    },
+                }
+            }
+        };
+        match browse(args, &loaded, status.take())? {
+            tui::Exit::Quit => return Ok(()),
+            tui::Exit::Genes => {}
+            tui::Exit::Search(q) => {
+                let genes = match parse_query(&q) {
+                    Some(Query::Gene(_)) => catalog()?,
+                    _ => &[],
+                };
+                match search(args, groups, genes, &q) {
+                    Ok(Found::View(l)) => current = Some(l),
+                    Ok(Found::List) => filter = q,
+                    Err(msg) => {
+                        status = Some(msg);
+                        current = Some(loaded);
+                    }
+                }
+            }
         }
     }
-    Ok(())
 }
 
 pub fn run_pileup(args: &PileupArgs) -> anyhow::Result<()> {
@@ -1233,7 +1374,11 @@ pub fn run_pileup(args: &PileupArgs) -> anyhow::Result<()> {
         || args.png;
     let groups = track_files(&args.data_files, &args.tracks)?;
     if args.interactive && !figure_mode && args.genes.is_empty() && args.regions.is_empty() {
-        return browse_genes(args, &groups);
+        anyhow::ensure!(
+            data_beans::interactive::tui_available(),
+            "--interactive without --genes/--regions needs stdin and stdout on a terminal"
+        );
+        return interactive(args, &groups, None);
     }
     let selector = Selector::build(&args.genes, &args.regions)?;
     if figure_mode {
@@ -1293,18 +1438,18 @@ pub fn run_pileup(args: &PileupArgs) -> anyhow::Result<()> {
         }
     }
 
-    if args.interactive {
-        if data_beans::interactive::tui_available() {
-            browse(args, &loaded, false)?;
-        } else {
-            log::warn!("--interactive needs stdin and stdout on a terminal; skipping the view");
-        }
-    }
-
     if let Some(ref output) = args.output {
         let tracks: Vec<&BinnedPileup> = pileups.iter().collect();
         write_pileup_tsv(&tracks, output)?;
         info!("wrote pileup TSV to {}", output);
+    }
+
+    if args.interactive {
+        if data_beans::interactive::tui_available() {
+            interactive(args, &groups, Some(loaded))?;
+        } else {
+            log::warn!("--interactive needs stdin and stdout on a terminal; skipping the view");
+        }
     }
 
     Ok(())

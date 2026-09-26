@@ -195,3 +195,45 @@ fn draws_through_the_image_path() {
     let text = screen(&mut v, 100, 24);
     assert!(text.contains("image/text"));
 }
+
+fn type_search(v: &mut PileupView, q: &str) {
+    press(v, KeyCode::Char('/'));
+    for ch in q.chars() {
+        press(v, KeyCode::Char(ch));
+    }
+    press(v, KeyCode::Enter);
+}
+
+#[test]
+fn search_moves_within_the_view_or_leaves_it() {
+    let (m, s) = (positions(), sites());
+    let mut v = view(&m, &s);
+    screen(&mut v, 100, 24);
+    type_search(&mut v, "chr1:1,050,000-1,050,040");
+    assert!(v.exit.is_none());
+    assert!(v.window.0 <= 1_050_000 && v.window.1 >= 1_050_040);
+    assert!(v.window.1 - v.window.0 < 1_000, "zoomed to the window");
+    type_search(&mut v, "chr1:1090000");
+    assert_eq!(v.cursor, 1_090_000);
+    assert!(v.exit.is_none());
+
+    type_search(&mut v, "chr2:5-10");
+    assert_eq!(
+        v.exit,
+        Some(Exit::Search("chr2:5-10".into())),
+        "another chromosome"
+    );
+    let mut v = view(&m, &s);
+    type_search(&mut v, "GENE2");
+    assert_eq!(v.exit, Some(Exit::Search("GENE2".into())));
+    let mut v = view(&m, &s);
+    press(&mut v, KeyCode::Char('/'));
+    press(&mut v, KeyCode::Char('x'));
+    press(&mut v, KeyCode::Esc);
+    assert!(
+        v.exit.is_none() && v.search.is_none(),
+        "Esc drops the search"
+    );
+    v.set_status(Some("no gene matches X".into()));
+    assert!(screen(&mut v, 100, 24).contains("no gene matches X"));
+}

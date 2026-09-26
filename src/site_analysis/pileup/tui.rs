@@ -7,7 +7,8 @@
 //! genomic coordinate, so it stays put through zooms and resizes.
 
 use data_beans::interactive::ui::{
-    header, help_line, panel, run_screen, Binning, HistPlot, Scale, Screen, DIM, HIGHLIGHT, PLAIN,
+    header, help_line, input_line, panel, run_screen, Binning, HistPlot, Scale, Screen, DIM,
+    HIGHLIGHT, PLAIN,
 };
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout};
@@ -18,6 +19,8 @@ use ratatui::Frame;
 use crate::figure::term::{self, PlotImage};
 use crate::figure::{self, Anchor, Bars, Canvas, SavePrompt, INK, MUTED};
 use ratatui_image::picker::Picker;
+
+use genomic_data::coordinates::chr_eq;
 
 use super::{fmt_thousands, BinEdges};
 
@@ -52,11 +55,13 @@ impl Track<'_> {
 }
 
 /// How the user left the browser.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Exit {
     Quit,
     /// `g`: back to the gene list.
     Genes,
+    /// `/`: a gene or locus the view cannot show itself.
+    Search(String),
 }
 
 /// State of the browser, independent of the terminal so it can be tested.
@@ -76,6 +81,10 @@ pub struct PileupView<'a> {
     save: SavePrompt,
     /// Whether `g` goes back to a gene list.
     back: bool,
+    /// The `/` search being typed.
+    search: Option<String>,
+    /// A message for the footer, until the next key.
+    status: Option<String>,
     /// The terminal's image support; `use_images` draws the tracks with it.
     images: Option<Picker>,
     use_images: bool,
@@ -110,6 +119,8 @@ impl<'a> PileupView<'a> {
             y_scale: Scale::Linear,
             save: SavePrompt::new(&format!("pileup_{title}")),
             back,
+            search: None,
+            status: None,
             images: None,
             use_images: false,
             plots: Vec::new(),
@@ -183,6 +194,38 @@ impl<'a> PileupView<'a> {
         let left = ((self.cursor - lo) as f64 / (hi - lo).max(1) as f64 * w as f64) as i64;
         self.window = (self.cursor - left, self.cursor - left + w);
         self.clamp_window();
+    }
+
+    /// Act on a `/` search: a locus inside this view moves the window
+    /// there; anything else leaves the view for the caller to open.
+    fn submit(&mut self, query: &str) {
+        match super::parse_query(query) {
+            Some(super::Query::Locus(r, single)) if chr_eq(&r.chr, &self.chr) => {
+                let (flo, fhi) = self.extent;
+                if r.ub < flo || r.lb > fhi {
+                    self.exit = Some(Exit::Search(query.to_string()));
+                } else if single {
+                    let w = self.window.1 - self.window.0;
+                    self.cursor = r.lb.clamp(flo, fhi);
+                    self.window = (self.cursor - w / 2, self.cursor - w / 2 + w);
+                    self.clamp_window();
+                } else {
+                    let (lo, hi) = (r.lb.max(flo), r.ub.min(fhi));
+                    let min_w = self.columns.max(1) as i64;
+                    let pad = (min_w - (hi - lo)).max(0) / 2;
+                    self.window = (lo - pad, hi + pad);
+                    self.cursor = (lo + hi) / 2;
+                    self.clamp_window();
+                }
+            }
+            Some(_) => self.exit = Some(Exit::Search(query.to_string())),
+            None => {}
+        }
+    }
+
+    /// Show `msg` on the footer until the next key.
+    pub fn set_status(&mut self, msg: Option<String>) {
+        self.status = msg;
     }
 
     fn cursor_col(&self) -> usize {
@@ -313,7 +356,24 @@ impl Screen for PileupView<'_> {
             return;
         }
         self.save.dismiss();
+        self.status = None;
+        if let Some(buf) = &mut self.search {
+            match key.code {
+                KeyCode::Char(ch) if buf.len() < 128 => buf.push(ch),
+                KeyCode::Backspace => {
+                    buf.pop();
+                }
+                KeyCode::Esc => self.search = None,
+                KeyCode::Enter => {
+                    let query = self.search.take().unwrap_or_default();
+                    self.submit(query.trim());
+                }
+                _ => {}
+            }
+            return;
+        }
         match key.code {
+            KeyCode::Char('/') => self.search = Some(String::new()),
             KeyCode::Char('s') => self.save.open(),
             KeyCode::Char('i') if self.images.is_some() => self.use_images ^= true,
             KeyCode::Left | KeyCode::Char('h') => self.move_cursor(-1),
@@ -410,38 +470,56 @@ impl Screen for PileupView<'_> {
         self.plots = plots;
 
         frame.render_widget(Paragraph::new(self.readout()), readout);
-        let help = self.save.footer().unwrap_or_else(|| {
-            let mut keys = vec![
-                ("←/→", "bar"),
-                ("n/p", "next/prev site"),
-                ("+/-", "zoom"),
-                ("0", "whole"),
-                ("y", "scale"),
-                ("s", "save"),
-            ];
-            if self.images.is_some() {
-                keys.push(("i", "image/text"));
-            }
-            if self.back {
-                keys.push(("g", "genes"));
-            }
-            keys.push(("q", "quit"));
-            help_line(&keys)
-        });
+        let help = if let Some(buf) = &self.search {
+            input_line(
+                "search gene or chr:start-end: ",
+                buf,
+                &[("Enter", "go"), ("Esc", "back")],
+            )
+        } else if let Some(msg) = &self.status {
+            Line::from(Span::styled(format!(" {msg}"), HIGHLIGHT))
+        } else {
+            self.save.footer().unwrap_or_else(|| self.help())
+        };
         frame.render_widget(help, footer);
     }
 }
 
-/// Browse full screen until the user quits or, with `back`, asks for the
-/// gene list.
+impl PileupView<'_> {
+    fn help(&self) -> Line<'static> {
+        let mut keys = vec![
+            ("←/→", "bar"),
+            ("n/p", "next/prev site"),
+            ("+/-", "zoom"),
+            ("0", "whole"),
+            ("/", "search"),
+            ("y", "scale"),
+            ("s", "save"),
+        ];
+        if self.images.is_some() {
+            keys.push(("i", "image/text"));
+        }
+        if self.back {
+            keys.push(("g", "genes"));
+        }
+        keys.push(("q", "quit"));
+        help_line(&keys)
+    }
+}
+
+/// Browse full screen until the user quits, asks for the gene list (with
+/// `back`), or searches for something outside the view. `status` shows on
+/// the footer first.
 pub fn show_pileup(
     title: &str,
     chr: &str,
     tracks: Vec<Track>,
     extent: (i64, i64),
     back: bool,
+    status: Option<String>,
 ) -> anyhow::Result<Exit> {
     let mut view = PileupView::new(title, chr, tracks, extent, back);
+    view.set_status(status);
     view.images = term::picker();
     view.use_images = view.images.is_some();
     run_screen(&mut view)?;

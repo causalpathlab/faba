@@ -14,7 +14,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use super::{fmt_thousands, parse_row_name_full};
+use super::{fmt_thousands, parse_query, parse_row_name_full, Query};
 
 /// One gene of the inputs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,8 +66,17 @@ pub fn gene_catalog(files: &[Box<str>]) -> anyhow::Result<Vec<GeneEntry>> {
     Ok(catalog_from_rows(names.iter().map(|n| n.as_ref())))
 }
 
-/// State of the list, independent of the terminal so it can be tested. It
-/// keeps the filter and selection between visits.
+/// What the user chose in the list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Choice {
+    /// An entry, by index.
+    Gene(usize),
+    /// A typed `chr:start-end` or `chr:pos`.
+    Locus(String),
+    Quit,
+}
+
+/// State of the list, independent of the terminal so it can be tested.
 pub struct GenePicker<'a> {
     entries: &'a [GeneEntry],
     filter: String,
@@ -76,7 +85,9 @@ pub struct GenePicker<'a> {
     /// Position in `shown`.
     selected: usize,
     offset: usize,
-    decision: Option<Option<usize>>,
+    /// A message for the footer, until the next key.
+    status: Option<String>,
+    decision: Option<Choice>,
 }
 
 impl<'a> GenePicker<'a> {
@@ -87,6 +98,7 @@ impl<'a> GenePicker<'a> {
             shown: (0..entries.len()).collect(),
             selected: 0,
             offset: 0,
+            status: None,
             decision: None,
         }
     }
@@ -109,11 +121,24 @@ impl<'a> GenePicker<'a> {
         self.selected = (self.selected as isize + delta).clamp(0, last) as usize;
     }
 
-    /// Show the list until a gene is picked (its index) or the user quits.
-    pub fn pick(&mut self) -> anyhow::Result<Option<usize>> {
+    pub fn filter(&self) -> &str {
+        &self.filter
+    }
+
+    pub fn set_filter(&mut self, filter: &str) {
+        self.filter = filter.to_string();
+        self.refilter();
+    }
+
+    pub fn set_status(&mut self, msg: Option<String>) {
+        self.status = msg;
+    }
+
+    /// Show the list until the user picks a gene, types a locus, or quits.
+    pub fn pick(&mut self) -> anyhow::Result<Choice> {
         self.decision = None;
         run_screen(self)?;
-        Ok(self.decision.flatten())
+        Ok(self.decision.take().unwrap_or(Choice::Quit))
     }
 }
 
@@ -123,10 +148,11 @@ impl Screen for GenePicker<'_> {
     }
 
     fn interrupt(&mut self) {
-        self.decision = Some(None);
+        self.decision = Some(Choice::Quit);
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
+        self.status = None;
         match key.code {
             KeyCode::Up => self.move_by(-1),
             KeyCode::Down => self.move_by(1),
@@ -135,15 +161,17 @@ impl Screen for GenePicker<'_> {
             KeyCode::Home => self.selected = 0,
             KeyCode::End => self.move_by(isize::MAX / 2),
             KeyCode::Enter => {
-                if let Some(&i) = self.shown.get(self.selected) {
-                    self.decision = Some(Some(i));
+                if let Some(Query::Locus(..)) = parse_query(&self.filter) {
+                    self.decision = Some(Choice::Locus(self.filter.clone()));
+                } else if let Some(&i) = self.shown.get(self.selected) {
+                    self.decision = Some(Choice::Gene(i));
                 }
             }
             KeyCode::Esc if !self.filter.is_empty() => {
                 self.filter.clear();
                 self.refilter();
             }
-            KeyCode::Esc => self.decision = Some(None),
+            KeyCode::Esc => self.decision = Some(Choice::Quit),
             KeyCode::Backspace => {
                 self.filter.pop();
                 self.refilter();
@@ -203,14 +231,15 @@ impl Screen for GenePicker<'_> {
             ]));
         }
         frame.render_widget(Paragraph::new(lines), inner);
-        frame.render_widget(
-            input_line(
-                "filter: ",
+        let line = match &self.status {
+            Some(msg) => Line::from(Span::styled(format!(" {msg}"), HIGHLIGHT)),
+            None => input_line(
+                "gene or chr:start-end: ",
                 &self.filter,
                 &[("↑/↓", "move"), ("Enter", "open"), ("Esc", "clear/quit")],
             ),
-            footer,
-        );
+        };
+        frame.render_widget(line, footer);
     }
 }
 

@@ -38,7 +38,7 @@ fn typing_filters_and_enter_picks() {
     }
     assert_eq!(p.shown.len(), 1);
     press(&mut p, KeyCode::Enter);
-    assert_eq!(p.decision, Some(Some(1)));
+    assert_eq!(p.decision, Some(Choice::Gene(1)));
 
     let mut p = GenePicker::new(&c);
     press(&mut p, KeyCode::Char('x'));
@@ -52,7 +52,7 @@ fn typing_filters_and_enter_picks() {
     press(&mut p, KeyCode::Down);
     assert_eq!(p.selected, 2);
     press(&mut p, KeyCode::Esc);
-    assert_eq!(p.decision, Some(None), "then quits");
+    assert_eq!(p.decision, Some(Choice::Quit), "then quits");
 }
 
 #[test]
@@ -72,4 +72,18 @@ fn renders_the_list() {
     assert!(text.contains("3 of 3 genes"));
     let mut tiny = Terminal::new(TestBackend::new(10, 3)).unwrap();
     tiny.draw(|f| p.render(f)).unwrap();
+}
+
+#[test]
+fn a_typed_locus_opens_as_a_locus() {
+    let c = catalog_from_rows(rows());
+    let mut p = GenePicker::new(&c);
+    for ch in "chr1:100-200".chars() {
+        press(&mut p, KeyCode::Char(ch));
+    }
+    press(&mut p, KeyCode::Enter);
+    assert_eq!(p.decision, Some(Choice::Locus("chr1:100-200".into())));
+    p.set_filter("gene3");
+    assert_eq!(p.filter(), "gene3");
+    assert_eq!(p.shown.len(), 1);
 }
