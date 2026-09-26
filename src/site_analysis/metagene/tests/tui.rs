@@ -133,7 +133,7 @@ fn saves_the_profile() {
     let mut v = MetageneView::new("sites", &h);
     screen(&mut v, 60, 16);
     let svg = v.figure();
-    for name in ["5'UTR", "CDS", "3'UTR"] {
+    for name in ["5&apos;UTR", "CDS", "3&apos;UTR"] {
         assert!(svg.contains(name), "{name}");
     }
     let dir = tempfile::tempdir().unwrap();
@@ -153,8 +153,7 @@ fn saves_the_profile() {
 fn draws_through_the_image_path() {
     let h = hist(true);
     let mut v = MetageneView::new("x", &h);
-    v.images = Some(ratatui_image::picker::Picker::halfblocks());
-    v.use_images = true;
+    v.controls = Controls::new("x").with_picker(ratatui_image::picker::Picker::halfblocks());
     let s = screen(&mut v, 80, 16);
     assert!(s.contains("image"));
     press(&mut v, KeyCode::Right);

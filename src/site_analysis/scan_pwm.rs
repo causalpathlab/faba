@@ -279,15 +279,8 @@ pub fn run_scan_pwm(args: &ScanPwmArgs) -> anyhow::Result<()> {
     info!("wrote PWM to {}", args.output);
 
     if args.interactive {
-        if data_beans::interactive::tui_available() {
-            tui::show_pwm(
-                &crate::qc::layout::file_name(&args.site_file),
-                &pwm,
-                args.window,
-            )?;
-        } else {
-            log::warn!("--interactive needs stdin and stdout on a terminal; skipping the view");
-        }
+        let title = crate::qc::layout::file_name(&args.site_file);
+        crate::figure::term::when_terminal(|| tui::show_pwm(&title, &pwm, args.window))?;
     }
 
     Ok(())

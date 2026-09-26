@@ -8,6 +8,7 @@
 use super::bin::{robust_max, BinEdges};
 use super::genemodel::{gene_model_svg, GeneModel};
 use super::palette::{self, Palette, Rgb};
+use crate::figure::esc;
 use crate::site_analysis::pileup::fmt_thousands;
 use std::fmt::Write as _;
 
@@ -94,8 +95,8 @@ pub fn render_miami(
         left,
         top * 0.55,
         title_fs,
-        escape(&opts.title),
-        escape(&opts.top_label)
+        esc(&opts.title),
+        esc(&opts.top_label)
     );
 
     for (pi, panel) in panels.iter().enumerate() {
@@ -127,7 +128,7 @@ pub fn render_miami(
             left - 0.82 * dpi,
             model_mid + label_fs * 0.35,
             label_fs,
-            escape(&label)
+            esc(&label)
         );
 
         // Baselines.
@@ -280,7 +281,7 @@ fn x_axis(edges: &BinEdges, x_left: f32, plot_w: f32, y: f32, fs: f32, dpi: f32)
             "<text x=\"{x:.1}\" y=\"{:.1}\" text-anchor=\"middle\" font-family=\"sans-serif\" \
              font-size=\"{fs:.1}\" fill=\"#444\">{}</text>",
             y + 0.05 * dpi + fs,
-            escape(&fmt_thousands(pos))
+            esc(&fmt_thousands(pos))
         );
     }
     s
@@ -288,21 +289,6 @@ fn x_axis(edges: &BinEdges, x_left: f32, plot_w: f32, y: f32, fs: f32, dpi: f32)
 
 fn rgb_hex(c: Rgb) -> String {
     format!("#{:02x}{:02x}{:02x}", c.0, c.1, c.2)
-}
-
-fn escape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&apos;"),
-            _ => out.push(c),
-        }
-    }
-    out
 }
 
 #[cfg(test)]

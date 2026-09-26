@@ -149,11 +149,10 @@ fn big_letters_are_drawn_from_bitmaps() {
 #[test]
 fn draws_through_the_image_path() {
     let mut v = PwmView::new("x", &pwm(), 2);
-    v.images = Some(ratatui_image::picker::Picker::halfblocks());
-    v.use_images = true;
+    v.controls = Controls::new("x").with_picker(ratatui_image::picker::Picker::halfblocks());
     screen(&mut v, 60, 20);
     press(&mut v, KeyCode::Char('i'));
-    assert!(!v.use_images);
+    assert!(v.controls.images().is_none());
     let text = screen(&mut v, 60, 20);
     assert!(text.contains("image/text"));
 }

@@ -441,6 +441,8 @@ pub(crate) struct Selector {
     genes: Vec<Box<str>>,
     gene_syms: Vec<Box<str>>,
     regions: Vec<Region>,
+    /// Match `genes` as whole row keys rather than by the relaxed rules.
+    exact: bool,
 }
 
 impl Selector {
@@ -465,6 +467,7 @@ impl Selector {
             genes,
             gene_syms,
             regions,
+            exact: false,
         })
     }
 
@@ -473,16 +476,20 @@ impl Selector {
     pub(crate) fn exact(gene_part: &str) -> Self {
         Self {
             genes: vec![gene_part.into()],
-            gene_syms: vec![gene_part.into()],
+            gene_syms: Vec::new(),
             regions: Vec::new(),
+            exact: true,
         }
     }
 
     pub(crate) fn matches_gene(&self, gene_part: &str) -> bool {
+        if self.exact {
+            return self.genes.iter().any(|g| g.as_ref() == gene_part);
+        }
         self.genes
             .iter()
             .zip(&self.gene_syms)
-            .any(|(g, sym)| g.as_ref() == gene_part || gene_matches(g, sym, gene_part))
+            .any(|(g, sym)| gene_matches(g, sym, gene_part))
     }
 
     fn matches_region(&self, chr: &str, pos: i64) -> bool {
@@ -1236,14 +1243,7 @@ fn browse(args: &PileupArgs, loaded: &Loaded, status: Option<String>) -> anyhow:
             log: false,
         });
     }
-    tui::show_pileup(
-        &loaded.gene,
-        &loaded.chr,
-        tracks,
-        loaded.extent,
-        true,
-        status,
-    )
+    tui::show_pileup(&loaded.gene, &loaded.chr, tracks, loaded.extent, status)
 }
 
 /// Bases shown around a single searched position.
@@ -1256,12 +1256,37 @@ enum Found {
     List,
 }
 
-/// Open what `query` names: a locus anywhere, or a gene of `catalog`.
+/// The inputs' genes, read from their row names the first time asked.
+struct Catalog<'a> {
+    files: &'a [Box<str>],
+    genes: std::cell::OnceCell<Vec<picker::GeneEntry>>,
+}
+
+impl<'a> Catalog<'a> {
+    fn new(files: &'a [Box<str>]) -> Self {
+        Self {
+            files,
+            genes: std::cell::OnceCell::new(),
+        }
+    }
+
+    fn get(&self) -> anyhow::Result<&[picker::GeneEntry]> {
+        if let Some(genes) = self.genes.get() {
+            return Ok(genes);
+        }
+        eprintln!("reading genes from {} file(s) ...", self.files.len());
+        let list = picker::gene_catalog(self.files)?;
+        anyhow::ensure!(!list.is_empty(), "no site rows in the input files");
+        Ok(self.genes.get_or_init(|| list))
+    }
+}
+
+/// Open what `query` names: a locus anywhere, or a gene of the catalog.
 /// `Err` carries a message for the footer.
 fn search(
     args: &PileupArgs,
     groups: &[TrackFiles],
-    catalog: &[picker::GeneEntry],
+    catalog: &Catalog,
     query: &str,
 ) -> Result<Found, String> {
     match parse_query(query) {
@@ -1279,8 +1304,9 @@ fn search(
             Ok(Found::View(loaded))
         }
         Some(Query::Gene(g)) => {
+            let genes = catalog.get().map_err(|e| e.to_string())?;
             let sym = query_symbol(&g);
-            let hits: Vec<&picker::GeneEntry> = catalog
+            let hits: Vec<&picker::GeneEntry> = genes
                 .iter()
                 .filter(|e| gene_matches(&g, &sym, &e.gene))
                 .collect();
@@ -1297,23 +1323,13 @@ fn search(
 }
 
 /// Browse interactively, starting from `first` (a selection given on the
-/// command line) or from the gene list. The list is read from the inputs'
-/// row names the first time it is needed.
+/// command line) or from the gene list.
 fn interactive(
     args: &PileupArgs,
     groups: &[TrackFiles],
     first: Option<Loaded>,
 ) -> anyhow::Result<()> {
-    let catalog: std::cell::OnceCell<Vec<picker::GeneEntry>> = std::cell::OnceCell::new();
-    let catalog = || -> anyhow::Result<&[picker::GeneEntry]> {
-        if catalog.get().is_none() {
-            eprintln!("reading genes from {} file(s) ...", args.data_files.len());
-            let list = picker::gene_catalog(&args.data_files)?;
-            anyhow::ensure!(!list.is_empty(), "no site rows in the input files");
-            let _ = catalog.set(list);
-        }
-        Ok(catalog.get().map(Vec::as_slice).unwrap_or_default())
-    };
+    let catalog = Catalog::new(&args.data_files);
     let mut filter = String::new();
     let mut current = first;
     let mut status: Option<String> = None;
@@ -1321,45 +1337,41 @@ fn interactive(
         let loaded = match current.take() {
             Some(l) => l,
             None => {
-                let genes = catalog()?;
+                let genes = catalog.get()?;
                 let mut list = picker::GenePicker::new(genes);
                 list.set_filter(&filter);
                 list.set_status(status.take());
                 let choice = list.pick()?;
                 filter = list.filter().to_string();
-                match choice {
+                let query = match choice {
                     picker::Choice::Quit => return Ok(()),
                     picker::Choice::Gene(i) => {
-                        load(args, groups, &Selector::exact(&genes[i].gene))?
+                        current = Some(load(args, groups, &Selector::exact(&genes[i].gene))?);
+                        continue;
                     }
-                    picker::Choice::Locus(q) => match search(args, groups, genes, &q) {
-                        Ok(Found::View(l)) => l,
-                        Ok(Found::List) => continue,
-                        Err(msg) => {
-                            status = Some(msg);
-                            continue;
-                        }
-                    },
+                    picker::Choice::Locus(q) => q,
+                };
+                match search(args, groups, &catalog, &query) {
+                    Ok(Found::View(l)) => l,
+                    Ok(Found::List) => continue,
+                    Err(msg) => {
+                        status = Some(msg);
+                        continue;
+                    }
                 }
             }
         };
         match browse(args, &loaded, status.take())? {
             tui::Exit::Quit => return Ok(()),
             tui::Exit::Genes => {}
-            tui::Exit::Search(q) => {
-                let genes = match parse_query(&q) {
-                    Some(Query::Gene(_)) => catalog()?,
-                    _ => &[],
-                };
-                match search(args, groups, genes, &q) {
-                    Ok(Found::View(l)) => current = Some(l),
-                    Ok(Found::List) => filter = q,
-                    Err(msg) => {
-                        status = Some(msg);
-                        current = Some(loaded);
-                    }
+            tui::Exit::Search(q) => match search(args, groups, &catalog, &q) {
+                Ok(Found::View(l)) => current = Some(l),
+                Ok(Found::List) => filter = q,
+                Err(msg) => {
+                    status = Some(msg);
+                    current = Some(loaded);
                 }
-            }
+            },
         }
     }
 }
@@ -1445,11 +1457,7 @@ pub fn run_pileup(args: &PileupArgs) -> anyhow::Result<()> {
     }
 
     if args.interactive {
-        if data_beans::interactive::tui_available() {
-            interactive(args, &groups, Some(loaded))?;
-        } else {
-            log::warn!("--interactive needs stdin and stdout on a terminal; skipping the view");
-        }
+        crate::figure::term::when_terminal(|| interactive(args, &groups, Some(loaded)))?;
     }
 
     Ok(())

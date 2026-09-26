@@ -15,6 +15,8 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use rustc_hash::{FxHashMap, FxHashSet};
 
+use crate::figure::status_line;
+
 use super::{fmt_thousands, parse_query, parse_row_name_full, Query};
 
 /// One gene of the inputs.
@@ -29,25 +31,36 @@ pub struct GeneEntry {
     pub sites: usize,
 }
 
-/// Fold row names into per-gene entries, most sites first.
-pub fn catalog_from_rows<'a>(rows: impl IntoIterator<Item = &'a str>) -> Vec<GeneEntry> {
-    let mut genes: FxHashMap<&str, (&str, FxHashSet<i64>)> = FxHashMap::default();
+/// Per gene key: its chromosome and distinct site positions.
+type GeneSites = FxHashMap<Box<str>, (Box<str>, FxHashSet<i64>)>;
+
+/// Add the site rows among `rows` to `genes`.
+fn fold_rows<'a>(genes: &mut GeneSites, rows: impl IntoIterator<Item = &'a str>) {
     for name in rows {
-        if let Some((gene, _, chr, pos)) = parse_row_name_full(name) {
-            if !chr.is_empty() {
-                genes
-                    .entry(gene)
-                    .or_insert((chr, FxHashSet::default()))
-                    .1
-                    .insert(pos);
+        let Some((gene, _, chr, pos)) = parse_row_name_full(name) else {
+            continue;
+        };
+        if chr.is_empty() {
+            continue;
+        }
+        match genes.get_mut(gene) {
+            Some((_, sites)) => {
+                sites.insert(pos);
+            }
+            None => {
+                genes.insert(gene.into(), (chr.into(), FxHashSet::from_iter([pos])));
             }
         }
     }
+}
+
+/// The folded genes as entries, most sites first.
+fn entries(genes: GeneSites) -> Vec<GeneEntry> {
     let mut out: Vec<GeneEntry> = genes
         .into_iter()
         .map(|(gene, (chr, pos))| GeneEntry {
-            gene: gene.into(),
-            chr: chr.into(),
+            gene,
+            chr,
             lo: pos.iter().copied().min().unwrap_or(0),
             hi: pos.iter().copied().max().unwrap_or(0),
             sites: pos.len(),
@@ -57,14 +70,24 @@ pub fn catalog_from_rows<'a>(rows: impl IntoIterator<Item = &'a str>) -> Vec<Gen
     out
 }
 
-/// Every gene with site rows in `files`, from their row names.
+/// Fold row names into per-gene entries, most sites first.
+#[cfg(test)]
+pub fn catalog_from_rows<'a>(rows: impl IntoIterator<Item = &'a str>) -> Vec<GeneEntry> {
+    let mut genes = GeneSites::default();
+    fold_rows(&mut genes, rows);
+    entries(genes)
+}
+
+/// Every gene with site rows in `files`, from their row names, one file at
+/// a time.
 pub fn gene_catalog(files: &[Box<str>]) -> anyhow::Result<Vec<GeneEntry>> {
-    let mut names: Vec<Box<str>> = Vec::new();
+    let mut genes = GeneSites::default();
     for file in files {
         let (backend, path) = resolve_backend_file(file, None)?;
-        names.extend(open_sparse_matrix(&path, &backend)?.row_names()?);
+        let names = open_sparse_matrix(&path, &backend)?.row_names()?;
+        fold_rows(&mut genes, names.iter().map(|n| n.as_ref()));
     }
-    Ok(catalog_from_rows(names.iter().map(|n| n.as_ref())))
+    Ok(entries(genes))
 }
 
 /// What the user chose in the list.
@@ -80,6 +103,8 @@ pub enum Choice {
 /// State of the list, independent of the terminal so it can be tested.
 pub struct GenePicker<'a> {
     entries: &'a [GeneEntry],
+    /// Lower-cased gene keys, for the filter.
+    keys: Vec<String>,
     filter: String,
     /// Indices into `entries` passing the filter.
     shown: Vec<usize>,
@@ -95,6 +120,7 @@ impl<'a> GenePicker<'a> {
     pub fn new(entries: &'a [GeneEntry]) -> Self {
         Self {
             entries,
+            keys: entries.iter().map(|e| e.gene.to_lowercase()).collect(),
             filter: String::new(),
             shown: (0..entries.len()).collect(),
             selected: 0,
@@ -109,8 +135,9 @@ impl<'a> GenePicker<'a> {
         let f = self.filter.to_lowercase();
         self.shown = (0..self.entries.len())
             .filter(|&i| {
-                let e = &self.entries[i];
-                f.is_empty() || e.gene.to_lowercase().contains(&f) || e.chr.to_lowercase() == f
+                f.is_empty()
+                    || self.keys[i].contains(&f)
+                    || self.entries[i].chr.eq_ignore_ascii_case(&f)
             })
             .collect();
         self.selected = 0;
@@ -137,7 +164,6 @@ impl<'a> GenePicker<'a> {
 
     /// Show the list until the user picks a gene, types a locus, or quits.
     pub fn pick(&mut self) -> anyhow::Result<Choice> {
-        self.decision = None;
         run_screen(self)?;
         Ok(self.decision.take().unwrap_or(Choice::Quit))
     }
@@ -168,18 +194,11 @@ impl Screen for GenePicker<'_> {
                     self.decision = Some(Choice::Gene(i));
                 }
             }
-            KeyCode::Esc if !self.filter.is_empty() => {
-                self.filter.clear();
-                self.refilter();
-            }
-            KeyCode::Esc => self.decision = Some(Choice::Quit),
+            KeyCode::Esc if self.filter.is_empty() => self.decision = Some(Choice::Quit),
+            // Esc, and `/` as in the browser, start the search over.
+            KeyCode::Esc | KeyCode::Char('/') => self.set_filter(""),
             KeyCode::Backspace => {
                 self.filter.pop();
-                self.refilter();
-            }
-            // As in the browser, `/` starts a search: here, a fresh filter.
-            KeyCode::Char('/') => {
-                self.filter.clear();
                 self.refilter();
             }
             KeyCode::Char(c) if !c.is_control() => {
@@ -238,7 +257,7 @@ impl Screen for GenePicker<'_> {
         }
         frame.render_widget(Paragraph::new(lines), inner);
         let line = match &self.status {
-            Some(msg) => Line::from(Span::styled(format!(" {msg}"), HIGHLIGHT)),
+            Some(msg) => status_line(msg),
             None => input_line(
                 "search gene or chr:start-end: ",
                 &self.filter,

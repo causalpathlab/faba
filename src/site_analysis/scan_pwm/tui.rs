@@ -17,9 +17,8 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use crate::data::dna::DnaBaseCount;
-use crate::figure::term::{self, PlotImage};
-use crate::figure::{self, Anchor, Canvas, SavePrompt, ACCENT, INK, MUTED};
-use ratatui_image::picker::Picker;
+use crate::figure::term::PlotImage;
+use crate::figure::{self, Anchor, Canvas, Controls, Key, ACCENT, INK, MUTED};
 
 /// Logo order: alphabetical, as sequence logos are usually keyed.
 const BASES: [char; 4] = ['A', 'C', 'G', 'T'];
@@ -135,6 +134,13 @@ fn bitmap(b: usize, row: usize, col: usize) -> bool {
     FONT[b][row.min(6)].as_bytes()[col.min(4)] == b'#'
 }
 
+/// Bases from the shortest letter to the tallest: bottom to top in a stack.
+fn stack_order(heights: &[f64; 4]) -> [usize; 4] {
+    let mut order = [0, 1, 2, 3];
+    order.sort_by(|&a, &b| heights[a].total_cmp(&heights[b]));
+    order
+}
+
 /// Split `rows` whole rows between letters in proportion to `heights`
 /// (largest remainder), so a stack's rows add up to its rounded total.
 fn allot(heights: &[f64; 4], rows: f64) -> [usize; 4] {
@@ -164,10 +170,7 @@ pub struct PwmView {
     cursor: usize,
     /// First column on screen, when they do not all fit.
     offset: usize,
-    save: SavePrompt,
-    /// The terminal's image support; `use_images` draws the logo with it.
-    images: Option<Picker>,
-    use_images: bool,
+    controls: Controls,
     plot: PlotImage,
     done: bool,
 }
@@ -187,9 +190,7 @@ impl PwmView {
             mode: Mode::Bits,
             cursor: window.max(0) as usize,
             offset: 0,
-            save: SavePrompt::new("pwm_logo"),
-            images: None,
-            use_images: false,
+            controls: Controls::new("pwm_logo"),
             plot: PlotImage::default(),
             done: false,
         }
@@ -263,8 +264,7 @@ impl PwmView {
         for (j, col) in self.columns.iter().enumerate() {
             let x = left + j as f64 * cw;
             let heights = col.heights(self.mode);
-            let mut order: Vec<usize> = (0..4).collect();
-            order.sort_by(|&a, &b| heights[a].total_cmp(&heights[b]));
+            let order = stack_order(&heights);
             let mut y = top + ph;
             for &b in &order {
                 let lh = heights[b] / top_value * ph;
@@ -303,13 +303,6 @@ impl PwmView {
         );
     }
 
-    /// The logo with the cursor, sized for an on-screen area.
-    fn logo_svg(&self, w: f64, h: f64) -> String {
-        let mut c = Canvas::new(w, h);
-        self.draw_logo(&mut c, (0.0, 0.0, w, h), Some(self.cursor));
-        c.finish()
-    }
-
     /// Draw the stacks into `area`: letters over all rows but the last two
     /// (axis and labels), y gutter on the left.
     fn render_logo(&mut self, buf: &mut Buffer, area: Rect) {
@@ -339,8 +332,7 @@ impl PwmView {
             let x0 = chart.x + slot as u16 * cw;
             let heights = self.columns[j].heights(self.mode);
             let alloted = allot(&heights, rows);
-            let mut order: Vec<usize> = (0..4).collect();
-            order.sort_by(|&a, &b| heights[a].total_cmp(&heights[b]));
+            let order = stack_order(&heights);
             // Smallest at the bottom, tallest on top. A letter with room
             // for it is drawn from its bitmap; a thin one repeats its glyph.
             let mut bottom = chart.bottom();
@@ -426,18 +418,12 @@ impl Screen for PwmView {
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
-        self.plot.invalidate();
-        if self.save.active() {
-            if let Some(prefix) = self.save.handle(key) {
-                let result = figure::save(&self.figure(), &prefix);
-                self.save.report(result);
-            }
-            return;
+        match self.controls.key(key) {
+            Key::Pass => self.plot.invalidate(),
+            Key::Used => return,
+            Key::Save(prefix) => return self.controls.save(&self.figure(), &prefix),
         }
-        self.save.dismiss();
         match key.code {
-            KeyCode::Char('s') => self.save.open(),
-            KeyCode::Char('i') if self.images.is_some() => self.use_images ^= true,
             KeyCode::Left | KeyCode::Char('h') => self.move_cursor(-1),
             KeyCode::Right | KeyCode::Char('l') => self.move_cursor(1),
             KeyCode::Home => self.cursor = 0,
@@ -467,29 +453,35 @@ impl Screen for PwmView {
             header(
                 "pwm",
                 &self.title,
-                &format!("{} positions · {}", n, self.mode.name()),
+                &format!(
+                    "{} positions · {}{}",
+                    n,
+                    self.mode.name(),
+                    self.controls.tag()
+                ),
             ),
             top,
         );
         let block = panel(format!(" {} ", self.mode.name()), true);
         let inner = block.inner(body);
         frame.render_widget(block, body);
-        let mut drawn = false;
-        if let Some(picker) = self.images.clone().filter(|_| self.use_images) {
-            let mut image = std::mem::take(&mut self.plot);
-            drawn = image.render(frame, inner, &picker, |w, h| self.logo_svg(w, h));
-            self.plot = image;
-        }
+        let mut plot = std::mem::take(&mut self.plot);
+        let drawn = self.controls.images().is_some_and(|picker| {
+            plot.render(frame, inner, picker, |w, h| {
+                figure::svg(w, h, |c| {
+                    self.draw_logo(c, (0.0, 0.0, w, h), Some(self.cursor))
+                })
+            })
+        });
+        self.plot = plot;
         if !drawn {
             self.render_logo(frame.buffer_mut(), inner);
         }
         frame.render_widget(Paragraph::new(self.stats_line()), stats);
-        let help = self.save.footer().unwrap_or_else(|| {
+        let help = self.controls.footer().unwrap_or_else(|| {
             let mut keys = vec![("←/→", "position"), ("0", "site"), ("m", "bits/frequency")];
-            if self.images.is_some() {
-                keys.push(("i", "image/text"));
-            }
-            keys.extend([("s", "save"), ("q", "quit")]);
+            self.controls.help_keys(&mut keys);
+            keys.push(("q", "quit"));
             help_line(&keys)
         });
         frame.render_widget(help, footer);
@@ -499,8 +491,7 @@ impl Screen for PwmView {
 /// Show the logo full screen until the user quits.
 pub fn show_pwm(title: &str, pwm: &[DnaBaseCount], window: i64) -> anyhow::Result<()> {
     let mut view = PwmView::new(title, pwm, window);
-    view.images = term::picker();
-    view.use_images = view.images.is_some();
+    view.controls = Controls::new("pwm_logo").detect();
     run_screen(&mut view)
 }
 

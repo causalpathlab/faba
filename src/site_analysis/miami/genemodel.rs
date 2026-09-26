@@ -8,6 +8,7 @@
 //! the model stays aligned with the matrix/depth tracks above and below.
 
 use super::bin::BinEdges;
+use crate::figure::esc;
 use crate::site_analysis::pileup::Selector;
 use genomic_data::gff::{
     build_exon_intervals, build_gene_map, read_gff_record_vec, FeatureType, GeneSymbol,
@@ -15,20 +16,6 @@ use genomic_data::gff::{
 use genomic_data::sam::Strand;
 use std::fmt::Write as _;
 
-fn escape_xml(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&apos;"),
-            _ => out.push(c),
-        }
-    }
-    out
-}
 /// One gene resolved from the GTF.
 pub struct GeneModel {
     pub chr: Box<str>,
@@ -166,7 +153,7 @@ pub fn gene_model_svg(
          font-size=\"{:.1}\" fill=\"#333\">{}</text>",
         y_mid + band_h * 0.35,
         band_h * 0.9,
-        escape_xml(&g.symbol)
+        esc(&g.symbol)
     );
 
     s

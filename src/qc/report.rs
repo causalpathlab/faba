@@ -249,24 +249,29 @@ fn fmt_threshold(x: f64) -> String {
     }
 }
 
+/// The report's panels, in first-seen order: one per (modality,
+/// criterion), with its rows.
+fn panels(rows: &[ReportRow]) -> Vec<(&str, &str, Vec<&ReportRow>)> {
+    let mut out: Vec<(&str, &str, Vec<&ReportRow>)> = Vec::new();
+    for r in rows {
+        match out
+            .iter_mut()
+            .find(|(m, c, _)| *m == &*r.modality && *c == &*r.criterion)
+        {
+            Some((_, _, panel)) => panel.push(r),
+            None => out.push((&r.modality, &r.criterion, vec![r])),
+        }
+    }
+    out
+}
+
 /// One ASCII panel per (modality, criterion), a bar per threshold scaled to
 /// the panel's largest count, in the style of `faba metagene`.
 pub fn print_ascii(rows: &[ReportRow], width: usize) {
-    let mut groups: Vec<(Box<str>, Box<str>)> = Vec::new();
-    for r in rows {
-        let g = (r.modality.clone(), r.criterion.clone());
-        if !groups.contains(&g) {
-            groups.push(g);
-        }
-    }
-    for (modality, criterion) in groups {
-        let panel: Vec<&ReportRow> = rows
-            .iter()
-            .filter(|r| r.modality == modality && r.criterion == criterion)
-            .collect();
+    for (modality, criterion, panel) in panels(rows) {
         let unit = panel.first().map(|r| r.unit).unwrap_or("site");
         let max = panel.iter().map(|r| r.n_kept).max().unwrap_or(0).max(1) as f64;
-        let is_hist = &*criterion == HIST_CRITERION;
+        let is_hist = criterion == HIST_CRITERION;
         if is_hist {
             eprintln!(
                 "\n== {modality} : -log10(p) histogram  (sites per bin of {HIST_BIN}; last bin >= {HIST_MAX})"
@@ -311,13 +316,7 @@ fn report_figure(rows: &[ReportRow]) -> String {
     use crate::figure::{Anchor, Bars, Canvas, INK};
     use data_beans::interactive::ui::Scale;
 
-    let mut groups: Vec<(Box<str>, Box<str>)> = Vec::new();
-    for r in rows {
-        let g = (r.modality.clone(), r.criterion.clone());
-        if !groups.contains(&g) {
-            groups.push(g);
-        }
-    }
+    let groups = panels(rows);
     let (pw, ph, per_row) = (260.0, 180.0, 3usize);
     let n_rows = groups.len().div_ceil(per_row).max(1);
     let mut c = Canvas::new(pw * per_row as f64 + 20.0, ph * n_rows as f64 + 40.0);
@@ -329,13 +328,9 @@ fn report_figure(rows: &[ReportRow]) -> String {
         Anchor::Start,
         INK,
     );
-    for (g, (modality, criterion)) in groups.iter().enumerate() {
-        let panel: Vec<&ReportRow> = rows
-            .iter()
-            .filter(|r| &r.modality == modality && &r.criterion == criterion)
-            .collect();
+    for (g, (modality, criterion, panel)) in groups.iter().enumerate() {
         let unit = panel.first().map(|r| r.unit).unwrap_or("site");
-        let is_hist = &**criterion == HIST_CRITERION;
+        let is_hist = *criterion == HIST_CRITERION;
         let values: Vec<f64> = panel.iter().map(|r| r.n_kept as f64).collect();
         let every = panel.len().div_ceil(6).max(1);
         let ticks = panel

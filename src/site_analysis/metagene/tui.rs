@@ -16,9 +16,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
-use crate::figure::term::{self, PlotImage};
-use crate::figure::{self, Anchor, Bars, Canvas, SavePrompt, INK, MUTED};
-use ratatui_image::picker::Picker;
+use crate::figure::term::PlotImage;
+use crate::figure::{self, Anchor, Bars, Canvas, Controls, Key, INK, MUTED};
 
 use super::{GeneFeatureHistogram, CDS, NCRNA, UTR3, UTR5};
 
@@ -71,6 +70,22 @@ fn bars(hist: &GeneFeatureHistogram, track: Track, merge: usize) -> Vec<Bar> {
     out
 }
 
+/// Whether any coding region has bins.
+fn has_coding(hist: &GeneFeatureHistogram) -> bool {
+    Track::Coding
+        .regions()
+        .iter()
+        .any(|&r| !hist.counts[r].is_empty())
+}
+
+/// Each bar that starts a region, with the region's name.
+fn region_starts(bars: &[Bar]) -> impl Iterator<Item = (usize, &'static str)> + '_ {
+    bars.iter()
+        .enumerate()
+        .filter(|(i, b)| *i == 0 || bars[i - 1].region != b.region)
+        .map(|(i, b)| (i, REGION_NAMES[b.region]))
+}
+
 /// The smallest merge factor whose bars fit `width` columns; when even one
 /// bar per region is too wide, one bar per region.
 fn fitting_merge(hist: &GeneFeatureHistogram, track: Track, width: usize) -> usize {
@@ -95,21 +110,14 @@ pub struct MetageneView<'a> {
     /// The bin under the cursor, as `(region, bin)`, so it survives merging.
     cursor: (usize, usize),
     y_scale: Scale,
-    save: SavePrompt,
-    /// The terminal's image support; `use_images` draws the track with it.
-    images: Option<Picker>,
-    use_images: bool,
+    controls: Controls,
     plot: PlotImage,
     done: bool,
 }
 
 impl<'a> MetageneView<'a> {
     pub fn new(title: &str, hist: &'a GeneFeatureHistogram) -> Self {
-        let coding = !Track::Coding
-            .regions()
-            .iter()
-            .all(|&r| hist.counts[r].is_empty());
-        let track = if coding {
+        let track = if has_coding(hist) {
             Track::Coding
         } else {
             Track::NonCoding
@@ -122,9 +130,7 @@ impl<'a> MetageneView<'a> {
             shown_merge: 1,
             cursor: (0, 0),
             y_scale: Scale::Linear,
-            save: SavePrompt::new("metagene"),
-            images: None,
-            use_images: false,
+            controls: Controls::new("metagene"),
             plot: PlotImage::default(),
             done: false,
         };
@@ -171,12 +177,7 @@ impl<'a> MetageneView<'a> {
     fn switch_track(&mut self) {
         if self.has_non_coding() && self.track == Track::Coding {
             self.track = Track::NonCoding;
-        } else if self.track == Track::NonCoding
-            && Track::Coding
-                .regions()
-                .iter()
-                .any(|&r| !self.hist.counts[r].is_empty())
-        {
+        } else if self.track == Track::NonCoding && has_coding(self.hist) {
             self.track = Track::Coding;
         }
         self.cursor_to_start();
@@ -227,11 +228,8 @@ impl<'a> MetageneView<'a> {
     ) {
         let bars = self.bars();
         let values: Vec<f64> = bars.iter().map(|b| b.count as f64).collect();
-        let ticks = bars
-            .iter()
-            .enumerate()
-            .filter(|(i, b)| *i == 0 || bars[i - 1].region != b.region)
-            .map(|(i, b)| (i, REGION_NAMES[b.region].to_string()))
+        let ticks = region_starts(&bars)
+            .map(|(i, name)| (i, name.to_string()))
             .collect();
         Bars {
             values: &values,
@@ -246,15 +244,6 @@ impl<'a> MetageneView<'a> {
             y_title: "sites".into(),
         }
         .draw(c, x, y, w, h);
-    }
-
-    /// The track with the cursor, sized for an on-screen area.
-    fn track_svg(&self, w: f64, h: f64) -> String {
-        let bars = self.bars();
-        let pointer = (!bars.is_empty()).then(|| self.cursor_bar(&bars));
-        let mut c = Canvas::new(w, h);
-        self.draw_track(&mut c, (0.0, 0.0, w, h), pointer, String::new());
-        c.finish()
     }
 
     fn stats_line(&self, bars: &[Bar]) -> Line<'static> {
@@ -307,18 +296,12 @@ impl Screen for MetageneView<'_> {
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
-        self.plot.invalidate();
-        if self.save.active() {
-            if let Some(prefix) = self.save.handle(key) {
-                let result = figure::save(&self.figure(), &prefix);
-                self.save.report(result);
-            }
-            return;
+        match self.controls.key(key) {
+            Key::Pass => self.plot.invalidate(),
+            Key::Used => return,
+            Key::Save(prefix) => return self.controls.save(&self.figure(), &prefix),
         }
-        self.save.dismiss();
         match key.code {
-            KeyCode::Char('s') => self.save.open(),
-            KeyCode::Char('i') if self.images.is_some() => self.use_images ^= true,
             KeyCode::Left | KeyCode::Char('h') => self.move_cursor(-1),
             KeyCode::Right | KeyCode::Char('l') => self.move_cursor(1),
             KeyCode::Home => self.cursor_to_start(),
@@ -348,48 +331,37 @@ impl Screen for MetageneView<'_> {
         };
         let block = panel(format!(" {track_name} track "), true);
         let inner = block.inner(body);
-        let picker = self.images.clone().filter(|_| self.use_images);
-        // Text bars are a column wide; image bars need about three pixels.
-        let width = match &picker {
-            Some(p) => inner.width as usize * p.font_size().width as usize / 3,
-            None => inner.width.saturating_sub(GUTTER) as usize,
-        };
+        let width = inner.width.saturating_sub(GUTTER) as usize;
         self.shown_merge = self
             .merge
             .unwrap_or_else(|| fitting_merge(self.hist, self.track, width));
         let bars = self.bars();
 
-        let mut extra = format!(
-            "{} bins/bar{} · y {}",
+        let extra = format!(
+            "{} bins/bar{} · y {}{}",
             self.shown_merge,
             if self.merge.is_none() { " (fit)" } else { "" },
-            self.y_scale.name()
+            self.y_scale.name(),
+            self.controls.tag()
         );
-        if self.images.is_some() {
-            extra += if self.use_images {
-                " · image"
-            } else {
-                " · text"
-            };
-        }
         frame.render_widget(header("metagene", &self.title, &extra), top);
         frame.render_widget(block, body);
 
-        let mut drawn = false;
-        if let Some(picker) = &picker {
-            let mut image = std::mem::take(&mut self.plot);
-            drawn = image.render(frame, inner, picker, |w, h| self.track_svg(w, h));
-            self.plot = image;
-        }
+        let mut plot = std::mem::take(&mut self.plot);
+        let drawn = self.controls.images().is_some_and(|picker| {
+            plot.render(frame, inner, picker, |w, h| {
+                let pointer = (!bars.is_empty()).then(|| self.cursor_bar(&bars));
+                let bbox = (0.0, 0.0, w, h);
+                figure::svg(w, h, |c| self.draw_track(c, bbox, pointer, String::new()))
+            })
+        });
+        self.plot = plot;
 
         let counts: Vec<usize> = bars.iter().map(|b| b.count).collect();
-        let starts: Vec<Option<&str>> = bars
-            .iter()
-            .enumerate()
-            .map(|(i, b)| {
-                (i == 0 || bars[i - 1].region != b.region).then(|| REGION_NAMES[b.region])
-            })
-            .collect();
+        let mut starts: Vec<Option<&str>> = vec![None; bars.len()];
+        for (i, name) in region_starts(&bars) {
+            starts[i] = Some(name);
+        }
         let label = |k: i32| {
             starts
                 .get(k as usize)
@@ -424,11 +396,9 @@ impl Screen for MetageneView<'_> {
         if self.has_non_coding() {
             keys.push(("Tab", "track"));
         }
-        if self.images.is_some() {
-            keys.push(("i", "image/text"));
-        }
-        keys.extend([("s", "save"), ("q", "quit")]);
-        let help = self.save.footer().unwrap_or_else(|| help_line(&keys));
+        self.controls.help_keys(&mut keys);
+        keys.push(("q", "quit"));
+        let help = self.controls.footer().unwrap_or_else(|| help_line(&keys));
         frame.render_widget(help, footer);
     }
 }
@@ -436,8 +406,7 @@ impl Screen for MetageneView<'_> {
 /// Show the profile full screen until the user quits.
 pub fn show_metagene(title: &str, hist: &GeneFeatureHistogram) -> anyhow::Result<()> {
     let mut view = MetageneView::new(title, hist);
-    view.images = term::picker();
-    view.use_images = view.images.is_some();
+    view.controls = Controls::new("metagene").detect();
     run_screen(&mut view)
 }
 

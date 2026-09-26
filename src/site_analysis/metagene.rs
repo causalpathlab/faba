@@ -961,11 +961,8 @@ pub fn run_metagene(args: &MetageneArgs) -> anyhow::Result<()> {
         histogram.print(args.max_width as usize);
     }
     if args.interactive {
-        if data_beans::interactive::tui_available() {
-            tui::show_metagene(&crate::qc::layout::file_name(&args.site_file), &histogram)?;
-        } else {
-            log::warn!("--interactive needs stdin and stdout on a terminal; skipping the view");
-        }
+        let title = crate::qc::layout::file_name(&args.site_file);
+        crate::figure::term::when_terminal(|| tui::show_metagene(&title, &histogram))?;
     }
 
     Ok(())

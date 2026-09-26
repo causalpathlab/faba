@@ -16,13 +16,14 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
-use crate::figure::term::{self, PlotImage};
-use crate::figure::{self, Anchor, Bars, Canvas, SavePrompt, INK, MUTED};
-use ratatui_image::picker::Picker;
+use crate::figure::term::PlotImage;
+use crate::figure::{
+    self, status_line, Anchor, Bars, Canvas, Controls, Edit, Key, LineInput, INK, MUTED,
+};
 
 use genomic_data::coordinates::chr_eq;
 
-use super::{fmt_thousands, BinEdges};
+use super::{distinct_positions, fmt_thousands, BinEdges};
 
 /// Width of HistPlot's y gutter.
 const GUTTER: u16 = 6;
@@ -48,9 +49,7 @@ impl Track<'_> {
     fn sites_in(&self, lo: i64, hi: i64) -> Vec<i64> {
         let a = self.positions.partition_point(|p| p.0 < lo);
         let b = self.positions.partition_point(|p| p.0 <= hi);
-        let mut out: Vec<i64> = self.positions[a..b].iter().map(|p| p.0).collect();
-        out.dedup();
-        out
+        distinct_positions(&self.positions[a..b])
     }
 }
 
@@ -78,28 +77,17 @@ pub struct PileupView<'a> {
     /// Bars per track in the last frame (one per chart column).
     columns: usize,
     y_scale: Scale,
-    save: SavePrompt,
-    /// Whether `g` goes back to a gene list.
-    back: bool,
+    controls: Controls,
     /// The `/` search being typed.
-    search: Option<String>,
+    search: LineInput,
     /// A message for the footer, until the next key.
     status: Option<String>,
-    /// The terminal's image support; `use_images` draws the tracks with it.
-    images: Option<Picker>,
-    use_images: bool,
     plots: Vec<PlotImage>,
     exit: Option<Exit>,
 }
 
 impl<'a> PileupView<'a> {
-    pub fn new(
-        title: &str,
-        chr: &str,
-        tracks: Vec<Track<'a>>,
-        extent: (i64, i64),
-        back: bool,
-    ) -> Self {
+    pub fn new(title: &str, chr: &str, tracks: Vec<Track<'a>>, extent: (i64, i64)) -> Self {
         let mut sites: Vec<i64> = tracks
             .iter()
             .flat_map(|t| t.positions.iter().map(|p| p.0))
@@ -117,12 +105,9 @@ impl<'a> PileupView<'a> {
             window: (lo, hi),
             columns: 80,
             y_scale: Scale::Linear,
-            save: SavePrompt::new(&format!("pileup_{title}")),
-            back,
-            search: None,
+            controls: Controls::new(&format!("pileup_{title}")),
+            search: LineInput::new(128),
             status: None,
-            images: None,
-            use_images: false,
             plots: Vec::new(),
             exit: None,
         }
@@ -223,11 +208,6 @@ impl<'a> PileupView<'a> {
         }
     }
 
-    /// Show `msg` on the footer until the next key.
-    pub fn set_status(&mut self, msg: Option<String>) {
-        self.status = msg;
-    }
-
     fn cursor_col(&self) -> usize {
         self.edges().col_of(self.cursor)
     }
@@ -298,14 +278,6 @@ impl<'a> PileupView<'a> {
         .draw(c, x, y, w, h);
     }
 
-    /// Track `i` with the cursor, sized for an on-screen area.
-    fn track_svg(&self, i: usize, w: f64, h: f64) -> String {
-        let mut c = Canvas::new(w, h);
-        let pointer = Some(self.cursor_col());
-        self.draw_track(i, &mut c, (0.0, 0.0, w, h), pointer, String::new());
-        c.finish()
-    }
-
     fn readout(&self) -> Line<'static> {
         let dim = |t: String| Span::styled(t, DIM);
         let col = self.cursor_col();
@@ -347,35 +319,21 @@ impl Screen for PileupView<'_> {
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
-        self.plots.iter_mut().for_each(PlotImage::invalidate);
-        if self.save.active() {
-            if let Some(prefix) = self.save.handle(key) {
-                let result = figure::save(&self.figure(), &prefix);
-                self.save.report(result);
+        self.status = None;
+        if self.search.active() {
+            if let Edit::Submitted(query) = self.search.handle(key) {
+                self.submit(&query);
+                self.plots.iter_mut().for_each(PlotImage::invalidate);
             }
             return;
         }
-        self.save.dismiss();
-        self.status = None;
-        if let Some(buf) = &mut self.search {
-            match key.code {
-                KeyCode::Char(ch) if buf.len() < 128 => buf.push(ch),
-                KeyCode::Backspace => {
-                    buf.pop();
-                }
-                KeyCode::Esc => self.search = None,
-                KeyCode::Enter => {
-                    let query = self.search.take().unwrap_or_default();
-                    self.submit(query.trim());
-                }
-                _ => {}
-            }
-            return;
+        match self.controls.key(key) {
+            Key::Pass => self.plots.iter_mut().for_each(PlotImage::invalidate),
+            Key::Used => return,
+            Key::Save(prefix) => return self.controls.save(&self.figure(), &prefix),
         }
         match key.code {
-            KeyCode::Char('/') => self.search = Some(String::new()),
-            KeyCode::Char('s') => self.save.open(),
-            KeyCode::Char('i') if self.images.is_some() => self.use_images ^= true,
+            KeyCode::Char('/') => self.search.open(""),
             KeyCode::Left | KeyCode::Char('h') => self.move_cursor(-1),
             KeyCode::Right | KeyCode::Char('l') => self.move_cursor(1),
             KeyCode::PageUp => self.move_cursor(-(self.columns as i64) / 2),
@@ -386,7 +344,7 @@ impl Screen for PileupView<'_> {
             KeyCode::Char('-') => self.zoom(2.0),
             KeyCode::Char('0') => self.window = self.extent,
             KeyCode::Char('y') => self.y_scale = self.y_scale.next(),
-            KeyCode::Char('g') if self.back => self.exit = Some(Exit::Genes),
+            KeyCode::Char('g') => self.exit = Some(Exit::Genes),
             KeyCode::Char('q') | KeyCode::Esc | KeyCode::Enter => self.exit = Some(Exit::Quit),
             _ => {}
         }
@@ -406,21 +364,15 @@ impl Screen for PileupView<'_> {
         self.clamp_window();
         let edges = self.edges();
         let (lo, hi) = self.window;
-        let mut extra = format!(
-            "{}:{}-{}  {} bp/bar · y {}",
+        let extra = format!(
+            "{}:{}-{}  {} bp/bar · y {}{}",
             self.chr,
             fmt_thousands(lo),
             fmt_thousands(hi),
             self.bin_width(),
-            self.y_scale.name()
+            self.y_scale.name(),
+            self.controls.tag()
         );
-        if self.images.is_some() {
-            extra += if self.use_images {
-                " · image"
-            } else {
-                " · text"
-            };
-        }
         frame.render_widget(header("pileup", &self.title, &extra), top);
 
         let every = TICK_SPACING.max(self.columns / 5);
@@ -432,7 +384,6 @@ impl Screen for PileupView<'_> {
             .collect();
         let label = |k: i32| ticks.get(k as usize).cloned().flatten();
         let pointer = Some(self.cursor_col() as i32);
-        let picker = self.images.clone().filter(|_| self.use_images);
         let mut plots = std::mem::take(&mut self.plots);
         plots.resize_with(self.tracks.len(), PlotImage::default);
         for (i, &area) in areas[1..areas.len() - 2].iter().enumerate() {
@@ -440,13 +391,18 @@ impl Screen for PileupView<'_> {
             let block = panel(format!(" {} · {} ", t.label, t.signal), true);
             let inner = block.inner(area);
             frame.render_widget(block, area);
-            if let Some(picker) = &picker {
-                let this = &*self;
-                if plots[i].render(frame, inner, picker, |w, h| this.track_svg(i, w, h)) {
-                    continue;
-                }
+            let drawn = self.controls.images().is_some_and(|picker| {
+                plots[i].render(frame, inner, picker, |w, h| {
+                    let bbox = (0.0, 0.0, w, h);
+                    let pointer = Some(self.cursor_col());
+                    figure::svg(w, h, |c| {
+                        self.draw_track(i, c, bbox, pointer, String::new())
+                    })
+                })
+            });
+            if drawn {
+                continue;
             }
-            let t = &self.tracks[i];
             let values = t.bin(&edges);
             let marks = t
                 .sites_in(lo, hi)
@@ -470,16 +426,16 @@ impl Screen for PileupView<'_> {
         self.plots = plots;
 
         frame.render_widget(Paragraph::new(self.readout()), readout);
-        let help = if let Some(buf) = &self.search {
+        let help = if let Some(buf) = self.search.text() {
             input_line(
                 "search gene or chr:start-end: ",
                 buf,
                 &[("Enter", "go"), ("Esc", "back")],
             )
         } else if let Some(msg) = &self.status {
-            Line::from(Span::styled(format!(" {msg}"), HIGHLIGHT))
+            status_line(msg)
         } else {
-            self.save.footer().unwrap_or_else(|| self.help())
+            self.controls.footer().unwrap_or_else(|| self.help())
         };
         frame.render_widget(help, footer);
     }
@@ -494,34 +450,27 @@ impl PileupView<'_> {
             ("0", "whole"),
             ("/", "search"),
             ("y", "scale"),
-            ("s", "save"),
+            ("g", "genes"),
         ];
-        if self.images.is_some() {
-            keys.push(("i", "image/text"));
-        }
-        if self.back {
-            keys.push(("g", "genes"));
-        }
+        self.controls.help_keys(&mut keys);
         keys.push(("q", "quit"));
         help_line(&keys)
     }
 }
 
-/// Browse full screen until the user quits, asks for the gene list (with
-/// `back`), or searches for something outside the view. `status` shows on
-/// the footer first.
+/// Browse full screen until the user quits, asks for the gene list, or
+/// searches for something outside the view. `status` shows on the footer
+/// first.
 pub fn show_pileup(
     title: &str,
     chr: &str,
     tracks: Vec<Track>,
     extent: (i64, i64),
-    back: bool,
     status: Option<String>,
 ) -> anyhow::Result<Exit> {
-    let mut view = PileupView::new(title, chr, tracks, extent, back);
-    view.set_status(status);
-    view.images = term::picker();
-    view.use_images = view.images.is_some();
+    let mut view = PileupView::new(title, chr, tracks, extent);
+    view.status = status;
+    view.controls = Controls::new(&format!("pileup_{title}")).detect();
     run_screen(&mut view)?;
     Ok(view.exit.unwrap_or(Exit::Quit))
 }

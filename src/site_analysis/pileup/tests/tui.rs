@@ -32,7 +32,7 @@ fn view<'a>(m: &'a [(i64, f64)], s: &'a [(i64, f64)]) -> PileupView<'a> {
             log: false,
         },
     ];
-    PileupView::new("GENE1", "chr1", tracks, EXTENT, false)
+    PileupView::new("GENE1", "chr1", tracks, EXTENT)
 }
 
 fn press(v: &mut PileupView, code: KeyCode) {
@@ -145,20 +145,11 @@ fn renders_both_tracks_with_coordinates() {
             log: false,
         }],
         EXTENT,
-        true,
     );
     let mut one = one;
     screen(&mut one, 12, 6);
     press(&mut one, KeyCode::Char('g'));
-    assert_eq!(
-        one.exit,
-        Some(Exit::Genes),
-        "g goes back when there is a list"
-    );
-    let (m2, s2) = (positions(), sites());
-    let mut v2 = view(&m2, &s2);
-    press(&mut v2, KeyCode::Char('g'));
-    assert_eq!(v2.exit, None, "and does nothing when there is none");
+    assert_eq!(one.exit, Some(Exit::Genes), "g goes back to the gene list");
 }
 
 #[test]
@@ -187,8 +178,7 @@ fn saves_the_window() {
 fn draws_through_the_image_path() {
     let (m, s) = (positions(), sites());
     let mut v = view(&m, &s);
-    v.images = Some(ratatui_image::picker::Picker::halfblocks());
-    v.use_images = true;
+    v.controls = Controls::new("x").with_picker(ratatui_image::picker::Picker::halfblocks());
     screen(&mut v, 100, 24);
     assert_eq!(v.plots.len(), 2, "one image per track");
     press(&mut v, KeyCode::Char('+'));
@@ -231,9 +221,9 @@ fn search_moves_within_the_view_or_leaves_it() {
     press(&mut v, KeyCode::Char('x'));
     press(&mut v, KeyCode::Esc);
     assert!(
-        v.exit.is_none() && v.search.is_none(),
+        v.exit.is_none() && !v.search.active(),
         "Esc drops the search"
     );
-    v.set_status(Some("no gene matches X".into()));
+    v.status = Some("no gene matches X".into());
     assert!(screen(&mut v, 100, 24).contains("no gene matches X"));
 }

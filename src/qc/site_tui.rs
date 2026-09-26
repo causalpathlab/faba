@@ -22,9 +22,8 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use rustc_hash::FxHashMap;
 
-use crate::figure::term::{self, PlotImage};
-use crate::figure::{self, Anchor, Bars, Canvas, SavePrompt, INK, MUTED};
-use ratatui_image::picker::Picker;
+use crate::figure::term::PlotImage;
+use crate::figure::{self, Anchor, Bars, Canvas, Controls, Key, INK, MUTED};
 
 use super::args::SiteFilterArgs;
 use super::layout::{file_name, SITE_MODALITIES};
@@ -78,6 +77,21 @@ impl Criterion {
     /// the upper edit-ratio bound: a p-value is shown as -log10 p).
     fn keeps_high(self) -> bool {
         self != Criterion::MaxEditRatio
+    }
+
+    /// Whether bin `k` lies on the dropped side of the threshold's bin.
+    fn drops(self, k: i32, threshold: Option<i32>) -> bool {
+        match threshold {
+            Some(p) if self.keeps_high() => k < p,
+            Some(p) => k > p,
+            None => false,
+        }
+    }
+
+    /// The threshold as shown: `≥ v` or `≤ v`, `None` when off.
+    fn shown(self, f: &SiteFilterArgs) -> Option<String> {
+        let op = if self.is_max() { "≤" } else { "≥" };
+        (!self.is_off(f)).then(|| format!("{op} {}", self.fmt_short(self.get(f))))
     }
 
     fn is_integer(self) -> bool {
@@ -261,6 +275,8 @@ struct Column {
     /// and drops the bins on the far side. Stops that keep everything are
     /// left out: they read as off.
     stops: Vec<(i32, f64)>,
+    /// The smallest display value in each bin, for tick labels.
+    lowest: Vec<f64>,
 }
 
 impl Column {
@@ -283,7 +299,7 @@ impl Column {
         display
             .iter_mut()
             .for_each(|d| *d = d.clamp(lo as f32, hi as f32));
-        let (hist, slot, stops) = bin(view, c, scale, &display, lo, hi);
+        let (hist, slot, stops, lowest) = bin(view, c, scale, &display, lo, hi);
         Self {
             display,
             n_inf,
@@ -292,11 +308,13 @@ impl Column {
             hist,
             slot,
             stops,
+            lowest,
         }
     }
 
     fn rebin(&mut self, view: &SiteView, c: Criterion, scale: Scale) {
-        (self.hist, self.slot, self.stops) = bin(view, c, scale, &self.display, self.lo, self.hi);
+        (self.hist, self.slot, self.stops, self.lowest) =
+            bin(view, c, scale, &self.display, self.lo, self.hi);
     }
 
     /// Bin key of a raw threshold, clamped to the histogram.
@@ -307,6 +325,10 @@ impl Column {
     }
 }
 
+/// A column binned: the histogram, each site's slot, the stops, and each
+/// bin's smallest value.
+type ColumnBins = (Binned, Vec<u16>, Vec<(i32, f64)>, Vec<f64>);
+
 /// Bin `display` on `scale`: the histogram, each site's slot, and the stops.
 fn bin(
     view: &SiteView,
@@ -315,7 +337,7 @@ fn bin(
     display: &[f32],
     lo: f64,
     hi: f64,
-) -> (Binned, Vec<u16>, Vec<(i32, f64)>) {
+) -> ColumnBins {
     // A signed axis spans -max..max; widen so it still gets ~50 bins.
     let max = if lo < 0.0 {
         2.0 * lo.abs().max(hi.abs())
@@ -328,9 +350,11 @@ fn bin(
     let mut counts = vec![0; n];
     let mut slot = Vec::with_capacity(display.len());
     let mut edge: Vec<Option<f64>> = vec![None; n];
+    let mut lowest = vec![f64::INFINITY; n];
     for (i, &d) in display.iter().enumerate() {
         let b = (bins.key(d as f64) - kmin).clamp(0, n as i32 - 1) as usize;
         counts[b] += 1;
+        lowest[b] = lowest[b].min(d as f64);
         slot.push(b as u16);
         let raw = c.raw(view.table, i, view.cells(i));
         edge[b] = Some(match edge[b] {
@@ -349,7 +373,7 @@ fn bin(
             !c.is_off(&f)
         })
         .collect();
-    (Binned { bins, kmin, counts }, slot, stops)
+    (Binned { bins, kmin, counts }, slot, stops, lowest)
 }
 
 enum Mode {
@@ -369,16 +393,6 @@ const LEGEND: [&str; 6] = [
     "  which names the first check a site fails",
 ];
 
-/// How the user left the picker.
-#[derive(Debug, Clone)]
-enum Outcome {
-    /// Enter: cut with these thresholds.
-    Apply(SiteFilterArgs),
-    /// `p`: print the matching flags and write nothing.
-    Print(SiteFilterArgs),
-    Cancel,
-}
-
 /// State of the picker, independent of the terminal so it can be tested.
 struct SitePicker<'a> {
     title: String,
@@ -394,12 +408,9 @@ struct SitePicker<'a> {
     column: Column,
     tally: Tally,
     mode: Mode,
-    save: SavePrompt,
-    /// The terminal's image support; `use_images` draws the histogram with it.
-    images: Option<Picker>,
-    use_images: bool,
+    controls: Controls,
     plot: PlotImage,
-    decision: Option<Outcome>,
+    decision: Option<Picked>,
 }
 
 impl<'a> SitePicker<'a> {
@@ -420,9 +431,7 @@ impl<'a> SitePicker<'a> {
             column,
             tally,
             mode: Mode::Browse,
-            save: SavePrompt::new("qc_sites"),
-            images: None,
-            use_images: false,
+            controls: Controls::new("qc_sites"),
             plot: PlotImage::default(),
             decision: None,
         }
@@ -548,12 +557,9 @@ impl<'a> SitePicker<'a> {
         ];
         for (j, &c) in self.view().criteria.iter().enumerate() {
             let focused = j == self.focus;
-            let (value, value_style) = if c.is_off(&self.filter) {
-                ("off".to_string(), DIM)
-            } else {
-                let op = if c.is_max() { "≤" } else { "≥" };
-                let value = format!("{op} {}", c.fmt_short(c.get(&self.filter)));
-                (value, if focused { HIGHLIGHT } else { PLAIN })
+            let (value, value_style) = match c.shown(&self.filter) {
+                None => ("off".to_string(), DIM),
+                Some(v) => (v, if focused { HIGHLIGHT } else { PLAIN }),
             };
             lines.push(Line::from(vec![
                 Span::styled(if focused { "▸ " } else { "  " }, HIGHLIGHT),
@@ -624,12 +630,7 @@ impl<'a> SitePicker<'a> {
         y += 10.0;
         for &k in &view.criteria {
             y += 16.0;
-            let value = if k.is_off(&self.filter) {
-                "off".to_string()
-            } else {
-                let op = if k.is_max() { "≤" } else { "≥" };
-                format!("{op} {}", k.fmt_short(k.get(&self.filter)))
-            };
+            let value = k.shown(&self.filter).unwrap_or_else(|| "off".into());
             let colour = if k == c { figure::ACCENT } else { INK };
             canvas.text(x0, y, k.label(), 9.0, Anchor::Start, colour);
             canvas.text(cols[0], y, &value, 9.0, Anchor::End, colour);
@@ -657,30 +658,28 @@ impl<'a> SitePicker<'a> {
         canvas.finish()
     }
 
+    /// The histogram bin holding the focused threshold, `None` when off.
+    fn pointer_key(&self) -> Option<i32> {
+        let c = self.criterion();
+        (!c.is_off(&self.filter)).then(|| self.column.key_of(c, c.get(&self.filter)))
+    }
+
     /// The focused column's histogram in the box `(x, y, w, h)`, as the
     /// export and the in-terminal image draw it.
     fn draw_hist(&self, canvas: &mut Canvas, (x, y, w, h): (f64, f64, f64, f64), title: String) {
         let c = self.criterion();
         // Histogram ticks: the smallest value in about six bins.
         let col = &self.column;
-        let nb = col.hist.counts.len();
-        let mut lowest = vec![f64::INFINITY; nb];
-        for (&d, &b) in col.display.iter().zip(&col.slot) {
-            lowest[b as usize] = lowest[b as usize].min(d as f64);
-        }
+        let (nb, lowest) = (col.lowest.len(), &col.lowest);
         let every = (nb / 6).max(1);
         let ticks = (0..nb)
             .step_by(every)
             .filter_map(|b| (b..nb).find(|&j| lowest[j].is_finite()))
             .map(|b| (b, c.fmt_short(lowest[b])))
             .collect::<Vec<_>>();
-        let pointer = (!c.is_off(&self.filter))
-            .then(|| (col.key_of(c, c.get(&self.filter)) - col.hist.kmin) as usize);
-        let keeps_high = c.keeps_high();
-        let dropped = |b: usize| match pointer {
-            Some(p) => (keeps_high && b < p) || (!keeps_high && b > p),
-            None => false,
-        };
+        let key = self.pointer_key();
+        let pointer = key.map(|k| (k - col.hist.kmin) as usize);
+        let dropped = |b: usize| c.drops(col.hist.kmin + b as i32, key);
         let values: Vec<f64> = col.hist.counts.iter().map(|&v| v as f64).collect();
         let front: Vec<f64> = self.tally.subset.iter().map(|&v| v as f64).collect();
         Bars {
@@ -696,13 +695,6 @@ impl<'a> SitePicker<'a> {
             y_title: "sites".into(),
         }
         .draw(canvas, x, y, w, h);
-    }
-
-    /// Just the histogram, sized for an on-screen area.
-    fn hist_svg(&self, w: f64, h: f64) -> String {
-        let mut canvas = Canvas::new(w, h);
-        self.draw_hist(&mut canvas, (0.0, 0.0, w, h), String::new());
-        canvas.finish()
     }
 
     fn render_hist(&mut self, frame: &mut Frame, area: Rect) {
@@ -740,21 +732,19 @@ impl<'a> SitePicker<'a> {
             stats,
         );
 
-        if let Some(picker) = self.images.clone().filter(|_| self.use_images) {
-            let mut image = std::mem::take(&mut self.plot);
-            let drawn = image.render(frame, plot, &picker, |w, h| self.hist_svg(w, h));
-            self.plot = image;
-            if drawn {
-                return;
-            }
+        let mut image = std::mem::take(&mut self.plot);
+        let drawn = self.controls.images().is_some_and(|picker| {
+            image.render(frame, plot, picker, |w, h| {
+                figure::svg(w, h, |c| self.draw_hist(c, (0.0, 0.0, w, h), String::new()))
+            })
+        });
+        self.plot = image;
+        if drawn {
+            return;
         }
         let col = &self.column;
-        let pointer = (!c.is_off(&self.filter)).then(|| col.key_of(c, c.get(&self.filter)));
-        let keeps_high = c.keeps_high();
-        let style = |k: i32| match pointer {
-            Some(p) if (keeps_high && k < p) || (!keeps_high && k > p) => ACCENTED,
-            _ => PLAIN,
-        };
+        let pointer = self.pointer_key();
+        let style = |k: i32| if c.drops(k, pointer) { ACCENTED } else { PLAIN };
         HistPlot {
             bins: col.hist.bins,
             kmin: col.hist.kmin,
@@ -777,19 +767,18 @@ impl Screen for SitePicker<'_> {
     }
 
     fn interrupt(&mut self) {
-        self.decision = Some(Outcome::Cancel);
+        self.decision = Some(Picked::Cancelled);
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
-        self.plot.invalidate();
-        if self.save.active() {
-            if let Some(prefix) = self.save.handle(key) {
-                let result = figure::save(&self.figure(), &prefix);
-                self.save.report(result);
+        if matches!(self.mode, Mode::Browse) {
+            match self.controls.key(key) {
+                Key::Pass => {}
+                Key::Used => return,
+                Key::Save(prefix) => return self.controls.save(&self.figure(), &prefix),
             }
-            return;
         }
-        self.save.dismiss();
+        self.plot.invalidate();
         match &mut self.mode {
             Mode::Edit(buf) => match key.code {
                 KeyCode::Char(ch)
@@ -825,11 +814,9 @@ impl Screen for SitePicker<'_> {
                 KeyCode::Char('y') => self.y_scale = self.y_scale.next(),
                 KeyCode::Char('e') => self.mode = Mode::Edit(String::new()),
                 KeyCode::Char(ch) if ch.is_ascii_digit() => self.mode = Mode::Edit(ch.to_string()),
-                KeyCode::Char('s') => self.save.open(),
-                KeyCode::Char('i') if self.images.is_some() => self.use_images ^= true,
-                KeyCode::Enter => self.decision = Some(Outcome::Apply(self.filter.clone())),
-                KeyCode::Char('p') => self.decision = Some(Outcome::Print(self.filter.clone())),
-                KeyCode::Char('q') | KeyCode::Esc => self.decision = Some(Outcome::Cancel),
+                KeyCode::Enter => self.decision = Some(Picked::Apply(self.filter.clone())),
+                KeyCode::Char('p') => self.decision = Some(Picked::PrintOnly(self.filter.clone())),
+                KeyCode::Char('q') | KeyCode::Esc => self.decision = Some(Picked::Cancelled),
                 _ => {}
             },
         }
@@ -844,14 +831,12 @@ impl Screen for SitePicker<'_> {
         ])
         .areas(frame.area());
 
-        let mut scales = format!("x {} · y {}", self.scale().name(), self.y_scale.name());
-        if self.images.is_some() {
-            scales += if self.use_images {
-                " · image"
-            } else {
-                " · text"
-            };
-        }
+        let scales = format!(
+            "x {} · y {}{}",
+            self.scale().name(),
+            self.y_scale.name(),
+            self.controls.tag()
+        );
         frame.render_widget(header("qc", &self.title, &scales), top);
 
         let mut spans = vec![Span::raw(" ")];
@@ -869,14 +854,14 @@ impl Screen for SitePicker<'_> {
         frame.render_widget(Paragraph::new(self.criteria_lines()), inner);
         self.render_hist(frame, right);
 
-        let help = match &self.mode {
-            _ if self.save.footer().is_some() => self.save.footer().unwrap_or_default(),
-            Mode::Edit(buf) => input_line(
+        let help = match (&self.mode, self.controls.footer()) {
+            (_, Some(line)) => line,
+            (Mode::Edit(buf), None) => input_line(
                 &format!("{} {}: ", self.criterion().label(), self.criterion().flag()),
                 buf,
                 &[("Enter", "set"), ("Esc", "back")],
             ),
-            Mode::Browse => {
+            (Mode::Browse, None) => {
                 let mut keys = vec![
                     ("↑/↓", "knob"),
                     ("←/→", "bin"),
@@ -887,15 +872,8 @@ impl Screen for SitePicker<'_> {
                     ("x/y", "scale"),
                     ("Tab", "modality"),
                 ];
-                if self.images.is_some() {
-                    keys.push(("i", "image/text"));
-                }
-                keys.extend([
-                    ("s", "save"),
-                    ("Enter", "apply"),
-                    ("p", "print flags"),
-                    ("q", "cancel"),
-                ]);
+                self.controls.help_keys(&mut keys);
+                keys.extend([("Enter", "apply"), ("p", "print flags"), ("q", "cancel")]);
                 help_line(&keys)
             }
         };
@@ -904,6 +882,7 @@ impl Screen for SitePicker<'_> {
 }
 
 /// How a picker session ended.
+#[derive(Debug, Clone)]
 pub enum Picked {
     /// No terminal, or no site table: the thresholds stand as given.
     Skipped,
@@ -941,14 +920,9 @@ pub fn run_site_picker(
         return Ok(Picked::Skipped);
     }
     let mut picker = SitePicker::new(&file_name(input_dir), views, filter.clone());
-    picker.images = term::picker();
-    picker.use_images = picker.images.is_some();
+    picker.controls = Controls::new("qc_sites").detect();
     run_screen(&mut picker)?;
-    Ok(match picker.decision {
-        Some(Outcome::Apply(f)) => Picked::Apply(f),
-        Some(Outcome::Print(f)) => Picked::PrintOnly(f),
-        Some(Outcome::Cancel) | None => Picked::Cancelled,
-    })
+    Ok(picker.decision.unwrap_or(Picked::Cancelled))
 }
 
 #[cfg(test)]

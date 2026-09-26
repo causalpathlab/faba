@@ -58,9 +58,8 @@ pub fn picker() -> Option<Picker> {
         .clone()
 }
 
-/// Rasterise `svg` at `scale` pixels per unit, on white.
-pub fn raster(svg: &str, scale: f32) -> anyhow::Result<DynamicImage> {
-    let tree = usvg::Tree::from_str(svg, &options())?;
+/// `tree` rendered at `scale` pixels per unit, on white.
+pub(super) fn pixmap(tree: &usvg::Tree, scale: f32) -> anyhow::Result<resvg::tiny_skia::Pixmap> {
     let size = tree
         .size()
         .to_int_size()
@@ -70,14 +69,31 @@ pub fn raster(svg: &str, scale: f32) -> anyhow::Result<DynamicImage> {
         .ok_or_else(|| anyhow::anyhow!("figure too large to rasterise"))?;
     pixmap.fill(resvg::tiny_skia::Color::WHITE);
     resvg::render(
-        &tree,
+        tree,
         resvg::tiny_skia::Transform::from_scale(scale, scale),
         &mut pixmap.as_mut(),
     );
+    Ok(pixmap)
+}
+
+/// Rasterise `svg` at `scale` pixels per unit, on white.
+fn raster(svg: &str, scale: f32) -> anyhow::Result<DynamicImage> {
+    let pixmap = pixmap(&usvg::Tree::from_str(svg, &options())?, scale)?;
     let (w, h) = (pixmap.width(), pixmap.height());
     let rgba = RgbaImage::from_raw(w, h, pixmap.take())
         .ok_or_else(|| anyhow::anyhow!("pixel buffer size mismatch"))?;
     Ok(DynamicImage::ImageRgba8(rgba))
+}
+
+/// Run a view when stdin and stdout are a terminal; otherwise say why not
+/// and carry on without it.
+pub fn when_terminal(view: impl FnOnce() -> anyhow::Result<()>) -> anyhow::Result<()> {
+    if data_beans::interactive::tui_available() {
+        view()
+    } else {
+        log::warn!("--interactive needs stdin and stdout on a terminal; skipping the view");
+        Ok(())
+    }
 }
 
 /// One plot area drawn as an image: rebuilt only when marked stale or when

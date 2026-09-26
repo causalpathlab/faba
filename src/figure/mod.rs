@@ -10,6 +10,7 @@ pub mod term;
 use data_beans::interactive::ui::{compact, input_line, Scale, DIM, HIGHLIGHT};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::text::{Line, Span};
+use ratatui_image::picker::Picker;
 
 /// Text and axes.
 pub const INK: &str = "#1a1a1a";
@@ -26,11 +27,20 @@ const FONT: &str = "Helvetica, Arial, 'DejaVu Sans', sans-serif";
 /// PNG pixels per SVG unit (the SVG is laid out in points: 3x is 216 dpi).
 const PNG_SCALE: f32 = 3.0;
 
-fn esc(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
+/// Escape text for SVG content and attributes.
+pub(crate) fn esc(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -151,6 +161,13 @@ impl Canvas {
             body = self.body
         )
     }
+}
+
+/// A `w` x `h` drawing made by `draw`, as SVG.
+pub fn svg(w: f64, h: f64, draw: impl FnOnce(&mut Canvas)) -> String {
+    let mut c = Canvas::new(w, h);
+    draw(&mut c);
+    c.finish()
 }
 
 /// `v` on a view's y scale, as the terminal histogram draws it.
@@ -277,7 +294,7 @@ fn fontdb() -> Arc<usvg::fontdb::Database> {
 }
 
 /// `prefix` without a trailing `.pdf` or `.png`, so either spelling works.
-pub fn strip_extension(prefix: &str) -> &str {
+fn strip_extension(prefix: &str) -> &str {
     prefix
         .strip_suffix(".pdf")
         .or_else(|| prefix.strip_suffix(".png"))
@@ -297,34 +314,75 @@ fn options() -> usvg::Options<'static> {
 pub fn save(svg: &str, prefix: &str) -> anyhow::Result<Vec<String>> {
     let prefix = strip_extension(prefix);
     let tree = usvg::Tree::from_str(svg, &options())?;
-
     let pdf = svg2pdf::to_pdf(&tree, Default::default(), Default::default())
         .map_err(|e| anyhow::anyhow!("PDF conversion failed: {e:?}"))?;
     let pdf_path = format!("{prefix}.pdf");
     std::fs::write(&pdf_path, pdf)?;
-
-    let size = tree
-        .size()
-        .to_int_size()
-        .scale_by(PNG_SCALE)
-        .ok_or_else(|| anyhow::anyhow!("figure has no size"))?;
-    let mut pixmap = resvg::tiny_skia::Pixmap::new(size.width(), size.height())
-        .ok_or_else(|| anyhow::anyhow!("figure too large to rasterise"))?;
-    pixmap.fill(resvg::tiny_skia::Color::WHITE);
-    resvg::render(
-        &tree,
-        resvg::tiny_skia::Transform::from_scale(PNG_SCALE, PNG_SCALE),
-        &mut pixmap.as_mut(),
-    );
     let png_path = format!("{prefix}.png");
-    pixmap.save_png(&png_path)?;
+    term::pixmap(&tree, PNG_SCALE)?.save_png(&png_path)?;
     Ok(vec![pdf_path, png_path])
 }
 
-/// The save-as prompt every view shares: `s` opens it with a suggested
-/// name, Enter confirms, Esc closes; the outcome shows until the next key.
+/// What a key did to a [`LineInput`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Edit {
+    /// The line is still open (or the key was not for it).
+    Typing,
+    Cancelled,
+    /// Enter, with the trimmed text.
+    Submitted(String),
+}
+
+/// A one-line text input: typing, Backspace, Esc to cancel, Enter to submit.
+pub struct LineInput {
+    buf: Option<String>,
+    max: usize,
+}
+
+impl LineInput {
+    pub fn new(max: usize) -> Self {
+        Self { buf: None, max }
+    }
+
+    pub fn open(&mut self, initial: &str) {
+        self.buf = Some(initial.to_string());
+    }
+
+    pub fn text(&self) -> Option<&str> {
+        self.buf.as_deref()
+    }
+
+    pub fn active(&self) -> bool {
+        self.buf.is_some()
+    }
+
+    pub fn handle(&mut self, key: KeyEvent) -> Edit {
+        let Some(buf) = self.buf.as_mut() else {
+            return Edit::Typing;
+        };
+        match key.code {
+            KeyCode::Char(ch) if buf.len() < self.max => buf.push(ch),
+            KeyCode::Backspace => {
+                buf.pop();
+            }
+            KeyCode::Esc => {
+                self.buf = None;
+                return Edit::Cancelled;
+            }
+            KeyCode::Enter => {
+                let text = self.buf.take().unwrap_or_default();
+                return Edit::Submitted(text.trim().to_string());
+            }
+            _ => {}
+        }
+        Edit::Typing
+    }
+}
+
+/// The save-as prompt every view shares: it opens with a suggested name,
+/// Enter confirms, Esc closes; the outcome shows until the next key.
 pub struct SavePrompt {
-    input: Option<String>,
+    input: LineInput,
     status: Option<Result<String, String>>,
     default: String,
 }
@@ -332,41 +390,30 @@ pub struct SavePrompt {
 impl SavePrompt {
     pub fn new(default: &str) -> Self {
         Self {
-            input: None,
+            input: LineInput::new(512),
             status: None,
             default: default.to_string(),
         }
     }
 
     pub fn active(&self) -> bool {
-        self.input.is_some()
+        self.input.active()
     }
 
     pub fn open(&mut self) {
-        self.input = Some(self.default.clone());
+        self.input.open(&self.default);
         self.status = None;
     }
 
     /// Handle a key while open: `Some(prefix)` once the user confirms.
     pub fn handle(&mut self, key: KeyEvent) -> Option<String> {
-        let buf = self.input.as_mut()?;
-        match key.code {
-            KeyCode::Char(ch) if buf.len() < 512 => buf.push(ch),
-            KeyCode::Backspace => {
-                buf.pop();
+        match self.input.handle(key) {
+            Edit::Submitted(name) if !name.is_empty() => {
+                self.default = name.clone();
+                Some(name)
             }
-            KeyCode::Esc => self.input = None,
-            KeyCode::Enter => {
-                let name = self.input.take().unwrap_or_default();
-                let name = name.trim();
-                if !name.is_empty() {
-                    self.default = name.to_string();
-                    return Some(name.to_string());
-                }
-            }
-            _ => {}
+            _ => None,
         }
-        None
     }
 
     /// Record how a save went, for the footer.
@@ -384,7 +431,7 @@ impl SavePrompt {
 
     /// The footer while the prompt or an outcome is showing.
     pub fn footer(&self) -> Option<Line<'static>> {
-        if let Some(buf) = &self.input {
+        if let Some(buf) = self.input.text() {
             return Some(input_line(
                 "save as (.pdf + .png): ",
                 buf,
@@ -393,8 +440,107 @@ impl SavePrompt {
         }
         self.status.as_ref().map(|s| match s {
             Ok(msg) => Line::from(Span::styled(format!(" {msg}"), DIM)),
-            Err(msg) => Line::from(Span::styled(format!(" {msg}"), HIGHLIGHT)),
+            Err(msg) => status_line(msg),
         })
+    }
+}
+
+/// A footer message in the accent colour.
+pub fn status_line(msg: &str) -> Line<'static> {
+    Line::from(Span::styled(format!(" {msg}"), HIGHLIGHT))
+}
+
+/// What [`Controls::key`] made of a key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Key {
+    /// Not a controls key: the view handles it.
+    Pass,
+    /// Used by the controls; nothing for the view to do.
+    Used,
+    /// A save was confirmed under this name: draw the figure and call
+    /// [`Controls::save`].
+    Save(String),
+}
+
+/// What every view's figure needs: the save prompt (`s`), and drawing plots
+/// as images where the terminal can (`i` switches to text and back).
+pub struct Controls {
+    save: SavePrompt,
+    picker: Option<Picker>,
+    images: bool,
+}
+
+impl Controls {
+    /// Text plots only; [`Controls::detect`] asks the terminal for images.
+    pub fn new(default_name: &str) -> Self {
+        Self {
+            save: SavePrompt::new(default_name),
+            picker: None,
+            images: false,
+        }
+    }
+
+    /// Use images if the terminal has them. Call before the view opens.
+    pub fn detect(mut self) -> Self {
+        self.picker = term::picker();
+        self.images = self.picker.is_some();
+        self
+    }
+
+    #[cfg(test)]
+    pub fn with_picker(mut self, picker: Picker) -> Self {
+        self.picker = Some(picker);
+        self.images = true;
+        self
+    }
+
+    /// Handle `key` if it is for the save prompt, `s` or `i`.
+    pub fn key(&mut self, key: KeyEvent) -> Key {
+        if self.save.active() {
+            return match self.save.handle(key) {
+                Some(prefix) => Key::Save(prefix),
+                None => Key::Used,
+            };
+        }
+        self.save.dismiss();
+        match key.code {
+            KeyCode::Char('s') => self.save.open(),
+            KeyCode::Char('i') if self.picker.is_some() => self.images ^= true,
+            _ => return Key::Pass,
+        }
+        Key::Used
+    }
+
+    /// Save `svg` under the confirmed `prefix` and show how it went.
+    pub fn save(&mut self, svg: &str, prefix: &str) {
+        self.save.report(save(svg, prefix));
+    }
+
+    /// The picker to draw images with, when images are on.
+    pub fn images(&self) -> Option<&Picker> {
+        self.picker.as_ref().filter(|_| self.images)
+    }
+
+    /// Header suffix naming the plot mode, when there is a choice.
+    pub fn tag(&self) -> &'static str {
+        match (&self.picker, self.images) {
+            (None, _) => "",
+            (Some(_), true) => " · image",
+            (Some(_), false) => " · text",
+        }
+    }
+
+    /// The `i` and `s` help keys.
+    pub fn help_keys(&self, keys: &mut Vec<(&'static str, &'static str)>) {
+        if self.picker.is_some() {
+            keys.push(("i", "image/text"));
+        }
+        keys.push(("s", "save"));
+    }
+
+    /// The footer while the save prompt or its outcome is showing.
+    pub fn footer(&self) -> Option<Line<'static>> {
+        self.save.footer()
     }
 }
 

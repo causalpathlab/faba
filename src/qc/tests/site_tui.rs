@@ -241,18 +241,18 @@ fn keys_type_reset_off_and_decide() {
     assert_eq!(p.filter.site_min_coverage, start.site_min_coverage);
     press(&mut p, KeyCode::Enter);
     assert!(p.done());
-    let Some(Outcome::Apply(got)) = p.decision.clone() else {
+    let Some(Picked::Apply(got)) = p.decision.clone() else {
         panic!("Enter applies");
     };
     assert_eq!(qc_flags(&got), qc_flags(&start));
 
     let mut q = picker(&t, None, start.clone());
     press(&mut q, KeyCode::Char('q'));
-    assert!(matches!(q.decision, Some(Outcome::Cancel)));
+    assert!(matches!(q.decision, Some(Picked::Cancelled)));
 
     let mut r = picker(&t, None, start);
     press(&mut r, KeyCode::Char('p'));
-    assert!(matches!(r.decision, Some(Outcome::Print(_))));
+    assert!(matches!(r.decision, Some(Picked::PrintOnly(_))));
 }
 
 #[test]
@@ -364,14 +364,13 @@ fn saves_the_view_as_pdf_and_png() {
 fn draws_through_the_image_path() {
     let t = table(M6A, 400);
     let mut p = picker(&t, None, SiteFilterArgs::default_values());
-    p.images = Some(ratatui_image::picker::Picker::halfblocks());
-    p.use_images = true;
+    p.controls = Controls::new("x").with_picker(ratatui_image::picker::Picker::halfblocks());
     let mut term = Terminal::new(TestBackend::new(120, 30)).unwrap();
     term.draw(|f| p.render(f)).unwrap();
     press(&mut p, KeyCode::Right);
     term.draw(|f| p.render(f)).unwrap();
     press(&mut p, KeyCode::Char('i'));
-    assert!(!p.use_images);
+    assert!(p.controls.images().is_none());
     term.draw(|f| p.render(f)).unwrap();
 }
 
