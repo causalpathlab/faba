@@ -1,17 +1,17 @@
 //! Full-screen sequence logo for `faba pwm --interactive`.
 //!
 //! One stack of letters per position around the sites, tallest on top, in
-//! information content (bits) or frequency. Letters are told apart by glyph,
-//! not colour; the site itself (position 0) is in the accent colour. A cursor
-//! reads out a position's counts.
+//! information content (bits) or frequency, in the usual logo colours; the
+//! site itself (position 0) is marked in the accent colour. A cursor reads
+//! out a position's counts.
 
 use data_beans::interactive::ui::{
-    header, help_line, panel, run_screen, Screen, ACCENTED, DIM, HIGHLIGHT, PLAIN,
+    header, help_line, panel, run_screen, Screen, DIM, HIGHLIGHT, PLAIN,
 };
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
@@ -23,6 +23,27 @@ use ratatui_image::picker::Picker;
 
 /// Logo order: alphabetical, as sequence logos are usually keyed.
 const BASES: [char; 4] = ['A', 'C', 'G', 'T'];
+
+/// The usual sequence-logo colours, in [`BASES`] order: A green, C blue,
+/// G amber, T red.
+const BASE_RGB: [(u8, u8, u8); 4] = [
+    (0x10, 0x96, 0x48),
+    (0x25, 0x5c, 0x99),
+    (0xf7, 0xb3, 0x2b),
+    (0xd6, 0x28, 0x39),
+];
+
+fn base_hex(b: usize) -> String {
+    let (r, g, bl) = BASE_RGB[b];
+    format!("#{r:02x}{g:02x}{bl:02x}")
+}
+
+fn base_style(b: usize) -> Style {
+    let (r, g, bl) = BASE_RGB[b];
+    Style::new()
+        .fg(Color::Rgb(r, g, bl))
+        .add_modifier(Modifier::BOLD)
+}
 
 /// Width of the y-axis gutter.
 const GUTTER: u16 = 6;
@@ -244,15 +265,19 @@ impl PwmView {
             let heights = col.heights(self.mode);
             let mut order: Vec<usize> = (0..4).collect();
             order.sort_by(|&a, &b| heights[a].total_cmp(&heights[b]));
-            let fill = if self.rel(j) == 0 { ACCENT } else { INK };
             let mut y = top + ph;
             for &b in &order {
                 let lh = heights[b] / top_value * ph;
                 y -= lh;
-                c.glyph(x + 0.5, y, cw - 1.0, lh, BASES[b], fill);
+                c.glyph(x + 0.5, y, cw - 1.0, lh, BASES[b], &base_hex(b));
             }
             let rel = self.rel(j);
+            if rel == 0 {
+                // The site: an accent tick under the axis.
+                c.rect(x + 0.5, top + ph + 1.0, cw - 1.0, 2.5, ACCENT);
+            }
             if rel % 5 == 0 || n <= 25 {
+                let colour = if rel == 0 { ACCENT } else { INK };
                 let label = rel.to_string();
                 c.text(
                     x + cw / 2.0,
@@ -260,11 +285,11 @@ impl PwmView {
                     &label,
                     8.0,
                     Anchor::Middle,
-                    INK,
+                    colour,
                 );
             }
             if cursor == Some(j) {
-                c.rect(x + 0.5, top + ph + 17.0, cw - 1.0, 3.0, ACCENT);
+                c.rect(x + 0.5, top + ph + 17.0, cw - 1.0, 3.0, INK);
             }
         }
         let mid = left + cw * n as f64 / 2.0;
@@ -316,8 +341,6 @@ impl PwmView {
             let alloted = allot(&heights, rows);
             let mut order: Vec<usize> = (0..4).collect();
             order.sort_by(|&a, &b| heights[a].total_cmp(&heights[b]));
-            let base = if self.rel(j) == 0 { ACCENTED } else { PLAIN };
-            let style = base.add_modifier(Modifier::BOLD);
             // Smallest at the bottom, tallest on top. A letter with room
             // for it is drawn from its bitmap; a thin one repeats its glyph.
             let mut bottom = chart.bottom();
@@ -340,7 +363,7 @@ impl PwmView {
                         };
                         buf[(x0 + dx, y)]
                             .set_symbol(&symbol)
-                            .set_style(Style::reset().patch(style));
+                            .set_style(Style::reset().patch(base_style(b)));
                     }
                 }
                 bottom -= rows;
