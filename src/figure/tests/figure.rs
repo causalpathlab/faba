@@ -14,6 +14,7 @@ fn panel() -> String {
         front: Some(&front),
         accent: &|i| i < 2,
         y_scale: Scale::Log,
+        y_max: None,
         ticks: vec![(0, "0".into()), (4, "L4 & <x>".into())],
         pointer: Some(2),
         marks: vec![1, 3],

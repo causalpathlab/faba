@@ -206,6 +206,8 @@ pub struct Bars<'a> {
     pub front: Option<&'a [f64]>,
     pub accent: &'a dyn Fn(usize) -> bool,
     pub y_scale: Scale,
+    /// Top of the y axis; `None` scales to the tallest bar.
+    pub y_max: Option<f64>,
     pub ticks: Vec<(usize, String)>,
     pub pointer: Option<usize>,
     pub marks: Vec<usize>,
@@ -221,11 +223,14 @@ impl Bars<'_> {
         c.bold(x + left, y + 13.0, &self.title, 11.0, Anchor::Start, INK);
         let n = self.values.len().max(1);
         let bw = pw / n as f64;
-        let max = self
+        let tallest = self
             .values
             .iter()
             .map(|&v| scaled(self.y_scale, v))
             .fold(0.0, f64::max);
+        let max = self
+            .y_max
+            .map_or(tallest, |m| scaled(self.y_scale, m).max(tallest));
         let height = |v: f64| {
             if max <= 0.0 {
                 0.0

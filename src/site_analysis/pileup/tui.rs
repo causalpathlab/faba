@@ -429,6 +429,21 @@ impl<'a> PileupView<'a> {
         lanes.unwrap_or(1)
     }
 
+    /// One y-axis top for every read track (not depth), so the tracks are
+    /// drawn on the same scale: the tallest bar, total included, over them.
+    fn shared_max(&self, edges: &BinEdges) -> Option<f64> {
+        let tallest = self
+            .tracks
+            .iter()
+            .filter(|t| t.ranges.is_none())
+            .map(|t| {
+                let (front, behind) = t.bin(edges);
+                behind.unwrap_or(front).into_iter().fold(0.0, f64::max)
+            })
+            .fold(0.0, f64::max);
+        (tallest > 0.0).then_some(tallest)
+    }
+
     /// The contrast per bar over the window (raw sums, never log).
     fn contrast_values(&self, edges: &BinEdges) -> Vec<Option<f64>> {
         let Some(measure) = self.contrast else {
@@ -644,6 +659,7 @@ impl<'a> PileupView<'a> {
             front: stacked.then_some(front.as_slice()),
             accent: &|_| stacked,
             y_scale: self.y_scale,
+            y_max: self.shared_max(&self.edges()),
             ticks,
             pointer,
             marks,
@@ -778,6 +794,7 @@ impl Screen for PileupView<'_> {
             .collect();
         let label = |k: i32| ticks.get(k as usize).cloned().flatten();
         let pointer = Some(self.cursor_col() as i32);
+        let shared = self.shared_max(&edges);
         let mut plots = std::mem::take(&mut self.plots);
         plots.resize_with(rows.len(), PlotImage::default);
         for (k, (&row, &area)) in rows.iter().zip(&areas[1..areas.len() - 2]).enumerate() {
@@ -827,6 +844,7 @@ impl Screen for PileupView<'_> {
                 style: &|_| if stacked { ACCENTED } else { PLAIN },
                 subset: stacked.then_some(front.as_slice()),
                 y_scale: self.y_scale,
+                y_max: shared,
                 pointer,
                 marks,
                 x_label: Some(&label),

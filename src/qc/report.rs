@@ -358,6 +358,7 @@ fn report_figure(rows: &[ReportRow]) -> String {
             front: None,
             accent: &|_| false,
             y_scale: Scale::Linear,
+            y_max: None,
             ticks,
             pointer: None,
             marks: Vec::new(),

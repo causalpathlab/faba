@@ -396,3 +396,28 @@ fn genes_arriving_late_show_on_the_next_frame() {
         "only the opened gene: {text}"
     );
 }
+
+#[test]
+fn read_tracks_share_one_scale() {
+    let m = positions();
+    let big: Vec<(i64, f64)> = m.iter().map(|&(p, v)| (p, v * 10.0)).collect();
+    let depth = [(1_000_000, 1_100_000, 1e9)];
+    let tracks = vec![
+        Track::single("a", "sum", &m, false),
+        Track::single("b", "sum", &big, false),
+        Track::depth("depth", &depth),
+    ];
+    let mut v = PileupView::new("GENE1", "chr1", tracks, EXTENT);
+    screen(&mut v, 110, 30);
+    let edges = v.edges();
+    let tallest_b = v.tracks[1].bin(&edges).0.into_iter().fold(0.0, f64::max);
+    assert_eq!(
+        v.shared_max(&edges),
+        Some(tallest_b),
+        "the larger track sets it; depth does not"
+    );
+    // Both read panels label the same top in the figure.
+    let svg = v.figure();
+    let top = data_beans::interactive::ui::compact(tallest_b);
+    assert!(svg.matches(&format!(">{top}<")).count() >= 2, "{top}");
+}
