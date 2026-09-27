@@ -86,7 +86,6 @@ fn empty_shapes_are_not_written() {
         values: &values,
         ticks: Vec::new(),
         pointer: None,
-        marks: Vec::new(),
         title: String::new(),
         x_title: String::new(),
         y_title: String::new(),

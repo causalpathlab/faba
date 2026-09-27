@@ -203,16 +203,6 @@ fn channel_rows_carry_their_channel() {
 }
 
 #[test]
-fn merged_positions_sum_shared_sites() {
-    let a = [(10, 1.0), (20, 2.0)];
-    let b = [(5, 4.0), (20, 3.0), (30, 1.0)];
-    assert_eq!(
-        merge_positions(&a, &b),
-        vec![(5, 4.0), (10, 1.0), (20, 5.0), (30, 1.0)]
-    );
-}
-
-#[test]
 fn channels_are_named_by_modality() {
     assert_eq!(channel_names("m6a"), ("methylated", "unmethylated"));
     assert_eq!(channel_names("m6A"), ("methylated", "unmethylated"));
@@ -232,11 +222,11 @@ fn only_the_opened_gene_is_drawn() {
         symbol: symbol.into(),
     };
     let genes = [model("GENE1"), model("GENE2")];
-    let one = genes_to_draw(&genes, "ENSG1_GENE2");
+    let one = genes_to_draw(&genes, "ENSG1_GENE2", false);
     assert_eq!(one.len(), 1);
     assert_eq!(&*one[0].symbol, "GENE2");
     assert_eq!(
-        genes_to_draw(&genes, "chr1:0-100").len(),
+        genes_to_draw(&genes, "chr1:0-100", true).len(),
         2,
         "a locus shows all"
     );

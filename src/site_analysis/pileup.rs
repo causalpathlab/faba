@@ -9,7 +9,7 @@ use crate::site_analysis::miami::render::{render_miami, FigOpts, PanelData};
 use arrow::array::{Array, Float32Array, Int64Array, StringArray, UInt64Array};
 use clap::Args;
 use data_beans::aux::feature_names::FeatureNameKind;
-use data_beans::aux::feature_rows::{EDITED, METHYLATED, UNEDITED, UNMETHYLATED};
+use data_beans::aux::feature_rows::{ATOI, EDITED, METHYLATED, UNEDITED, UNMETHYLATED};
 use data_beans::hdf5_io::resolve_backend_file;
 use data_beans::sparse_io::open_sparse_matrix;
 use genomic_data::bed::Bed;
@@ -604,6 +604,7 @@ struct MatrixGeneData {
     gene: Box<str>,
     chr: Box<str>,
     modality: Box<str>,
+    total: Option<Vec<(i64, f64)>>,
     positions: Vec<(i64, f64)>,
 }
 
@@ -618,10 +619,10 @@ struct SiteAnnotation {
 /// How a modality's two channels are named on screen: A-to-I reads are
 /// converted or not, m6A reads methylated or not.
 pub(crate) fn channel_names(modality: &str) -> (&'static str, &'static str) {
-    if modality.eq_ignore_ascii_case("atoi") {
+    if modality.eq_ignore_ascii_case(ATOI) {
         ("converted", "unconverted")
     } else {
-        ("methylated", "unmethylated")
+        (METHYLATED, UNMETHYLATED)
     }
 }
 
@@ -785,7 +786,10 @@ struct GroupedMatrix {
     modality: Box<str>,
     /// celltype label -> sorted `(pos, value)`
     by_group: FxHashMap<Box<str>, Vec<(i64, f64)>>,
-    /// Rows the selection matched, over all files.
+    /// Both channels summed per position (all cells), when asked for and
+    /// the matrices have an unconverted channel.
+    total: Option<Vec<(i64, f64)>>,
+    /// Converted rows the selection matched, over all files.
     matched: usize,
 }
 
@@ -795,7 +799,7 @@ fn read_matrix_positions_grouped(
     signal: &PileupSignal,
     membership: Option<&CellMembership>,
     top_modality: &[Box<str>],
-    unconverted: bool,
+    with_total: bool,
 ) -> anyhow::Result<GroupedMatrix> {
     // Per group: pos -> aggregate. Multiple input files (e.g. replicates)
     // merge per genomic position; gene/chr labels reflect the union.
@@ -804,6 +808,9 @@ fn read_matrix_positions_grouped(
     let mut matched_chrs: Vec<Box<str>> = Vec::new();
     let mut total_matched = 0usize;
     let mut first_modality: Option<Box<str>> = None;
+    // Both channels summed per position, with `with_total`.
+    let mut totals: FxHashMap<i64, f64> = FxHashMap::default();
+    let mut unconverted_rows = 0usize;
 
     let modality_filter: Option<Vec<String>> = if top_modality.is_empty() {
         None
@@ -822,12 +829,12 @@ fn read_matrix_positions_grouped(
 
         let row_names = data.row_names()?;
 
-        let mut matched_rows: Vec<(usize, i64)> = Vec::new();
+        let mut matched_rows: Vec<(usize, i64, bool)> = Vec::new();
         for (idx, name) in row_names.iter().enumerate() {
             if let Some((gene_part, modality, chr, pos, converted)) = parse_row_channel(name) {
-                // The converted channel (or a channel-less row), or only the
-                // unconverted one.
-                if (converted == Some(false)) != unconverted {
+                // Unconverted rows count only toward the total.
+                let is_converted = converted != Some(false);
+                if !is_converted && !with_total {
                     continue;
                 }
                 if let Some(ref mf) = modality_filter {
@@ -836,10 +843,14 @@ fn read_matrix_positions_grouped(
                     }
                 }
                 if selector.selects(gene_part, chr, pos) {
-                    first_modality.get_or_insert_with(|| modality.into());
-                    *distinct_genes.entry(gene_part.into()).or_insert(0) += 1;
-                    matched_chrs.push(chr.into());
-                    matched_rows.push((idx, pos));
+                    if is_converted {
+                        first_modality.get_or_insert_with(|| modality.into());
+                        *distinct_genes.entry(gene_part.into()).or_insert(0) += 1;
+                        matched_chrs.push(chr.into());
+                    } else {
+                        unconverted_rows += 1;
+                    }
+                    matched_rows.push((idx, pos, is_converted));
                 }
             }
         }
@@ -847,7 +858,7 @@ fn read_matrix_positions_grouped(
         if matched_rows.is_empty() {
             continue;
         }
-        total_matched += matched_rows.len();
+        total_matched += matched_rows.iter().filter(|r| r.2).count();
 
         // Column index -> cell type (None to drop). Only needed when
         // stratifying; the all-cells path skips reading column names.
@@ -864,16 +875,18 @@ fn read_matrix_positions_grouped(
             }
         };
 
-        let local_to_pos: Vec<i64> = matched_rows.iter().map(|(_, pos)| *pos).collect();
-        let row_indices: Vec<usize> = matched_rows.iter().map(|(idx, _)| *idx).collect();
+        let local_to_pos: Vec<(i64, bool)> = matched_rows.iter().map(|r| (r.1, r.2)).collect();
+        let row_indices: Vec<usize> = matched_rows.iter().map(|r| r.0).collect();
         let (_nrow, _ncol, triplets) = data.read_triplets_by_rows(row_indices)?;
 
         // All-cells: pre-seed every matched position so zero-signal sites
         // still appear (axis markers), matching the legacy behavior.
         if membership.is_none() {
             let g = by_group.entry("".into()).or_default();
-            for &pos in &local_to_pos {
-                g.entry(pos).or_insert(PosAgg { sum: 0.0, nnz: 0 });
+            for &(pos, is_converted) in &local_to_pos {
+                if is_converted {
+                    g.entry(pos).or_insert(PosAgg { sum: 0.0, nnz: 0 });
+                }
             }
         }
 
@@ -889,7 +902,13 @@ fn read_matrix_positions_grouped(
                     None => continue,
                 },
             };
-            let pos = local_to_pos[local_idx];
+            let (pos, is_converted) = local_to_pos[local_idx];
+            if with_total {
+                *totals.entry(pos).or_insert(0.0) += *val as f64;
+            }
+            if !is_converted {
+                continue;
+            }
             let agg = by_group
                 .entry(group)
                 .or_default()
@@ -932,25 +951,32 @@ fn read_matrix_positions_grouped(
         })
         .collect();
 
+    // No unconverted rows (a matrix without that channel): no total.
+    let total = (unconverted_rows > 0).then(|| {
+        let mut total: Vec<(i64, f64)> = totals.into_iter().collect();
+        total.sort_unstable_by_key(|p| p.0);
+        total
+    });
     Ok(GroupedMatrix {
         gene,
         chr,
         modality: first_modality.unwrap_or_default(),
         by_group,
+        total,
         matched: total_matched,
     })
 }
 
-/// The selection's positions over `data_files`, or `None` when no row
-/// matched: the converted channel, or with `unconverted` the other one.
+/// The selection's converted positions over `data_files` (and with
+/// `with_total` both channels summed), or `None` when no row matched.
 fn read_matrix_positions(
     data_files: &[Box<str>],
     selector: &Selector,
     signal: &PileupSignal,
-    unconverted: bool,
+    with_total: bool,
 ) -> anyhow::Result<Option<MatrixGeneData>> {
     let grouped =
-        read_matrix_positions_grouped(data_files, selector, signal, None, &[], unconverted)?;
+        read_matrix_positions_grouped(data_files, selector, signal, None, &[], with_total)?;
     if grouped.matched == 0 {
         return Ok(None);
     }
@@ -966,6 +992,7 @@ fn read_matrix_positions(
         chr: grouped.chr,
         modality: grouped.modality,
         positions,
+        total: grouped.total,
     }))
 }
 
@@ -1219,20 +1246,6 @@ struct MatrixTrack {
     total: Option<Vec<(i64, f64)>>,
 }
 
-/// Two sorted position lists merged, values at a shared position summed.
-fn merge_positions(a: &[(i64, f64)], b: &[(i64, f64)]) -> Vec<(i64, f64)> {
-    let mut out: Vec<(i64, f64)> = a.iter().chain(b).copied().collect();
-    out.sort_unstable_by_key(|p| p.0);
-    out.dedup_by(|next, kept| {
-        let same = next.0 == kept.0;
-        if same {
-            kept.1 += next.1;
-        }
-        same
-    });
-    out
-}
-
 /// One selection loaded for drawing: each labelled matrix track (empty when
 /// none of its files hold the selection), the site annotation, the extent.
 struct Loaded {
@@ -1242,34 +1255,35 @@ struct Loaded {
     tracks: Vec<MatrixTrack>,
     sites: Option<SiteAnnotation>,
     extent: (i64, i64),
+    /// A searched locus rather than a gene: draw every gene in view.
+    locus: bool,
+    /// `--depth` bins over the extent.
+    depth: Vec<(i64, i64, f64)>,
 }
 
-/// Load `selector` for drawing. With `totals`, each matrix track also
-/// reads its unconverted channel, for the converted-over-total bars (not for
-/// `nnz`, where adding cells across channels would count cells twice).
+/// Load `selector` for drawing. With `totals`, each matrix track also sums
+/// both channels, for the converted-over-total bars (not for `nnz`, where
+/// adding cells across channels would count cells twice). A `locus` fixes
+/// the extent to a searched window.
 fn load(
     args: &PileupArgs,
     groups: &[TrackFiles],
     selector: &Selector,
     totals: bool,
+    locus: Option<(i64, i64)>,
 ) -> anyhow::Result<Loaded> {
     let totals = totals && !matches!(args.signal, PileupSignal::Nnz);
     let mut label: Option<(Box<str>, Box<str>, Box<str>)> = None;
     let mut tracks = Vec::with_capacity(groups.len());
     for g in groups {
-        let converted = match read_matrix_positions(&g.files, selector, &args.signal, false)? {
-            Some(m) => {
-                label.get_or_insert((m.gene, m.chr, m.modality));
-                m.positions
-            }
-            None => Vec::new(),
-        };
-        // No unconverted rows (a matrix without that channel): no total.
-        let total = match totals {
-            true => read_matrix_positions(&g.files, selector, &args.signal, true)?
-                .map(|m| merge_positions(&converted, &m.positions)),
-            false => None,
-        };
+        let (converted, total) =
+            match read_matrix_positions(&g.files, selector, &args.signal, totals)? {
+                Some(m) => {
+                    label.get_or_insert((m.gene, m.chr, m.modality));
+                    (m.positions, m.total)
+                }
+                None => (Vec::new(), None),
+            };
         tracks.push(MatrixTrack {
             label: g.label.clone(),
             converted,
@@ -1296,6 +1310,8 @@ fn load(
             (lo, all.max().unwrap_or(lo))
         }
     };
+    let extent = locus.unwrap_or(extent);
+    let depth = read_depth(&args.depth_files, &chr, extent)?;
     Ok(Loaded {
         gene,
         chr,
@@ -1303,19 +1319,26 @@ fn load(
         tracks,
         sites,
         extent,
+        locus: locus.is_some(),
+        depth,
     })
 }
 
-/// The gene models to draw: only the opened gene when the selection is
-/// one gene (matched by symbol), else every model (a searched locus).
-pub(crate) fn genes_to_draw<'a>(genes: &'a [GeneModel], selection: &str) -> Vec<&'a GeneModel> {
-    let symbol = selection.rsplit_once('_').map_or(selection, |(_, s)| s);
-    let picked: Vec<&GeneModel> = genes.iter().filter(|g| &*g.symbol == symbol).collect();
-    if picked.is_empty() {
-        genes.iter().collect()
-    } else {
-        picked
+/// The gene models to draw: every model for a searched locus, else the
+/// opened gene alone (its symbol matched as the selector matches rows).
+pub(crate) fn genes_to_draw<'a>(
+    genes: &'a [GeneModel],
+    selection: &str,
+    locus: bool,
+) -> Vec<&'a GeneModel> {
+    if locus {
+        return genes.iter().collect();
     }
+    let symbol = query_symbol(selection);
+    genes
+        .iter()
+        .filter(|g| g.symbol.eq_ignore_ascii_case(&symbol))
+        .collect()
 }
 
 /// Parse a `_depth` row name `chr:start-end`.
@@ -1334,8 +1357,7 @@ fn read_depth(
 ) -> anyhow::Result<Vec<(i64, i64, f64)>> {
     let mut bins: FxHashMap<(i64, i64), f64> = FxHashMap::default();
     for file in files {
-        let (backend, path) = resolve_backend_file(file, None)?;
-        let data = open_sparse_matrix(&path, &backend)?;
+        let data = crate::qc::matrix::open_matrix(file)?;
         let names = data.row_names()?;
         let rows: Vec<(usize, (i64, i64))> = names
             .iter()
@@ -1373,35 +1395,28 @@ fn browse(
     let is_log = matches!(args.signal, PileupSignal::Log10Sum);
     let (on, off) = channel_names(&loaded.modality);
     let stacked_name = format!("{on} / {off} ({})", args.signal.name());
-    let tracks: Vec<tui::Track> = loaded
+    let mut tracks: Vec<tui::Track> = loaded
         .tracks
         .iter()
         .map(|t| {
-            let name = if t.total.is_some() {
-                stacked_name.as_str()
-            } else {
-                args.signal.name()
+            let name = match t.total {
+                Some(_) => &stacked_name,
+                None => args.signal.name(),
             };
-            tui::Track {
-                label: &t.label,
-                name,
-                front: &t.converted,
-                behind: t.total.as_deref(),
-                ranges: None,
-                log: is_log,
-            }
+            let mut track = tui::Track::single(&t.label, name, &t.converted, is_log);
+            track.behind = t.total.as_deref();
+            track
         })
         .collect();
-    let depth = read_depth(&args.depth_files, &loaded.chr, loaded.extent)?;
-    let mut tracks = tracks;
     if !args.depth_files.is_empty() {
-        tracks.push(tui::Track::depth("depth", &depth));
+        tracks.push(tui::Track::depth("depth", &loaded.depth));
     }
     let view = tui::View {
         title: &loaded.gene,
         chr: &loaded.chr,
         extent: loaded.extent,
-        channels: channel_names(&loaded.modality),
+        on,
+        locus: loaded.locus,
         genes: genes.cloned(),
     };
     tui::show_pileup(view, tracks, status)
@@ -1459,9 +1474,8 @@ fn search(
             };
             let spec: Box<str> = format!("{}:{lo}-{hi}", r.chr).into();
             let selector = Selector::build(&[], &[spec]).map_err(|e| e.to_string())?;
-            let mut loaded =
-                load(args, groups, &selector, true).map_err(|_| format!("no sites in {query}"))?;
-            loaded.extent = (lo, hi);
+            let loaded = load(args, groups, &selector, true, Some((lo, hi)))
+                .map_err(|_| format!("no sites in {query}"))?;
             Ok(Found::View(loaded))
         }
         Some(Query::Gene(g)) => {
@@ -1473,7 +1487,7 @@ fn search(
                 .collect();
             match hits.as_slice() {
                 [] => Err(format!("no gene matches {g}")),
-                [one] => load(args, groups, &Selector::exact(&one.gene), true)
+                [one] => load(args, groups, &Selector::exact(&one.gene), true, None)
                     .map(Found::View)
                     .map_err(|e| e.to_string()),
                 _ => Ok(Found::List),
@@ -1485,7 +1499,7 @@ fn search(
 
 /// The annotation's gene models, filled by a thread so the browser opens
 /// at once; views pick them up when they arrive.
-pub(crate) type SharedModels = std::sync::Arc<std::sync::OnceLock<Vec<GeneModel>>>;
+pub(crate) type SharedModels = std::sync::Arc<std::sync::OnceLock<Result<Vec<GeneModel>, String>>>;
 
 /// Start reading `gtf` on a thread; `None` without an annotation.
 fn start_gene_models(gtf: Option<&str>) -> Option<SharedModels> {
@@ -1493,10 +1507,8 @@ fn start_gene_models(gtf: Option<&str>) -> Option<SharedModels> {
     let models = SharedModels::default();
     let slot = models.clone();
     std::thread::spawn(move || {
-        let read = load_gene_models_where(&gtf, |_| true).unwrap_or_else(|e| {
-            log::warn!("gene models from {gtf}: {e}");
-            Vec::new()
-        });
+        // Logs are paused under a view, so a failure is shown on its footer.
+        let read = load_gene_models_where(&gtf, |_| true).map_err(|e| format!("{gtf}: {e}"));
         let _ = slot.set(read);
     });
     Some(models)
@@ -1527,7 +1539,13 @@ fn interactive(
                 let query = match choice {
                     picker::Choice::Quit => return Ok(()),
                     picker::Choice::Gene(i) => {
-                        current = Some(load(args, groups, &Selector::exact(&genes[i].gene), true)?);
+                        current = Some(load(
+                            args,
+                            groups,
+                            &Selector::exact(&genes[i].gene),
+                            true,
+                            None,
+                        )?);
                         continue;
                     }
                     picker::Choice::Locus(q) => q,
@@ -1582,7 +1600,7 @@ pub fn run_pileup(args: &PileupArgs) -> anyhow::Result<()> {
         return run_miami_figure(args, &selector);
     }
 
-    let loaded = load(args, &groups, &selector, args.interactive)?;
+    let loaded = load(args, &groups, &selector, args.interactive, None)?;
     let (min_pos, max_pos) = loaded.extent;
     let max_sites = loaded
         .tracks

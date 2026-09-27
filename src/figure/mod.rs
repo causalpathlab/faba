@@ -300,12 +300,11 @@ impl Bars<'_> {
 }
 
 /// Signed bars around a zero line: positive up in the accent, negative
-/// down in grey; `None` draws no bar. Ticks, pointer and marks as [`Bars`].
+/// down in grey; `None` draws no bar. Ticks and pointer as [`Bars`].
 pub struct Diverging<'a> {
     pub values: &'a [Option<f64>],
     pub ticks: Vec<(usize, String)>,
     pub pointer: Option<usize>,
-    pub marks: Vec<usize>,
     pub title: String,
     pub x_title: String,
     pub y_title: String,
@@ -362,10 +361,6 @@ impl Diverging<'_> {
         c.line(px, zero, px + pw, zero, INK, 0.6);
         c.line(px, py, px, py + ph, INK, 0.6);
         let base = py + ph;
-        for &m in &self.marks {
-            let mx = px + (m as f64 + 0.5) * bw;
-            c.line(mx, base, mx, base + 3.0, MUTED, 0.5);
-        }
         for (i, label) in &self.ticks {
             let tx = px + (*i as f64 + 0.5) * bw;
             c.line(tx, base, tx, base + 4.0, INK, 0.6);

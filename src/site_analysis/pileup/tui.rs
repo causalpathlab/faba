@@ -50,7 +50,6 @@ pub struct Track<'a> {
 
 impl<'a> Track<'a> {
     /// A track with no total.
-    #[cfg(test)]
     pub fn single(label: &'a str, name: &'a str, front: &'a [(i64, f64)], log: bool) -> Self {
         Track {
             label,
@@ -93,10 +92,10 @@ impl<'a> Track<'a> {
 
 /// Per column, the value of the genomic bin covering the column's middle.
 fn ranges_per_column(ranges: &[(i64, i64, f64)], edges: &BinEdges) -> Vec<f64> {
-    let (n, span) = (edges.num_bins as i64, edges.span() as i64);
-    (0..n)
+    (0..edges.num_bins)
         .map(|k| {
-            let mid = edges.min_pos + (2 * k + 1) * span / (2 * n);
+            let (start, stop) = edges.col_range(k);
+            let mid = (start + stop) / 2;
             let i = ranges.partition_point(|r| r.1 <= mid);
             ranges.get(i).filter(|r| r.0 <= mid).map_or(0.0, |r| r.2)
         })
@@ -153,7 +152,7 @@ impl Measure {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Row {
     Track(usize),
-    Contrast,
+    Contrast(Measure),
     /// The annotation's genes in view.
     Genes,
 }
@@ -248,8 +247,10 @@ pub struct View<'a> {
     pub title: &'a str,
     pub chr: &'a str,
     pub extent: (i64, i64),
-    /// The two channels' names, e.g. `("methylated", "unmethylated")`.
-    pub channels: (&'static str, &'static str),
+    /// The converted channel's name, e.g. `methylated`.
+    pub on: &'static str,
+    /// A searched locus rather than a gene: draw every gene in view.
+    pub locus: bool,
     /// The annotation's gene models, possibly still loading.
     pub genes: Option<SharedModels>,
 }
@@ -297,8 +298,10 @@ pub struct PileupView<'a> {
     plots: Vec<PlotImage>,
     /// How the first two tracks are compared, when both carry totals.
     contrast: Option<Measure>,
-    /// The two channels' names, e.g. `("methylated", "unmethylated")`.
-    channels: (&'static str, &'static str),
+    /// The converted channel's name, e.g. `methylated`.
+    on: &'static str,
+    /// A searched locus rather than a gene: draw every gene in view.
+    locus: bool,
     /// The genes to draw, once the annotation has arrived.
     genes: Vec<GeneModel>,
     /// The annotation while it is still loading.
@@ -315,6 +318,8 @@ impl<'a> PileupView<'a> {
         sites.sort_unstable();
         sites.dedup();
         let (lo, hi) = (extent.0.min(extent.1), extent.0.max(extent.1));
+        // Compare the first two tracks when both have totals.
+        let paired = tracks.iter().take(2).filter(|t| t.behind.is_some()).count() == 2;
         Self {
             title: title.to_string(),
             chr: chr.to_string(),
@@ -329,35 +334,32 @@ impl<'a> PileupView<'a> {
             search: LineInput::new(128),
             status: None,
             plots: Vec::new(),
-            contrast: None,
-            channels: ("methylated", "unmethylated"),
+            contrast: paired.then_some(Measure::Difference),
+            on: "methylated",
+            locus: false,
             genes: Vec::new(),
             pending_genes: None,
             exit: None,
         }
-        .with_contrast()
     }
 
-    /// Compare the first two tracks when both have totals.
-    fn with_contrast(mut self) -> Self {
-        let totals = self.tracks.iter().take(2).filter(|t| t.behind.is_some());
-        if totals.count() == 2 {
-            self.contrast = Some(Measure::Difference);
-        }
-        self
-    }
-
-    /// Pick this view's genes out of the annotation once it has arrived:
-    /// the opened gene alone, else those on this chromosome.
+    /// Pick this view's genes out of the annotation once it has arrived,
+    /// keeping those on this chromosome within the extent.
     fn take_genes(&mut self) {
-        let Some(models) = self.pending_genes.as_ref().and_then(|m| m.get()) else {
+        let Some(read) = self.pending_genes.as_ref().and_then(|m| m.get()) else {
             return;
         };
-        self.genes = genes_to_draw(models, &self.title)
-            .into_iter()
-            .filter(|g| chr_eq(&g.chr, &self.chr))
-            .cloned()
-            .collect();
+        let (lo, hi) = self.extent;
+        match read {
+            Ok(models) => {
+                self.genes = genes_to_draw(models, &self.title, self.locus)
+                    .into_iter()
+                    .filter(|g| chr_eq(&g.chr, &self.chr) && g.hi > lo && g.lo <= hi)
+                    .cloned()
+                    .collect();
+            }
+            Err(e) => self.status = Some(format!("gene models: {e}")),
+        }
         self.pending_genes = None;
         self.plots.iter_mut().for_each(PlotImage::invalidate);
     }
@@ -365,7 +367,7 @@ impl<'a> PileupView<'a> {
     /// The rows top to bottom: the contrast first, as the main row, then
     /// the tracks.
     fn rows(&self) -> Vec<Row> {
-        let contrast = self.contrast.map(|_| Row::Contrast);
+        let contrast = self.contrast.map(Row::Contrast);
         let genes = (!self.genes.is_empty()).then_some(Row::Genes);
         contrast
             .into_iter()
@@ -375,17 +377,16 @@ impl<'a> PileupView<'a> {
     }
 
     fn row_title(&self, row: Row) -> String {
-        match (row, self.contrast) {
-            (Row::Track(i), _) => {
+        match row {
+            Row::Track(i) => {
                 let t = &self.tracks[i];
                 format!("{} · {}", t.label, t.name)
             }
-            (Row::Contrast, Some(m)) => {
+            Row::Contrast(m) => {
                 let (a, b) = (self.tracks[0].label, self.tracks[1].label);
-                format!("{a} vs {b} · {}", m.name(self.channels.0))
+                format!("{a} vs {b} · {}", m.name(self.on))
             }
-            (Row::Contrast, None) => String::new(),
-            (Row::Genes, _) => "genes".into(),
+            Row::Genes => "genes".into(),
         }
     }
 
@@ -445,13 +446,10 @@ impl<'a> PileupView<'a> {
     }
 
     /// The contrast per bar over the window (raw sums, never log).
-    fn contrast_values(&self, edges: &BinEdges) -> Vec<Option<f64>> {
-        let Some(measure) = self.contrast else {
-            return Vec::new();
-        };
+    fn contrast_values(&self, measure: Measure, edges: &BinEdges) -> Vec<Option<f64>> {
         let counts = |t: &Track| {
             let front = edges.bin(t.front, false);
-            let total = edges.bin(t.behind.unwrap_or(t.front), false);
+            let total = edges.bin(t.behind.unwrap_or_default(), false);
             (front, total)
         };
         let ((ma, na), (mb, nb)) = (counts(&self.tracks[0]), counts(&self.tracks[1]));
@@ -471,11 +469,7 @@ impl<'a> PileupView<'a> {
 
     /// Genomic range `[start, stop)` of bar `col`.
     fn bar_range(&self, col: usize) -> (i64, i64) {
-        let e = self.edges();
-        let span = e.span() as i64;
-        let n = e.num_bins as i64;
-        let at = |i: i64| e.min_pos + i * span / n;
-        (at(col as i64), at(col as i64 + 1))
+        self.edges().col_range(col)
     }
 
     /// Slide the window so it holds the cursor, keeping its width.
@@ -564,11 +558,12 @@ impl<'a> PileupView<'a> {
         let (lo, hi) = self.window;
         let panel_h = 170.0;
         let rows = self.rows();
-        let height = |row: Row| match row {
-            Row::Genes => 24.0 + GENE_LANE * self.lanes() as f64,
-            _ => panel_h,
-        };
-        let total: f64 = rows.iter().map(|&r| height(r)).sum();
+        let genes_h = 24.0 + GENE_LANE * self.lanes() as f64;
+        let heights: Vec<f64> = rows
+            .iter()
+            .map(|&r| if r == Row::Genes { genes_h } else { panel_h })
+            .collect();
+        let total: f64 = heights.iter().sum();
         let mut c = Canvas::new(720.0, 50.0 + total);
         c.bold(16.0, 22.0, &self.title, 12.0, Anchor::Start, INK);
         c.text(
@@ -586,11 +581,11 @@ impl<'a> PileupView<'a> {
             MUTED,
         );
         let mut y = 44.0;
-        for &row in &rows {
-            let panel = (8.0, y, 704.0, height(row));
-            self.draw_row(row, &mut c, panel, None, self.row_title(row));
-            y += height(row);
+        for (&row, &h) in rows.iter().zip(&heights) {
+            self.draw_row(row, &mut c, (8.0, y, 704.0, h), None, self.row_title(row));
+            y += h;
         }
+
         c.finish()
     }
 
@@ -603,25 +598,23 @@ impl<'a> PileupView<'a> {
         pointer: Option<usize>,
         title: String,
     ) {
-        match (row, self.contrast) {
-            (Row::Track(i), _) => self.draw_track(i, c, bbox, pointer, title),
-            (Row::Contrast, Some(measure)) => {
+        match row {
+            Row::Track(i) => self.draw_track(i, c, bbox, pointer, title),
+            Row::Contrast(measure) => {
                 let (x, y, w, h) = bbox;
-                let values = self.contrast_values(&self.edges());
+                let values = self.contrast_values(measure, &self.edges());
                 figure::Diverging {
                     values: &values,
                     ticks: self.tick_list(),
                     pointer,
-                    marks: Vec::new(),
                     title,
                     x_title: format!("{} position", self.chr),
-                    y_title: measure.name(self.channels.0),
+                    y_title: measure.name(self.on),
                     label: &|v| measure.label(v),
                 }
                 .draw(c, x, y, w, h);
             }
-            (Row::Contrast, None) => {}
-            (Row::Genes, _) => self.draw_genes(c, bbox, title),
+            Row::Genes => self.draw_genes(c, bbox, title),
         }
     }
 
@@ -688,7 +681,7 @@ impl<'a> PileupView<'a> {
         let edges = self.edges();
         if let Some(measure) = self.contrast {
             let (a, b) = (self.tracks[0].label, self.tracks[1].label);
-            let value = self.contrast_values(&edges)[col];
+            let value = self.contrast_values(measure, &edges)[col];
             spans.push(dim(format!("   {a} vs {b} ")));
             spans.push(Span::styled(
                 value.map_or("-".into(), |v| measure.label(v)),
@@ -818,8 +811,10 @@ impl Screen for PileupView<'_> {
                 continue;
             }
             let Row::Track(i) = row else {
-                let values = self.contrast_values(&edges);
-                let measure = self.contrast.unwrap_or(Measure::Difference);
+                let Row::Contrast(measure) = row else {
+                    continue;
+                };
+                let values = self.contrast_values(measure, &edges);
                 let diverging = TextDiverging {
                     values: &values,
                     pointer: self.cursor_col(),
@@ -939,7 +934,8 @@ impl PileupView<'_> {
 /// first.
 pub fn show_pileup(view: View, tracks: Vec<Track>, status: Option<String>) -> anyhow::Result<Exit> {
     let mut browser = PileupView::new(view.title, view.chr, tracks, view.extent);
-    browser.channels = view.channels;
+    browser.on = view.on;
+    browser.locus = view.locus;
     browser.pending_genes = view.genes;
     browser.take_genes();
     browser.status = status.or_else(|| {

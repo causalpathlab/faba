@@ -265,7 +265,12 @@ fn contrast_row_compares_the_first_two_tracks() {
     );
     assert_eq!(
         v.rows(),
-        vec![Row::Contrast, Row::Track(0), Row::Track(1), Row::Track(2)]
+        vec![
+            Row::Contrast(Measure::Difference),
+            Row::Track(0),
+            Row::Track(1),
+            Row::Track(2)
+        ]
     );
     let text = screen(&mut v, 110, 30);
     assert!(
@@ -274,7 +279,7 @@ fn contrast_row_compares_the_first_two_tracks() {
     );
     assert!(text.contains("c difference/fold"), "{text}");
     // 1/2 vs 1/4 methylated wherever there are reads: +25 pp.
-    let values = v.contrast_values(&v.edges());
+    let values = v.contrast_values(Measure::Difference, &v.edges());
     assert!(values.iter().flatten().all(|&x| (x - 25.0).abs() < 1e-9));
     press(&mut v, KeyCode::Char('c'));
     assert_eq!(v.contrast, Some(Measure::Log2Fold));
@@ -346,7 +351,7 @@ fn contrast_and_titles_name_the_channels() {
     let mut b = Track::single("mut", "sum", &m, false);
     b.behind = Some(&total);
     let mut v = PileupView::new("GENE1", "chr1", vec![a, b], EXTENT);
-    v.channels = crate::site_analysis::pileup::channel_names("atoi");
+    v.on = crate::site_analysis::pileup::channel_names("atoi").0;
     assert!(screen(&mut v, 110, 30).contains("converted fraction difference"));
 }
 
@@ -385,10 +390,10 @@ fn genes_arriving_late_show_on_the_next_frame() {
     v.pending_genes = Some(models.clone());
     screen(&mut v, 110, 30);
     assert!(!v.rows().contains(&Row::Genes), "nothing yet");
-    let _ = models.set(vec![
+    let _ = models.set(Ok(vec![
         gene("GENE1", 1_000_000, 1_060_000, true),
         gene("GENE2", 1_070_000, 1_090_000, true),
-    ]);
+    ]));
     let text = screen(&mut v, 110, 30);
     assert!(v.rows().contains(&Row::Genes));
     assert!(
