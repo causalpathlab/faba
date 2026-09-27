@@ -349,3 +349,25 @@ fn contrast_and_titles_name_the_channels() {
     v.channels = crate::site_analysis::pileup::channel_names("atoi");
     assert!(screen(&mut v, 110, 30).contains("converted fraction difference"));
 }
+
+#[test]
+fn depth_track_shows_the_bin_under_each_column() {
+    let ranges = [(1_000_000, 1_050_000, 40.0), (1_050_000, 1_100_000, 10.0)];
+    let edges = BinEdges::new(1_000_000, 1_100_000, 10);
+    assert_eq!(
+        ranges_per_column(&ranges, &edges),
+        vec![40.0, 40.0, 40.0, 40.0, 40.0, 10.0, 10.0, 10.0, 10.0, 10.0]
+    );
+    let gap = [(1_000_000, 1_010_000, 5.0)];
+    assert_eq!(ranges_per_column(&gap, &edges)[5], 0.0, "no bin, no depth");
+
+    let m = positions();
+    let tracks = vec![
+        Track::single("m", "sum", &m, false),
+        Track::depth("depth", &ranges),
+    ];
+    let mut v = PileupView::new("GENE1", "chr1", tracks, EXTENT);
+    let text = screen(&mut v, 110, 30);
+    assert!(text.contains("depth · reads per depth bin"), "{text}");
+    assert!(v.figure().contains("depth"));
+}

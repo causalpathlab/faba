@@ -7,8 +7,8 @@
 //! genomic coordinate, so it stays put through zooms and resizes.
 
 use data_beans::interactive::ui::{
-    header, help_line, input_line, panel, run_screen, Binning, HistPlot, Scale, Screen, ACCENTED,
-    DIM, HIGHLIGHT, PLAIN,
+    compact, header, help_line, input_line, panel, run_screen, Binning, HistPlot, Scale, Screen,
+    ACCENTED, DIM, HIGHLIGHT, PLAIN,
 };
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout};
@@ -40,6 +40,9 @@ pub struct Track<'a> {
     pub name: &'a str,
     pub front: &'a [(i64, f64)],
     pub behind: Option<&'a [(i64, f64)]>,
+    /// Genomic bins `(start, end, value)` instead of positions: each column
+    /// shows the bin covering it (read depth).
+    pub ranges: Option<&'a [(i64, i64, f64)]>,
     /// Bins become `log10(1 + sum)`, as the printed pileup does.
     pub log: bool,
 }
@@ -53,12 +56,28 @@ impl<'a> Track<'a> {
             name,
             front,
             behind: None,
+            ranges: None,
             log,
+        }
+    }
+
+    /// A read-depth track over genomic bins.
+    pub fn depth(label: &'a str, ranges: &'a [(i64, i64, f64)]) -> Self {
+        Track {
+            label,
+            name: "reads per depth bin",
+            front: &[],
+            behind: None,
+            ranges: Some(ranges),
+            log: false,
         }
     }
 
     /// Binned over `edges`: front, and the total when there is one.
     fn bin(&self, edges: &BinEdges) -> (Vec<f64>, Option<Vec<f64>>) {
+        if let Some(ranges) = self.ranges {
+            return (ranges_per_column(ranges, edges), None);
+        }
         let front = edges.bin(self.front, self.log);
         (front, self.behind.map(|b| edges.bin(b, self.log)))
     }
@@ -69,6 +88,18 @@ impl<'a> Track<'a> {
         let b = self.front.partition_point(|p| p.0 <= hi);
         distinct_positions(&self.front[a..b])
     }
+}
+
+/// Per column, the value of the genomic bin covering the column's middle.
+fn ranges_per_column(ranges: &[(i64, i64, f64)], edges: &BinEdges) -> Vec<f64> {
+    let (n, span) = (edges.num_bins as i64, edges.span() as i64);
+    (0..n)
+        .map(|k| {
+            let mid = edges.min_pos + (2 * k + 1) * span / (2 * n);
+            let i = ranges.partition_point(|r| r.1 <= mid);
+            ranges.get(i).filter(|r| r.0 <= mid).map_or(0.0, |r| r.2)
+        })
+        .collect()
 }
 
 /// How the contrast row compares two tracks' converted fractions per bar.
@@ -633,7 +664,7 @@ impl<'a> PileupView<'a> {
             spans.push(dim(format!("   {} ", t.label)));
             spans.push(Span::raw(match t.bin(&edges) {
                 (front, Some(behind)) => format!("{:.0}/{:.0}", front[col], behind[col]),
-                (front, None) => format!("{:.2}", front[col]),
+                (front, None) => compact(front[col]),
             }));
         }
         let here = self

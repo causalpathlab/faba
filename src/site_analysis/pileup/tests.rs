@@ -241,3 +241,40 @@ fn only_the_opened_gene_is_drawn() {
         "a locus shows all"
     );
 }
+
+#[test]
+fn depth_rows_parse_as_bins() {
+    assert_eq!(parse_depth_row("chr1:0-50000"), Some(("chr1", 0, 50_000)));
+    assert_eq!(
+        parse_depth_row("GL000008.2:100000-150000"),
+        Some(("GL000008.2", 100_000, 150_000))
+    );
+    assert_eq!(parse_depth_row("ENSG1_GENE1/m6a/chr1:100/methylated"), None);
+}
+
+/// The row names the producers write today (through the shared
+/// `feature_row`) are the ones pileup reads: a naming change there must
+/// fail here rather than leave the pileup empty.
+#[test]
+fn reads_the_rows_the_producers_write() {
+    use data_beans::aux::feature_rows::{
+        feature_row, ATOI, EDITED, M6A, METHYLATED, UNEDITED, UNMETHYLATED,
+    };
+    let site = |m, ch| feature_row("ENSG1_GENE1", m, ch, Some("chr1:100"));
+    let expect = |m, converted| Some(("ENSG1_GENE1", m, "chr1", 100, Some(converted)));
+    assert_eq!(parse_row_channel(&site(M6A, METHYLATED)), expect(M6A, true));
+    assert_eq!(
+        parse_row_channel(&site(M6A, UNMETHYLATED)),
+        expect(M6A, false)
+    );
+    assert_eq!(parse_row_channel(&site(ATOI, EDITED)), expect(ATOI, true));
+    assert_eq!(
+        parse_row_channel(&site(ATOI, UNEDITED)),
+        expect(ATOI, false)
+    );
+    assert_eq!(channel_names(M6A), ("methylated", "unmethylated"));
+    assert_eq!(channel_names(ATOI), ("converted", "unconverted"));
+    // `faba depth` names bins `{chr}:{start}-{end}`.
+    let depth = format!("{}:{}-{}", "chr1", 0, 50_000);
+    assert_eq!(parse_depth_row(&depth), Some(("chr1", 0, 50_000)));
+}

@@ -154,6 +154,14 @@ pub struct PileupArgs {
     quiet: bool,
 
     #[arg(
+        long = "depth",
+        value_name = "FILE",
+        num_args = 1..,
+        help = "`_depth` matrices for a read-depth row in the browser (--interactive): each bin's reads summed over cells and files"
+    )]
+    depth_files: Vec<Box<str>>,
+
+    #[arg(
         long = "track",
         value_name = "LABEL=PATTERN",
         help = "Group input files into a labelled track (repeatable): each file joins the first track whose PATTERN (`*`, `?`) matches its path",
@@ -1310,6 +1318,50 @@ fn genes_to_draw<'a>(genes: &'a [GeneModel], selection: &str) -> Vec<&'a GeneMod
     }
 }
 
+/// Parse a `_depth` row name `chr:start-end`.
+fn parse_depth_row(name: &str) -> Option<(&str, i64, i64)> {
+    let (chr, range) = name.rsplit_once(':')?;
+    let (start, end) = range.split_once('-')?;
+    Some((chr, start.parse().ok()?, end.parse().ok()?))
+}
+
+/// Read depth over `chr:lo-hi` from `_depth` matrices: each overlapping
+/// bin `(start, end, reads)`, reads summed over cells and files, sorted.
+fn read_depth(
+    files: &[Box<str>],
+    chr: &str,
+    (lo, hi): (i64, i64),
+) -> anyhow::Result<Vec<(i64, i64, f64)>> {
+    let mut bins: FxHashMap<(i64, i64), f64> = FxHashMap::default();
+    for file in files {
+        let (backend, path) = resolve_backend_file(file, None)?;
+        let data = open_sparse_matrix(&path, &backend)?;
+        let names = data.row_names()?;
+        let rows: Vec<(usize, (i64, i64))> = names
+            .iter()
+            .enumerate()
+            .filter_map(|(i, n)| parse_depth_row(n).map(|(c, s, e)| (i, c, s, e)))
+            .filter(|&(_, c, s, e)| chr_eq(c, chr) && e > lo && s <= hi)
+            .map(|(i, _, s, e)| (i, (s, e)))
+            .collect();
+        if rows.is_empty() {
+            continue;
+        }
+        let (_, _, triplets) = data.read_triplets_by_rows(rows.iter().map(|r| r.0).collect())?;
+        for bin in rows.iter().map(|r| r.1) {
+            bins.entry(bin).or_insert(0.0);
+        }
+        for (row, _, value) in triplets {
+            if let Some(&(_, bin)) = rows.get(row as usize) {
+                *bins.entry(bin).or_insert(0.0) += value as f64;
+            }
+        }
+    }
+    let mut out: Vec<(i64, i64, f64)> = bins.into_iter().map(|((s, e), v)| (s, e, v)).collect();
+    out.sort_unstable_by_key(|b| b.0);
+    Ok(out)
+}
+
 /// Browse `loaded` full screen, with `status` on the footer first and the
 /// annotation's `genes` drawn under the tracks.
 fn browse(
@@ -1335,10 +1387,16 @@ fn browse(
                 name,
                 front: &t.converted,
                 behind: t.total.as_deref(),
+                ranges: None,
                 log: is_log,
             }
         })
         .collect();
+    let depth = read_depth(&args.depth_files, &loaded.chr, loaded.extent)?;
+    let mut tracks = tracks;
+    if !args.depth_files.is_empty() {
+        tracks.push(tui::Track::depth("depth", &depth));
+    }
     let view = tui::View {
         title: &loaded.gene,
         chr: &loaded.chr,
@@ -1425,6 +1483,48 @@ fn search(
     }
 }
 
+/// The annotation's gene models, read on a thread so the browser opens at
+/// once.
+enum GeneModels {
+    None,
+    Loading(std::thread::JoinHandle<anyhow::Result<Vec<GeneModel>>>),
+    Ready(Vec<GeneModel>),
+}
+
+impl GeneModels {
+    fn start(gtf: Option<&str>) -> Self {
+        match gtf {
+            Some(gtf) => {
+                let gtf = gtf.to_string();
+                GeneModels::Loading(std::thread::spawn(move || {
+                    load_gene_models_where(&gtf, |_| true)
+                }))
+            }
+            None => GeneModels::None,
+        }
+    }
+
+    fn is_loading(&self) -> bool {
+        matches!(self, GeneModels::Loading(h) if !h.is_finished())
+    }
+
+    /// The models read so far: none while the thread is still reading.
+    fn ready(&mut self) -> anyhow::Result<&[GeneModel]> {
+        if matches!(self, GeneModels::Loading(h) if h.is_finished()) {
+            if let GeneModels::Loading(h) = std::mem::replace(self, GeneModels::None) {
+                let models = h
+                    .join()
+                    .map_err(|_| anyhow::anyhow!("reading the gene models panicked"))??;
+                *self = GeneModels::Ready(models);
+            }
+        }
+        Ok(match self {
+            GeneModels::Ready(models) => models,
+            _ => &[],
+        })
+    }
+}
+
 /// Browse interactively, starting from `first` (a selection given on the
 /// command line) or from the gene list.
 fn interactive(
@@ -1433,13 +1533,7 @@ fn interactive(
     first: Option<Loaded>,
 ) -> anyhow::Result<()> {
     let catalog = Catalog::new(&args.data_files);
-    let genes = match &args.gtf {
-        Some(gtf) => {
-            eprintln!("reading gene models from {gtf} ...");
-            load_gene_models_where(gtf, |_| true)?
-        }
-        None => Vec::new(),
-    };
+    let mut genes = GeneModels::start(args.gtf.as_deref());
     let mut filter = String::new();
     let mut current = first;
     let mut status: Option<String> = None;
@@ -1471,7 +1565,10 @@ fn interactive(
                 }
             }
         };
-        match browse(args, &loaded, &genes, status.take())? {
+        if genes.is_loading() && status.is_none() {
+            status = Some("gene models are still loading; they show from the next view".into());
+        }
+        match browse(args, &loaded, genes.ready()?, status.take())? {
             tui::Exit::Quit => return Ok(()),
             tui::Exit::Genes => {}
             tui::Exit::Search(q) => match search(args, groups, &catalog, &q) {
