@@ -170,6 +170,19 @@ pub struct QcArgs {
     )]
     pub block_size: Option<usize>,
 
+    #[arg(
+        short = 'I',
+        long = "interactive",
+        default_value_t = false,
+        help = "Pick the site thresholds in a full-screen view before cutting (needs a terminal)",
+        long_help = "Pick the site thresholds in a full-screen view before cutting.\n\
+                     The view starts from the --site-* values given, shows each knob's column\n\
+                     as a histogram with live kept and dropped counts, and Enter applies the\n\
+                     thresholds on screen. Needs stdin and stdout on a terminal; otherwise the\n\
+                     --site-* values are used as given."
+    )]
+    pub interactive: bool,
+
     #[command(flatten)]
     pub site: SiteFilterArgs,
 }
@@ -183,7 +196,7 @@ pub struct QcReportArgs {
         short = 'o',
         long = "output",
         required = true,
-        help = "Output prefix: writes {prefix}.qc_report.parquet"
+        help = "Output prefix: writes {prefix}.qc_report.parquet and the panels as {prefix}.qc_report.pdf/.png"
     )]
     pub output: Box<str>,
 

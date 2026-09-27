@@ -115,3 +115,171 @@ fn aggregate_labels() {
     let multi: Vec<Box<str>> = vec!["chr1".into(), "chr2".into()];
     assert_eq!(summarize_chr(&multi).as_ref(), "*");
 }
+
+#[test]
+fn channel_rows_pile_up_the_converted_channel() {
+    assert_eq!(
+        parse_row_name_full("ENSG1_GENE1/m6a/chr1:100/methylated"),
+        Some(("ENSG1_GENE1", "m6a", "chr1", 100))
+    );
+    assert_eq!(
+        parse_row_name_full("ENSG1_GENE1/atoi/chr1:200/edited"),
+        Some(("ENSG1_GENE1", "atoi", "chr1", 200))
+    );
+    assert_eq!(
+        parse_row_name_full("ENSG1_GENE1/m6a/chr1:100/unmethylated"),
+        None
+    );
+    assert_eq!(
+        parse_row_name_full("ENSG1_GENE1/atoi/chr1:200/unedited"),
+        None
+    );
+}
+
+#[test]
+fn wildcard_patterns() {
+    assert!(wildcard("*_wt_*", "out/rep1_wt_m6a_site.zarr.zip"));
+    assert!(!wildcard("*_wt_*", "out/rep1_mut_m6a_site.zarr.zip"));
+    assert!(wildcard("rep?_*", "rep2_x"));
+    assert!(wildcard("*", ""));
+    assert!(!wildcard("a*b", "ac"));
+}
+
+#[test]
+fn track_files_group_in_given_order() {
+    let files: Vec<Box<str>> = ["a_wt_1", "a_mut_1", "b_wt_2"].map(Into::into).to_vec();
+    let one = track_files(&files, &[]).unwrap();
+    assert_eq!(one.len(), 1);
+    assert_eq!(one[0].label.as_ref(), "matrix");
+    let specs: Vec<Box<str>> = ["mut=*_mut_*", "wt=*_wt_*"].map(Into::into).to_vec();
+    let g = track_files(&files, &specs).unwrap();
+    assert_eq!(g[0].label.as_ref(), "mut");
+    assert_eq!(g[0].files.len(), 1);
+    assert_eq!(g[1].files.len(), 2);
+    let bad: Vec<Box<str>> = ["wt=*_wt_*"].map(Into::into).to_vec();
+    assert!(
+        track_files(&files, &bad).is_err(),
+        "a_mut_1 matches no track"
+    );
+    let empty: Vec<Box<str>> = ["wt=*", "none=zzz"].map(Into::into).to_vec();
+    assert!(track_files(&files, &empty).is_err(), "a track with no file");
+    let malformed: Vec<Box<str>> = ["wt"].map(Into::into).to_vec();
+    assert!(track_files(&files, &malformed).is_err());
+}
+
+#[test]
+fn exact_selector_matches_only_its_row_key() {
+    let s = Selector::exact("ENSG1_GENE1");
+    assert!(s.matches_gene("ENSG1_GENE1"));
+    assert!(!s.matches_gene("ENSG2_GENE2"));
+    assert!(!s.matches_gene("ENSG1_GENE10"));
+}
+
+#[test]
+fn queries_parse_as_locus_or_gene() {
+    match parse_query(" chr1:1,000-2,000 ") {
+        Some(Query::Locus(r, false)) => {
+            assert_eq!((r.chr.as_ref(), r.lb, r.ub), ("chr1", 1000, 2000))
+        }
+        _ => panic!("window"),
+    }
+    match parse_query("chr2:1,500") {
+        Some(Query::Locus(r, true)) => assert_eq!((r.lb, r.ub), (1500, 1500)),
+        _ => panic!("position"),
+    }
+    assert!(matches!(parse_query("GENE1"), Some(Query::Gene(g)) if &*g == "GENE1"));
+    assert!(parse_query("chr1:abc").is_none());
+    assert!(parse_query("  ").is_none());
+}
+
+#[test]
+fn channel_rows_carry_their_channel() {
+    let row = parse_row_channel("ENSG1_GENE1/m6a/chr1:100/unmethylated");
+    assert_eq!(row, Some(("ENSG1_GENE1", "m6a", "chr1", 100, Some(false))));
+    let row = parse_row_channel("ENSG1_GENE1/m6a/chr1:100/methylated");
+    assert_eq!(row.map(|r| r.4), Some(Some(true)));
+    let row = parse_row_channel("ENSG1_GENE1/m6A/chr1:100");
+    assert_eq!(row.map(|r| r.4), Some(None));
+}
+
+#[test]
+fn channels_are_named_by_modality() {
+    assert_eq!(channel_names("m6a"), ("methylated", "unmethylated"));
+    assert_eq!(channel_names("m6A"), ("methylated", "unmethylated"));
+    assert_eq!(channel_names("atoi"), ("converted", "unconverted"));
+    assert_eq!(channel_names("AtoI"), ("converted", "unconverted"));
+}
+
+#[test]
+fn only_the_opened_genes_are_drawn() {
+    use crate::site_analysis::miami::genemodel::GeneModel;
+    let model = |symbol: &str, key: &str| GeneModel {
+        chr: "chr1".into(),
+        lo: 0,
+        hi: 10,
+        forward: true,
+        exons: Vec::new(),
+        symbol: symbol.into(),
+        key: key.into(),
+    };
+    let genes = [
+        model("GENE1", "ID1_GENE1"),
+        model("GENE2", "ID2_GENE2"),
+        model("GENE3", "ID3.4_GENE3"),
+    ];
+    let keys = |k: &[&str]| k.iter().map(|&k| Box::from(k)).collect::<Vec<Box<str>>>();
+    let one = genes_to_draw(&genes, Some(&keys(&["ID2_GENE2"])));
+    assert_eq!(one.len(), 1);
+    assert_eq!(&*one[0].symbol, "GENE2");
+    let two = genes_to_draw(&genes, Some(&keys(&["ID1_GENE1", "ID3_GENE3"])));
+    assert_eq!(
+        two.len(),
+        2,
+        "every matched gene, by symbol when ids differ"
+    );
+    assert_eq!(genes_to_draw(&genes, None).len(), 3, "a locus shows all");
+}
+
+#[test]
+fn depth_rows_parse_as_bins() {
+    assert_eq!(parse_depth_row("chr1:0-50000"), Some(("chr1", 0, 50_000)));
+    assert_eq!(
+        parse_depth_row("GL000008.2:100000-150000"),
+        Some(("GL000008.2", 100_000, 150_000))
+    );
+    assert_eq!(parse_depth_row("ENSG1_GENE1/m6a/chr1:100/methylated"), None);
+}
+
+/// The row names the producers write today (through the shared
+/// `feature_row`) are the ones pileup reads: a naming change there must
+/// fail here rather than leave the pileup empty.
+#[test]
+fn reads_the_rows_the_producers_write() {
+    use data_beans::aux::feature_rows::{
+        feature_row, ATOI, EDITED, M6A, METHYLATED, UNEDITED, UNMETHYLATED,
+    };
+    let site = |m, ch| feature_row("ENSG1_GENE1", m, ch, Some("chr1:100"));
+    let expect = |m, converted| Some(("ENSG1_GENE1", m, "chr1", 100, Some(converted)));
+    assert_eq!(parse_row_channel(&site(M6A, METHYLATED)), expect(M6A, true));
+    assert_eq!(
+        parse_row_channel(&site(M6A, UNMETHYLATED)),
+        expect(M6A, false)
+    );
+    assert_eq!(parse_row_channel(&site(ATOI, EDITED)), expect(ATOI, true));
+    assert_eq!(
+        parse_row_channel(&site(ATOI, UNEDITED)),
+        expect(ATOI, false)
+    );
+    assert_eq!(channel_names(M6A), ("methylated", "unmethylated"));
+    assert_eq!(channel_names(ATOI), ("converted", "unconverted"));
+    // `faba depth` names bins `{chr}:{start}-{end}`.
+    let depth = format!("{}:{}-{}", "chr1", 0, 50_000);
+    assert_eq!(parse_depth_row(&depth), Some(("chr1", 0, 50_000)));
+}
+
+#[test]
+fn a_gene_symbol_may_hold_a_slash() {
+    let row = parse_row_channel("ID1_GENE1/B/m6a/chr1:100/methylated");
+    assert_eq!(row, Some(("ID1_GENE1/B", "m6a", "chr1", 100, Some(true))));
+    assert_eq!(parse_row_channel("ID1_GENE1/m6a/chr1:100/other"), None);
+}

@@ -13,6 +13,7 @@ pub mod matrix;
 pub mod repool;
 pub mod report;
 pub mod run;
+pub mod site_tui;
 pub mod sites;
 
 pub use args::{QcArgs, QcReportArgs};

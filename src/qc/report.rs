@@ -249,24 +249,29 @@ fn fmt_threshold(x: f64) -> String {
     }
 }
 
+/// The report's panels, in first-seen order: one per (modality,
+/// criterion), with its rows.
+fn panels(rows: &[ReportRow]) -> Vec<(&str, &str, Vec<&ReportRow>)> {
+    let mut out: Vec<(&str, &str, Vec<&ReportRow>)> = Vec::new();
+    for r in rows {
+        match out
+            .iter_mut()
+            .find(|(m, c, _)| *m == &*r.modality && *c == &*r.criterion)
+        {
+            Some((_, _, panel)) => panel.push(r),
+            None => out.push((&r.modality, &r.criterion, vec![r])),
+        }
+    }
+    out
+}
+
 /// One ASCII panel per (modality, criterion), a bar per threshold scaled to
 /// the panel's largest count, in the style of `faba metagene`.
 pub fn print_ascii(rows: &[ReportRow], width: usize) {
-    let mut groups: Vec<(Box<str>, Box<str>)> = Vec::new();
-    for r in rows {
-        let g = (r.modality.clone(), r.criterion.clone());
-        if !groups.contains(&g) {
-            groups.push(g);
-        }
-    }
-    for (modality, criterion) in groups {
-        let panel: Vec<&ReportRow> = rows
-            .iter()
-            .filter(|r| r.modality == modality && r.criterion == criterion)
-            .collect();
+    for (modality, criterion, panel) in panels(rows) {
         let unit = panel.first().map(|r| r.unit).unwrap_or("site");
         let max = panel.iter().map(|r| r.n_kept).max().unwrap_or(0).max(1) as f64;
-        let is_hist = &*criterion == HIST_CRITERION;
+        let is_hist = criterion == HIST_CRITERION;
         if is_hist {
             eprintln!(
                 "\n== {modality} : -log10(p) histogram  (sites per bin of {HIST_BIN}; last bin >= {HIST_MAX})"
@@ -303,6 +308,73 @@ pub fn print_ascii(rows: &[ReportRow], width: usize) {
             );
         }
     }
+}
+
+/// Every panel of [`print_ascii`] as a figure, three to a row: kept units
+/// per threshold, and the -log10(p) histograms.
+fn report_figure(rows: &[ReportRow]) -> String {
+    use crate::figure::{Anchor, Bars, Canvas, INK};
+    use data_beans::interactive::ui::Scale;
+
+    let groups = panels(rows);
+    let (pw, ph, per_row) = (260.0, 180.0, 3usize);
+    let n_rows = groups.len().div_ceil(per_row).max(1);
+    let mut c = Canvas::new(pw * per_row as f64 + 20.0, ph * n_rows as f64 + 40.0);
+    c.bold(
+        12.0,
+        22.0,
+        "faba qc-report: what each threshold keeps, the others off",
+        12.0,
+        Anchor::Start,
+        INK,
+    );
+    for (g, (modality, criterion, panel)) in groups.iter().enumerate() {
+        let unit = panel.first().map(|r| r.unit).unwrap_or("site");
+        let is_hist = *criterion == HIST_CRITERION;
+        let values: Vec<f64> = panel.iter().map(|r| r.n_kept as f64).collect();
+        let every = panel.len().div_ceil(6).max(1);
+        let ticks = panel
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| i % every == 0)
+            .map(|(i, r)| (i, fmt_threshold(r.threshold)))
+            .collect();
+        let (title, x_title, y_title) = if is_hist {
+            (
+                format!("{modality}: -log10(p)"),
+                format!("-log10(p), bins of {HIST_BIN}"),
+                "sites".to_string(),
+            )
+        } else {
+            (
+                format!("{modality}: {criterion}"),
+                "threshold".to_string(),
+                format!("kept {unit}s"),
+            )
+        };
+        let (col, row) = (g % per_row, g / per_row);
+        Bars {
+            values: &values,
+            front: None,
+            accent: &|_| false,
+            y_scale: Scale::Linear,
+            y_max: None,
+            ticks,
+            pointer: None,
+            marks: Vec::new(),
+            title,
+            x_title,
+            y_title,
+        }
+        .draw(
+            &mut c,
+            10.0 + pw * col as f64,
+            34.0 + ph * row as f64,
+            pw,
+            ph,
+        );
+    }
+    c.finish()
 }
 
 pub fn run_qc_report(args: &QcReportArgs) -> anyhow::Result<()> {
@@ -379,6 +451,10 @@ pub fn run_qc_report(args: &QcReportArgs) -> anyhow::Result<()> {
     info!("wrote {} rows to {path}", rows.len());
     if !args.quiet {
         print_ascii(&rows, args.width);
+    }
+    let figure = format!("{}.qc_report", args.output);
+    for path in crate::figure::save(&report_figure(&rows), &figure)? {
+        info!("wrote {path}");
     }
     Ok(())
 }

@@ -1,6 +1,6 @@
 [package]
 name = "faba"
-version = "0.14.2"
+version = "0.14.3"
 edition = "2021"
 rust-version = "1.91"
 license = "MIT"
@@ -43,7 +43,16 @@ default = []
 hdf5 = ["data-beans/hdf5"]
 
 [dependencies]
-data-beans = { version = "0.6.9", features = ["aux"] }
+data-beans = { version = "0.6.17", default-features = false, features = ["aux", "tui"] }
+ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
+# Figures: one SVG per view, converted to PDF and PNG.
+usvg = "0.45"
+resvg = { version = "0.45", default-features = false, features = ["text", "system-fonts", "memmap-fonts"] }
+svg2pdf = { version = "0.13", default-features = false, features = ["text"] }
+# Figures drawn as images in terminals that support an image protocol
+# (kitty, iTerm2, sixel); others keep the text plots.
+ratatui-image = { version = "11.1", default-features = false, features = ["crossterm"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
 legume-genomic-types = "0.4.1"
 legume-numeric = { version = "0.8.10", features = ["matrix", "param", "candle"] }
 
@@ -70,3 +79,4 @@ arrow = "59"
 
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+

@@ -39,6 +39,13 @@ impl BinEdges {
         (rel * self.num_bins as u64 / self.span()).min(self.num_bins as u64 - 1) as usize
     }
 
+    /// Genomic range `[start, stop)` of column `col`.
+    pub fn col_range(&self, col: usize) -> (i64, i64) {
+        let (span, n) = (self.span() as i64, self.num_bins as i64);
+        let at = |i: i64| self.min_pos + i * span / n;
+        (at(col as i64), at(col as i64 + 1))
+    }
+
     /// Bin a position/value list into `num_bins` summed columns. Positions
     /// outside `[min_pos, max_pos]` are dropped. When `log_transform`,
     /// each bin becomes `log10(1 + sum)`.
