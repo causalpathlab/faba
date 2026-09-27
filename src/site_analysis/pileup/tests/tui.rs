@@ -1,4 +1,5 @@
 use super::*;
+use crate::site_analysis::miami::genemodel::GeneModel;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::KeyModifiers;
 use ratatui::Terminal;
@@ -237,7 +238,7 @@ fn stacked_layers_and_cycling() {
         text.contains("sites · methylated / unmethylated reads"),
         "{text}"
     );
-    assert!(text.contains("v site view"), "{text}");
+    assert!(text.contains("t total view"), "{text}");
     let (front, behind) = v.tracks[0].bin(&v.edges());
     let behind = behind.expect("stacked");
     assert!(front.iter().zip(&behind).all(|(f, b)| f <= b));
@@ -245,11 +246,11 @@ fn stacked_layers_and_cycling() {
         v.figure().contains(crate::figure::ACCENT),
         "front drawn in the accent"
     );
-    press(&mut v, KeyCode::Char('v'));
+    press(&mut v, KeyCode::Char('t'));
     assert_eq!(v.tracks[1].shown, 1);
     assert_eq!(v.tracks[0].shown, 0, "single-layer tracks do not cycle");
     assert!(screen(&mut v, 110, 26).contains("sites · sites"));
-    press(&mut v, KeyCode::Char('v'));
+    press(&mut v, KeyCode::Char('t'));
     assert_eq!(v.tracks[1].shown, 0);
 }
 
@@ -307,4 +308,64 @@ fn contrast_row_compares_the_first_two_tracks() {
         EXTENT,
     );
     assert!(single.contrast.is_none(), "nothing to compare");
+}
+
+fn gene(symbol: &str, lo: i64, hi: i64, forward: bool) -> GeneModel {
+    GeneModel {
+        chr: "chr1".into(),
+        lo,
+        hi,
+        forward,
+        exons: vec![(lo, lo + 500), (hi - 800, hi)],
+        symbol: symbol.into(),
+    }
+}
+
+#[test]
+fn genes_row_stacks_overlapping_genes() {
+    let (m, s) = (positions(), sites());
+    let genes = [
+        gene("GENE1", 1_000_000, 1_060_000, true),
+        gene("GENE2", 1_040_000, 1_090_000, false),
+        gene("GENE3", 1_095_000, 1_120_000, true),
+        gene("GENE4", 5_000_000, 5_010_000, true),
+    ];
+    let mut v = view(&m, &s);
+    v.genes = genes.iter().collect();
+    screen(&mut v, 110, 34);
+    let lanes = v.gene_lanes();
+    let lane_of = |sym: &str| {
+        lanes
+            .iter()
+            .find(|(_, g)| &*g.symbol == sym)
+            .map(|(l, _)| *l)
+    };
+    assert_eq!(lane_of("GENE1"), Some(0));
+    assert_eq!(lane_of("GENE2"), Some(1), "overlaps GENE1");
+    assert_eq!(lane_of("GENE4"), None, "outside the window");
+    assert_eq!(v.rows().last(), Some(&Row::Genes));
+    let text = screen(&mut v, 110, 34);
+    assert!(
+        text.contains("GENE1 →") && text.contains("GENE2 ←"),
+        "{text}"
+    );
+    assert!(text.contains('█') && text.contains('›'), "{text}");
+    let svg = v.figure();
+    assert!(
+        svg.contains("GENE3") && svg.contains("<rect"),
+        "gene models in the figure"
+    );
+}
+
+#[test]
+fn contrast_and_titles_name_the_channels() {
+    let m = positions();
+    let total: Vec<(i64, f64)> = m.iter().map(|&(p, v)| (p, v * 2.0)).collect();
+    let mut a = Track::single("wt", "sum", &m, false);
+    a.layers[0].behind = Some(&total);
+    let mut b = Track::single("mut", "sum", &m, false);
+    b.layers[0].behind = Some(&total);
+    let mut v = PileupView::new("GENE1", "chr1", vec![a, b], EXTENT);
+    v.channels = crate::site_analysis::pileup::channel_names("atoi");
+    assert!(screen(&mut v, 110, 30).contains("converted fraction difference"));
 }

@@ -151,6 +151,12 @@ impl Canvas {
         );
     }
 
+    /// Append SVG drawn elsewhere, in this canvas's units.
+    pub fn raw(&mut self, svg: &str) {
+        self.body.push_str(svg);
+        self.body.push('\n');
+    }
+
     pub fn finish(self) -> String {
         format!(
             r#"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}">

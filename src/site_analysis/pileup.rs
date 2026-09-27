@@ -1,7 +1,9 @@
 use crate::data::cell_membership::CellMembership;
 use crate::site_analysis::miami::bin::BinEdges;
 use crate::site_analysis::miami::depth::read_depth_binned;
-use crate::site_analysis::miami::genemodel::{load_gene_models, models_extent};
+use crate::site_analysis::miami::genemodel::{
+    load_gene_models, load_gene_models_where, models_extent, GeneModel,
+};
 use crate::site_analysis::miami::palette::Palette;
 use crate::site_analysis::miami::render::{render_miami, FigOpts, PanelData};
 use arrow::array::{Array, Float32Array, Int64Array, StringArray, UInt64Array};
@@ -183,7 +185,7 @@ pub struct PileupArgs {
         long = "gtf",
         help = "Gene annotation GTF/GFF for the middle gene-model track (exons, introns)",
         long_help = "Gene annotation GTF/GFF for the middle gene-model track (exons, introns, strand).\n\
-                     Enables figure mode."
+                     Enables figure mode; with --interactive, draws the genes in view instead."
     )]
     gtf: Option<Box<str>>,
 
@@ -593,6 +595,7 @@ struct BinnedPileup {
 struct MatrixGeneData {
     gene: Box<str>,
     chr: Box<str>,
+    modality: Box<str>,
     positions: Vec<(i64, f64)>,
 }
 
@@ -625,15 +628,21 @@ struct SiteValues {
     neg_log10_pv: f64,
 }
 
+/// How a modality's two channels are named on screen: A-to-I reads are
+/// converted or not, m6A reads methylated or not.
+pub(crate) fn channel_names(modality: &str) -> (&'static str, &'static str) {
+    if modality.eq_ignore_ascii_case("atoi") {
+        ("converted", "unconverted")
+    } else {
+        ("methylated", "unmethylated")
+    }
+}
+
 /// The site track's layers, from rows sorted by position. Read counts need
 /// the `converted`/`coverage` columns; the control arm, any control reads.
 fn site_layers(rows: &[SiteValues], has_counts: bool, mod_type: &str) -> Vec<SiteLayer> {
     let series = |f: fn(&SiteValues) -> f64| rows.iter().map(|r| (r.pos, f(r))).collect();
-    let (on, off) = if mod_type.eq_ignore_ascii_case("AtoI") {
-        ("edited", "unedited")
-    } else {
-        ("methylated", "unmethylated")
-    };
+    let (on, off) = channel_names(mod_type);
     let mut layers = Vec::new();
     if has_counts {
         layers.push(SiteLayer {
@@ -855,6 +864,8 @@ fn read_site_annotation(
 struct GroupedMatrix {
     gene: Box<str>,
     chr: Box<str>,
+    /// The first matched row's modality (e.g. `m6a`).
+    modality: Box<str>,
     /// celltype label -> sorted `(pos, value)`
     by_group: FxHashMap<Box<str>, Vec<(i64, f64)>>,
     /// Rows the selection matched, over all files.
@@ -875,6 +886,7 @@ fn read_matrix_positions_grouped(
     let mut distinct_genes: FxHashMap<Box<str>, usize> = FxHashMap::default();
     let mut matched_chrs: Vec<Box<str>> = Vec::new();
     let mut total_matched = 0usize;
+    let mut first_modality: Option<Box<str>> = None;
 
     let modality_filter: Option<Vec<String>> = if top_modality.is_empty() {
         None
@@ -907,6 +919,7 @@ fn read_matrix_positions_grouped(
                     }
                 }
                 if selector.selects(gene_part, chr, pos) {
+                    first_modality.get_or_insert_with(|| modality.into());
                     *distinct_genes.entry(gene_part.into()).or_insert(0) += 1;
                     matched_chrs.push(chr.into());
                     matched_rows.push((idx, pos));
@@ -1005,6 +1018,7 @@ fn read_matrix_positions_grouped(
     Ok(GroupedMatrix {
         gene,
         chr,
+        modality: first_modality.unwrap_or_default(),
         by_group,
         matched: total_matched,
     })
@@ -1033,6 +1047,7 @@ fn read_matrix_positions(
     Ok(Some(MatrixGeneData {
         gene: grouped.gene,
         chr: grouped.chr,
+        modality: grouped.modality,
         positions,
     }))
 }
@@ -1306,6 +1321,7 @@ fn merge_positions(a: &[(i64, f64)], b: &[(i64, f64)]) -> Vec<(i64, f64)> {
 struct Loaded {
     gene: Box<str>,
     chr: Box<str>,
+    modality: Box<str>,
     tracks: Vec<MatrixTrack>,
     sites: Option<SiteAnnotation>,
     extent: (i64, i64),
@@ -1321,12 +1337,12 @@ fn load(
     totals: bool,
 ) -> anyhow::Result<Loaded> {
     let totals = totals && !matches!(args.signal, PileupSignal::Nnz);
-    let mut label: Option<(Box<str>, Box<str>)> = None;
+    let mut label: Option<(Box<str>, Box<str>, Box<str>)> = None;
     let mut tracks = Vec::with_capacity(groups.len());
     for g in groups {
         let converted = match read_matrix_positions(&g.files, selector, &args.signal, false)? {
             Some(m) => {
-                label.get_or_insert((m.gene, m.chr));
+                label.get_or_insert((m.gene, m.chr, m.modality));
                 m.positions
             }
             None => Vec::new(),
@@ -1344,7 +1360,7 @@ fn load(
             total,
         });
     }
-    let Some((gene, chr)) = label else {
+    let Some((gene, chr, modality)) = label else {
         anyhow::bail!(
             "no rows matching {} in {} file(s)",
             selector.describe(),
@@ -1367,20 +1383,34 @@ fn load(
     Ok(Loaded {
         gene,
         chr,
+        modality,
         tracks,
         sites,
         extent,
     })
 }
 
-/// Browse `loaded` full screen, with `status` on the footer first.
-fn browse(args: &PileupArgs, loaded: &Loaded, status: Option<String>) -> anyhow::Result<tui::Exit> {
+/// Browse `loaded` full screen, with `status` on the footer first and the
+/// annotation's `genes` drawn under the tracks.
+fn browse(
+    args: &PileupArgs,
+    loaded: &Loaded,
+    genes: &[GeneModel],
+    status: Option<String>,
+) -> anyhow::Result<tui::Exit> {
     let is_log = matches!(args.signal, PileupSignal::Log10Sum);
+    let (on, off) = channel_names(&loaded.modality);
+    let stacked_name = format!("{on} / {off} ({})", args.signal.name());
     let mut tracks: Vec<tui::Track> = loaded
         .tracks
         .iter()
         .map(|t| {
-            let mut track = tui::Track::single(&t.label, args.signal.name(), &t.converted, is_log);
+            let name = if t.total.is_some() {
+                stacked_name.as_str()
+            } else {
+                args.signal.name()
+            };
+            let mut track = tui::Track::single(&t.label, name, &t.converted, is_log);
             if let Some(total) = &t.total {
                 track.layers[0].behind = Some(total);
             }
@@ -1398,13 +1428,20 @@ fn browse(args: &PileupArgs, loaded: &Loaded, status: Option<String>) -> anyhow:
             })
             .collect();
         tracks.push(tui::Track {
-            label: "sites",
+            label: "total",
             layers,
             shown: 0,
             log: false,
         });
     }
-    tui::show_pileup(&loaded.gene, &loaded.chr, tracks, loaded.extent, status)
+    let view = tui::View {
+        title: &loaded.gene,
+        chr: &loaded.chr,
+        extent: loaded.extent,
+        channels: channel_names(&loaded.modality),
+        genes,
+    };
+    tui::show_pileup(view, tracks, status)
 }
 
 /// Bases shown around a single searched position.
@@ -1491,6 +1528,13 @@ fn interactive(
     first: Option<Loaded>,
 ) -> anyhow::Result<()> {
     let catalog = Catalog::new(&args.data_files);
+    let genes = match &args.gtf {
+        Some(gtf) => {
+            eprintln!("reading gene models from {gtf} ...");
+            load_gene_models_where(gtf, |_| true)?
+        }
+        None => Vec::new(),
+    };
     let mut filter = String::new();
     let mut current = first;
     let mut status: Option<String> = None;
@@ -1522,7 +1566,7 @@ fn interactive(
                 }
             }
         };
-        match browse(args, &loaded, status.take())? {
+        match browse(args, &loaded, &genes, status.take())? {
             tui::Exit::Quit => return Ok(()),
             tui::Exit::Genes => {}
             tui::Exit::Search(q) => match search(args, groups, &catalog, &q) {
@@ -1540,11 +1584,12 @@ fn interactive(
 pub fn run_pileup(args: &PileupArgs) -> anyhow::Result<()> {
     // Figure mode is triggered by any figure-only input/output flag.
     // Otherwise fall through to the ASCII / TSV path.
-    let figure_mode = args.gtf.is_some()
-        || !args.bam_files.is_empty()
-        || args.format.is_some()
-        || args.svg
-        || args.png;
+    // With `--interactive`, `--gtf` feeds the browser's gene row instead.
+    let figure_flags = !args.bam_files.is_empty() || args.format.is_some() || args.svg || args.png;
+    let figure_mode = !args.interactive && (args.gtf.is_some() || figure_flags);
+    if args.interactive && figure_flags {
+        log::warn!("--bam/--format/--svg/--png make a figure, not the browser; ignoring them");
+    }
     let groups = track_files(&args.data_files, &args.tracks)?;
     if args.interactive && !figure_mode && args.genes.is_empty() && args.regions.is_empty() {
         anyhow::ensure!(
@@ -1555,9 +1600,6 @@ pub fn run_pileup(args: &PileupArgs) -> anyhow::Result<()> {
     }
     let selector = Selector::build(&args.genes, &args.regions)?;
     if figure_mode {
-        if args.interactive {
-            log::warn!("--interactive applies to the ASCII pileup, not the figure; ignoring it");
-        }
         if !args.tracks.is_empty() {
             log::warn!("--track applies to the ASCII pileup, not the figure; ignoring it");
         }

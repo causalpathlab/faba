@@ -243,8 +243,16 @@ fn site_layers_offer_reads_counts_and_p() {
         ]
     );
     let atoi = site_layers(&rows, true, "AtoI");
-    assert_eq!(atoi[0].name, "edited / unedited reads");
+    assert_eq!(atoi[0].name, "converted / unconverted reads");
     assert_eq!(atoi[0].behind.as_deref(), Some(&[(1, 10.0), (2, 4.0)][..]));
     let bare = site_layers(&rows, false, "m6A");
     assert_eq!(bare.len(), 1, "no read counts without the count columns");
+}
+
+#[test]
+fn channels_are_named_by_modality() {
+    assert_eq!(channel_names("m6a"), ("methylated", "unmethylated"));
+    assert_eq!(channel_names("m6A"), ("methylated", "unmethylated"));
+    assert_eq!(channel_names("atoi"), ("converted", "unconverted"));
+    assert_eq!(channel_names("AtoI"), ("converted", "unconverted"));
 }

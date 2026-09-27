@@ -32,6 +32,14 @@ pub struct GeneModel {
 /// reuses the same `{gene_id}_{symbol}` key + relaxed canonicalizer the
 /// matrix rows use, so a `-q BRCA2` query resolves the GTF gene too.
 pub fn load_gene_models(gtf: &str, selector: &Selector) -> anyhow::Result<Vec<GeneModel>> {
+    load_gene_models_where(gtf, |key| selector.matches_gene(key))
+}
+
+/// Every gene model of the GTF whose `{gene_id}_{symbol}` key passes `keep`.
+pub fn load_gene_models_where(
+    gtf: &str,
+    keep: impl Fn(&str) -> bool,
+) -> anyhow::Result<Vec<GeneModel>> {
     let records = read_gff_record_vec(gtf)?;
     let gene_map = build_gene_map(&records, Some(&FeatureType::Gene))?;
     let exon_map = build_exon_intervals(&records);
@@ -51,7 +59,7 @@ pub fn load_gene_models(gtf: &str, selector: &Selector) -> anyhow::Result<Vec<Ge
             }
         };
 
-        if !selector.matches_gene(&gene_key) {
+        if !keep(&gene_key) {
             continue;
         }
 
