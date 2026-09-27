@@ -650,11 +650,6 @@ fn site_layers(rows: &[SiteValues], has_counts: bool, mod_type: &str) -> Vec<Sit
         }
     }
     layers.push(SiteLayer {
-        name: "sites".into(),
-        front: series(|_| 1.0),
-        behind: None,
-    });
-    layers.push(SiteLayer {
         name: "-log10 p".into(),
         front: series(|r| r.neg_log10_pv),
         behind: None,

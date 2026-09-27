@@ -88,6 +88,144 @@ impl<'a> Track<'a> {
     }
 }
 
+/// How the contrast row compares two tracks' converted fractions per bar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Measure {
+    /// Fraction A minus fraction B, in percentage points.
+    Difference,
+    /// log2 of fraction A over fraction B, half a read of pseudocount.
+    Log2Fold,
+}
+
+impl Measure {
+    fn name(self) -> &'static str {
+        match self {
+            Measure::Difference => "methylated fraction difference (pp)",
+            Measure::Log2Fold => "log2 fold of methylated fraction",
+        }
+    }
+
+    fn next(self) -> Self {
+        match self {
+            Measure::Difference => Measure::Log2Fold,
+            Measure::Log2Fold => Measure::Difference,
+        }
+    }
+
+    /// The measure for converted `(ma, na)` of A and `(mb, nb)` of B;
+    /// `None` when either has no reads.
+    pub fn of(self, (ma, na): (f64, f64), (mb, nb): (f64, f64)) -> Option<f64> {
+        if na <= 0.0 || nb <= 0.0 {
+            return None;
+        }
+        Some(match self {
+            Measure::Difference => 100.0 * (ma / na - mb / nb),
+            Measure::Log2Fold => {
+                ((ma + 0.5) / (na + 1.0)).log2() - ((mb + 0.5) / (nb + 1.0)).log2()
+            }
+        })
+    }
+
+    fn label(self, v: f64) -> String {
+        match self {
+            Measure::Difference => format!("{v:+.1}"),
+            Measure::Log2Fold => format!("{v:+.2}"),
+        }
+    }
+}
+
+/// A row of the browser: a track, or the contrast of the first two.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Row {
+    Track(usize),
+    Contrast,
+}
+
+/// Signed bars around a middle zero line, as text: positive up in the
+/// accent, negative down; `None` draws nothing.
+struct TextDiverging<'a> {
+    values: &'a [Option<f64>],
+    pointer: usize,
+    label: &'a dyn Fn(f64) -> String,
+    /// Tick label per column.
+    ticks: &'a [Option<String>],
+}
+
+impl TextDiverging<'_> {
+    fn render(&self, buf: &mut ratatui::buffer::Buffer, area: ratatui::layout::Rect) {
+        let [plot, axis] =
+            Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area);
+        let [gutter, chart] =
+            Layout::horizontal([Constraint::Length(GUTTER), Constraint::Min(1)]).areas(plot);
+        if chart.width == 0 || chart.height < 3 {
+            return;
+        }
+        let half = (chart.height - 1) / 2;
+        let zero = chart.top() + half;
+        let max = self
+            .values
+            .iter()
+            .flatten()
+            .fold(0.0f64, |m, v| m.max(v.abs()));
+        for x in chart.left()..chart.right() {
+            buf[(x, zero)].set_symbol("─").set_style(DIM);
+        }
+        for (i, v) in self.values.iter().enumerate() {
+            let x = chart.x + i as u16;
+            if x >= chart.right() {
+                break;
+            }
+            let Some(v) = *v else { continue };
+            if max <= 0.0 {
+                continue;
+            }
+            let cells = ((v.abs() / max) * half as f64).round().max(1.0) as u16;
+            for k in 0..cells.min(half) {
+                let (y, style) = if v >= 0.0 {
+                    (zero - 1 - k, ACCENTED)
+                } else {
+                    (zero + 1 + k, PLAIN)
+                };
+                buf[(x, y)].set_symbol("█").set_style(style);
+            }
+        }
+        let gx = gutter.right() - 1;
+        for y in gutter.top()..gutter.bottom() {
+            buf[(gx, y)].set_symbol("│").set_style(DIM);
+        }
+        for (y, v) in [
+            (chart.top(), max),
+            (zero, 0.0),
+            (chart.top() + 2 * half, -max),
+        ] {
+            let s = (self.label)(v);
+            buf.set_string(
+                gx.saturating_sub(s.len() as u16 + 1).max(gutter.x),
+                y,
+                &s,
+                DIM,
+            );
+        }
+        for x in axis.left()..axis.right() {
+            buf[(x, axis.y)].set_symbol(" ");
+        }
+        let mut next_free = axis.x;
+        for (i, t) in self.ticks.iter().enumerate() {
+            let x = chart.x + i as u16;
+            if let Some(t) = t {
+                if x >= next_free && x + (t.len() as u16) <= axis.right() {
+                    buf.set_string(x, axis.y, t, DIM);
+                    next_free = x + t.len() as u16 + 1;
+                }
+            }
+        }
+        let px = chart.x + self.pointer as u16;
+        if px < chart.right() {
+            buf[(px, axis.y)].set_symbol("▲").set_style(HIGHLIGHT);
+        }
+    }
+}
+
 /// How the user left the browser.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Exit {
@@ -118,6 +256,8 @@ pub struct PileupView<'a> {
     /// A message for the footer, until the next key.
     status: Option<String>,
     plots: Vec<PlotImage>,
+    /// How the first two tracks are compared, when both carry totals.
+    contrast: Option<Measure>,
     exit: Option<Exit>,
 }
 
@@ -144,8 +284,64 @@ impl<'a> PileupView<'a> {
             search: LineInput::new(128),
             status: None,
             plots: Vec::new(),
+            contrast: None,
             exit: None,
         }
+        .with_contrast()
+    }
+
+    /// Compare the first two tracks when both have totals.
+    fn with_contrast(mut self) -> Self {
+        let totals = self
+            .tracks
+            .iter()
+            .take(2)
+            .filter(|t| t.layers[0].behind.is_some());
+        if totals.count() == 2 {
+            self.contrast = Some(Measure::Difference);
+        }
+        self
+    }
+
+    /// The rows top to bottom: the contrast first, as the main row, then
+    /// the tracks.
+    fn rows(&self) -> Vec<Row> {
+        let contrast = self.contrast.map(|_| Row::Contrast);
+        contrast
+            .into_iter()
+            .chain((0..self.tracks.len()).map(Row::Track))
+            .collect()
+    }
+
+    fn row_title(&self, row: Row) -> String {
+        match (row, self.contrast) {
+            (Row::Track(i), _) => {
+                let t = &self.tracks[i];
+                format!("{} · {}", t.label, t.layer().name)
+            }
+            (Row::Contrast, Some(m)) => {
+                let (a, b) = (self.tracks[0].label, self.tracks[1].label);
+                format!("{a} vs {b} · {}", m.name())
+            }
+            (Row::Contrast, None) => String::new(),
+        }
+    }
+
+    /// The contrast per bar over the window (raw sums, never log).
+    fn contrast_values(&self, edges: &BinEdges) -> Vec<Option<f64>> {
+        let Some(measure) = self.contrast else {
+            return Vec::new();
+        };
+        let counts = |t: &Track| {
+            let layer = &t.layers[0];
+            let front = edges.bin(layer.front, false);
+            let total = edges.bin(layer.behind.unwrap_or(layer.front), false);
+            (front, total)
+        };
+        let ((ma, na), (mb, nb)) = (counts(&self.tracks[0]), counts(&self.tracks[1]));
+        (0..ma.len())
+            .map(|k| measure.of((ma[k], na[k]), (mb[k], nb[k])))
+            .collect()
     }
 
     fn edges(&self) -> BinEdges {
@@ -251,7 +447,8 @@ impl<'a> PileupView<'a> {
     fn figure(&self) -> String {
         let (lo, hi) = self.window;
         let panel_h = 170.0;
-        let mut c = Canvas::new(720.0, 50.0 + panel_h * self.tracks.len() as f64);
+        let rows = self.rows();
+        let mut c = Canvas::new(720.0, 50.0 + panel_h * rows.len() as f64);
         c.bold(16.0, 22.0, &self.title, 12.0, Anchor::Start, INK);
         c.text(
             16.0,
@@ -267,12 +464,50 @@ impl<'a> PileupView<'a> {
             Anchor::Start,
             MUTED,
         );
-        for (i, t) in self.tracks.iter().enumerate() {
-            let title = format!("{} ({})", t.label, t.layer().name);
-            let panel = (8.0, 44.0 + panel_h * i as f64, 704.0, panel_h);
-            self.draw_track(i, &mut c, panel, None, title);
+        for (k, &row) in rows.iter().enumerate() {
+            let panel = (8.0, 44.0 + panel_h * k as f64, 704.0, panel_h);
+            self.draw_row(row, &mut c, panel, None, self.row_title(row));
         }
         c.finish()
+    }
+
+    /// A row in the box: a track's bars, or the contrast's signed bars.
+    fn draw_row(
+        &self,
+        row: Row,
+        c: &mut Canvas,
+        bbox: (f64, f64, f64, f64),
+        pointer: Option<usize>,
+        title: String,
+    ) {
+        match (row, self.contrast) {
+            (Row::Track(i), _) => self.draw_track(i, c, bbox, pointer, title),
+            (Row::Contrast, Some(measure)) => {
+                let (x, y, w, h) = bbox;
+                let values = self.contrast_values(&self.edges());
+                figure::Diverging {
+                    values: &values,
+                    ticks: self.tick_list(),
+                    pointer,
+                    marks: Vec::new(),
+                    title,
+                    x_title: format!("{} position", self.chr),
+                    y_title: measure.name().into(),
+                    label: &|v| measure.label(v),
+                }
+                .draw(c, x, y, w, h);
+            }
+            (Row::Contrast, None) => {}
+        }
+    }
+
+    /// About five labelled genomic ticks across the window.
+    fn tick_list(&self) -> Vec<(usize, String)> {
+        let every = (self.columns / 5).max(1);
+        (0..self.columns)
+            .step_by(every)
+            .map(|k| (k, fmt_thousands(self.bar_range(k).0)))
+            .collect()
     }
 
     /// Track `i` over the visible window in the box `(x, y, w, h)`.
@@ -287,11 +522,7 @@ impl<'a> PileupView<'a> {
         let t = &self.tracks[i];
         let edges = self.edges();
         let (lo, hi) = self.window;
-        let every = (self.columns / 5).max(1);
-        let ticks = (0..self.columns)
-            .step_by(every)
-            .map(|k| (k, fmt_thousands(self.bar_range(k).0)))
-            .collect();
+        let ticks = self.tick_list();
         let (front, behind) = t.bin(&edges);
         let marks = t
             .sites_in(lo, hi)
@@ -330,6 +561,15 @@ impl<'a> PileupView<'a> {
             )),
         ];
         let edges = self.edges();
+        if let Some(measure) = self.contrast {
+            let (a, b) = (self.tracks[0].label, self.tracks[1].label);
+            let value = self.contrast_values(&edges)[col];
+            spans.push(dim(format!("   {a} vs {b} ")));
+            spans.push(Span::styled(
+                value.map_or("-".into(), |v| measure.label(v)),
+                HIGHLIGHT,
+            ));
+        }
         for t in &self.tracks {
             spans.push(dim(format!("   {} ", t.label)));
             spans.push(Span::raw(match t.bin(&edges) {
@@ -372,7 +612,8 @@ impl Screen for PileupView<'_> {
         }
         match key.code {
             KeyCode::Char('/') => self.search.open(""),
-            KeyCode::Char('c') => {
+            KeyCode::Char('c') => self.contrast = self.contrast.map(Measure::next),
+            KeyCode::Char('v') => {
                 for t in self.tracks.iter_mut().filter(|t| t.layers.len() > 1) {
                     t.shown = (t.shown + 1) % t.layers.len();
                 }
@@ -394,11 +635,12 @@ impl Screen for PileupView<'_> {
     }
 
     fn render(&mut self, frame: &mut Frame) {
-        let n_tracks = self.tracks.len().max(1) as u32;
-        let mut rows = vec![Constraint::Length(1)];
-        rows.extend((0..n_tracks).map(|_| Constraint::Ratio(1, n_tracks)));
-        rows.extend([Constraint::Length(1), Constraint::Length(1)]);
-        let areas = Layout::vertical(rows).split(frame.area());
+        let rows = self.rows();
+        let n_rows = rows.len().max(1) as u32;
+        let mut layout = vec![Constraint::Length(1)];
+        layout.extend((0..n_rows).map(|_| Constraint::Ratio(1, n_rows)));
+        layout.extend([Constraint::Length(1), Constraint::Length(1)]);
+        let areas = Layout::vertical(layout).split(frame.area());
         let (top, readout, footer) = (areas[0], areas[areas.len() - 2], areas[areas.len() - 1]);
 
         // One bar per chart column, re-binned from the raw positions.
@@ -428,24 +670,36 @@ impl Screen for PileupView<'_> {
         let label = |k: i32| ticks.get(k as usize).cloned().flatten();
         let pointer = Some(self.cursor_col() as i32);
         let mut plots = std::mem::take(&mut self.plots);
-        plots.resize_with(self.tracks.len(), PlotImage::default);
-        for (i, &area) in areas[1..areas.len() - 2].iter().enumerate() {
-            let t = &self.tracks[i];
-            let block = panel(format!(" {} · {} ", t.label, t.layer().name), true);
+        plots.resize_with(rows.len(), PlotImage::default);
+        for (k, (&row, &area)) in rows.iter().zip(&areas[1..areas.len() - 2]).enumerate() {
+            let block = panel(format!(" {} ", self.row_title(row)), true);
             let inner = block.inner(area);
             frame.render_widget(block, area);
             let drawn = self.controls.images().is_some_and(|picker| {
-                plots[i].render(frame, inner, picker, |w, h| {
+                plots[k].render(frame, inner, picker, |w, h| {
                     let bbox = (0.0, 0.0, w, h);
                     let pointer = Some(self.cursor_col());
                     figure::svg(w, h, |c| {
-                        self.draw_track(i, c, bbox, pointer, String::new())
+                        self.draw_row(row, c, bbox, pointer, String::new())
                     })
                 })
             });
             if drawn {
                 continue;
             }
+            let Row::Track(i) = row else {
+                let values = self.contrast_values(&edges);
+                let measure = self.contrast.unwrap_or(Measure::Difference);
+                let diverging = TextDiverging {
+                    values: &values,
+                    pointer: self.cursor_col(),
+                    label: &|v| measure.label(v),
+                    ticks: &ticks,
+                };
+                diverging.render(frame.buffer_mut(), inner);
+                continue;
+            };
+            let t = &self.tracks[i];
             let (front, behind) = t.bin(&edges);
             let marks = t
                 .sites_in(lo, hi)
@@ -496,8 +750,11 @@ impl PileupView<'_> {
             ("y", "scale"),
             ("g", "genes"),
         ];
+        if self.contrast.is_some() {
+            keys.push(("c", "difference/fold"));
+        }
         if self.tracks.iter().any(|t| t.layers.len() > 1) {
-            keys.push(("c", "site signal"));
+            keys.push(("v", "site view"));
         }
         self.controls.help_keys(&mut keys);
         keys.push(("q", "quit"));

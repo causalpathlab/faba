@@ -239,7 +239,6 @@ fn site_layers_offer_reads_counts_and_p() {
         [
             "methylated / unmethylated reads",
             "control methylated / unmethylated reads",
-            "sites",
             "-log10 p"
         ]
     );
@@ -247,5 +246,5 @@ fn site_layers_offer_reads_counts_and_p() {
     assert_eq!(atoi[0].name, "edited / unedited reads");
     assert_eq!(atoi[0].behind.as_deref(), Some(&[(1, 10.0), (2, 4.0)][..]));
     let bare = site_layers(&rows, false, "m6A");
-    assert_eq!(bare.len(), 2, "no read counts without the count columns");
+    assert_eq!(bare.len(), 1, "no read counts without the count columns");
 }

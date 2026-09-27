@@ -283,6 +283,89 @@ impl Bars<'_> {
     }
 }
 
+/// Signed bars around a zero line: positive up in the accent, negative
+/// down in grey; `None` draws no bar. Ticks, pointer and marks as [`Bars`].
+pub struct Diverging<'a> {
+    pub values: &'a [Option<f64>],
+    pub ticks: Vec<(usize, String)>,
+    pub pointer: Option<usize>,
+    pub marks: Vec<usize>,
+    pub title: String,
+    pub x_title: String,
+    pub y_title: String,
+    /// Label for a value on the y axis.
+    pub label: &'a dyn Fn(f64) -> String,
+}
+
+impl Diverging<'_> {
+    pub fn draw(&self, c: &mut Canvas, x: f64, y: f64, w: f64, h: f64) {
+        let (left, right, top, bottom) = (52.0, 12.0, 20.0, 38.0);
+        let (px, py, pw, ph) = (x + left, y + top, w - left - right, h - top - bottom);
+        c.bold(x + left, y + 13.0, &self.title, 11.0, Anchor::Start, INK);
+        let n = self.values.len().max(1);
+        let bw = pw / n as f64;
+        let max = self
+            .values
+            .iter()
+            .flatten()
+            .fold(0.0f64, |m, v| m.max(v.abs()));
+        let zero = py + ph / 2.0;
+        for (f, label) in [(1.0, max), (0.0, 0.0), (-1.0, -max)] {
+            let gy = zero - f * ph / 2.0;
+            if f != 0.0 {
+                c.line(px, gy, px + pw, gy, FAINT, 0.4);
+            }
+            c.text(
+                px - 5.0,
+                gy + 3.0,
+                &(self.label)(label),
+                8.0,
+                Anchor::End,
+                MUTED,
+            );
+        }
+        c.vtext(x + 12.0, py + ph / 2.0, &self.y_title, 8.0, MUTED);
+        let gap = if bw > 3.0 { 0.15 * bw } else { 0.0 };
+        if max > 0.0 {
+            for (i, v) in self.values.iter().enumerate() {
+                let Some(v) = *v else { continue };
+                let bh = v.abs() / max * ph / 2.0;
+                let bx = px + i as f64 * bw + gap / 2.0;
+                let (top, fill) = if v >= 0.0 {
+                    (zero - bh, ACCENT)
+                } else {
+                    (zero, BAR)
+                };
+                c.rect(bx, top, bw - gap, bh, fill);
+            }
+        }
+        if let Some(p) = self.pointer {
+            let cx = px + (p as f64 + 0.5) * bw;
+            c.dashed(cx, py, cx, py + ph, ACCENT, 0.8);
+        }
+        c.line(px, zero, px + pw, zero, INK, 0.6);
+        c.line(px, py, px, py + ph, INK, 0.6);
+        let base = py + ph;
+        for &m in &self.marks {
+            let mx = px + (m as f64 + 0.5) * bw;
+            c.line(mx, base, mx, base + 3.0, MUTED, 0.5);
+        }
+        for (i, label) in &self.ticks {
+            let tx = px + (*i as f64 + 0.5) * bw;
+            c.line(tx, base, tx, base + 4.0, INK, 0.6);
+            c.text(tx, base + 13.0, label, 8.0, Anchor::Middle, INK);
+        }
+        c.text(
+            px + pw / 2.0,
+            y + h - 6.0,
+            &self.x_title,
+            8.0,
+            Anchor::Middle,
+            MUTED,
+        );
+    }
+}
+
 fn fontdb() -> Arc<usvg::fontdb::Database> {
     static DB: OnceLock<Arc<usvg::fontdb::Database>> = OnceLock::new();
     DB.get_or_init(|| {

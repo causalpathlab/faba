@@ -139,7 +139,7 @@ fn saves_the_window() {
     screen(&mut v, 100, 24);
     press(&mut v, KeyCode::Char('+'));
     let svg = v.figure();
-    assert!(svg.contains("matrix (sum)") && svg.contains("sites (count)"));
+    assert!(svg.contains("matrix · sum") && svg.contains("sites · count"));
     assert!(svg.contains("bp per bar"));
     let dir = tempfile::tempdir().unwrap();
     let prefix = dir.path().join("pile1.png");
@@ -237,7 +237,7 @@ fn stacked_layers_and_cycling() {
         text.contains("sites · methylated / unmethylated reads"),
         "{text}"
     );
-    assert!(text.contains("c site signal"), "{text}");
+    assert!(text.contains("v site view"), "{text}");
     let (front, behind) = v.tracks[0].bin(&v.edges());
     let behind = behind.expect("stacked");
     assert!(front.iter().zip(&behind).all(|(f, b)| f <= b));
@@ -245,10 +245,66 @@ fn stacked_layers_and_cycling() {
         v.figure().contains(crate::figure::ACCENT),
         "front drawn in the accent"
     );
-    press(&mut v, KeyCode::Char('c'));
+    press(&mut v, KeyCode::Char('v'));
     assert_eq!(v.tracks[1].shown, 1);
     assert_eq!(v.tracks[0].shown, 0, "single-layer tracks do not cycle");
     assert!(screen(&mut v, 110, 26).contains("sites · sites"));
-    press(&mut v, KeyCode::Char('c'));
+    press(&mut v, KeyCode::Char('v'));
     assert_eq!(v.tracks[1].shown, 0);
+}
+
+#[test]
+fn contrast_measures() {
+    let d = Measure::Difference;
+    assert_eq!(d.of((5.0, 10.0), (2.0, 10.0)), Some(30.0));
+    assert_eq!(
+        d.of((1.0, 10.0), (2.0, 4.0)).map(|v| v.round()),
+        Some(-40.0)
+    );
+    assert_eq!(d.of((1.0, 0.0), (2.0, 4.0)), None, "no reads, no value");
+    let f = Measure::Log2Fold;
+    let up = f.of((8.0, 10.0), (2.0, 10.0)).unwrap();
+    assert!(up > 1.0 && f.of((2.0, 10.0), (8.0, 10.0)).unwrap() == -up);
+}
+
+#[test]
+fn contrast_row_compares_the_first_two_tracks() {
+    let (m, s) = (positions(), sites());
+    let half: Vec<(i64, f64)> = m.iter().map(|&(p, v)| (p, v * 2.0)).collect();
+    let quarter: Vec<(i64, f64)> = m.iter().map(|&(p, v)| (p, v * 4.0)).collect();
+    let mut a = Track::single("wt", "sum", &m, false);
+    a.layers[0].behind = Some(&half);
+    let mut b = Track::single("mut", "sum", &m, false);
+    b.layers[0].behind = Some(&quarter);
+    let mut v = PileupView::new(
+        "GENE1",
+        "chr1",
+        vec![a, b, Track::single("sites", "count", &s, false)],
+        EXTENT,
+    );
+    assert_eq!(
+        v.rows(),
+        vec![Row::Contrast, Row::Track(0), Row::Track(1), Row::Track(2)]
+    );
+    let text = screen(&mut v, 110, 30);
+    assert!(
+        text.contains("wt vs mut · methylated fraction difference"),
+        "{text}"
+    );
+    assert!(text.contains("c difference/fold"), "{text}");
+    // 1/2 vs 1/4 methylated wherever there are reads: +25 pp.
+    let values = v.contrast_values(&v.edges());
+    assert!(values.iter().flatten().all(|&x| (x - 25.0).abs() < 1e-9));
+    press(&mut v, KeyCode::Char('c'));
+    assert_eq!(v.contrast, Some(Measure::Log2Fold));
+    assert!(screen(&mut v, 110, 30).contains("log2 fold"));
+    assert!(v.figure().contains("wt vs mut"));
+
+    let single = PileupView::new(
+        "GENE1",
+        "chr1",
+        vec![Track::single("m", "sum", &m, false)],
+        EXTENT,
+    );
+    assert!(single.contrast.is_none(), "nothing to compare");
 }
