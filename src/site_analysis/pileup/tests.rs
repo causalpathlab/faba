@@ -191,3 +191,61 @@ fn queries_parse_as_locus_or_gene() {
     assert!(parse_query("chr1:abc").is_none());
     assert!(parse_query("  ").is_none());
 }
+
+#[test]
+fn channel_rows_carry_their_channel() {
+    let row = parse_row_channel("ENSG1_GENE1/m6a/chr1:100/unmethylated");
+    assert_eq!(row, Some(("ENSG1_GENE1", "m6a", "chr1", 100, Some(false))));
+    let row = parse_row_channel("ENSG1_GENE1/m6a/chr1:100/methylated");
+    assert_eq!(row.map(|r| r.4), Some(Some(true)));
+    let row = parse_row_channel("ENSG1_GENE1/m6A/chr1:100");
+    assert_eq!(row.map(|r| r.4), Some(None));
+}
+
+#[test]
+fn merged_positions_sum_shared_sites() {
+    let a = [(10, 1.0), (20, 2.0)];
+    let b = [(5, 4.0), (20, 3.0), (30, 1.0)];
+    assert_eq!(
+        merge_positions(&a, &b),
+        vec![(5, 4.0), (10, 1.0), (20, 5.0), (30, 1.0)]
+    );
+}
+
+#[test]
+fn site_layers_offer_reads_counts_and_p() {
+    let rows = vec![
+        SiteValues {
+            pos: 1,
+            converted: 2.0,
+            coverage: 10.0,
+            control_converted: 0.0,
+            control_coverage: 5.0,
+            neg_log10_pv: 3.0,
+        },
+        SiteValues {
+            pos: 2,
+            converted: 1.0,
+            coverage: 4.0,
+            ..SiteValues::default()
+        },
+    ];
+    let names: Vec<String> = site_layers(&rows, true, "m6A")
+        .into_iter()
+        .map(|l| l.name)
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "methylated / unmethylated reads",
+            "control methylated / unmethylated reads",
+            "sites",
+            "-log10 p"
+        ]
+    );
+    let atoi = site_layers(&rows, true, "AtoI");
+    assert_eq!(atoi[0].name, "edited / unedited reads");
+    assert_eq!(atoi[0].behind.as_deref(), Some(&[(1, 10.0), (2, 4.0)][..]));
+    let bare = site_layers(&rows, false, "m6A");
+    assert_eq!(bare.len(), 2, "no read counts without the count columns");
+}

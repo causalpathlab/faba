@@ -7,8 +7,8 @@
 //! genomic coordinate, so it stays put through zooms and resizes.
 
 use data_beans::interactive::ui::{
-    header, help_line, input_line, panel, run_screen, Binning, HistPlot, Scale, Screen, DIM,
-    HIGHLIGHT, PLAIN,
+    header, help_line, input_line, panel, run_screen, Binning, HistPlot, Scale, Screen, ACCENTED,
+    DIM, HIGHLIGHT, PLAIN,
 };
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout};
@@ -31,25 +31,60 @@ const GUTTER: u16 = 6;
 /// Columns between labelled ticks, at least.
 const TICK_SPACING: usize = 14;
 
-/// One track: raw `(position, value)` pairs, sorted by position.
+/// One way to draw a track: sorted `(position, value)` pairs, optionally
+/// in front of a total per position (converted reads over all reads).
+pub struct Layer<'a> {
+    pub name: &'a str,
+    pub front: &'a [(i64, f64)],
+    pub behind: Option<&'a [(i64, f64)]>,
+}
+
+/// One track and the layers it can switch between (`c`).
 pub struct Track<'a> {
     pub label: &'a str,
-    pub signal: &'static str,
-    pub positions: &'a [(i64, f64)],
+    pub layers: Vec<Layer<'a>>,
+    /// The layer shown.
+    pub shown: usize,
     /// Bins become `log10(1 + sum)`, as the printed pileup does.
     pub log: bool,
 }
 
-impl Track<'_> {
-    fn bin(&self, edges: &BinEdges) -> Vec<f64> {
-        edges.bin(self.positions, self.log)
+impl<'a> Track<'a> {
+    /// A track with one layer and no total.
+    pub fn single(label: &'a str, name: &'a str, positions: &'a [(i64, f64)], log: bool) -> Self {
+        Track {
+            label,
+            layers: vec![Layer {
+                name,
+                front: positions,
+                behind: None,
+            }],
+            shown: 0,
+            log,
+        }
+    }
+
+    fn layer(&self) -> &Layer<'a> {
+        &self.layers[self.shown]
+    }
+
+    fn positions(&self) -> &'a [(i64, f64)] {
+        self.layer().front
+    }
+
+    /// The shown layer binned: front, and the total when it has one.
+    fn bin(&self, edges: &BinEdges) -> (Vec<f64>, Option<Vec<f64>>) {
+        let layer = self.layer();
+        let front = edges.bin(layer.front, self.log);
+        (front, layer.behind.map(|b| edges.bin(b, self.log)))
     }
 
     /// Distinct positions inside `lo..=hi`.
     fn sites_in(&self, lo: i64, hi: i64) -> Vec<i64> {
-        let a = self.positions.partition_point(|p| p.0 < lo);
-        let b = self.positions.partition_point(|p| p.0 <= hi);
-        distinct_positions(&self.positions[a..b])
+        let positions = self.positions();
+        let a = positions.partition_point(|p| p.0 < lo);
+        let b = positions.partition_point(|p| p.0 <= hi);
+        distinct_positions(&positions[a..b])
     }
 }
 
@@ -90,7 +125,7 @@ impl<'a> PileupView<'a> {
     pub fn new(title: &str, chr: &str, tracks: Vec<Track<'a>>, extent: (i64, i64)) -> Self {
         let mut sites: Vec<i64> = tracks
             .iter()
-            .flat_map(|t| t.positions.iter().map(|p| p.0))
+            .flat_map(|t| t.positions().iter().map(|p| p.0))
             .collect();
         sites.sort_unstable();
         sites.dedup();
@@ -233,7 +268,7 @@ impl<'a> PileupView<'a> {
             MUTED,
         );
         for (i, t) in self.tracks.iter().enumerate() {
-            let title = format!("{} ({})", t.label, t.signal);
+            let title = format!("{} ({})", t.label, t.layer().name);
             let panel = (8.0, 44.0 + panel_h * i as f64, 704.0, panel_h);
             self.draw_track(i, &mut c, panel, None, title);
         }
@@ -257,23 +292,24 @@ impl<'a> PileupView<'a> {
             .step_by(every)
             .map(|k| (k, fmt_thousands(self.bar_range(k).0)))
             .collect();
-        let values = t.bin(&edges);
+        let (front, behind) = t.bin(&edges);
         let marks = t
             .sites_in(lo, hi)
             .into_iter()
             .map(|s| edges.col_of(s))
             .collect();
+        let stacked = behind.is_some();
         Bars {
-            values: &values,
-            front: None,
-            accent: &|_| false,
+            values: behind.as_ref().unwrap_or(&front),
+            front: stacked.then_some(front.as_slice()),
+            accent: &|_| stacked,
             y_scale: self.y_scale,
             ticks,
             pointer,
             marks,
             title,
             x_title: format!("{} position", self.chr),
-            y_title: t.signal.into(),
+            y_title: t.layer().name.into(),
         }
         .draw(c, x, y, w, h);
     }
@@ -295,9 +331,11 @@ impl<'a> PileupView<'a> {
         ];
         let edges = self.edges();
         for t in &self.tracks {
-            let v = t.bin(&edges)[col];
             spans.push(dim(format!("   {} ", t.label)));
-            spans.push(Span::raw(format!("{v:.2}")));
+            spans.push(Span::raw(match t.bin(&edges) {
+                (front, Some(behind)) => format!("{:.0}/{:.0}", front[col], behind[col]),
+                (front, None) => format!("{:.2}", front[col]),
+            }));
         }
         let here = self
             .sites
@@ -334,6 +372,11 @@ impl Screen for PileupView<'_> {
         }
         match key.code {
             KeyCode::Char('/') => self.search.open(""),
+            KeyCode::Char('c') => {
+                for t in self.tracks.iter_mut().filter(|t| t.layers.len() > 1) {
+                    t.shown = (t.shown + 1) % t.layers.len();
+                }
+            }
             KeyCode::Left | KeyCode::Char('h') => self.move_cursor(-1),
             KeyCode::Right | KeyCode::Char('l') => self.move_cursor(1),
             KeyCode::PageUp => self.move_cursor(-(self.columns as i64) / 2),
@@ -388,7 +431,7 @@ impl Screen for PileupView<'_> {
         plots.resize_with(self.tracks.len(), PlotImage::default);
         for (i, &area) in areas[1..areas.len() - 2].iter().enumerate() {
             let t = &self.tracks[i];
-            let block = panel(format!(" {} · {} ", t.label, t.signal), true);
+            let block = panel(format!(" {} · {} ", t.label, t.layer().name), true);
             let inner = block.inner(area);
             frame.render_widget(block, area);
             let drawn = self.controls.images().is_some_and(|picker| {
@@ -403,18 +446,19 @@ impl Screen for PileupView<'_> {
             if drawn {
                 continue;
             }
-            let values = t.bin(&edges);
+            let (front, behind) = t.bin(&edges);
             let marks = t
                 .sites_in(lo, hi)
                 .into_iter()
                 .map(|s| (edges.col_of(s) as i32, "+", DIM))
                 .collect();
+            let stacked = behind.is_some();
             HistPlot {
                 bins: Binning::with_width(Scale::Linear, 1.0),
                 kmin: 0,
-                counts: &values,
-                style: &|_| PLAIN,
-                subset: None,
+                counts: behind.as_ref().unwrap_or(&front),
+                style: &|_| if stacked { ACCENTED } else { PLAIN },
+                subset: stacked.then_some(front.as_slice()),
                 y_scale: self.y_scale,
                 pointer,
                 marks,
@@ -452,6 +496,9 @@ impl PileupView<'_> {
             ("y", "scale"),
             ("g", "genes"),
         ];
+        if self.tracks.iter().any(|t| t.layers.len() > 1) {
+            keys.push(("c", "site signal"));
+        }
         self.controls.help_keys(&mut keys);
         keys.push(("q", "quit"));
         help_line(&keys)

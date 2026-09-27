@@ -19,18 +19,8 @@ const EXTENT: (i64, i64) = (1_000_000, 1_100_000);
 
 fn view<'a>(m: &'a [(i64, f64)], s: &'a [(i64, f64)]) -> PileupView<'a> {
     let tracks = vec![
-        Track {
-            label: "matrix",
-            signal: "sum",
-            positions: m,
-            log: false,
-        },
-        Track {
-            label: "sites",
-            signal: "count",
-            positions: s,
-            log: false,
-        },
+        Track::single("matrix", "sum", m, false),
+        Track::single("sites", "count", s, false),
     ];
     PileupView::new("GENE1", "chr1", tracks, EXTENT)
 }
@@ -62,17 +52,12 @@ fn bins_hold_exactly_the_window() {
             .filter(|p| p.0 >= lo && p.0 <= hi)
             .map(|p| p.1)
             .sum();
-        let got: f64 = v.tracks[0].bin(&v.edges()).iter().sum();
+        let got: f64 = v.tracks[0].bin(&v.edges()).0.iter().sum();
         assert!((got - want).abs() < 1e-9, "{lo}-{hi}: {got} vs {want}");
     }
-    let log = Track {
-        label: "m",
-        signal: "log10-sum",
-        positions: &m,
-        log: true,
-    };
+    let log = Track::single("m", "log10-sum", &m, true);
     let edges = BinEdges::new(1_050_000, 1_050_049, 1);
-    assert!((log.bin(&edges)[0] - (1.0f64 + 250.0).log10()).abs() < 1e-9);
+    assert!((log.bin(&edges).0[0] - (1.0f64 + 250.0).log10()).abs() < 1e-9);
 }
 
 #[test]
@@ -138,12 +123,7 @@ fn renders_both_tracks_with_coordinates() {
     let one = PileupView::new(
         "GENE1",
         "chr1",
-        vec![Track {
-            label: "matrix",
-            signal: "sum",
-            positions: &m,
-            log: false,
-        }],
+        vec![Track::single("matrix", "sum", &m, false)],
         EXTENT,
     );
     let mut one = one;
@@ -226,4 +206,49 @@ fn search_moves_within_the_view_or_leaves_it() {
     );
     v.status = Some("no gene matches X".into());
     assert!(screen(&mut v, 100, 24).contains("no gene matches X"));
+}
+
+#[test]
+fn stacked_layers_and_cycling() {
+    let (m, s) = (positions(), sites());
+    let total: Vec<(i64, f64)> = m.iter().map(|&(p, v)| (p, v * 3.0)).collect();
+    let mut matrix = Track::single("wt", "sum", &m, false);
+    matrix.layers[0].behind = Some(&total);
+    let sites_track = Track {
+        label: "sites",
+        layers: vec![
+            Layer {
+                name: "methylated / unmethylated reads",
+                front: &s,
+                behind: Some(&s),
+            },
+            Layer {
+                name: "sites",
+                front: &s,
+                behind: None,
+            },
+        ],
+        shown: 0,
+        log: false,
+    };
+    let mut v = PileupView::new("GENE1", "chr1", vec![matrix, sites_track], EXTENT);
+    let text = screen(&mut v, 110, 26);
+    assert!(
+        text.contains("sites · methylated / unmethylated reads"),
+        "{text}"
+    );
+    assert!(text.contains("c site signal"), "{text}");
+    let (front, behind) = v.tracks[0].bin(&v.edges());
+    let behind = behind.expect("stacked");
+    assert!(front.iter().zip(&behind).all(|(f, b)| f <= b));
+    assert!(
+        v.figure().contains(crate::figure::ACCENT),
+        "front drawn in the accent"
+    );
+    press(&mut v, KeyCode::Char('c'));
+    assert_eq!(v.tracks[1].shown, 1);
+    assert_eq!(v.tracks[0].shown, 0, "single-layer tracks do not cycle");
+    assert!(screen(&mut v, 110, 26).contains("sites · sites"));
+    press(&mut v, KeyCode::Char('c'));
+    assert_eq!(v.tracks[1].shown, 0);
 }
