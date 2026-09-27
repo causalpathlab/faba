@@ -210,35 +210,17 @@ fn search_moves_within_the_view_or_leaves_it() {
 }
 
 #[test]
-fn stacked_layers_and_cycling() {
-    let (m, s) = (positions(), sites());
+fn stacked_tracks_draw_front_over_total() {
+    let m = positions();
     let total: Vec<(i64, f64)> = m.iter().map(|&(p, v)| (p, v * 3.0)).collect();
-    let mut matrix = Track::single("wt", "sum", &m, false);
-    matrix.layers[0].behind = Some(&total);
-    let sites_track = Track {
-        label: "sites",
-        layers: vec![
-            Layer {
-                name: "methylated / unmethylated reads",
-                front: &s,
-                behind: Some(&s),
-            },
-            Layer {
-                name: "sites",
-                front: &s,
-                behind: None,
-            },
-        ],
-        shown: 0,
-        log: false,
-    };
-    let mut v = PileupView::new("GENE1", "chr1", vec![matrix, sites_track], EXTENT);
+    let mut matrix = Track::single("wt", "methylated / unmethylated (sum)", &m, false);
+    matrix.behind = Some(&total);
+    let mut v = PileupView::new("GENE1", "chr1", vec![matrix], EXTENT);
     let text = screen(&mut v, 110, 26);
     assert!(
-        text.contains("sites · methylated / unmethylated reads"),
+        text.contains("wt · methylated / unmethylated (sum)"),
         "{text}"
     );
-    assert!(text.contains("t total view"), "{text}");
     let (front, behind) = v.tracks[0].bin(&v.edges());
     let behind = behind.expect("stacked");
     assert!(front.iter().zip(&behind).all(|(f, b)| f <= b));
@@ -246,12 +228,10 @@ fn stacked_layers_and_cycling() {
         v.figure().contains(crate::figure::ACCENT),
         "front drawn in the accent"
     );
-    press(&mut v, KeyCode::Char('t'));
-    assert_eq!(v.tracks[1].shown, 1);
-    assert_eq!(v.tracks[0].shown, 0, "single-layer tracks do not cycle");
-    assert!(screen(&mut v, 110, 26).contains("sites · sites"));
-    press(&mut v, KeyCode::Char('t'));
-    assert_eq!(v.tracks[1].shown, 0);
+    assert!(
+        v.readout().to_string().contains('/'),
+        "readout gives front/total"
+    );
 }
 
 #[test]
@@ -274,9 +254,9 @@ fn contrast_row_compares_the_first_two_tracks() {
     let half: Vec<(i64, f64)> = m.iter().map(|&(p, v)| (p, v * 2.0)).collect();
     let quarter: Vec<(i64, f64)> = m.iter().map(|&(p, v)| (p, v * 4.0)).collect();
     let mut a = Track::single("wt", "sum", &m, false);
-    a.layers[0].behind = Some(&half);
+    a.behind = Some(&half);
     let mut b = Track::single("mut", "sum", &m, false);
-    b.layers[0].behind = Some(&quarter);
+    b.behind = Some(&quarter);
     let mut v = PileupView::new(
         "GENE1",
         "chr1",
@@ -345,11 +325,11 @@ fn genes_row_stacks_overlapping_genes() {
     assert_eq!(lane_of("GENE4"), None, "outside the window");
     assert_eq!(v.rows().last(), Some(&Row::Genes));
     let text = screen(&mut v, 110, 34);
+    assert!(text.contains("GENE1") && text.contains("GENE2"), "{text}");
     assert!(
-        text.contains("GENE1 →") && text.contains("GENE2 ←"),
+        text.contains('━') && text.contains('›') && text.contains('‹'),
         "{text}"
     );
-    assert!(text.contains('█') && text.contains('›'), "{text}");
     let svg = v.figure();
     assert!(
         svg.contains("GENE3") && svg.contains("<rect"),
@@ -362,9 +342,9 @@ fn contrast_and_titles_name_the_channels() {
     let m = positions();
     let total: Vec<(i64, f64)> = m.iter().map(|&(p, v)| (p, v * 2.0)).collect();
     let mut a = Track::single("wt", "sum", &m, false);
-    a.layers[0].behind = Some(&total);
+    a.behind = Some(&total);
     let mut b = Track::single("mut", "sum", &m, false);
-    b.layers[0].behind = Some(&total);
+    b.behind = Some(&total);
     let mut v = PileupView::new("GENE1", "chr1", vec![a, b], EXTENT);
     v.channels = crate::site_analysis::pileup::channel_names("atoi");
     assert!(screen(&mut v, 110, 30).contains("converted fraction difference"));

@@ -32,60 +32,42 @@ const GUTTER: u16 = 6;
 /// Columns between labelled ticks, at least.
 const TICK_SPACING: usize = 14;
 
-/// One way to draw a track: sorted `(position, value)` pairs, optionally
-/// in front of a total per position (converted reads over all reads).
-pub struct Layer<'a> {
+/// One track: sorted `(position, value)` pairs, optionally drawn in front
+/// of a total per position (converted reads over all reads).
+pub struct Track<'a> {
+    pub label: &'a str,
+    /// What the values are, for the panel title.
     pub name: &'a str,
     pub front: &'a [(i64, f64)],
     pub behind: Option<&'a [(i64, f64)]>,
-}
-
-/// One track and the layers it can switch between (`c`).
-pub struct Track<'a> {
-    pub label: &'a str,
-    pub layers: Vec<Layer<'a>>,
-    /// The layer shown.
-    pub shown: usize,
     /// Bins become `log10(1 + sum)`, as the printed pileup does.
     pub log: bool,
 }
 
 impl<'a> Track<'a> {
-    /// A track with one layer and no total.
-    pub fn single(label: &'a str, name: &'a str, positions: &'a [(i64, f64)], log: bool) -> Self {
+    /// A track with no total.
+    #[cfg(test)]
+    pub fn single(label: &'a str, name: &'a str, front: &'a [(i64, f64)], log: bool) -> Self {
         Track {
             label,
-            layers: vec![Layer {
-                name,
-                front: positions,
-                behind: None,
-            }],
-            shown: 0,
+            name,
+            front,
+            behind: None,
             log,
         }
     }
 
-    fn layer(&self) -> &Layer<'a> {
-        &self.layers[self.shown]
-    }
-
-    fn positions(&self) -> &'a [(i64, f64)] {
-        self.layer().front
-    }
-
-    /// The shown layer binned: front, and the total when it has one.
+    /// Binned over `edges`: front, and the total when there is one.
     fn bin(&self, edges: &BinEdges) -> (Vec<f64>, Option<Vec<f64>>) {
-        let layer = self.layer();
-        let front = edges.bin(layer.front, self.log);
-        (front, layer.behind.map(|b| edges.bin(b, self.log)))
+        let front = edges.bin(self.front, self.log);
+        (front, self.behind.map(|b| edges.bin(b, self.log)))
     }
 
     /// Distinct positions inside `lo..=hi`.
     fn sites_in(&self, lo: i64, hi: i64) -> Vec<i64> {
-        let positions = self.positions();
-        let a = positions.partition_point(|p| p.0 < lo);
-        let b = positions.partition_point(|p| p.0 <= hi);
-        distinct_positions(&positions[a..b])
+        let a = self.front.partition_point(|p| p.0 < lo);
+        let b = self.front.partition_point(|p| p.0 <= hi);
+        distinct_positions(&self.front[a..b])
     }
 }
 
@@ -236,8 +218,8 @@ pub struct View<'a> {
     pub extent: (i64, i64),
     /// The two channels' names, e.g. `("methylated", "unmethylated")`.
     pub channels: (&'static str, &'static str),
-    /// Annotation genes (any chromosome); those on `chr` are drawn.
-    pub genes: &'a [GeneModel],
+    /// The annotation genes to draw (those on `chr`).
+    pub genes: Vec<&'a GeneModel>,
 }
 
 /// Genes sharing a lane leave at least this share of the window between
@@ -246,6 +228,10 @@ const LANE_GAP: f64 = 0.08;
 
 /// Most gene lanes drawn.
 const MAX_LANES: usize = 4;
+
+/// Exon height and lane pitch of the gene models in figures.
+const GENE_BAND: f32 = 5.0;
+const GENE_LANE: f64 = 13.0;
 
 /// How the user left the browser.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -290,7 +276,7 @@ impl<'a> PileupView<'a> {
     pub fn new(title: &str, chr: &str, tracks: Vec<Track<'a>>, extent: (i64, i64)) -> Self {
         let mut sites: Vec<i64> = tracks
             .iter()
-            .flat_map(|t| t.positions().iter().map(|p| p.0))
+            .flat_map(|t| t.front.iter().map(|p| p.0))
             .collect();
         sites.sort_unstable();
         sites.dedup();
@@ -319,11 +305,7 @@ impl<'a> PileupView<'a> {
 
     /// Compare the first two tracks when both have totals.
     fn with_contrast(mut self) -> Self {
-        let totals = self
-            .tracks
-            .iter()
-            .take(2)
-            .filter(|t| t.layers[0].behind.is_some());
+        let totals = self.tracks.iter().take(2).filter(|t| t.behind.is_some());
         if totals.count() == 2 {
             self.contrast = Some(Measure::Difference);
         }
@@ -346,7 +328,7 @@ impl<'a> PileupView<'a> {
         match (row, self.contrast) {
             (Row::Track(i), _) => {
                 let t = &self.tracks[i];
-                format!("{} · {}", t.label, t.layer().name)
+                format!("{} · {}", t.label, t.name)
             }
             (Row::Contrast, Some(m)) => {
                 let (a, b) = (self.tracks[0].label, self.tracks[1].label);
@@ -385,21 +367,16 @@ impl<'a> PileupView<'a> {
         c.bold(x + left, y + 13.0, &title, 11.0, Anchor::Start, INK);
         let edges = self.edges();
         for (lane, g) in self.gene_lanes() {
-            let mid = y + 30.0 + 22.0 * lane as f64;
+            let mid = y + 26.0 + GENE_LANE * lane as f64;
             let (px, pw) = ((x + left) as f32, (w - left - right) as f32);
-            c.raw(&gene_model_svg(g, &edges, px, pw, mid as f32, 9.0));
+            c.raw(&gene_model_svg(g, &edges, px, pw, mid as f32, GENE_BAND));
         }
     }
 
-    /// Height of the genes row: two lines per lane.
-    fn genes_height(&self) -> u16 {
-        let lanes = self
-            .gene_lanes()
-            .iter()
-            .map(|(l, _)| l + 1)
-            .max()
-            .unwrap_or(1);
-        2 + 2 * lanes as u16
+    /// Gene lanes in view (at least one).
+    fn lanes(&self) -> usize {
+        let lanes = self.gene_lanes().iter().map(|(l, _)| l + 1).max();
+        lanes.unwrap_or(1)
     }
 
     /// The contrast per bar over the window (raw sums, never log).
@@ -408,9 +385,8 @@ impl<'a> PileupView<'a> {
             return Vec::new();
         };
         let counts = |t: &Track| {
-            let layer = &t.layers[0];
-            let front = edges.bin(layer.front, false);
-            let total = edges.bin(layer.behind.unwrap_or(layer.front), false);
+            let front = edges.bin(t.front, false);
+            let total = edges.bin(t.behind.unwrap_or(t.front), false);
             (front, total)
         };
         let ((ma, na), (mb, nb)) = (counts(&self.tracks[0]), counts(&self.tracks[1]));
@@ -524,7 +500,7 @@ impl<'a> PileupView<'a> {
         let panel_h = 170.0;
         let rows = self.rows();
         let height = |row: Row| match row {
-            Row::Genes => 36.0 + 22.0 * self.genes_height().saturating_sub(2) as f64 / 2.0,
+            Row::Genes => 24.0 + GENE_LANE * self.lanes() as f64,
             _ => panel_h,
         };
         let total: f64 = rows.iter().map(|&r| height(r)).sum();
@@ -623,7 +599,7 @@ impl<'a> PileupView<'a> {
             marks,
             title,
             x_title: format!("{} position", self.chr),
-            y_title: t.layer().name.into(),
+            y_title: t.name.into(),
         }
         .draw(c, x, y, w, h);
     }
@@ -696,11 +672,6 @@ impl Screen for PileupView<'_> {
         match key.code {
             KeyCode::Char('/') => self.search.open(""),
             KeyCode::Char('c') => self.contrast = self.contrast.map(Measure::next),
-            KeyCode::Char('t') => {
-                for t in self.tracks.iter_mut().filter(|t| t.layers.len() > 1) {
-                    t.shown = (t.shown + 1) % t.layers.len();
-                }
-            }
             KeyCode::Left | KeyCode::Char('h') => self.move_cursor(-1),
             KeyCode::Right | KeyCode::Char('l') => self.move_cursor(1),
             KeyCode::PageUp => self.move_cursor(-(self.columns as i64) / 2),
@@ -720,7 +691,7 @@ impl Screen for PileupView<'_> {
     fn render(&mut self, frame: &mut Frame) {
         let rows = self.rows();
         let n_plots = rows.iter().filter(|&&r| r != Row::Genes).count().max(1) as u32;
-        let genes_height = self.genes_height() + 2;
+        let genes_height = self.lanes() as u16 + 2;
         let mut layout = vec![Constraint::Length(1)];
         layout.extend(rows.iter().map(|&r| match r {
             Row::Genes => Constraint::Length(genes_height),
@@ -831,25 +802,24 @@ impl Screen for PileupView<'_> {
 }
 
 impl PileupView<'_> {
-    /// The genes row as text: exons as blocks on an intron line with strand
-    /// arrows, the symbol underneath, one pair of lines per lane.
+    /// The genes row as text, a line per lane: exons as a heavy line on a
+    /// thin intron line with strand arrows, the symbol beside the gene.
     fn render_genes(&self, buf: &mut ratatui::buffer::Buffer, area: ratatui::layout::Rect) {
         let chart_x = area.x + GUTTER;
-        if area.width <= GUTTER || area.height < 2 {
+        if area.width <= GUTTER || area.height == 0 {
             return;
         }
         let right = area.right();
         let edges = self.edges();
         let col = |pos: i64| chart_x + edges.col_of(pos) as u16;
         for (lane, g) in self.gene_lanes() {
-            let y = area.y + 2 * lane as u16;
-            if y + 1 >= area.bottom() {
+            let y = area.y + lane as u16;
+            if y >= area.bottom() {
                 break;
             }
-            let (c0, c1) = (col(g.lo), col(g.hi - 1));
-            for x in c0..=c1.min(right - 1) {
-                let arrow = (x - c0) % 4 == 2;
-                let sym = match (arrow, g.forward) {
+            let (c0, c1) = (col(g.lo), col(g.hi - 1).min(right - 1));
+            for x in c0..=c1 {
+                let sym = match ((x - c0) % 4 == 2, g.forward) {
                     (true, true) => "›",
                     (true, false) => "‹",
                     _ => "─",
@@ -861,12 +831,18 @@ impl PileupView<'_> {
                     continue;
                 }
                 for x in col(es)..=col(ee - 1).min(right - 1) {
-                    buf[(x, y)].set_symbol("█").set_style(PLAIN);
+                    buf[(x, y)].set_symbol("━").set_style(PLAIN);
                 }
             }
-            let label = format!("{}{}", g.symbol, if g.forward { " →" } else { " ←" });
-            let lx = c0.min(right.saturating_sub(label.len() as u16));
-            buf.set_string(lx, y + 1, &label, PLAIN);
+            // The symbol after the gene if it fits, else before it.
+            let label = g.symbol.as_ref();
+            let len = label.chars().count() as u16;
+            let lx = if c1 + 2 + len <= right {
+                c1 + 2
+            } else {
+                c0.saturating_sub(len + 1).max(area.x)
+            };
+            buf.set_string(lx, y, label, DIM);
         }
     }
 
@@ -883,9 +859,6 @@ impl PileupView<'_> {
         if self.contrast.is_some() {
             keys.push(("c", "difference/fold"));
         }
-        if self.tracks.iter().any(|t| t.layers.len() > 1) {
-            keys.push(("t", "total view"));
-        }
         self.controls.help_keys(&mut keys);
         keys.push(("q", "quit"));
         help_line(&keys)
@@ -900,7 +873,7 @@ pub fn show_pileup(view: View, tracks: Vec<Track>, status: Option<String>) -> an
     browser.channels = view.channels;
     browser.genes = view
         .genes
-        .iter()
+        .into_iter()
         .filter(|g| chr_eq(&g.chr, view.chr))
         .collect();
     browser.status = status;

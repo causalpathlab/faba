@@ -605,27 +605,6 @@ struct SiteAnnotation {
     gene_stop: i64,
     positions: Vec<(i64, f64)>,
     num_sites: usize,
-    /// What the browser can switch the site track between.
-    layers: Vec<SiteLayer>,
-}
-
-/// One way to draw the site track: a value per site, optionally in front of
-/// a total per site (converted reads over all reads).
-struct SiteLayer {
-    name: String,
-    front: Vec<(i64, f64)>,
-    behind: Option<Vec<(i64, f64)>>,
-}
-
-/// Per-site values the site track's layers are cut from.
-#[derive(Default)]
-struct SiteValues {
-    pos: i64,
-    converted: f64,
-    coverage: f64,
-    control_converted: f64,
-    control_coverage: f64,
-    neg_log10_pv: f64,
 }
 
 /// How a modality's two channels are named on screen: A-to-I reads are
@@ -636,34 +615,6 @@ pub(crate) fn channel_names(modality: &str) -> (&'static str, &'static str) {
     } else {
         ("methylated", "unmethylated")
     }
-}
-
-/// The site track's layers, from rows sorted by position. Read counts need
-/// the `converted`/`coverage` columns; the control arm, any control reads.
-fn site_layers(rows: &[SiteValues], has_counts: bool, mod_type: &str) -> Vec<SiteLayer> {
-    let series = |f: fn(&SiteValues) -> f64| rows.iter().map(|r| (r.pos, f(r))).collect();
-    let (on, off) = channel_names(mod_type);
-    let mut layers = Vec::new();
-    if has_counts {
-        layers.push(SiteLayer {
-            name: format!("{on} / {off} reads"),
-            front: series(|r| r.converted),
-            behind: Some(series(|r| r.coverage)),
-        });
-        if rows.iter().any(|r| r.control_coverage > 0.0) {
-            layers.push(SiteLayer {
-                name: format!("control {on} / {off} reads"),
-                front: series(|r| r.control_converted),
-                behind: Some(series(|r| r.control_coverage)),
-            });
-        }
-    }
-    layers.push(SiteLayer {
-        name: "-log10 p".into(),
-        front: series(|r| r.neg_log10_pv),
-        behind: None,
-    });
-    layers
 }
 
 fn read_site_annotation(
@@ -678,9 +629,6 @@ fn read_site_annotation(
     let mut gene_start: Option<i64> = None;
     let mut gene_stop: Option<i64> = None;
     let mut positions: Vec<(i64, f64)> = Vec::new();
-    let mut values: Vec<SiteValues> = Vec::new();
-    let mut has_counts = true;
-    let mut mod_type: Option<String> = None;
     let mut distinct_genes: FxHashMap<Box<str>, usize> = FxHashMap::default();
 
     // Resolve signal column names once
@@ -724,26 +672,6 @@ fn read_site_annotation(
         let pv_col = batch
             .column_by_name("pv")
             .and_then(|c| c.as_any().downcast_ref::<Float32Array>());
-
-        let count_col = |name: &str| {
-            batch
-                .column_by_name(name)
-                .and_then(|c| c.as_any().downcast_ref::<UInt64Array>())
-        };
-        let counts = [
-            count_col("converted"),
-            count_col("coverage"),
-            count_col("control_converted"),
-            count_col("control_coverage"),
-        ];
-        has_counts &= counts[..2].iter().all(Option::is_some);
-        if mod_type.is_none() {
-            mod_type = batch
-                .column_by_name("mod_type")
-                .and_then(|c| c.as_any().downcast_ref::<StringArray>())
-                .filter(|c| !c.is_empty())
-                .map(|c| c.value(0).to_string());
-        }
 
         let base_cols: Vec<Option<&UInt64Array>> = signal_cols
             .iter()
@@ -796,22 +724,6 @@ fn read_site_annotation(
             };
 
             positions.push((pos, value));
-            let count = |k: usize| counts[k].map_or(0.0, |c| c.value(i) as f64);
-            values.push(SiteValues {
-                pos,
-                converted: count(0),
-                coverage: count(1),
-                control_converted: count(2),
-                control_coverage: count(3),
-                neg_log10_pv: pv_col.map_or(0.0, |pv| {
-                    let p = pv.value(i);
-                    if p > 0.0 {
-                        -(p as f64).log10()
-                    } else {
-                        300.0
-                    }
-                }),
-            });
         }
     }
 
@@ -846,14 +758,11 @@ fn read_site_annotation(
     );
 
     let num_sites = positions.len();
-    values.sort_unstable_by_key(|v| v.pos);
-    let layers = site_layers(&values, has_counts, mod_type.as_deref().unwrap_or(""));
     Ok(SiteAnnotation {
         gene_start: gs,
         gene_stop: gt,
         positions,
         num_sites,
-        layers,
     })
 }
 
@@ -1347,12 +1256,11 @@ fn load(
             }
             None => Vec::new(),
         };
-        let total = if totals {
-            let other = read_matrix_positions(&g.files, selector, &args.signal, true)?;
-            let other = other.map(|m| m.positions).unwrap_or_default();
-            Some(merge_positions(&converted, &other))
-        } else {
-            None
+        // No unconverted rows (a matrix without that channel): no total.
+        let total = match totals {
+            true => read_matrix_positions(&g.files, selector, &args.signal, true)?
+                .map(|m| merge_positions(&converted, &m.positions)),
+            false => None,
         };
         tracks.push(MatrixTrack {
             label: g.label.clone(),
@@ -1390,6 +1298,18 @@ fn load(
     })
 }
 
+/// The gene models to draw: only the opened gene when the selection is
+/// one gene (matched by symbol), else every model (a searched locus).
+fn genes_to_draw<'a>(genes: &'a [GeneModel], selection: &str) -> Vec<&'a GeneModel> {
+    let symbol = selection.rsplit_once('_').map_or(selection, |(_, s)| s);
+    let picked: Vec<&GeneModel> = genes.iter().filter(|g| &*g.symbol == symbol).collect();
+    if picked.is_empty() {
+        genes.iter().collect()
+    } else {
+        picked
+    }
+}
+
 /// Browse `loaded` full screen, with `status` on the footer first and the
 /// annotation's `genes` drawn under the tracks.
 fn browse(
@@ -1401,7 +1321,7 @@ fn browse(
     let is_log = matches!(args.signal, PileupSignal::Log10Sum);
     let (on, off) = channel_names(&loaded.modality);
     let stacked_name = format!("{on} / {off} ({})", args.signal.name());
-    let mut tracks: Vec<tui::Track> = loaded
+    let tracks: Vec<tui::Track> = loaded
         .tracks
         .iter()
         .map(|t| {
@@ -1410,36 +1330,21 @@ fn browse(
             } else {
                 args.signal.name()
             };
-            let mut track = tui::Track::single(&t.label, name, &t.converted, is_log);
-            if let Some(total) = &t.total {
-                track.layers[0].behind = Some(total);
+            tui::Track {
+                label: &t.label,
+                name,
+                front: &t.converted,
+                behind: t.total.as_deref(),
+                log: is_log,
             }
-            track
         })
         .collect();
-    if let Some(sa) = &loaded.sites {
-        let layers = sa
-            .layers
-            .iter()
-            .map(|l| tui::Layer {
-                name: &l.name,
-                front: &l.front,
-                behind: l.behind.as_deref(),
-            })
-            .collect();
-        tracks.push(tui::Track {
-            label: "total",
-            layers,
-            shown: 0,
-            log: false,
-        });
-    }
     let view = tui::View {
         title: &loaded.gene,
         chr: &loaded.chr,
         extent: loaded.extent,
         channels: channel_names(&loaded.modality),
-        genes,
+        genes: genes_to_draw(genes, &loaded.gene),
     };
     tui::show_pileup(view, tracks, status)
 }

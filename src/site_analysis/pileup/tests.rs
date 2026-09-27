@@ -213,46 +213,31 @@ fn merged_positions_sum_shared_sites() {
 }
 
 #[test]
-fn site_layers_offer_reads_counts_and_p() {
-    let rows = vec![
-        SiteValues {
-            pos: 1,
-            converted: 2.0,
-            coverage: 10.0,
-            control_converted: 0.0,
-            control_coverage: 5.0,
-            neg_log10_pv: 3.0,
-        },
-        SiteValues {
-            pos: 2,
-            converted: 1.0,
-            coverage: 4.0,
-            ..SiteValues::default()
-        },
-    ];
-    let names: Vec<String> = site_layers(&rows, true, "m6A")
-        .into_iter()
-        .map(|l| l.name)
-        .collect();
-    assert_eq!(
-        names,
-        [
-            "methylated / unmethylated reads",
-            "control methylated / unmethylated reads",
-            "-log10 p"
-        ]
-    );
-    let atoi = site_layers(&rows, true, "AtoI");
-    assert_eq!(atoi[0].name, "converted / unconverted reads");
-    assert_eq!(atoi[0].behind.as_deref(), Some(&[(1, 10.0), (2, 4.0)][..]));
-    let bare = site_layers(&rows, false, "m6A");
-    assert_eq!(bare.len(), 1, "no read counts without the count columns");
-}
-
-#[test]
 fn channels_are_named_by_modality() {
     assert_eq!(channel_names("m6a"), ("methylated", "unmethylated"));
     assert_eq!(channel_names("m6A"), ("methylated", "unmethylated"));
     assert_eq!(channel_names("atoi"), ("converted", "unconverted"));
     assert_eq!(channel_names("AtoI"), ("converted", "unconverted"));
+}
+
+#[test]
+fn only_the_opened_gene_is_drawn() {
+    use crate::site_analysis::miami::genemodel::GeneModel;
+    let model = |symbol: &str| GeneModel {
+        chr: "chr1".into(),
+        lo: 0,
+        hi: 10,
+        forward: true,
+        exons: Vec::new(),
+        symbol: symbol.into(),
+    };
+    let genes = [model("GENE1"), model("GENE2")];
+    let one = genes_to_draw(&genes, "ENSG1_GENE2");
+    assert_eq!(one.len(), 1);
+    assert_eq!(&*one[0].symbol, "GENE2");
+    assert_eq!(
+        genes_to_draw(&genes, "chr1:0-100").len(),
+        2,
+        "a locus shows all"
+    );
 }
