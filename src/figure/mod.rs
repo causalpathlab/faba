@@ -182,7 +182,7 @@ pub fn svg(w: f64, h: f64, draw: impl FnOnce(&mut Canvas)) -> String {
 }
 
 /// `v` on a view's y scale, as the terminal histogram draws it.
-fn scaled(scale: Scale, v: f64) -> f64 {
+pub(crate) fn scaled(scale: Scale, v: f64) -> f64 {
     match scale {
         Scale::Log => (v.max(0.0) + 1.0).log10(),
         Scale::Sqrt => v.max(0.0).sqrt(),
@@ -314,46 +314,133 @@ pub struct Diverging<'a> {
 
 impl Diverging<'_> {
     pub fn draw(&self, c: &mut Canvas, x: f64, y: f64, w: f64, h: f64) {
+        let (up, down) = split_signed(self.values);
+        let max = up.iter().chain(&down).fold(0.0, |m: f64, &v| m.max(v));
+        Mirror {
+            up: Half::plain(&up, ACCENT),
+            down: Half::plain(&down, BAR),
+            y_scale: Scale::Linear,
+            y_max: Some(max),
+            y_labels: [(self.label)(max), (self.label)(0.0), (self.label)(-max)],
+            ticks: self.ticks.clone(),
+            pointer: self.pointer,
+            title: self.title.clone(),
+            x_title: self.x_title.clone(),
+            y_title: self.y_title.clone(),
+        }
+        .draw(c, x, y, w, h);
+    }
+}
+
+/// Signed values split into their positive and negative parts, as sizes;
+/// `None` is zero on both.
+pub fn split_signed(values: &[Option<f64>]) -> (Vec<f64>, Vec<f64>) {
+    let part = |sign: f64| {
+        let v = values.iter();
+        v.map(|v| v.map_or(0.0, |v| (sign * v).max(0.0))).collect()
+    };
+    (part(1.0), part(-1.0))
+}
+
+/// One side of a [`Mirror`]: bars, optionally with a part drawn in front
+/// (in the accent, the bars behind then faint), and a name in the corner.
+pub struct Half<'a> {
+    pub values: &'a [f64],
+    pub front: Option<&'a [f64]>,
+    pub colour: &'static str,
+    pub name: String,
+}
+
+impl<'a> Half<'a> {
+    pub fn plain(values: &'a [f64], colour: &'static str) -> Self {
+        Half {
+            values,
+            front: None,
+            colour,
+            name: String::new(),
+        }
+    }
+}
+
+/// Two bar series on one scale around a zero line, one growing up and the
+/// other down, as a Miami plot. Ticks and pointer as [`Bars`].
+pub struct Mirror<'a> {
+    pub up: Half<'a>,
+    pub down: Half<'a>,
+    pub y_scale: Scale,
+    /// Top of either side; `None` scales to the tallest bar.
+    pub y_max: Option<f64>,
+    /// Axis labels at the top, the zero line and the bottom; empty ones are
+    /// the scale's own.
+    pub y_labels: [String; 3],
+    pub ticks: Vec<(usize, String)>,
+    pub pointer: Option<usize>,
+    pub title: String,
+    pub x_title: String,
+    pub y_title: String,
+}
+
+impl Mirror<'_> {
+    pub fn draw(&self, c: &mut Canvas, x: f64, y: f64, w: f64, h: f64) {
         let (left, right, top, bottom) = (52.0, 12.0, 20.0, 38.0);
         let (px, py, pw, ph) = (x + left, y + top, w - left - right, h - top - bottom);
         c.bold(x + left, y + 13.0, &self.title, 11.0, Anchor::Start, INK);
-        let n = self.values.len().max(1);
+        let n = self.up.values.len().max(self.down.values.len()).max(1);
         let bw = pw / n as f64;
+        let all = self.up.values.iter().chain(self.down.values);
+        let tallest = all.map(|&v| scaled(self.y_scale, v)).fold(0.0, f64::max);
         let max = self
-            .values
-            .iter()
-            .flatten()
-            .fold(0.0f64, |m, v| m.max(v.abs()));
+            .y_max
+            .map_or(tallest, |m| scaled(self.y_scale, m).max(tallest));
         let zero = py + ph / 2.0;
-        for (f, label) in [(1.0, max), (0.0, 0.0), (-1.0, -max)] {
+        let height = |v: f64| {
+            if max <= 0.0 {
+                0.0
+            } else {
+                scaled(self.y_scale, v) / max * ph / 2.0
+            }
+        };
+        let own = compact(unscaled(self.y_scale, max));
+        for (f, label) in [(1.0, 0), (0.0, 1), (-1.0, 2)] {
             let gy = zero - f * ph / 2.0;
             if f != 0.0 {
                 c.line(px, gy, px + pw, gy, FAINT, 0.4);
             }
-            c.text(
-                px - 5.0,
-                gy + 3.0,
-                &(self.label)(label),
-                8.0,
-                Anchor::End,
-                MUTED,
-            );
+            let label = match self.y_labels[label].as_str() {
+                "" if f == 0.0 => "0",
+                "" => &own,
+                l => l,
+            };
+            c.text(px - 5.0, gy + 3.0, label, 8.0, Anchor::End, MUTED);
         }
         c.vtext(x + 12.0, py + ph / 2.0, &self.y_title, 8.0, MUTED);
         let gap = if bw > 3.0 { 0.15 * bw } else { 0.0 };
-        if max > 0.0 {
-            for (i, v) in self.values.iter().enumerate() {
-                let Some(v) = *v else { continue };
-                let bh = v.abs() / max * ph / 2.0;
-                let bx = px + i as f64 * bw + gap / 2.0;
-                let (top, fill) = if v >= 0.0 {
-                    (zero - bh, ACCENT)
-                } else {
-                    (zero, BAR)
-                };
-                c.rect(bx, top, bw - gap, bh, fill);
+        for (half, sign) in [(&self.up, -1.0), (&self.down, 1.0)] {
+            let mut bars = |values: &[f64], colour: &'static str| {
+                for (i, &v) in values.iter().enumerate() {
+                    let bh = height(v);
+                    let bx = px + i as f64 * bw + gap / 2.0;
+                    let top = if sign < 0.0 { zero - bh } else { zero };
+                    c.rect(bx, top, bw - gap, bh, colour);
+                }
+            };
+            match half.front {
+                Some(front) => {
+                    bars(half.values, FAINT);
+                    bars(front, ACCENT);
+                }
+                None => bars(half.values, half.colour),
             }
         }
+        c.text(px + 4.0, py + 9.0, &self.up.name, 8.0, Anchor::Start, MUTED);
+        c.text(
+            px + 4.0,
+            py + ph - 3.0,
+            &self.down.name,
+            8.0,
+            Anchor::Start,
+            MUTED,
+        );
         if let Some(p) = self.pointer {
             let cx = px + (p as f64 + 0.5) * bw;
             c.dashed(cx, py, cx, py + ph, ACCENT, 0.8);

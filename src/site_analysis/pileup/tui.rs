@@ -12,6 +12,7 @@ use data_beans::interactive::ui::{
 };
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
@@ -153,21 +154,36 @@ impl Measure {
 enum Row {
     Track(usize),
     Contrast(Measure),
+    /// The first track above a zero line and the second below it.
+    Mirror,
     /// The annotation's genes in view.
     Genes,
 }
 
-/// Signed bars around a middle zero line, as text: positive up in the
-/// accent, negative down; `None` draws nothing.
-struct TextDiverging<'a> {
-    values: &'a [Option<f64>],
+/// One side of a [`TextMirror`]: bars, optionally with a part drawn in
+/// front in the accent (the bars behind then dim).
+struct TextHalf<'a> {
+    values: &'a [f64],
+    front: Option<&'a [f64]>,
+    style: Style,
+    name: &'a str,
+}
+
+/// Two bar series around a middle zero line, as text, one growing up and
+/// the other down, in half cells.
+struct TextMirror<'a> {
+    up: TextHalf<'a>,
+    down: TextHalf<'a>,
+    /// A value's share of a side's height, 0 to 1.
+    share: &'a dyn Fn(f64) -> f64,
+    /// Axis labels at the top, the zero line and the bottom.
+    y_labels: [String; 3],
     pointer: usize,
-    label: &'a dyn Fn(f64) -> String,
     /// Tick label per column.
     ticks: &'a [Option<String>],
 }
 
-impl TextDiverging<'_> {
+impl TextMirror<'_> {
     fn render(&self, buf: &mut ratatui::buffer::Buffer, area: ratatui::layout::Rect) {
         let [plot, axis] =
             Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area);
@@ -178,47 +194,55 @@ impl TextDiverging<'_> {
         }
         let half = (chart.height - 1) / 2;
         let zero = chart.top() + half;
-        let max = self
-            .values
-            .iter()
-            .flatten()
-            .fold(0.0f64, |m, v| m.max(v.abs()));
         for x in chart.left()..chart.right() {
             buf[(x, zero)].set_symbol("─").set_style(DIM);
         }
-        for (i, v) in self.values.iter().enumerate() {
-            let x = chart.x + i as u16;
-            if x >= chart.right() {
-                break;
-            }
-            let Some(v) = *v else { continue };
-            if max <= 0.0 {
-                continue;
-            }
-            let cells = ((v.abs() / max) * half as f64).round().max(1.0) as u16;
-            for k in 0..cells.min(half) {
-                let (y, style) = if v >= 0.0 {
-                    (zero - 1 - k, ACCENTED)
-                } else {
-                    (zero + 1 + k, PLAIN)
-                };
-                buf[(x, y)].set_symbol("█").set_style(style);
+        for (side, up) in [(&self.up, true), (&self.down, false)] {
+            let mut bars = |values: &[f64], style: Style| {
+                for (i, &v) in values.iter().enumerate() {
+                    let x = chart.x + i as u16;
+                    if x >= chart.right() {
+                        break;
+                    }
+                    let share = (self.share)(v);
+                    if share <= 0.0 {
+                        continue;
+                    }
+                    let halves = ((share * 2.0 * half as f64).round() as u16).clamp(1, 2 * half);
+                    for k in 0..halves.div_ceil(2) {
+                        let whole = 2 * k + 2 <= halves;
+                        let (y, sym) = match (up, whole) {
+                            (true, true) => (zero - 1 - k, "█"),
+                            (true, false) => (zero - 1 - k, "▄"),
+                            (false, true) => (zero + 1 + k, "█"),
+                            (false, false) => (zero + 1 + k, "▀"),
+                        };
+                        buf[(x, y)].set_symbol(sym).set_style(style);
+                    }
+                }
+            };
+            match side.front {
+                Some(front) => {
+                    bars(side.values, DIM);
+                    bars(front, ACCENTED);
+                }
+                None => bars(side.values, side.style),
             }
         }
+        buf.set_string(chart.x, chart.top(), self.up.name, DIM);
+        buf.set_string(chart.x, chart.top() + 2 * half, self.down.name, DIM);
         let gx = gutter.right() - 1;
         for y in gutter.top()..gutter.bottom() {
             buf[(gx, y)].set_symbol("│").set_style(DIM);
         }
-        for (y, v) in [
-            (chart.top(), max),
-            (zero, 0.0),
-            (chart.top() + 2 * half, -max),
-        ] {
-            let s = (self.label)(v);
+        for (y, s) in [chart.top(), zero, chart.top() + 2 * half]
+            .into_iter()
+            .zip(&self.y_labels)
+        {
             buf.set_string(
                 gx.saturating_sub(s.len() as u16 + 1).max(gutter.x),
                 y,
-                &s,
+                s,
                 DIM,
             );
         }
@@ -238,6 +262,17 @@ impl TextDiverging<'_> {
         let px = chart.x + self.pointer as u16;
         if px < chart.right() {
             buf[(px, axis.y)].set_symbol("▲").set_style(HIGHLIGHT);
+        }
+    }
+}
+
+impl<'a> TextHalf<'a> {
+    fn plain(values: &'a [f64], style: Style) -> Self {
+        TextHalf {
+            values,
+            front: None,
+            style,
+            name: "",
         }
     }
 }
@@ -302,6 +337,8 @@ pub struct PileupView<'a> {
     on: &'static str,
     /// A searched locus rather than a gene: draw every gene in view.
     locus: bool,
+    /// The first two tracks share one mirrored row (`m` splits them).
+    mirror: bool,
     /// The genes to draw, once the annotation has arrived.
     genes: Vec<GeneModel>,
     /// The annotation while it is still loading.
@@ -337,6 +374,7 @@ impl<'a> PileupView<'a> {
             contrast: paired.then_some(Measure::Difference),
             on: "methylated",
             locus: false,
+            mirror: true,
             genes: Vec::new(),
             pending_genes: None,
             exit: None,
@@ -369,11 +407,31 @@ impl<'a> PileupView<'a> {
     fn rows(&self) -> Vec<Row> {
         let contrast = self.contrast.map(Row::Contrast);
         let genes = (!self.genes.is_empty()).then_some(Row::Genes);
+        let (mirror, first) = if self.mirrored() {
+            (Some(Row::Mirror), 2)
+        } else {
+            (None, 0)
+        };
         contrast
             .into_iter()
-            .chain((0..self.tracks.len()).map(Row::Track))
+            .chain(mirror)
+            .chain((first..self.tracks.len()).map(Row::Track))
             .chain(genes)
             .collect()
+    }
+
+    /// Whether the first two tracks are drawn as one mirrored row: asked
+    /// for, and they can be.
+    fn mirrored(&self) -> bool {
+        self.mirror && self.mirrorable()
+    }
+
+    /// The first two tracks are read tracks of the same measure.
+    fn mirrorable(&self) -> bool {
+        match &self.tracks[..] {
+            [a, b, ..] => a.ranges.is_none() && b.ranges.is_none() && a.name == b.name,
+            _ => false,
+        }
     }
 
     fn row_title(&self, row: Row) -> String {
@@ -385,6 +443,10 @@ impl<'a> PileupView<'a> {
             Row::Contrast(m) => {
                 let (a, b) = (self.tracks[0].label, self.tracks[1].label);
                 format!("{a} vs {b} · {}", m.name(self.on))
+            }
+            Row::Mirror => {
+                let (a, b) = (&self.tracks[0], &self.tracks[1]);
+                format!("{} above, {} below · {}", a.label, b.label, a.name)
             }
             Row::Genes => "genes".into(),
         }
@@ -614,6 +676,30 @@ impl<'a> PileupView<'a> {
                 }
                 .draw(c, x, y, w, h);
             }
+            Row::Mirror => {
+                let (x, y, w, h) = bbox;
+                let edges = self.edges();
+                let binned: Vec<_> = self.tracks[..2].iter().map(|t| t.bin(&edges)).collect();
+                let half = |k: usize| figure::Half {
+                    values: binned[k].1.as_ref().unwrap_or(&binned[k].0),
+                    front: binned[k].1.is_some().then_some(binned[k].0.as_slice()),
+                    colour: figure::BAR,
+                    name: self.tracks[k].label.to_string(),
+                };
+                figure::Mirror {
+                    up: half(0),
+                    down: half(1),
+                    y_scale: self.y_scale,
+                    y_max: self.shared_max(&edges),
+                    y_labels: Default::default(),
+                    ticks: self.tick_list(),
+                    pointer,
+                    title,
+                    x_title: format!("{} position", self.chr),
+                    y_title: self.tracks[0].name.into(),
+                }
+                .draw(c, x, y, w, h);
+            }
             Row::Genes => self.draw_genes(c, bbox, title),
         }
     }
@@ -731,6 +817,7 @@ impl Screen for PileupView<'_> {
         match key.code {
             KeyCode::Char('/') => self.search.open(""),
             KeyCode::Char('c') => self.contrast = self.contrast.map(Measure::next),
+            KeyCode::Char('m') => self.mirror = !self.mirror,
             KeyCode::Left | KeyCode::Char('h') => self.move_cursor(-1),
             KeyCode::Right | KeyCode::Char('l') => self.move_cursor(1),
             KeyCode::PageUp => self.move_cursor(-(self.columns as i64) / 2),
@@ -810,19 +897,52 @@ impl Screen for PileupView<'_> {
                 self.render_genes(frame.buffer_mut(), inner);
                 continue;
             }
-            let Row::Track(i) = row else {
-                let Row::Contrast(measure) = row else {
+            let i = match row {
+                Row::Track(i) => i,
+                Row::Contrast(measure) => {
+                    let values = self.contrast_values(measure, &edges);
+                    let (up, down) = figure::split_signed(&values);
+                    let max = up.iter().chain(&down).fold(0.0, |m: f64, &v| m.max(v));
+                    TextMirror {
+                        up: TextHalf::plain(&up, ACCENTED),
+                        down: TextHalf::plain(&down, PLAIN),
+                        share: &|v| if max > 0.0 { v / max } else { 0.0 },
+                        y_labels: [max, 0.0, -max].map(|v| measure.label(v)),
+                        pointer: self.cursor_col(),
+                        ticks: &ticks,
+                    }
+                    .render(frame.buffer_mut(), inner);
                     continue;
-                };
-                let values = self.contrast_values(measure, &edges);
-                let diverging = TextDiverging {
-                    values: &values,
-                    pointer: self.cursor_col(),
-                    label: &|v| measure.label(v),
-                    ticks: &ticks,
-                };
-                diverging.render(frame.buffer_mut(), inner);
-                continue;
+                }
+                Row::Mirror => {
+                    let binned: Vec<_> = self.tracks[..2].iter().map(|t| t.bin(&edges)).collect();
+                    let half = |k: usize| TextHalf {
+                        values: binned[k].1.as_ref().unwrap_or(&binned[k].0),
+                        front: binned[k].1.is_some().then_some(binned[k].0.as_slice()),
+                        style: PLAIN,
+                        name: self.tracks[k].label,
+                    };
+                    let scale = self.y_scale;
+                    let top = shared.map_or(0.0, |m| figure::scaled(scale, m));
+                    let own = compact(shared.unwrap_or(0.0));
+                    TextMirror {
+                        up: half(0),
+                        down: half(1),
+                        share: &|v| {
+                            if top > 0.0 {
+                                figure::scaled(scale, v) / top
+                            } else {
+                                0.0
+                            }
+                        },
+                        y_labels: [own.clone(), "0".into(), own],
+                        pointer: self.cursor_col(),
+                        ticks: &ticks,
+                    }
+                    .render(frame.buffer_mut(), inner);
+                    continue;
+                }
+                Row::Genes => continue,
             };
             let t = &self.tracks[i];
             let (front, behind) = t.bin(&edges);
@@ -922,6 +1042,9 @@ impl PileupView<'_> {
         ];
         if self.contrast.is_some() {
             keys.push(("c", "difference/fold"));
+        }
+        if self.mirrorable() {
+            keys.push(("m", if self.mirror { "split" } else { "mirror" }));
         }
         self.controls.help_keys(&mut keys);
         keys.push(("q", "quit"));

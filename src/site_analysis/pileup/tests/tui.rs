@@ -267,8 +267,7 @@ fn contrast_row_compares_the_first_two_tracks() {
         v.rows(),
         vec![
             Row::Contrast(Measure::Difference),
-            Row::Track(0),
-            Row::Track(1),
+            Row::Mirror,
             Row::Track(2)
         ]
     );
@@ -425,4 +424,50 @@ fn read_tracks_share_one_scale() {
     let svg = v.figure();
     let top = data_beans::interactive::ui::compact(tallest_b);
     assert!(svg.matches(&format!(">{top}<")).count() >= 2, "{top}");
+}
+
+#[test]
+fn like_tracks_share_a_mirrored_row_until_split() {
+    let m = positions();
+    let half: Vec<(i64, f64)> = m.iter().map(|&(p, v)| (p, v * 2.0)).collect();
+    let mut a = Track::single("wt", "sum", &m, false);
+    a.behind = Some(&half);
+    let mut b = Track::single("mut", "sum", &half, false);
+    b.behind = Some(&half);
+    let mut v = PileupView::new("GENE1", "chr1", vec![a, b], EXTENT);
+    let text = screen(&mut v, 110, 30);
+    assert!(text.contains("wt above, mut below · sum"), "{text}");
+    assert!(text.contains("m split"), "{text}");
+    assert!(v.figure().contains("wt above, mut below"));
+    // Bars grow both ways from the zero line.
+    assert!(text.contains('▀') || text.lines().any(|l| l.contains('█')));
+
+    press(&mut v, KeyCode::Char('m'));
+    assert_eq!(
+        v.rows(),
+        vec![
+            Row::Contrast(Measure::Difference),
+            Row::Track(0),
+            Row::Track(1)
+        ]
+    );
+    assert!(screen(&mut v, 110, 30).contains("m mirror"));
+}
+
+#[test]
+fn unlike_tracks_are_not_mirrored() {
+    let (m, s) = (positions(), sites());
+    let v = view(&m, &s);
+    assert_eq!(v.rows(), vec![Row::Track(0), Row::Track(1)]);
+    let depth = [(1_000_000, 1_100_000, 5.0)];
+    let v = PileupView::new(
+        "GENE1",
+        "chr1",
+        vec![
+            Track::single("wt", "sum", &m, false),
+            Track::depth("depth", &depth),
+        ],
+        EXTENT,
+    );
+    assert_eq!(v.rows(), vec![Row::Track(0), Row::Track(1)]);
 }
