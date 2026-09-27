@@ -1308,7 +1308,7 @@ fn load(
 
 /// The gene models to draw: only the opened gene when the selection is
 /// one gene (matched by symbol), else every model (a searched locus).
-fn genes_to_draw<'a>(genes: &'a [GeneModel], selection: &str) -> Vec<&'a GeneModel> {
+pub(crate) fn genes_to_draw<'a>(genes: &'a [GeneModel], selection: &str) -> Vec<&'a GeneModel> {
     let symbol = selection.rsplit_once('_').map_or(selection, |(_, s)| s);
     let picked: Vec<&GeneModel> = genes.iter().filter(|g| &*g.symbol == symbol).collect();
     if picked.is_empty() {
@@ -1367,7 +1367,7 @@ fn read_depth(
 fn browse(
     args: &PileupArgs,
     loaded: &Loaded,
-    genes: &[GeneModel],
+    genes: Option<&SharedModels>,
     status: Option<String>,
 ) -> anyhow::Result<tui::Exit> {
     let is_log = matches!(args.signal, PileupSignal::Log10Sum);
@@ -1402,7 +1402,7 @@ fn browse(
         chr: &loaded.chr,
         extent: loaded.extent,
         channels: channel_names(&loaded.modality),
-        genes: genes_to_draw(genes, &loaded.gene),
+        genes: genes.cloned(),
     };
     tui::show_pileup(view, tracks, status)
 }
@@ -1483,46 +1483,23 @@ fn search(
     }
 }
 
-/// The annotation's gene models, read on a thread so the browser opens at
-/// once.
-enum GeneModels {
-    None,
-    Loading(std::thread::JoinHandle<anyhow::Result<Vec<GeneModel>>>),
-    Ready(Vec<GeneModel>),
-}
+/// The annotation's gene models, filled by a thread so the browser opens
+/// at once; views pick them up when they arrive.
+pub(crate) type SharedModels = std::sync::Arc<std::sync::OnceLock<Vec<GeneModel>>>;
 
-impl GeneModels {
-    fn start(gtf: Option<&str>) -> Self {
-        match gtf {
-            Some(gtf) => {
-                let gtf = gtf.to_string();
-                GeneModels::Loading(std::thread::spawn(move || {
-                    load_gene_models_where(&gtf, |_| true)
-                }))
-            }
-            None => GeneModels::None,
-        }
-    }
-
-    fn is_loading(&self) -> bool {
-        matches!(self, GeneModels::Loading(h) if !h.is_finished())
-    }
-
-    /// The models read so far: none while the thread is still reading.
-    fn ready(&mut self) -> anyhow::Result<&[GeneModel]> {
-        if matches!(self, GeneModels::Loading(h) if h.is_finished()) {
-            if let GeneModels::Loading(h) = std::mem::replace(self, GeneModels::None) {
-                let models = h
-                    .join()
-                    .map_err(|_| anyhow::anyhow!("reading the gene models panicked"))??;
-                *self = GeneModels::Ready(models);
-            }
-        }
-        Ok(match self {
-            GeneModels::Ready(models) => models,
-            _ => &[],
-        })
-    }
+/// Start reading `gtf` on a thread; `None` without an annotation.
+fn start_gene_models(gtf: Option<&str>) -> Option<SharedModels> {
+    let gtf = gtf?.to_string();
+    let models = SharedModels::default();
+    let slot = models.clone();
+    std::thread::spawn(move || {
+        let read = load_gene_models_where(&gtf, |_| true).unwrap_or_else(|e| {
+            log::warn!("gene models from {gtf}: {e}");
+            Vec::new()
+        });
+        let _ = slot.set(read);
+    });
+    Some(models)
 }
 
 /// Browse interactively, starting from `first` (a selection given on the
@@ -1533,7 +1510,7 @@ fn interactive(
     first: Option<Loaded>,
 ) -> anyhow::Result<()> {
     let catalog = Catalog::new(&args.data_files);
-    let mut genes = GeneModels::start(args.gtf.as_deref());
+    let genes = start_gene_models(args.gtf.as_deref());
     let mut filter = String::new();
     let mut current = first;
     let mut status: Option<String> = None;
@@ -1565,10 +1542,7 @@ fn interactive(
                 }
             }
         };
-        if genes.is_loading() && status.is_none() {
-            status = Some("gene models are still loading; they show from the next view".into());
-        }
-        match browse(args, &loaded, genes.ready()?, status.take())? {
+        match browse(args, &loaded, genes.as_ref(), status.take())? {
             tui::Exit::Quit => return Ok(()),
             tui::Exit::Genes => {}
             tui::Exit::Search(q) => match search(args, groups, &catalog, &q) {

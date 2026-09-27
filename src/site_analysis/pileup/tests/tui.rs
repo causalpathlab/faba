@@ -311,7 +311,7 @@ fn genes_row_stacks_overlapping_genes() {
         gene("GENE4", 5_000_000, 5_010_000, true),
     ];
     let mut v = view(&m, &s);
-    v.genes = genes.iter().collect();
+    v.genes = genes.to_vec();
     screen(&mut v, 110, 34);
     let lanes = v.gene_lanes();
     let lane_of = |sym: &str| {
@@ -370,4 +370,29 @@ fn depth_track_shows_the_bin_under_each_column() {
     let text = screen(&mut v, 110, 30);
     assert!(text.contains("depth · reads per depth bin"), "{text}");
     assert!(v.figure().contains("depth"));
+}
+
+#[test]
+fn genes_arriving_late_show_on_the_next_frame() {
+    let m = positions();
+    let models = crate::site_analysis::pileup::SharedModels::default();
+    let mut v = PileupView::new(
+        "ENSG1_GENE1",
+        "chr1",
+        vec![Track::single("m", "sum", &m, false)],
+        EXTENT,
+    );
+    v.pending_genes = Some(models.clone());
+    screen(&mut v, 110, 30);
+    assert!(!v.rows().contains(&Row::Genes), "nothing yet");
+    let _ = models.set(vec![
+        gene("GENE1", 1_000_000, 1_060_000, true),
+        gene("GENE2", 1_070_000, 1_090_000, true),
+    ]);
+    let text = screen(&mut v, 110, 30);
+    assert!(v.rows().contains(&Row::Genes));
+    assert!(
+        text.contains("GENE1") && !text.contains("GENE2"),
+        "only the opened gene: {text}"
+    );
 }

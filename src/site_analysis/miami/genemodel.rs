@@ -17,6 +17,7 @@ use genomic_data::sam::Strand;
 use std::fmt::Write as _;
 
 /// One gene resolved from the GTF.
+#[derive(Clone)]
 pub struct GeneModel {
     pub chr: Box<str>,
     /// 0-based half-open gene footprint `[lo, hi)`.

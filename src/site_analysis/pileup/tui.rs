@@ -24,6 +24,7 @@ use crate::figure::{
 use genomic_data::coordinates::chr_eq;
 
 use super::{distinct_positions, fmt_thousands, BinEdges};
+use super::{genes_to_draw, SharedModels};
 use crate::site_analysis::miami::genemodel::{gene_model_svg, GeneModel};
 
 /// Width of HistPlot's y gutter.
@@ -249,8 +250,8 @@ pub struct View<'a> {
     pub extent: (i64, i64),
     /// The two channels' names, e.g. `("methylated", "unmethylated")`.
     pub channels: (&'static str, &'static str),
-    /// The annotation genes to draw (those on `chr`).
-    pub genes: Vec<&'a GeneModel>,
+    /// The annotation's gene models, possibly still loading.
+    pub genes: Option<SharedModels>,
 }
 
 /// Genes sharing a lane leave at least this share of the window between
@@ -261,8 +262,8 @@ const LANE_GAP: f64 = 0.08;
 const MAX_LANES: usize = 4;
 
 /// Exon height and lane pitch of the gene models in figures.
-const GENE_BAND: f32 = 5.0;
-const GENE_LANE: f64 = 13.0;
+const GENE_BAND: f32 = 8.0;
+const GENE_LANE: f64 = 18.0;
 
 /// How the user left the browser.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -298,8 +299,10 @@ pub struct PileupView<'a> {
     contrast: Option<Measure>,
     /// The two channels' names, e.g. `("methylated", "unmethylated")`.
     channels: (&'static str, &'static str),
-    /// Annotation genes on this chromosome.
-    genes: Vec<&'a GeneModel>,
+    /// The genes to draw, once the annotation has arrived.
+    genes: Vec<GeneModel>,
+    /// The annotation while it is still loading.
+    pending_genes: Option<SharedModels>,
     exit: Option<Exit>,
 }
 
@@ -329,6 +332,7 @@ impl<'a> PileupView<'a> {
             contrast: None,
             channels: ("methylated", "unmethylated"),
             genes: Vec::new(),
+            pending_genes: None,
             exit: None,
         }
         .with_contrast()
@@ -341,6 +345,21 @@ impl<'a> PileupView<'a> {
             self.contrast = Some(Measure::Difference);
         }
         self
+    }
+
+    /// Pick this view's genes out of the annotation once it has arrived:
+    /// the opened gene alone, else those on this chromosome.
+    fn take_genes(&mut self) {
+        let Some(models) = self.pending_genes.as_ref().and_then(|m| m.get()) else {
+            return;
+        };
+        self.genes = genes_to_draw(models, &self.title)
+            .into_iter()
+            .filter(|g| chr_eq(&g.chr, &self.chr))
+            .cloned()
+            .collect();
+        self.pending_genes = None;
+        self.plots.iter_mut().for_each(PlotImage::invalidate);
     }
 
     /// The rows top to bottom: the contrast first, as the main row, then
@@ -372,12 +391,12 @@ impl<'a> PileupView<'a> {
 
     /// Genes overlapping the window, each with a lane so that genes in one
     /// lane (and their labels) do not collide.
-    fn gene_lanes(&self) -> Vec<(usize, &'a GeneModel)> {
+    fn gene_lanes(&self) -> Vec<(usize, &GeneModel)> {
         let (lo, hi) = self.window;
         let gap = ((hi - lo) as f64 * LANE_GAP) as i64;
         let mut ends: Vec<i64> = Vec::new();
         let mut out = Vec::new();
-        for &g in self.genes.iter().filter(|g| g.hi > lo && g.lo <= hi) {
+        for g in self.genes.iter().filter(|g| g.hi > lo && g.lo <= hi) {
             let lane = match ends.iter().position(|&end| end + gap < g.lo) {
                 Some(l) => l,
                 None if ends.len() < MAX_LANES => {
@@ -720,6 +739,7 @@ impl Screen for PileupView<'_> {
     }
 
     fn render(&mut self, frame: &mut Frame) {
+        self.take_genes();
         let rows = self.rows();
         let n_plots = rows.iter().filter(|&&r| r != Row::Genes).count().max(1) as u32;
         let genes_height = self.lanes() as u16 + 2;
@@ -902,12 +922,12 @@ impl PileupView<'_> {
 pub fn show_pileup(view: View, tracks: Vec<Track>, status: Option<String>) -> anyhow::Result<Exit> {
     let mut browser = PileupView::new(view.title, view.chr, tracks, view.extent);
     browser.channels = view.channels;
-    browser.genes = view
-        .genes
-        .into_iter()
-        .filter(|g| chr_eq(&g.chr, view.chr))
-        .collect();
-    browser.status = status;
+    browser.pending_genes = view.genes;
+    browser.take_genes();
+    browser.status = status.or_else(|| {
+        let loading = browser.pending_genes.is_some();
+        loading.then(|| "gene models are loading; they appear with the next key".to_string())
+    });
     browser.controls = Controls::new(&format!("pileup_{}", view.title)).detect();
     run_screen(&mut browser)?;
     Ok(browser.exit.unwrap_or(Exit::Quit))
