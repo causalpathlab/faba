@@ -5,9 +5,7 @@
 //! site itself (position 0) is marked in the accent colour. A cursor reads
 //! out a position's counts.
 
-use data_beans::interactive::ui::{
-    header, help_line, panel, run_screen, Screen, DIM, HIGHLIGHT, PLAIN,
-};
+use data_beans::interactive::ui::{header, help_line, panel, Screen, DIM, HIGHLIGHT, PLAIN};
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -492,7 +490,7 @@ impl Screen for PwmView {
 pub fn show_pwm(title: &str, pwm: &[DnaBaseCount], window: i64) -> anyhow::Result<()> {
     let mut view = PwmView::new(title, pwm, window);
     view.controls = Controls::new("pwm_logo").detect();
-    run_screen(&mut view)
+    crate::figure::term::run(&mut view)
 }
 
 #[cfg(test)]

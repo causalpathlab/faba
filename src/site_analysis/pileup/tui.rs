@@ -7,8 +7,8 @@
 //! genomic coordinate, so it stays put through zooms and resizes.
 
 use data_beans::interactive::ui::{
-    compact, header, help_line, input_line, panel, run_screen, Binning, HistPlot, Scale, Screen,
-    ACCENTED, DIM, HIGHLIGHT, PLAIN,
+    compact, header, help_line, input_line, panel, Binning, HistPlot, Scale, Screen, ACCENTED, DIM,
+    HIGHLIGHT, PLAIN,
 };
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout};
@@ -929,7 +929,7 @@ pub fn show_pileup(view: View, tracks: Vec<Track>, status: Option<String>) -> an
         loading.then(|| "gene models are loading; they appear with the next key".to_string())
     });
     browser.controls = Controls::new(&format!("pileup_{}", view.title)).detect();
-    run_screen(&mut browser)?;
+    crate::figure::term::run(&mut browser)?;
     Ok(browser.exit.unwrap_or(Exit::Quit))
 }
 

@@ -12,6 +12,8 @@ use ratatui_image::picker::{Picker, ProtocolType};
 use ratatui_image::protocol::Protocol;
 use ratatui_image::{Image, Resize};
 
+use data_beans::interactive::ui::{run_screen, Screen};
+
 use super::options;
 
 /// Figure units per terminal cell height, so 9-unit text reads at about
@@ -74,6 +76,16 @@ pub(super) fn pixmap(tree: &usvg::Tree, scale: f32) -> anyhow::Result<resvg::tin
         &mut pixmap.as_mut(),
     );
     Ok(pixmap)
+}
+
+/// Run a full-screen view with logging paused: a log line printed while
+/// the view owns the terminal scrolls it and tears the picture.
+pub fn run(screen: &mut impl Screen) -> anyhow::Result<()> {
+    let level = log::max_level();
+    log::set_max_level(log::LevelFilter::Off);
+    let result = run_screen(screen);
+    log::set_max_level(level);
+    result
 }
 
 /// Rasterise `svg` at `scale` pixels per unit, on white.

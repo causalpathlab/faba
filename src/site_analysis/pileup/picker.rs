@@ -4,9 +4,7 @@
 //! `chr:start-end` or `chr:pos` opens that locus.
 
 use data_beans::hdf5_io::resolve_backend_file;
-use data_beans::interactive::ui::{
-    header, input_line, panel, run_screen, Screen, DIM, HIGHLIGHT, PLAIN,
-};
+use data_beans::interactive::ui::{header, input_line, panel, Screen, DIM, HIGHLIGHT, PLAIN};
 use data_beans::sparse_io::open_sparse_matrix;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout};
@@ -164,7 +162,7 @@ impl<'a> GenePicker<'a> {
 
     /// Show the list until the user picks a gene, types a locus, or quits.
     pub fn pick(&mut self) -> anyhow::Result<Choice> {
-        run_screen(self)?;
+        crate::figure::term::run(self)?;
         Ok(self.decision.take().unwrap_or(Choice::Quit))
     }
 }

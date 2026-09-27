@@ -78,7 +78,12 @@ impl Canvas {
         c
     }
 
+    /// A filled rectangle; empty ones (zero or negative size) are skipped,
+    /// as SVG renderers reject them.
     pub fn rect(&mut self, x: f64, y: f64, w: f64, h: f64, fill: &str) {
+        if !(w > 0.0 && h > 0.0) {
+            return;
+        }
         let _ = writeln!(
             self.body,
             r#"<rect x="{x:.2}" y="{y:.2}" width="{:.2}" height="{:.2}" fill="{fill}"/>"#,

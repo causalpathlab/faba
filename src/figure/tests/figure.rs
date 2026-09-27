@@ -73,3 +73,28 @@ fn prompt_confirms_edits_and_cancels() {
     p.handle(key(KeyCode::Esc));
     assert!(!p.active());
 }
+
+#[test]
+fn empty_shapes_are_not_written() {
+    let mut c = Canvas::new(100.0, 200.0);
+    c.rect(1.0, 1.0, 10.0, 0.0, INK);
+    c.rect(1.0, 1.0, 0.0, 10.0, INK);
+    c.rect(1.0, 1.0, 10.0, f64::NAN, INK);
+    let values = [Some(0.0), Some(1.5), None, Some(-0.5), Some(0.0)];
+    Diverging {
+        values: &values,
+        ticks: Vec::new(),
+        pointer: None,
+        marks: Vec::new(),
+        title: String::new(),
+        x_title: String::new(),
+        y_title: String::new(),
+        label: &|v| format!("{v:+.1}"),
+    }
+    .draw(&mut c, 0.0, 0.0, 100.0, 200.0);
+    let svg = c.finish();
+    assert!(!svg.contains(r#"height="0.00""#), "{svg}");
+    assert!(!svg.contains("NaN"), "{svg}");
+    // Two non-zero bars plus the background.
+    assert_eq!(svg.matches("<rect").count(), 3, "{svg}");
+}

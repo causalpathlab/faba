@@ -11,8 +11,8 @@
 
 use data_beans::interactive::tui_available;
 use data_beans::interactive::ui::{
-    header, help_line, input_line, panel, run_screen, Binned, Binning, HistPlot, Scale, Screen,
-    ACCENTED, DIM, HIGHLIGHT, PLAIN,
+    header, help_line, input_line, panel, Binned, Binning, HistPlot, Scale, Screen, ACCENTED, DIM,
+    HIGHLIGHT, PLAIN,
 };
 use data_beans::qc::pct;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
@@ -921,7 +921,7 @@ pub fn run_site_picker(
     }
     let mut picker = SitePicker::new(&file_name(input_dir), views, filter.clone());
     picker.controls = Controls::new("qc_sites").detect();
-    run_screen(&mut picker)?;
+    crate::figure::term::run(&mut picker)?;
     Ok(picker.decision.unwrap_or(Picked::Cancelled))
 }
 

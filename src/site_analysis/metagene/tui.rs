@@ -7,7 +7,7 @@
 //! bar's region, bins, MetaPlotR coordinates and count.
 
 use data_beans::interactive::ui::{
-    header, help_line, panel, run_screen, Binning, HistPlot, Scale, Screen, DIM, HIGHLIGHT, PLAIN,
+    header, help_line, panel, Binning, HistPlot, Scale, Screen, DIM, HIGHLIGHT, PLAIN,
 };
 use data_beans::qc::pct;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
@@ -407,7 +407,7 @@ impl Screen for MetageneView<'_> {
 pub fn show_metagene(title: &str, hist: &GeneFeatureHistogram) -> anyhow::Result<()> {
     let mut view = MetageneView::new(title, hist);
     view.controls = Controls::new("metagene").detect();
-    run_screen(&mut view)
+    crate::figure::term::run(&mut view)
 }
 
 #[cfg(test)]
