@@ -490,7 +490,7 @@ impl Screen for PwmView {
 pub fn show_pwm(title: &str, pwm: &[DnaBaseCount], window: i64) -> anyhow::Result<()> {
     let mut view = PwmView::new(title, pwm, window);
     view.controls = Controls::new("pwm_logo").detect();
-    crate::figure::term::run(&mut view)
+    data_beans::interactive::ui::run_screen(&mut view)
 }
 
 #[cfg(test)]

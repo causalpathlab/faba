@@ -409,7 +409,7 @@ impl Screen for MetageneView<'_> {
 pub fn show_metagene(title: &str, hist: &GeneFeatureHistogram) -> anyhow::Result<()> {
     let mut view = MetageneView::new(title, hist);
     view.controls = Controls::new("metagene").detect();
-    crate::figure::term::run(&mut view)
+    data_beans::interactive::ui::run_screen(&mut view)
 }
 
 #[cfg(test)]

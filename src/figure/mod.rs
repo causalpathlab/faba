@@ -156,10 +156,32 @@ impl Canvas {
         );
     }
 
-    /// Append SVG drawn elsewhere, in this canvas's units.
-    pub fn raw(&mut self, svg: &str) {
-        self.body.push_str(svg);
-        self.body.push('\n');
+    /// An open line through `points`.
+    pub fn polyline(&mut self, points: &[(f64, f64)], stroke: &str, width: f64) {
+        let pts: Vec<String> = points
+            .iter()
+            .map(|(x, y)| format!("{x:.2},{y:.2}"))
+            .collect();
+        let _ = writeln!(
+            self.body,
+            r#"<polyline points="{}" fill="none" stroke="{stroke}" stroke-width="{width}"/>"#,
+            pts.join(" ")
+        );
+    }
+
+    /// A canvas with no size or background, for shapes to place inside
+    /// another drawing with [`Canvas::into_body`].
+    pub fn layer() -> Self {
+        Self {
+            width: 0.0,
+            height: 0.0,
+            body: String::new(),
+        }
+    }
+
+    /// The shapes drawn so far, without the `<svg>` wrapper.
+    pub fn into_body(self) -> String {
+        self.body
     }
 
     pub fn finish(self) -> String {

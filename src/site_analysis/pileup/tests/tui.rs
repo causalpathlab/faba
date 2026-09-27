@@ -213,8 +213,8 @@ fn search_moves_within_the_view_or_leaves_it() {
 fn stacked_tracks_draw_front_over_total() {
     let m = positions();
     let total: Vec<(i64, f64)> = m.iter().map(|&(p, v)| (p, v * 3.0)).collect();
-    let mut matrix = Track::single("wt", "methylated / unmethylated (sum)", &m, false);
-    matrix.behind = Some(&total);
+    let matrix =
+        Track::single("wt", "methylated / unmethylated (sum)", &m, false).with_total(&total);
     let mut v = PileupView::new("GENE1", "chr1", vec![matrix], EXTENT);
     let text = screen(&mut v, 110, 26);
     assert!(
@@ -229,7 +229,7 @@ fn stacked_tracks_draw_front_over_total() {
         "front drawn in the accent"
     );
     assert!(
-        v.readout().to_string().contains('/'),
+        v.readout(&v.bins()).to_string().contains('/'),
         "readout gives front/total"
     );
 }
@@ -253,10 +253,8 @@ fn contrast_row_compares_the_first_two_tracks() {
     let (m, s) = (positions(), sites());
     let half: Vec<(i64, f64)> = m.iter().map(|&(p, v)| (p, v * 2.0)).collect();
     let quarter: Vec<(i64, f64)> = m.iter().map(|&(p, v)| (p, v * 4.0)).collect();
-    let mut a = Track::single("wt", "sum", &m, false);
-    a.behind = Some(&half);
-    let mut b = Track::single("mut", "sum", &m, false);
-    b.behind = Some(&quarter);
+    let a = Track::single("wt", "sum", &m, false).with_total(&half);
+    let b = Track::single("mut", "sum", &m, false).with_total(&quarter);
     let mut v = PileupView::new(
         "GENE1",
         "chr1",
@@ -265,11 +263,7 @@ fn contrast_row_compares_the_first_two_tracks() {
     );
     assert_eq!(
         v.rows(),
-        vec![
-            Row::Contrast(Measure::Difference),
-            Row::Mirror,
-            Row::Track(2)
-        ]
+        vec![Row::Contrast(DIFFERENCE), Row::Mirror(0, 1), Row::Track(2)]
     );
     let text = screen(&mut v, 110, 30);
     assert!(
@@ -278,10 +272,10 @@ fn contrast_row_compares_the_first_two_tracks() {
     );
     assert!(text.contains("c difference/fold"), "{text}");
     // 1/2 vs 1/4 methylated wherever there are reads: +25 pp.
-    let values = v.contrast_values(Measure::Difference, &v.edges());
+    let values = v.contrast_values(DIFFERENCE, &v.bins());
     assert!(values.iter().flatten().all(|&x| (x - 25.0).abs() < 1e-9));
     press(&mut v, KeyCode::Char('c'));
-    assert_eq!(v.contrast, Some(Measure::Log2Fold));
+    assert_eq!(v.contrast.map(|c| c.measure), Some(Measure::Log2Fold));
     assert!(screen(&mut v, 110, 30).contains("log2 fold"));
     assert!(v.figure().contains("wt vs mut"));
 
@@ -294,6 +288,13 @@ fn contrast_row_compares_the_first_two_tracks() {
     assert!(single.contrast.is_none(), "nothing to compare");
 }
 
+/// The first two tracks compared by difference, as a view starts.
+const DIFFERENCE: Contrast = Contrast {
+    a: 0,
+    b: 1,
+    measure: Measure::Difference,
+};
+
 fn gene(symbol: &str, lo: i64, hi: i64, forward: bool) -> GeneModel {
     GeneModel {
         chr: "chr1".into(),
@@ -302,6 +303,7 @@ fn gene(symbol: &str, lo: i64, hi: i64, forward: bool) -> GeneModel {
         forward,
         exons: vec![(lo, lo + 500), (hi - 800, hi)],
         symbol: symbol.into(),
+        key: format!("ID1_{symbol}").into(),
     }
 }
 
@@ -345,10 +347,8 @@ fn genes_row_stacks_overlapping_genes() {
 fn contrast_and_titles_name_the_channels() {
     let m = positions();
     let total: Vec<(i64, f64)> = m.iter().map(|&(p, v)| (p, v * 2.0)).collect();
-    let mut a = Track::single("wt", "sum", &m, false);
-    a.behind = Some(&total);
-    let mut b = Track::single("mut", "sum", &m, false);
-    b.behind = Some(&total);
+    let a = Track::single("wt", "sum", &m, false).with_total(&total);
+    let b = Track::single("mut", "sum", &m, false).with_total(&total);
     let mut v = PileupView::new("GENE1", "chr1", vec![a, b], EXTENT);
     v.on = crate::site_analysis::pileup::channel_names("atoi").0;
     assert!(screen(&mut v, 110, 30).contains("converted fraction difference"));
@@ -377,7 +377,7 @@ fn depth_track_shows_the_bin_under_each_column() {
 }
 
 #[test]
-fn genes_arriving_late_show_on_the_next_frame() {
+fn genes_arriving_late_show_without_a_key() {
     let m = positions();
     let models = crate::site_analysis::pileup::SharedModels::default();
     let mut v = PileupView::new(
@@ -389,10 +389,12 @@ fn genes_arriving_late_show_on_the_next_frame() {
     v.pending_genes = Some(models.clone());
     screen(&mut v, 110, 30);
     assert!(!v.rows().contains(&Row::Genes), "nothing yet");
+    assert!(!v.tick(), "no redraw while waiting");
     let _ = models.set(Ok(vec![
         gene("GENE1", 1_000_000, 1_060_000, true),
         gene("GENE2", 1_070_000, 1_090_000, true),
     ]));
+    assert!(v.tick(), "arrival redraws without a key");
     let text = screen(&mut v, 110, 30);
     assert!(v.rows().contains(&Row::Genes));
     assert!(
@@ -413,10 +415,13 @@ fn read_tracks_share_one_scale() {
     ];
     let mut v = PileupView::new("GENE1", "chr1", tracks, EXTENT);
     screen(&mut v, 110, 30);
-    let edges = v.edges();
-    let tallest_b = v.tracks[1].bin(&edges).0.into_iter().fold(0.0, f64::max);
+    let tallest_b = v.tracks[1]
+        .bin(&v.edges())
+        .0
+        .into_iter()
+        .fold(0.0, f64::max);
     assert_eq!(
-        v.shared_max(&edges),
+        v.bins().shared,
         Some(tallest_b),
         "the larger track sets it; depth does not"
     );
@@ -430,10 +435,8 @@ fn read_tracks_share_one_scale() {
 fn like_tracks_share_a_mirrored_row_until_split() {
     let m = positions();
     let half: Vec<(i64, f64)> = m.iter().map(|&(p, v)| (p, v * 2.0)).collect();
-    let mut a = Track::single("wt", "sum", &m, false);
-    a.behind = Some(&half);
-    let mut b = Track::single("mut", "sum", &half, false);
-    b.behind = Some(&half);
+    let a = Track::single("wt", "sum", &m, false).with_total(&half);
+    let b = Track::single("mut", "sum", &half, false).with_total(&half);
     let mut v = PileupView::new("GENE1", "chr1", vec![a, b], EXTENT);
     let text = screen(&mut v, 110, 30);
     assert!(text.contains("wt above, mut below · sum"), "{text}");
@@ -445,11 +448,7 @@ fn like_tracks_share_a_mirrored_row_until_split() {
     press(&mut v, KeyCode::Char('m'));
     assert_eq!(
         v.rows(),
-        vec![
-            Row::Contrast(Measure::Difference),
-            Row::Track(0),
-            Row::Track(1)
-        ]
+        vec![Row::Contrast(DIFFERENCE), Row::Track(0), Row::Track(1)]
     );
     assert!(screen(&mut v, 110, 30).contains("m mirror"));
 }

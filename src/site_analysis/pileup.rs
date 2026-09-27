@@ -9,7 +9,7 @@ use crate::site_analysis::miami::render::{render_miami, FigOpts, PanelData};
 use arrow::array::{Array, Float32Array, Int64Array, StringArray, UInt64Array};
 use clap::Args;
 use data_beans::aux::feature_names::FeatureNameKind;
-use data_beans::aux::feature_rows::{ATOI, EDITED, METHYLATED, UNEDITED, UNMETHYLATED};
+use data_beans::aux::feature_rows::{channels, parse_feature_row, ATOI, METHYLATED, UNMETHYLATED};
 use data_beans::hdf5_io::resolve_backend_file;
 use data_beans::sparse_io::open_sparse_matrix;
 use genomic_data::bed::Bed;
@@ -321,10 +321,6 @@ pub struct PileupArgs {
     raster_threshold: usize,
 }
 
-/// Converted-read channels of a site row: the modification signal.
-const CONVERTED: [&str; 2] = [METHYLATED, EDITED];
-const UNCONVERTED: [&str; 2] = [UNMETHYLATED, UNEDITED];
-
 /// Parse a faba row name `gene_key/modality/detail`. `detail` is either
 /// `chr:pos` (site output, e.g. `ENSG00000139618_BRCA2/m6A/chr13:32350000`)
 /// or a bare component ordinal (mixture output, e.g.
@@ -344,25 +340,31 @@ fn parse_row_name_full(name: &str) -> Option<(&str, &str, &str, i64)> {
         .map(|(gene, modality, chr, pos, _)| (gene, modality, chr, pos))
 }
 
-/// [`parse_row_name_full`] for either channel: the last field says whether
-/// the row is the converted channel, `None` for rows without a channel.
+/// [`parse_row_name_full`] for either channel: whether the row is the
+/// modality's first (converted) channel, `None` for rows without one.
+/// Rows split with [`parse_feature_row`], so a gene symbol may hold `/`.
 fn parse_row_channel(name: &str) -> Option<(&str, &str, &str, i64, Option<bool>)> {
-    let (name, converted) = match name.rsplit_once('/') {
-        Some((head, channel)) if CONVERTED.contains(&channel) => (head, Some(true)),
-        Some((head, channel)) if UNCONVERTED.contains(&channel) => (head, Some(false)),
-        _ => (name, None),
+    let row = parse_feature_row(name)?;
+    let (detail, converted) = match row.subunit {
+        Some(detail) => {
+            let (on, off) =
+                channels(row.modality).or_else(|| channels(&row.modality.to_ascii_lowercase()))?;
+            let converted = match row.channel {
+                c if c == on => true,
+                c if c == off => false,
+                _ => return None,
+            };
+            (detail, Some(converted))
+        }
+        None => (row.channel, None),
     };
-    let mut parts = name.splitn(3, '/');
-    let gene_part = parts.next()?;
-    let modality = parts.next()?;
-    let detail = parts.next()?;
     if let Some((chr, pos_str)) = detail.split_once(':') {
         let pos = pos_str.parse::<i64>().ok()?;
-        Some((gene_part, modality, chr, pos, converted))
+        Some((row.gene, row.modality, chr, pos, converted))
     } else {
         // Mixture rows carry a component ordinal, not a chromosome.
         let component = detail.parse::<i64>().ok()?;
-        Some((gene_part, modality, "", component, converted))
+        Some((row.gene, row.modality, "", component, converted))
     }
 }
 
@@ -602,6 +604,8 @@ struct BinnedPileup {
 
 struct MatrixGeneData {
     gene: Box<str>,
+    /// The matched gene keys, sorted.
+    genes: Vec<Box<str>>,
     chr: Box<str>,
     modality: Box<str>,
     total: Option<Vec<(i64, f64)>>,
@@ -791,6 +795,8 @@ struct GroupedMatrix {
     total: Option<Vec<(i64, f64)>>,
     /// Converted rows the selection matched, over all files.
     matched: usize,
+    /// The matched gene keys, sorted.
+    genes: Vec<Box<str>>,
 }
 
 fn read_matrix_positions_grouped(
@@ -922,6 +928,8 @@ fn read_matrix_positions_grouped(
     // The selection can span several genes (and chromosomes); rather than
     // erroring on ambiguity we pile them together and label the aggregate.
     let gene: Box<str> = summarize_genes(&distinct_genes);
+    let mut genes: Vec<Box<str>> = distinct_genes.keys().cloned().collect();
+    genes.sort_unstable();
     let chr: Box<str> = summarize_chr(&matched_chrs);
 
     info!(
@@ -964,6 +972,7 @@ fn read_matrix_positions_grouped(
         by_group,
         total,
         matched: total_matched,
+        genes,
     })
 }
 
@@ -989,6 +998,7 @@ fn read_matrix_positions(
         .unwrap_or_default();
     Ok(Some(MatrixGeneData {
         gene: grouped.gene,
+        genes: grouped.genes,
         chr: grouped.chr,
         modality: grouped.modality,
         positions,
@@ -1255,8 +1265,9 @@ struct Loaded {
     tracks: Vec<MatrixTrack>,
     sites: Option<SiteAnnotation>,
     extent: (i64, i64),
-    /// A searched locus rather than a gene: draw every gene in view.
-    locus: bool,
+    /// The genes whose models to draw; `None` for a searched locus, which
+    /// draws every gene in view.
+    keys: Option<Vec<Box<str>>>,
     /// `--depth` bins over the extent.
     depth: Vec<(i64, i64, f64)>,
 }
@@ -1274,12 +1285,14 @@ fn load(
 ) -> anyhow::Result<Loaded> {
     let totals = totals && !matches!(args.signal, PileupSignal::Nnz);
     let mut label: Option<(Box<str>, Box<str>, Box<str>)> = None;
+    let mut keys: Vec<Box<str>> = Vec::new();
     let mut tracks = Vec::with_capacity(groups.len());
     for g in groups {
         let (converted, total) =
             match read_matrix_positions(&g.files, selector, &args.signal, totals)? {
                 Some(m) => {
                     label.get_or_insert((m.gene, m.chr, m.modality));
+                    keys.extend(m.genes);
                     (m.positions, m.total)
                 }
                 None => (Vec::new(), None),
@@ -1319,25 +1332,31 @@ fn load(
         tracks,
         sites,
         extent,
-        locus: locus.is_some(),
+        keys: locus.is_none().then(|| {
+            keys.sort_unstable();
+            keys.dedup();
+            keys
+        }),
         depth,
     })
 }
 
-/// The gene models to draw: every model for a searched locus, else the
-/// opened gene alone (its symbol matched as the selector matches rows).
+/// The gene models to draw: those of the matched gene `keys`, by key or
+/// failing that by symbol (a GTF may version its gene ids differently), or
+/// every model for a searched locus (`None`).
 pub(crate) fn genes_to_draw<'a>(
     genes: &'a [GeneModel],
-    selection: &str,
-    locus: bool,
+    keys: Option<&[Box<str>]>,
 ) -> Vec<&'a GeneModel> {
-    if locus {
+    let Some(keys) = keys else {
         return genes.iter().collect();
-    }
-    let symbol = query_symbol(selection);
+    };
+    let symbols: Vec<Box<str>> = keys.iter().map(|k| query_symbol(k)).collect();
     genes
         .iter()
-        .filter(|g| g.symbol.eq_ignore_ascii_case(&symbol))
+        .filter(|g| {
+            keys.contains(&g.key) || symbols.iter().any(|s| g.symbol.eq_ignore_ascii_case(s))
+        })
         .collect()
 }
 
@@ -1403,9 +1422,11 @@ fn browse(
                 Some(_) => &stacked_name,
                 None => args.signal.name(),
             };
-            let mut track = tui::Track::single(&t.label, name, &t.converted, is_log);
-            track.behind = t.total.as_deref();
-            track
+            let track = tui::Track::single(&t.label, name, &t.converted, is_log);
+            match &t.total {
+                Some(total) => track.with_total(total),
+                None => track,
+            }
         })
         .collect();
     if !args.depth_files.is_empty() {
@@ -1416,7 +1437,7 @@ fn browse(
         chr: &loaded.chr,
         extent: loaded.extent,
         on,
-        locus: loaded.locus,
+        keys: loaded.keys.as_deref(),
         genes: genes.cloned(),
     };
     tui::show_pileup(view, tracks, status)

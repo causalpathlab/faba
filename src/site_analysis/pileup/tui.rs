@@ -7,12 +7,11 @@
 //! genomic coordinate, so it stays put through zooms and resizes.
 
 use data_beans::interactive::ui::{
-    compact, header, help_line, input_line, panel, Binning, HistPlot, Scale, Screen, ACCENTED, DIM,
-    HIGHLIGHT, PLAIN,
+    compact, header, help_line, input_line, panel, Binning, HistPlot, MirrorPlot, MirrorSide,
+    Scale, Screen, ACCENTED, DIM, HIGHLIGHT, PLAIN,
 };
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout};
-use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
@@ -26,40 +25,63 @@ use genomic_data::coordinates::chr_eq;
 
 use super::{distinct_positions, fmt_thousands, BinEdges};
 use super::{genes_to_draw, SharedModels};
-use crate::site_analysis::miami::genemodel::{gene_model_svg, GeneModel};
+use crate::site_analysis::miami::genemodel::{draw_gene_model, GeneModel};
 
 /// Width of HistPlot's y gutter.
 const GUTTER: u16 = 6;
 
+/// The footer while the gene models load.
+const LOADING: &str = "gene models are loading";
+
 /// Columns between labelled ticks, at least.
 const TICK_SPACING: usize = 14;
 
-/// One track: sorted `(position, value)` pairs, optionally drawn in front
-/// of a total per position (converted reads over all reads).
+/// What a track holds.
+pub enum Values<'a> {
+    /// Sorted `(position, value)` pairs, optionally drawn in front of a
+    /// total per position (converted reads over all reads).
+    Reads {
+        front: &'a [(i64, f64)],
+        behind: Option<&'a [(i64, f64)]>,
+    },
+    /// Genomic bins `(start, end, value)`: each column shows the bin
+    /// covering it (read depth).
+    Ranges(&'a [(i64, i64, f64)]),
+}
+
+/// One track of the browser.
 pub struct Track<'a> {
     pub label: &'a str,
     /// What the values are, for the panel title.
     pub name: &'a str,
-    pub front: &'a [(i64, f64)],
-    pub behind: Option<&'a [(i64, f64)]>,
-    /// Genomic bins `(start, end, value)` instead of positions: each column
-    /// shows the bin covering it (read depth).
-    pub ranges: Option<&'a [(i64, i64, f64)]>,
+    pub values: Values<'a>,
     /// Bins become `log10(1 + sum)`, as the printed pileup does.
     pub log: bool,
 }
 
+/// A track binned over the window: front, and the total when there is one.
+type Binned = (Vec<f64>, Option<Vec<f64>>);
+
 impl<'a> Track<'a> {
-    /// A track with no total.
+    /// A read track with no total.
     pub fn single(label: &'a str, name: &'a str, front: &'a [(i64, f64)], log: bool) -> Self {
         Track {
             label,
             name,
-            front,
-            behind: None,
-            ranges: None,
+            values: Values::Reads {
+                front,
+                behind: None,
+            },
             log,
         }
+    }
+
+    /// This read track drawn in front of `total`.
+    pub fn with_total(mut self, total: &'a [(i64, f64)]) -> Self {
+        if let Values::Reads { behind, .. } = &mut self.values {
+            *behind = Some(total);
+        }
+        self
     }
 
     /// A read-depth track over genomic bins.
@@ -67,28 +89,58 @@ impl<'a> Track<'a> {
         Track {
             label,
             name: "reads per depth bin",
-            front: &[],
-            behind: None,
-            ranges: Some(ranges),
+            values: Values::Ranges(ranges),
             log: false,
         }
     }
 
-    /// Binned over `edges`: front, and the total when there is one.
-    fn bin(&self, edges: &BinEdges) -> (Vec<f64>, Option<Vec<f64>>) {
-        if let Some(ranges) = self.ranges {
-            return (ranges_per_column(ranges, edges), None);
+    /// The read positions; none for a depth track.
+    fn front(&self) -> &'a [(i64, f64)] {
+        match self.values {
+            Values::Reads { front, .. } => front,
+            Values::Ranges(_) => &[],
         }
-        let front = edges.bin(self.front, self.log);
-        (front, self.behind.map(|b| edges.bin(b, self.log)))
+    }
+
+    /// The total behind the reads, when there is one.
+    fn behind(&self) -> Option<&'a [(i64, f64)]> {
+        match self.values {
+            Values::Reads { behind, .. } => behind,
+            Values::Ranges(_) => None,
+        }
+    }
+
+    fn is_reads(&self) -> bool {
+        matches!(self.values, Values::Reads { .. })
+    }
+
+    /// Binned over `edges`.
+    fn bin(&self, edges: &BinEdges) -> Binned {
+        match self.values {
+            Values::Reads { front, behind } => (
+                edges.bin(front, self.log),
+                behind.map(|b| edges.bin(b, self.log)),
+            ),
+            Values::Ranges(ranges) => (ranges_per_column(ranges, edges), None),
+        }
     }
 
     /// Distinct positions inside `lo..=hi`.
     fn sites_in(&self, lo: i64, hi: i64) -> Vec<i64> {
-        let a = self.front.partition_point(|p| p.0 < lo);
-        let b = self.front.partition_point(|p| p.0 <= hi);
-        distinct_positions(&self.front[a..b])
+        let front = self.front();
+        let a = front.partition_point(|p| p.0 < lo);
+        let b = front.partition_point(|p| p.0 <= hi);
+        distinct_positions(&front[a..b])
     }
+}
+
+/// Every track binned over one window, once per frame.
+struct Bins {
+    edges: BinEdges,
+    tracks: Vec<Binned>,
+    /// One y-axis top for every read track (not depth), so they are drawn
+    /// on the same scale: the tallest bar, total included, over them.
+    shared: Option<f64>,
 }
 
 /// Per column, the value of the genomic bin covering the column's middle.
@@ -149,132 +201,23 @@ impl Measure {
     }
 }
 
-/// A row of the browser: a track, or the contrast of the first two.
+/// Two tracks compared bar by bar, `a` against `b`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Contrast {
+    a: usize,
+    b: usize,
+    measure: Measure,
+}
+
+/// A row of the browser.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Row {
     Track(usize),
-    Contrast(Measure),
-    /// The first track above a zero line and the second below it.
-    Mirror,
+    Contrast(Contrast),
+    /// One track above a zero line and another below it.
+    Mirror(usize, usize),
     /// The annotation's genes in view.
     Genes,
-}
-
-/// One side of a [`TextMirror`]: bars, optionally with a part drawn in
-/// front in the accent (the bars behind then dim).
-struct TextHalf<'a> {
-    values: &'a [f64],
-    front: Option<&'a [f64]>,
-    style: Style,
-    name: &'a str,
-}
-
-/// Two bar series around a middle zero line, as text, one growing up and
-/// the other down, in half cells.
-struct TextMirror<'a> {
-    up: TextHalf<'a>,
-    down: TextHalf<'a>,
-    /// A value's share of a side's height, 0 to 1.
-    share: &'a dyn Fn(f64) -> f64,
-    /// Axis labels at the top, the zero line and the bottom.
-    y_labels: [String; 3],
-    pointer: usize,
-    /// Tick label per column.
-    ticks: &'a [Option<String>],
-}
-
-impl TextMirror<'_> {
-    fn render(&self, buf: &mut ratatui::buffer::Buffer, area: ratatui::layout::Rect) {
-        let [plot, axis] =
-            Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area);
-        let [gutter, chart] =
-            Layout::horizontal([Constraint::Length(GUTTER), Constraint::Min(1)]).areas(plot);
-        if chart.width == 0 || chart.height < 3 {
-            return;
-        }
-        let half = (chart.height - 1) / 2;
-        let zero = chart.top() + half;
-        for x in chart.left()..chart.right() {
-            buf[(x, zero)].set_symbol("─").set_style(DIM);
-        }
-        for (side, up) in [(&self.up, true), (&self.down, false)] {
-            let mut bars = |values: &[f64], style: Style| {
-                for (i, &v) in values.iter().enumerate() {
-                    let x = chart.x + i as u16;
-                    if x >= chart.right() {
-                        break;
-                    }
-                    let share = (self.share)(v);
-                    if share <= 0.0 {
-                        continue;
-                    }
-                    let halves = ((share * 2.0 * half as f64).round() as u16).clamp(1, 2 * half);
-                    for k in 0..halves.div_ceil(2) {
-                        let whole = 2 * k + 2 <= halves;
-                        let (y, sym) = match (up, whole) {
-                            (true, true) => (zero - 1 - k, "█"),
-                            (true, false) => (zero - 1 - k, "▄"),
-                            (false, true) => (zero + 1 + k, "█"),
-                            (false, false) => (zero + 1 + k, "▀"),
-                        };
-                        buf[(x, y)].set_symbol(sym).set_style(style);
-                    }
-                }
-            };
-            match side.front {
-                Some(front) => {
-                    bars(side.values, DIM);
-                    bars(front, ACCENTED);
-                }
-                None => bars(side.values, side.style),
-            }
-        }
-        buf.set_string(chart.x, chart.top(), self.up.name, DIM);
-        buf.set_string(chart.x, chart.top() + 2 * half, self.down.name, DIM);
-        let gx = gutter.right() - 1;
-        for y in gutter.top()..gutter.bottom() {
-            buf[(gx, y)].set_symbol("│").set_style(DIM);
-        }
-        for (y, s) in [chart.top(), zero, chart.top() + 2 * half]
-            .into_iter()
-            .zip(&self.y_labels)
-        {
-            buf.set_string(
-                gx.saturating_sub(s.len() as u16 + 1).max(gutter.x),
-                y,
-                s,
-                DIM,
-            );
-        }
-        for x in axis.left()..axis.right() {
-            buf[(x, axis.y)].set_symbol(" ");
-        }
-        let mut next_free = axis.x;
-        for (i, t) in self.ticks.iter().enumerate() {
-            let x = chart.x + i as u16;
-            if let Some(t) = t {
-                if x >= next_free && x + (t.len() as u16) <= axis.right() {
-                    buf.set_string(x, axis.y, t, DIM);
-                    next_free = x + t.len() as u16 + 1;
-                }
-            }
-        }
-        let px = chart.x + self.pointer as u16;
-        if px < chart.right() {
-            buf[(px, axis.y)].set_symbol("▲").set_style(HIGHLIGHT);
-        }
-    }
-}
-
-impl<'a> TextHalf<'a> {
-    fn plain(values: &'a [f64], style: Style) -> Self {
-        TextHalf {
-            values,
-            front: None,
-            style,
-            name: "",
-        }
-    }
 }
 
 /// What one browsing session shows besides its tracks.
@@ -284,8 +227,9 @@ pub struct View<'a> {
     pub extent: (i64, i64),
     /// The converted channel's name, e.g. `methylated`.
     pub on: &'static str,
-    /// A searched locus rather than a gene: draw every gene in view.
-    pub locus: bool,
+    /// The genes whose models to draw; `None` for a searched locus, which
+    /// draws every gene in view.
+    pub keys: Option<&'a [Box<str>]>,
     /// The annotation's gene models, possibly still loading.
     pub genes: Option<SharedModels>,
 }
@@ -298,7 +242,7 @@ const LANE_GAP: f64 = 0.08;
 const MAX_LANES: usize = 4;
 
 /// Exon height and lane pitch of the gene models in figures.
-const GENE_BAND: f32 = 8.0;
+const GENE_BAND: f64 = 8.0;
 const GENE_LANE: f64 = 18.0;
 
 /// How the user left the browser.
@@ -332,11 +276,12 @@ pub struct PileupView<'a> {
     status: Option<String>,
     plots: Vec<PlotImage>,
     /// How the first two tracks are compared, when both carry totals.
-    contrast: Option<Measure>,
+    contrast: Option<Contrast>,
     /// The converted channel's name, e.g. `methylated`.
     on: &'static str,
-    /// A searched locus rather than a gene: draw every gene in view.
-    locus: bool,
+    /// The genes whose models to draw; `None` for a searched locus, which
+    /// draws every gene in view.
+    keys: Option<Vec<Box<str>>>,
     /// The first two tracks share one mirrored row (`m` splits them).
     mirror: bool,
     /// The genes to draw, once the annotation has arrived.
@@ -350,13 +295,18 @@ impl<'a> PileupView<'a> {
     pub fn new(title: &str, chr: &str, tracks: Vec<Track<'a>>, extent: (i64, i64)) -> Self {
         let mut sites: Vec<i64> = tracks
             .iter()
-            .flat_map(|t| t.front.iter().map(|p| p.0))
+            .flat_map(|t| t.front().iter().map(|p| p.0))
             .collect();
         sites.sort_unstable();
         sites.dedup();
         let (lo, hi) = (extent.0.min(extent.1), extent.0.max(extent.1));
         // Compare the first two tracks when both have totals.
-        let paired = tracks.iter().take(2).filter(|t| t.behind.is_some()).count() == 2;
+        let paired = tracks
+            .iter()
+            .take(2)
+            .filter(|t| t.behind().is_some())
+            .count()
+            == 2;
         Self {
             title: title.to_string(),
             chr: chr.to_string(),
@@ -371,9 +321,13 @@ impl<'a> PileupView<'a> {
             search: LineInput::new(128),
             status: None,
             plots: Vec::new(),
-            contrast: paired.then_some(Measure::Difference),
+            contrast: paired.then_some(Contrast {
+                a: 0,
+                b: 1,
+                measure: Measure::Difference,
+            }),
             on: "methylated",
-            locus: false,
+            keys: Some(vec![title.into()]),
             mirror: true,
             genes: Vec::new(),
             pending_genes: None,
@@ -390,7 +344,10 @@ impl<'a> PileupView<'a> {
         let (lo, hi) = self.extent;
         match read {
             Ok(models) => {
-                self.genes = genes_to_draw(models, &self.title, self.locus)
+                if self.status.as_deref() == Some(LOADING) {
+                    self.status = None;
+                }
+                self.genes = genes_to_draw(models, self.keys.as_deref())
                     .into_iter()
                     .filter(|g| chr_eq(&g.chr, &self.chr) && g.hi > lo && g.lo <= hi)
                     .cloned()
@@ -408,7 +365,7 @@ impl<'a> PileupView<'a> {
         let contrast = self.contrast.map(Row::Contrast);
         let genes = (!self.genes.is_empty()).then_some(Row::Genes);
         let (mirror, first) = if self.mirrored() {
-            (Some(Row::Mirror), 2)
+            (Some(Row::Mirror(0, 1)), 2)
         } else {
             (None, 0)
         };
@@ -429,7 +386,7 @@ impl<'a> PileupView<'a> {
     /// The first two tracks are read tracks of the same measure.
     fn mirrorable(&self) -> bool {
         match &self.tracks[..] {
-            [a, b, ..] => a.ranges.is_none() && b.ranges.is_none() && a.name == b.name,
+            [a, b, ..] => a.is_reads() && b.is_reads() && a.name == b.name,
             _ => false,
         }
     }
@@ -440,12 +397,12 @@ impl<'a> PileupView<'a> {
                 let t = &self.tracks[i];
                 format!("{} · {}", t.label, t.name)
             }
-            Row::Contrast(m) => {
-                let (a, b) = (self.tracks[0].label, self.tracks[1].label);
-                format!("{a} vs {b} · {}", m.name(self.on))
+            Row::Contrast(c) => {
+                let (a, b) = (self.tracks[c.a].label, self.tracks[c.b].label);
+                format!("{a} vs {b} · {}", c.measure.name(self.on))
             }
-            Row::Mirror => {
-                let (a, b) = (&self.tracks[0], &self.tracks[1]);
+            Row::Mirror(a, b) => {
+                let (a, b) = (&self.tracks[a], &self.tracks[b]);
                 format!("{} above, {} below · {}", a.label, b.label, a.name)
             }
             Row::Genes => "genes".into(),
@@ -481,8 +438,7 @@ impl<'a> PileupView<'a> {
         let edges = self.edges();
         for (lane, g) in self.gene_lanes() {
             let mid = y + 26.0 + GENE_LANE * lane as f64;
-            let (px, pw) = ((x + left) as f32, (w - left - right) as f32);
-            c.raw(&gene_model_svg(g, &edges, px, pw, mid as f32, GENE_BAND));
+            draw_gene_model(c, g, &edges, x + left, w - left - right, mid, GENE_BAND);
         }
     }
 
@@ -492,31 +448,46 @@ impl<'a> PileupView<'a> {
         lanes.unwrap_or(1)
     }
 
-    /// One y-axis top for every read track (not depth), so the tracks are
-    /// drawn on the same scale: the tallest bar, total included, over them.
-    fn shared_max(&self, edges: &BinEdges) -> Option<f64> {
+    /// Every track binned over the window.
+    fn bins(&self) -> Bins {
+        let edges = self.edges();
+        let tracks: Vec<Binned> = self.tracks.iter().map(|t| t.bin(&edges)).collect();
         let tallest = self
             .tracks
             .iter()
-            .filter(|t| t.ranges.is_none())
-            .map(|t| {
-                let (front, behind) = t.bin(edges);
-                behind.unwrap_or(front).into_iter().fold(0.0, f64::max)
+            .zip(&tracks)
+            .filter(|(t, _)| t.is_reads())
+            .map(|(_, (front, behind))| {
+                behind
+                    .as_ref()
+                    .unwrap_or(front)
+                    .iter()
+                    .fold(0.0, |m: f64, &v| m.max(v))
             })
             .fold(0.0, f64::max);
-        (tallest > 0.0).then_some(tallest)
+        Bins {
+            edges,
+            tracks,
+            shared: (tallest > 0.0).then_some(tallest),
+        }
     }
 
-    /// The contrast per bar over the window (raw sums, never log).
-    fn contrast_values(&self, measure: Measure, edges: &BinEdges) -> Vec<Option<f64>> {
-        let counts = |t: &Track| {
-            let front = edges.bin(t.front, false);
-            let total = edges.bin(t.behind.unwrap_or_default(), false);
-            (front, total)
+    /// The contrast per bar over the window, from raw sums (rebinned when
+    /// the tracks show logs).
+    fn contrast_values(&self, c: Contrast, bins: &Bins) -> Vec<Option<f64>> {
+        let counts = |k: usize| -> (Vec<f64>, Vec<f64>) {
+            let t = &self.tracks[k];
+            match &bins.tracks[k] {
+                (front, Some(total)) if !t.log => (front.clone(), total.clone()),
+                _ => (
+                    bins.edges.bin(t.front(), false),
+                    bins.edges.bin(t.behind().unwrap_or_default(), false),
+                ),
+            }
         };
-        let ((ma, na), (mb, nb)) = (counts(&self.tracks[0]), counts(&self.tracks[1]));
+        let ((ma, na), (mb, nb)) = (counts(c.a), counts(c.b));
         (0..ma.len())
-            .map(|k| measure.of((ma[k], na[k]), (mb[k], nb[k])))
+            .map(|k| c.measure.of((ma[k], na[k]), (mb[k], nb[k])))
             .collect()
     }
 
@@ -642,61 +613,87 @@ impl<'a> PileupView<'a> {
             Anchor::Start,
             MUTED,
         );
+        let bins = self.bins();
         let mut y = 44.0;
         for (&row, &h) in rows.iter().zip(&heights) {
-            self.draw_row(row, &mut c, (8.0, y, 704.0, h), None, self.row_title(row));
+            let title = self.row_title(row);
+            self.draw_row(row, &bins, &mut c, (8.0, y, 704.0, h), None, title);
             y += h;
         }
 
         c.finish()
     }
 
-    /// A row in the box: a track's bars, or the contrast's signed bars.
+    /// A row in the box: a track's bars, the contrast's signed bars, two
+    /// tracks mirrored, or the genes.
     fn draw_row(
         &self,
         row: Row,
+        bins: &Bins,
         c: &mut Canvas,
         bbox: (f64, f64, f64, f64),
         pointer: Option<usize>,
         title: String,
     ) {
+        let (x, y, w, h) = bbox;
+        let x_title = format!("{} position", self.chr);
         match row {
-            Row::Track(i) => self.draw_track(i, c, bbox, pointer, title),
-            Row::Contrast(measure) => {
-                let (x, y, w, h) = bbox;
-                let values = self.contrast_values(measure, &self.edges());
+            Row::Track(i) => {
+                let t = &self.tracks[i];
+                let (lo, hi) = self.window;
+                let (front, behind) = &bins.tracks[i];
+                let marks = t.sites_in(lo, hi).into_iter();
+                let stacked = behind.is_some();
+                Bars {
+                    values: behind.as_ref().unwrap_or(front),
+                    front: stacked.then_some(front.as_slice()),
+                    accent: &|_| stacked,
+                    y_scale: self.y_scale,
+                    y_max: bins.shared,
+                    ticks: self.tick_list(),
+                    pointer,
+                    marks: marks.map(|s| bins.edges.col_of(s)).collect(),
+                    title,
+                    x_title,
+                    y_title: t.name.into(),
+                }
+                .draw(c, x, y, w, h);
+            }
+            Row::Contrast(contrast) => {
+                let values = self.contrast_values(contrast, bins);
+                let measure = contrast.measure;
                 figure::Diverging {
                     values: &values,
                     ticks: self.tick_list(),
                     pointer,
                     title,
-                    x_title: format!("{} position", self.chr),
+                    x_title,
                     y_title: measure.name(self.on),
                     label: &|v| measure.label(v),
                 }
                 .draw(c, x, y, w, h);
             }
-            Row::Mirror => {
-                let (x, y, w, h) = bbox;
-                let edges = self.edges();
-                let binned: Vec<_> = self.tracks[..2].iter().map(|t| t.bin(&edges)).collect();
-                let half = |k: usize| figure::Half {
-                    values: binned[k].1.as_ref().unwrap_or(&binned[k].0),
-                    front: binned[k].1.is_some().then_some(binned[k].0.as_slice()),
-                    colour: figure::BAR,
-                    name: self.tracks[k].label.to_string(),
+            Row::Mirror(a, b) => {
+                let half = |k: usize| {
+                    let (front, behind) = &bins.tracks[k];
+                    figure::Half {
+                        values: behind.as_ref().unwrap_or(front),
+                        front: behind.is_some().then_some(front.as_slice()),
+                        colour: figure::BAR,
+                        name: self.tracks[k].label.to_string(),
+                    }
                 };
                 figure::Mirror {
-                    up: half(0),
-                    down: half(1),
+                    up: half(a),
+                    down: half(b),
                     y_scale: self.y_scale,
-                    y_max: self.shared_max(&edges),
+                    y_max: bins.shared,
                     y_labels: Default::default(),
                     ticks: self.tick_list(),
                     pointer,
                     title,
-                    x_title: format!("{} position", self.chr),
-                    y_title: self.tracks[0].name.into(),
+                    x_title,
+                    y_title: self.tracks[a].name.into(),
                 }
                 .draw(c, x, y, w, h);
             }
@@ -713,43 +710,7 @@ impl<'a> PileupView<'a> {
             .collect()
     }
 
-    /// Track `i` over the visible window in the box `(x, y, w, h)`.
-    fn draw_track(
-        &self,
-        i: usize,
-        c: &mut Canvas,
-        (x, y, w, h): (f64, f64, f64, f64),
-        pointer: Option<usize>,
-        title: String,
-    ) {
-        let t = &self.tracks[i];
-        let edges = self.edges();
-        let (lo, hi) = self.window;
-        let ticks = self.tick_list();
-        let (front, behind) = t.bin(&edges);
-        let marks = t
-            .sites_in(lo, hi)
-            .into_iter()
-            .map(|s| edges.col_of(s))
-            .collect();
-        let stacked = behind.is_some();
-        Bars {
-            values: behind.as_ref().unwrap_or(&front),
-            front: stacked.then_some(front.as_slice()),
-            accent: &|_| stacked,
-            y_scale: self.y_scale,
-            y_max: self.shared_max(&self.edges()),
-            ticks,
-            pointer,
-            marks,
-            title,
-            x_title: format!("{} position", self.chr),
-            y_title: t.name.into(),
-        }
-        .draw(c, x, y, w, h);
-    }
-
-    fn readout(&self) -> Line<'static> {
+    fn readout(&self, bins: &Bins) -> Line<'static> {
         let dim = |t: String| Span::styled(t, DIM);
         let col = self.cursor_col();
         let (start, stop) = self.bar_range(col);
@@ -764,21 +725,20 @@ impl<'a> PileupView<'a> {
                 fmt_thousands(stop)
             )),
         ];
-        let edges = self.edges();
-        if let Some(measure) = self.contrast {
-            let (a, b) = (self.tracks[0].label, self.tracks[1].label);
-            let value = self.contrast_values(measure, &edges)[col];
+        if let Some(c) = self.contrast {
+            let (a, b) = (self.tracks[c.a].label, self.tracks[c.b].label);
+            let value = self.contrast_values(c, bins).get(col).copied().flatten();
             spans.push(dim(format!("   {a} vs {b} ")));
             spans.push(Span::styled(
-                value.map_or("-".into(), |v| measure.label(v)),
+                value.map_or("-".into(), |v| c.measure.label(v)),
                 HIGHLIGHT,
             ));
         }
-        for t in &self.tracks {
+        for (t, (front, behind)) in self.tracks.iter().zip(&bins.tracks) {
             spans.push(dim(format!("   {} ", t.label)));
-            spans.push(Span::raw(match t.bin(&edges) {
-                (front, Some(behind)) => format!("{:.0}/{:.0}", front[col], behind[col]),
-                (front, None) => compact(front[col]),
+            spans.push(Span::raw(match behind {
+                Some(behind) => format!("{:.0}/{:.0}", front[col], behind[col]),
+                None => compact(front[col]),
             }));
         }
         let here = self
@@ -800,6 +760,13 @@ impl Screen for PileupView<'_> {
         self.exit = Some(Exit::Quit);
     }
 
+    /// Redraw once the gene models arrive in the background.
+    fn tick(&mut self) -> bool {
+        let waiting = self.pending_genes.is_some();
+        self.take_genes();
+        waiting && self.pending_genes.is_none()
+    }
+
     fn handle_key(&mut self, key: KeyEvent) {
         self.status = None;
         if self.search.active() {
@@ -816,7 +783,12 @@ impl Screen for PileupView<'_> {
         }
         match key.code {
             KeyCode::Char('/') => self.search.open(""),
-            KeyCode::Char('c') => self.contrast = self.contrast.map(Measure::next),
+            KeyCode::Char('c') => {
+                self.contrast = self.contrast.map(|c| Contrast {
+                    measure: c.measure.next(),
+                    ..c
+                })
+            }
             KeyCode::Char('m') => self.mirror = !self.mirror,
             KeyCode::Left | KeyCode::Char('h') => self.move_cursor(-1),
             KeyCode::Right | KeyCode::Char('l') => self.move_cursor(1),
@@ -852,7 +824,6 @@ impl Screen for PileupView<'_> {
         let inner_width = areas[1].width.saturating_sub(2 + GUTTER);
         self.columns = (inner_width as usize).max(1);
         self.clamp_window();
-        let edges = self.edges();
         let (lo, hi) = self.window;
         let extra = format!(
             "{}:{}-{}  {} bp/bar · y {}{}",
@@ -872,9 +843,10 @@ impl Screen for PileupView<'_> {
                     .then(|| fmt_thousands(self.bar_range(k).0))
             })
             .collect();
-        let label = |k: i32| ticks.get(k as usize).cloned().flatten();
-        let pointer = Some(self.cursor_col() as i32);
-        let shared = self.shared_max(&edges);
+        let column_label = |k: usize| ticks.get(k).cloned().flatten();
+        let label = |k: i32| column_label(k as usize);
+        let bins = self.bins();
+        let pointer = self.cursor_col();
         let mut plots = std::mem::take(&mut self.plots);
         plots.resize_with(rows.len(), PlotImage::default);
         for (k, (&row, &area)) in rows.iter().zip(&areas[1..areas.len() - 2]).enumerate() {
@@ -884,92 +856,86 @@ impl Screen for PileupView<'_> {
             let drawn = self.controls.images().is_some_and(|picker| {
                 plots[k].render(frame, inner, picker, |w, h| {
                     let bbox = (0.0, 0.0, w, h);
-                    let pointer = Some(self.cursor_col());
                     figure::svg(w, h, |c| {
-                        self.draw_row(row, c, bbox, pointer, String::new())
+                        self.draw_row(row, &bins, c, bbox, Some(pointer), String::new())
                     })
                 })
             });
             if drawn {
                 continue;
             }
-            if row == Row::Genes {
-                self.render_genes(frame.buffer_mut(), inner);
-                continue;
-            }
-            let i = match row {
-                Row::Track(i) => i,
-                Row::Contrast(measure) => {
-                    let values = self.contrast_values(measure, &edges);
+            let buf = frame.buffer_mut();
+            match row {
+                Row::Track(i) => {
+                    let marks = self.tracks[i].sites_in(lo, hi).into_iter();
+                    let (front, behind) = &bins.tracks[i];
+                    let stacked = behind.is_some();
+                    HistPlot {
+                        bins: Binning::with_width(Scale::Linear, 1.0),
+                        kmin: 0,
+                        counts: behind.as_ref().unwrap_or(front),
+                        style: &|_| if stacked { ACCENTED } else { PLAIN },
+                        subset: stacked.then_some(front.as_slice()),
+                        y_scale: self.y_scale,
+                        y_max: bins.shared,
+                        pointer: Some(pointer as i32),
+                        marks: marks
+                            .map(|s| (bins.edges.col_of(s) as i32, "+", DIM))
+                            .collect(),
+                        x_label: Some(&label),
+                        tick_every: Some(1),
+                    }
+                    .render(buf, inner);
+                }
+                Row::Contrast(contrast) => {
+                    let values = self.contrast_values(contrast, &bins);
                     let (up, down) = figure::split_signed(&values);
                     let max = up.iter().chain(&down).fold(0.0, |m: f64, &v| m.max(v));
-                    TextMirror {
-                        up: TextHalf::plain(&up, ACCENTED),
-                        down: TextHalf::plain(&down, PLAIN),
-                        share: &|v| if max > 0.0 { v / max } else { 0.0 },
-                        y_labels: [max, 0.0, -max].map(|v| measure.label(v)),
-                        pointer: self.cursor_col(),
-                        ticks: &ticks,
-                    }
-                    .render(frame.buffer_mut(), inner);
-                    continue;
-                }
-                Row::Mirror => {
-                    let binned: Vec<_> = self.tracks[..2].iter().map(|t| t.bin(&edges)).collect();
-                    let half = |k: usize| TextHalf {
-                        values: binned[k].1.as_ref().unwrap_or(&binned[k].0),
-                        front: binned[k].1.is_some().then_some(binned[k].0.as_slice()),
-                        style: PLAIN,
-                        name: self.tracks[k].label,
+                    let side = |counts, style| MirrorSide {
+                        counts,
+                        subset: None,
+                        style,
+                        name: "",
                     };
-                    let scale = self.y_scale;
-                    let top = shared.map_or(0.0, |m| figure::scaled(scale, m));
-                    let own = compact(shared.unwrap_or(0.0));
-                    TextMirror {
-                        up: half(0),
-                        down: half(1),
-                        share: &|v| {
-                            if top > 0.0 {
-                                figure::scaled(scale, v) / top
-                            } else {
-                                0.0
-                            }
-                        },
-                        y_labels: [own.clone(), "0".into(), own],
-                        pointer: self.cursor_col(),
-                        ticks: &ticks,
+                    let measure = contrast.measure;
+                    MirrorPlot {
+                        up: side(&up, ACCENTED),
+                        down: side(&down, PLAIN),
+                        y_scale: Scale::Linear,
+                        y_max: Some(max),
+                        y_labels: Some([max, 0.0, -max].map(|v| measure.label(v))),
+                        pointer: Some(pointer),
+                        x_label: Some(&column_label),
                     }
-                    .render(frame.buffer_mut(), inner);
-                    continue;
+                    .render(buf, inner);
                 }
-                Row::Genes => continue,
-            };
-            let t = &self.tracks[i];
-            let (front, behind) = t.bin(&edges);
-            let marks = t
-                .sites_in(lo, hi)
-                .into_iter()
-                .map(|s| (edges.col_of(s) as i32, "+", DIM))
-                .collect();
-            let stacked = behind.is_some();
-            HistPlot {
-                bins: Binning::with_width(Scale::Linear, 1.0),
-                kmin: 0,
-                counts: behind.as_ref().unwrap_or(&front),
-                style: &|_| if stacked { ACCENTED } else { PLAIN },
-                subset: stacked.then_some(front.as_slice()),
-                y_scale: self.y_scale,
-                y_max: shared,
-                pointer,
-                marks,
-                x_label: Some(&label),
-                tick_every: Some(1),
+                Row::Mirror(a, b) => {
+                    let side = |k: usize| {
+                        let (front, behind) = &bins.tracks[k];
+                        MirrorSide {
+                            counts: behind.as_ref().unwrap_or(front),
+                            subset: behind.is_some().then_some(front.as_slice()),
+                            style: ACCENTED,
+                            name: self.tracks[k].label,
+                        }
+                    };
+                    MirrorPlot {
+                        up: side(a),
+                        down: side(b),
+                        y_scale: self.y_scale,
+                        y_max: bins.shared,
+                        y_labels: None,
+                        pointer: Some(pointer),
+                        x_label: Some(&column_label),
+                    }
+                    .render(buf, inner);
+                }
+                Row::Genes => self.render_genes(buf, inner),
             }
-            .render(frame.buffer_mut(), inner);
         }
         self.plots = plots;
 
-        frame.render_widget(Paragraph::new(self.readout()), readout);
+        frame.render_widget(Paragraph::new(self.readout(&bins)), readout);
         let help = if let Some(buf) = self.search.text() {
             input_line(
                 "search gene or chr:start-end: ",
@@ -1058,15 +1024,15 @@ impl PileupView<'_> {
 pub fn show_pileup(view: View, tracks: Vec<Track>, status: Option<String>) -> anyhow::Result<Exit> {
     let mut browser = PileupView::new(view.title, view.chr, tracks, view.extent);
     browser.on = view.on;
-    browser.locus = view.locus;
+    browser.keys = view.keys.map(<[_]>::to_vec);
     browser.pending_genes = view.genes;
     browser.take_genes();
     browser.status = status.or_else(|| {
         let loading = browser.pending_genes.is_some();
-        loading.then(|| "gene models are loading; they appear with the next key".to_string())
+        loading.then(|| LOADING.to_string())
     });
     browser.controls = Controls::new(&format!("pileup_{}", view.title)).detect();
-    crate::figure::term::run(&mut browser)?;
+    data_beans::interactive::ui::run_screen(&mut browser)?;
     Ok(browser.exit.unwrap_or(Exit::Quit))
 }
 

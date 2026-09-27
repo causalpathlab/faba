@@ -923,7 +923,7 @@ pub fn run_site_picker(
     }
     let mut picker = SitePicker::new(&file_name(input_dir), views, filter.clone());
     picker.controls = Controls::new("qc_sites").detect();
-    crate::figure::term::run(&mut picker)?;
+    data_beans::interactive::ui::run_screen(&mut picker)?;
     Ok(picker.decision.unwrap_or(Picked::Cancelled))
 }
 

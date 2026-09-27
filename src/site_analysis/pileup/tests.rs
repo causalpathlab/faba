@@ -211,25 +211,33 @@ fn channels_are_named_by_modality() {
 }
 
 #[test]
-fn only_the_opened_gene_is_drawn() {
+fn only_the_opened_genes_are_drawn() {
     use crate::site_analysis::miami::genemodel::GeneModel;
-    let model = |symbol: &str| GeneModel {
+    let model = |symbol: &str, key: &str| GeneModel {
         chr: "chr1".into(),
         lo: 0,
         hi: 10,
         forward: true,
         exons: Vec::new(),
         symbol: symbol.into(),
+        key: key.into(),
     };
-    let genes = [model("GENE1"), model("GENE2")];
-    let one = genes_to_draw(&genes, "ENSG1_GENE2", false);
+    let genes = [
+        model("GENE1", "ID1_GENE1"),
+        model("GENE2", "ID2_GENE2"),
+        model("GENE3", "ID3.4_GENE3"),
+    ];
+    let keys = |k: &[&str]| k.iter().map(|&k| Box::from(k)).collect::<Vec<Box<str>>>();
+    let one = genes_to_draw(&genes, Some(&keys(&["ID2_GENE2"])));
     assert_eq!(one.len(), 1);
     assert_eq!(&*one[0].symbol, "GENE2");
+    let two = genes_to_draw(&genes, Some(&keys(&["ID1_GENE1", "ID3_GENE3"])));
     assert_eq!(
-        genes_to_draw(&genes, "chr1:0-100", true).len(),
+        two.len(),
         2,
-        "a locus shows all"
+        "every matched gene, by symbol when ids differ"
     );
+    assert_eq!(genes_to_draw(&genes, None).len(), 3, "a locus shows all");
 }
 
 #[test]
@@ -267,4 +275,11 @@ fn reads_the_rows_the_producers_write() {
     // `faba depth` names bins `{chr}:{start}-{end}`.
     let depth = format!("{}:{}-{}", "chr1", 0, 50_000);
     assert_eq!(parse_depth_row(&depth), Some(("chr1", 0, 50_000)));
+}
+
+#[test]
+fn a_gene_symbol_may_hold_a_slash() {
+    let row = parse_row_channel("ID1_GENE1/B/m6a/chr1:100/methylated");
+    assert_eq!(row, Some(("ID1_GENE1/B", "m6a", "chr1", 100, Some(true))));
+    assert_eq!(parse_row_channel("ID1_GENE1/m6a/chr1:100/other"), None);
 }

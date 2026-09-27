@@ -162,7 +162,7 @@ impl<'a> GenePicker<'a> {
 
     /// Show the list until the user picks a gene, types a locus, or quits.
     pub fn pick(&mut self) -> anyhow::Result<Choice> {
-        crate::figure::term::run(self)?;
+        data_beans::interactive::ui::run_screen(self)?;
         Ok(self.decision.take().unwrap_or(Choice::Quit))
     }
 }
