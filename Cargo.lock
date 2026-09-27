@@ -1261,9 +1261,9 @@ dependencies = [
 
 [[package]]
 name = "data-beans"
-version = "0.6.16"
+version = "0.6.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eb6293c3b341981773fbc544574ba8f26d1b5f805788d4a8a869681bd4006326"
+checksum = "b8037db0399cd228b58bdbd76969d2efb6ca9aa51592935ab48b13f3683f0d02"
 dependencies = [
  "anyhow",
  "approx",
@@ -1612,7 +1612,7 @@ dependencies = [
 
 [[package]]
 name = "faba"
-version = "0.14.2"
+version = "0.14.3"
 dependencies = [
  "anyhow",
  "arrow",
