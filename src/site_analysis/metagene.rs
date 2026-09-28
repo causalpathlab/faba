@@ -45,10 +45,11 @@ pub struct MetageneArgs {
     #[arg(
         short = 'g',
         long = "gff",
-        required = true,
-        help = "GFF annotation file"
+        help = "GFF annotation file (default: the one recorded next to --sites)",
+        long_help = "GFF annotation file.\n\
+                     Without it, the GFF recorded in the `*.run.json` next to --sites is used."
     )]
-    gff_file: Box<str>,
+    gff_file: Option<Box<str>>,
 
     #[arg(
         short = 'n',
@@ -142,6 +143,9 @@ pub struct MetageneArgs {
 /// TSV has always emitted; a second speller once wrote `5'UTR`/`3'UTR` for the
 /// same logical row, and a script grepping `^5UTR` silently matched nothing.
 const FEATURE_LABELS: [&str; 4] = ["5UTR", "CDS", "3UTR", "ncRNA"];
+
+/// On-screen region names (the TSV's `FEATURE_LABELS` avoid apostrophes).
+pub(crate) const REGION_NAMES: [&str; 4] = ["5'UTR", "CDS", "3'UTR", "ncRNA"];
 
 /// Region indices into [`FEATURE_LABELS`], and the base of each region's
 /// MetaPlotR coordinate: 5'UTR spans [0,1), CDS [1,2), 3'UTR [2,3).
@@ -593,6 +597,21 @@ fn allocate_bins(n: usize, m: &[i64; 3]) -> [usize; 3] {
 struct BinGrid([usize; 4]);
 
 impl BinGrid {
+    /// Placements per bin, one row per track.
+    fn tally<'a>(&self, assignments: impl Iterator<Item = &'a SiteAssignment>) -> [Vec<usize>; 4] {
+        let mut counts: [Vec<usize>; 4] =
+            std::array::from_fn(|region| vec![0usize; self.0[region]]);
+        for a in assignments {
+            let track = &mut counts[a.region];
+            let width = track.len();
+            if width > 0 {
+                // `bin` already clamps to the track width.
+                track[a.bin(width)] += 1;
+            }
+        }
+        counts
+    }
+
     fn new(n: usize, scale: Option<&ScaleFactors>, include_non_coding: bool) -> Self {
         // No coding assignment means no coding axis, so those tracks get no
         // bins rather than the whole budget.
@@ -626,16 +645,7 @@ pub struct GeneFeatureHistogram {
 impl GeneFeatureHistogram {
     /// Tally every placement, once the grid has fixed the bin widths.
     fn accumulate(grid: &BinGrid, scale: ScaleFactors, assignments: &[SiteAssignment]) -> Self {
-        let mut counts: [Vec<usize>; 4] =
-            std::array::from_fn(|region| vec![0usize; grid.0[region]]);
-        for a in assignments.iter() {
-            let track = &mut counts[a.region];
-            let width = track.len();
-            if width > 0 {
-                // `bin` already clamps to the track width.
-                track[a.bin(width)] += 1;
-            }
-        }
+        let counts = grid.tally(assignments.iter());
         GeneFeatureHistogram { counts, scale }
     }
 
@@ -859,7 +869,19 @@ fn non_coding_bodies(records: &[GffRecord]) -> Vec<NonCodingBody> {
 
 pub fn run_metagene(args: &MetageneArgs) -> anyhow::Result<()> {
     let sites = read_sites(&args.site_file)?;
-    let records = read_gff_record_vec(&args.gff_file)?;
+    let gff_file = crate::run_record::explicit_or_recorded(
+        args.gff_file.as_deref(),
+        &args.site_file,
+        "gff",
+        "annotation",
+    )
+    .ok_or_else(|| {
+        anyhow::anyhow!(
+            "-g/--gff is required: no run record next to {} names a GFF",
+            args.site_file
+        )
+    })?;
+    let records = read_gff_record_vec(&gff_file)?;
 
     let models = build_transcript_models(&records);
     if models.is_empty() {
@@ -874,14 +896,14 @@ pub fn run_metagene(args: &MetageneArgs) -> anyhow::Result<()> {
                 "{} has CDS records but no `exon` records, and the transcript model is \
                  built from exons. GENCODE, Ensembl and RefSeq all emit exon lines; a \
                  CDS/UTR-only or hand-subsetted annotation does not.",
-                args.gff_file
+                gff_file
             );
         }
         anyhow::bail!(
             "no coding transcript could be built from {}. Coding transcripts need \
              `exon` and `CDS` records carrying both `gene_type`/`gene_biotype` \
              protein_coding and a `transcript_id` attribute.",
-            args.gff_file
+            gff_file
         );
     }
     let n_models = models.len();
@@ -966,6 +988,76 @@ pub fn run_metagene(args: &MetageneArgs) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+////////////////////////////
+// Fixed layout for subsets //
+////////////////////////////
+
+/// Coding transcripts of an annotation, one per gene (the longest spliced,
+/// as `faba metagene` elects by default), indexed for placing sites.
+pub struct MetaModels {
+    models: Vec<TranscriptModel>,
+    index: RegionIndex,
+}
+
+impl MetaModels {
+    pub fn load(gff_file: &str) -> anyhow::Result<Self> {
+        let models = Self::from_records(&read_gff_record_vec(gff_file)?);
+        anyhow::ensure!(
+            !models.models.is_empty(),
+            "no coding transcript could be built from {gff_file}"
+        );
+        Ok(models)
+    }
+
+    pub(crate) fn from_records(records: &[GffRecord]) -> Self {
+        let models = elect_longest_isoform(build_transcript_models(records));
+        let index = RegionIndex::build(&models, &[]);
+        Self { models, index }
+    }
+
+    /// Place `sites` on the coding track of a metagene whose region widths
+    /// are fixed by all of them, `n_bins` in total. `None` when no site lands
+    /// on a coding transcript.
+    pub fn layout(&self, sites: &[GenomicSite], n_bins: usize) -> Option<MetaLayout> {
+        let (assignments, unassigned) = assign_sites(sites, &self.index);
+        let scale = scale_factors(&assignments, &self.models)?;
+        let grid = BinGrid::new(n_bins, Some(&scale), false);
+        Some(MetaLayout {
+            grid,
+            assignments,
+            unassigned,
+        })
+    }
+}
+
+/// Every site placed once, on an axis that does not move: [`Self::counts`]
+/// re-tallies any subset of the sites on it, so a subset's profile changes
+/// only because sites left it, never because the region widths were
+/// recomputed from what remains.
+pub struct MetaLayout {
+    grid: BinGrid,
+    assignments: Vec<SiteAssignment>,
+    /// Sites on no coding transcript.
+    pub unassigned: usize,
+}
+
+impl MetaLayout {
+    /// Bins per coding region: 5'UTR, CDS, 3'UTR.
+    pub fn region_bins(&self) -> [usize; 3] {
+        [self.grid.0[UTR5], self.grid.0[CDS], self.grid.0[UTR3]]
+    }
+
+    /// Placements per bin, 5'UTR then CDS then 3'UTR, of the sites `keep`
+    /// admits (by index into the placed sites). A site on two isoforms counts
+    /// on each, as in `faba metagene`.
+    pub fn counts(&self, keep: impl Fn(usize) -> bool) -> Vec<usize> {
+        let [utr5, cds, utr3, _] = self
+            .grid
+            .tally(self.assignments.iter().filter(|a| keep(a.site as usize)));
+        [utr5, cds, utr3].concat()
+    }
 }
 
 mod tui;

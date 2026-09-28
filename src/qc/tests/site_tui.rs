@@ -1,4 +1,5 @@
 use super::*;
+use crate::site_analysis::site_io::GenomicSite;
 use arrow::datatypes::Schema;
 use arrow::record_batch::RecordBatch;
 use data_beans::aux::feature_rows::{ATOI, M6A};
@@ -71,7 +72,7 @@ fn picker<'a>(
     start: SiteFilterArgs,
 ) -> SitePicker<'a> {
     let view = SiteView::new(t, n_cells, &start);
-    SitePicker::new("x", vec![view], start)
+    SitePicker::new("x", vec![view], start, Meta::Unavailable("none".into()))
 }
 
 fn press(p: &mut SitePicker, code: KeyCode) {
@@ -119,19 +120,7 @@ fn counts_agree_with_the_qc_rule() {
             assert_eq!(p.tally.kept, kept_linear(&t, Some(&c), &p.filter));
             for &k in &p.view().criteria {
                 let dropped = t.len() - kept_linear(&t, Some(&c), &only(k, &p.filter));
-                assert_eq!(p.tally.alone[k as usize], dropped, "alone {k:?}");
-            }
-            // `reason` refines the written reason: summed per reason it matches.
-            let reasons = p.filter.reasons(&t, Some(&c));
-            for &k in &p.view().criteria {
-                let r = k.drop_reason();
-                let want = reasons.iter().filter(|x| **x == Some(r)).count();
-                let got: usize = Criterion::ALL
-                    .iter()
-                    .filter(|x| x.drop_reason() == r)
-                    .map(|x| p.tally.reason[*x as usize])
-                    .sum();
-                assert_eq!(got, want, "reason {r:?}");
+                assert_eq!(p.tally.fail[k as usize], dropped, "fail {k:?}");
             }
         }
     }
@@ -264,7 +253,7 @@ fn modalities_share_thresholds_but_not_knobs() {
         SiteView::new(&m6a, None, &start),
         SiteView::new(&atoi, None, &start),
     ];
-    let mut p = SitePicker::new("x", views, start);
+    let mut p = SitePicker::new("x", views, start, Meta::Unavailable("none".into()));
     assert!(p.view().criteria.contains(&Criterion::MinFold));
     assert!(!p.view().criteria.contains(&Criterion::MinCells));
     focus_on(&mut p, Criterion::MinFold);
@@ -313,7 +302,7 @@ fn renders_every_knob_and_scale() {
     let t = table(M6A, 600);
     let start = SiteFilterArgs::default_values();
     let view = SiteView::new(&t, Some(cells(t.len())), &start);
-    let mut p = SitePicker::new("input", vec![view], start);
+    let mut p = SitePicker::new("input", vec![view], start, Meta::Unavailable("none".into()));
     let mut term = Terminal::new(TestBackend::new(120, 30)).unwrap();
     for _ in 0..p.view().criteria.len() {
         for _ in 0..3 {
@@ -414,6 +403,104 @@ fn only_is_what_turning_the_threshold_off_keeps() {
         .iter()
         .map(|c| c.symbol())
         .collect();
-    assert!(text.contains("drops only: fail this and pass all others"));
-    assert!(text.contains("reason column"));
+    assert!(text.contains("Counts are sites (not cells or genes)."));
+    assert!(text.contains("only this: sites that fail this and no other;"));
+    assert!(!text.contains("reason"));
+}
+
+/// A layout for `n` sites spread over one forward two-exon transcript on
+/// chr1 (exons 1000..1199 and 1500..1699, CDS 1100..1599), one site off it
+/// in every ten.
+fn meta_layout(n: usize) -> MetaLayout {
+    use genomic_data::gff::{FeatureType, GeneId, GeneSymbol, GeneType, GffRecord, TranscriptId};
+    use genomic_data::sam::Strand;
+    let rec = |feature_type, start, stop| GffRecord {
+        seqname: "chr1".into(),
+        feature_type,
+        start,
+        stop,
+        strand: Strand::Forward,
+        gene_id: GeneId::Ensembl("GENE1".into()),
+        gene_name: GeneSymbol::Symbol("GENE1".into()),
+        gene_type: GeneType::CodingGene,
+        transcript_id: TranscriptId::Ensembl("T1".into()),
+    };
+    let records = [
+        rec(FeatureType::Exon, 1000, 1199),
+        rec(FeatureType::Exon, 1500, 1699),
+        rec(FeatureType::CDS, 1100, 1199),
+        rec(FeatureType::CDS, 1500, 1599),
+        rec(FeatureType::StopCodon, 1600, 1602),
+    ];
+    let exonic: Vec<i64> = (1000..1200).chain(1500..1700).collect();
+    let sites: Vec<GenomicSite> = (0..n)
+        .map(|i| GenomicSite {
+            chr: "chr1".into(),
+            position: if i % 10 == 9 {
+                5000
+            } else {
+                exonic[i * 7 % exonic.len()] - 1
+            },
+            strand: Strand::Forward,
+        })
+        .collect();
+    MetaModels::from_records(&records)
+        .layout(&sites, META_BINS)
+        .expect("sites on the transcript")
+}
+
+#[test]
+fn the_metagene_follows_the_thresholds_on_a_fixed_axis() {
+    let t = table(M6A, 1500);
+    let mut p = picker(&t, None, SiteFilterArgs::default_values());
+    assert!(p.meta_counts().is_none());
+    p.set_meta(Meta::ready(vec![Some(meta_layout(t.len()))]));
+    let placed = |i: usize| i % 10 != 9;
+
+    let before = p.meta_counts().unwrap();
+    let (all, kept_before) = (before.all.to_vec(), before.kept.iter().sum::<usize>());
+    focus_on(&mut p, Criterion::MinCoverage);
+    for _ in 0..5 {
+        press(&mut p, KeyCode::Right);
+    }
+    let after = p.meta_counts().unwrap();
+    // The axis and the all-site profile do not move; the kept profile is
+    // the kept sites, and it shrinks as the threshold tightens.
+    assert_eq!(after.all, all);
+    let kept_placed = (0..t.len())
+        .filter(|&i| p.view().fails[i] == 0 && placed(i))
+        .count();
+    assert_eq!(after.kept.iter().sum::<usize>(), kept_placed);
+    assert!(after.kept.iter().sum::<usize>() < kept_before);
+    assert_eq!(
+        after.unassigned,
+        (0..t.len()).filter(|&i| !placed(i)).count()
+    );
+}
+
+#[test]
+fn the_metagene_panel_says_why_it_is_empty_and_draws_when_ready() {
+    let t = table(M6A, 400);
+    let mut p = picker(&t, None, SiteFilterArgs::default_values());
+    p.set_meta(Meta::Unavailable("no annotation: pass --gff".into()));
+    let screen = |p: &mut SitePicker| {
+        let mut term = Terminal::new(TestBackend::new(140, 44)).unwrap();
+        term.draw(|f| p.render(f)).unwrap();
+        term.backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>()
+    };
+    let text = screen(&mut p);
+    assert!(text.contains("metagene"));
+    assert!(text.contains("no annotation: pass --gff"));
+
+    p.set_meta(Meta::ready(vec![Some(meta_layout(t.len()))]));
+    let text = screen(&mut p);
+    assert!(text.contains("kept / all"));
+    assert!(text.contains("CDS"));
+    // The export carries the metagene too.
+    assert!(p.figure().contains("metagene, kept sites in front"));
 }

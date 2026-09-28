@@ -1,7 +1,7 @@
 use crate::common::*;
 use crate::data::util_htslib::*;
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, serde::Serialize)]
 pub struct ReadDepthArgs {
     /// Input BAM file(s), comma-separated
     #[arg(
@@ -72,6 +72,7 @@ pub struct ReadDepthArgs {
         help = "Sparse matrix output backend",
         long_help = "File format for the output sparse matrix. Supported: zarr, hdf5."
     )]
+    #[serde(serialize_with = "crate::run_record::ser_debug")]
     pub(crate) backend: SparseIoBackend,
 
     #[arg(
@@ -105,6 +106,16 @@ pub struct ReadDepthArgs {
                      One sparse matrix file per input BAM is created here."
     )]
     pub(crate) output: Box<str>,
+}
+
+impl ReadDepthArgs {
+    /// A record of this run: its inputs and every option.
+    pub fn run_record(&self) -> crate::run_record::RunRecord {
+        crate::run_record::RunRecord::start("depth", &self.output)
+            .inputs("bam", &self.bam_files)
+            .input("valid_cells", self.valid_cells_file.as_deref())
+            .options(self)
+    }
 }
 
 /// Count read depth

@@ -15,11 +15,12 @@
 use std::sync::Arc;
 
 use crate::common::*;
+use crate::run_record::{explicit_or_recorded, find_input, RunRecord};
 use data_beans::qc_lib::{compute_qc, write_qc_report, QcConfig, QcReport};
 use data_beans::sparse_io_vector::SparseIoVec;
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use super::args::QcArgs;
+use super::args::{QcArgs, SiteFilterArgs};
 use super::layout::{file_name, scan_input_dir, InputLayout, MatrixFile, SITE_MODALITIES};
 use super::matrix::{
     open_matrix, row_nnz_over_columns, select_columns, shape, write_subset, Backend, OutSpec,
@@ -203,7 +204,33 @@ pub fn run_qc(args: &QcArgs) -> anyhow::Result<()> {
     if std::path::Path::new(out_dir).exists() && std::fs::read_dir(out_dir)?.next().is_some() {
         anyhow::bail!("output directory {out_dir} already contains files; choose an empty one");
     }
+    // Carry the annotation and genome forward, so tools reading the new
+    // fileset find them as they would in the original.
+    let gff = explicit_or_recorded(args.gff.as_deref(), &args.input_dir, "gff", "annotation");
+    let genome = find_input(&args.input_dir, "genome", "genome");
+    let mut record = RunRecord::start("qc", out_dir)
+        .input("fileset", Some(&args.input_dir))
+        .input("gff", gff.as_deref())
+        .input("genome", genome.as_deref())
+        .options(args);
+    let outcome = filter_fileset(args, gff.as_deref());
+    // A run cancelled before writing leaves the directory empty, for a rerun.
+    let wrote = std::fs::read_dir(out_dir).is_ok_and(|mut d| d.next().is_some());
+    if wrote {
+        // The thresholds applied, which `--interactive` may have changed.
+        if let Ok(Some(site)) = &outcome {
+            record.set_option("site", site);
+        }
+        record.finish(&outcome);
+    }
+    outcome.map(|_| ())
+}
 
+/// [`run_qc`] once the output directory is known to be empty, with `gff` for
+/// the interactive metagene. Returns the site thresholds applied, `None` when
+/// nothing was written.
+fn filter_fileset(args: &QcArgs, gff: Option<&str>) -> anyhow::Result<Option<SiteFilterArgs>> {
+    let out_dir = args.output.as_ref();
     let layout: InputLayout = scan_input_dir(&args.input_dir)?;
     let batches = layout.batches();
     info!(
@@ -269,14 +296,14 @@ pub fn run_qc(args: &QcArgs) -> anyhow::Result<()> {
     let mut site_args = args.site.clone();
     if args.interactive {
         let (tables, cells) = (&tables, &site_cells);
-        match run_site_picker(&args.input_dir, tables, cells, &args.site)? {
+        match run_site_picker(&args.input_dir, tables, cells, &args.site, gff)? {
             Picked::Apply(f) => {
                 info!("site thresholds: {}", qc_flags(&f));
                 site_args = f;
             }
             Picked::PrintOnly(f) => {
                 println!("faba qc {} -o {} {}", args.input_dir, out_dir, qc_flags(&f));
-                return Ok(());
+                return Ok(None);
             }
             Picked::Cancelled => anyhow::bail!("cancelled at the site thresholds; nothing written"),
             Picked::Skipped => {}
@@ -410,5 +437,5 @@ pub fn run_qc(args: &QcArgs) -> anyhow::Result<()> {
     }
     write_lines(&lines, &format!("{out_dir}/qc_summary.tsv"))?;
     info!("done: {out_dir}");
-    Ok(())
+    Ok(Some(site_args))
 }

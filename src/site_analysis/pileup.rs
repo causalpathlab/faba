@@ -193,7 +193,9 @@ pub struct PileupArgs {
         long = "gtf",
         help = "Gene annotation GTF/GFF for the middle gene-model track (exons, introns)",
         long_help = "Gene annotation GTF/GFF for the middle gene-model track (exons, introns, strand).\n\
-                     Enables figure mode; with --interactive, draws the genes in view instead."
+                     Enables figure mode; with --interactive, draws the genes in view instead.\n\
+                     Without it, the browser and the figure use the GFF recorded in the\n\
+                     `*.run.json` next to the first matrix, when there is one."
     )]
     gtf: Option<Box<str>>,
 
@@ -1543,7 +1545,7 @@ fn interactive(
     first: Option<Loaded>,
 ) -> anyhow::Result<()> {
     let catalog = Catalog::new(&args.data_files);
-    let genes = start_gene_models(args.gtf.as_deref());
+    let genes = start_gene_models(args.annotation().as_deref());
     let mut filter = String::new();
     let mut current = first;
     let mut status: Option<String> = None;
@@ -1593,6 +1595,15 @@ fn interactive(
                 }
             },
         }
+    }
+}
+
+impl PileupArgs {
+    /// `--gtf`, or else the GFF the first matrix was made from, found in its
+    /// run record.
+    fn annotation(&self) -> Option<Box<str>> {
+        let first = self.data_files.first()?;
+        crate::run_record::explicit_or_recorded(self.gtf.as_deref(), first, "gff", "gene models")
     }
 }
 
@@ -1719,8 +1730,8 @@ fn run_miami_figure(args: &PileupArgs, selector: &Selector) -> anyhow::Result<()
         .transpose()?;
 
     // Middle track: gene model(s) from GTF.
-    let models = match &args.gtf {
-        Some(gtf) => load_gene_models(gtf, selector)?,
+    let models = match args.annotation() {
+        Some(gtf) => load_gene_models(&gtf, selector)?,
         None => Vec::new(),
     };
 

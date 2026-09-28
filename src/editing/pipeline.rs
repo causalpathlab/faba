@@ -947,7 +947,7 @@ fn write_resolution_backend(
         .backend_output_path(&format!("{}_{}", batch_name, name_suffix));
     let data = triplets.to_backend(&out.write_path)?;
     out_acc.rows.extend(data.row_names()?);
-    info!("created {name_suffix} data: {}", &out.target_path);
+    info!("created {name_suffix} data: {}", out.target_path);
     drop(data);
     out_acc.files.push(out);
     Ok(())

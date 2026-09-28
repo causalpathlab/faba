@@ -159,7 +159,7 @@ fn process_simple_bam(
     let triplets = summarize_simple_stats(&stats, |bed| site_key(bed, gff_map));
     let data = triplets.to_backend(&out.write_path)?;
     data.qc(cutoffs.clone())?;
-    info!("created data backend: {}", &out.target_path);
+    info!("created data backend: {}", out.target_path);
 
     drop(data);
     out.finalize()?;
@@ -487,7 +487,7 @@ pub fn run_mixture(args: &CountApaArgs) -> anyhow::Result<()> {
                 column: args.column_nnz_cutoff,
             })?;
             all_rows.extend(data.row_names()?);
-            info!("created output: {}", &out.target_path);
+            info!("created output: {}", out.target_path);
             drop(data);
             out_files.push(out);
         }
@@ -504,7 +504,7 @@ pub fn run_mixture(args: &CountApaArgs) -> anyhow::Result<()> {
 
     // Write APA site annotation Parquet (shared definitions, single file)
     if !all_annotations.is_empty() {
-        let parquet_path = format!("{}/apa_components.parquet", &args.output);
+        let parquet_path = format!("{}/apa_components.parquet", args.output);
         write_apa_annotations(&all_annotations, &parquet_path)?;
         info!(
             "wrote {} site annotations to {}",
@@ -682,8 +682,8 @@ fn process_utr(
         if clusters.len() < 2 {
             return Ok((Vec::new(), Vec::new())); // single-site → no PDUI
         }
-        clusters.sort_unstable_by(|a, b| b.1.cmp(&a.1)); // by read count, desc
-                                                         // Require the runner-up to be a non-trivial fraction of the dominant peak.
+        clusters.sort_unstable_by_key(|a| std::cmp::Reverse(a.1)); // by read count, desc
+                                                                   // Require the runner-up to be a non-trivial fraction of the dominant peak.
         if (clusters[1].1 as f32) < MIN_RUNNERUP_MASS_FRAC * clusters[0].1 as f32 {
             return Ok((Vec::new(), Vec::new()));
         }
@@ -919,7 +919,7 @@ fn compute_and_write_pdui(
             column: args.column_nnz_cutoff,
         })?;
         all_rows.extend(data.row_names()?);
-        info!("PDUI: created {}", &out.target_path);
+        info!("PDUI: created {}", out.target_path);
         drop(data);
         out_files.push(out);
     }

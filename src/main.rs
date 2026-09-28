@@ -13,6 +13,7 @@ mod pipeline;
 mod qc;
 mod quant;
 mod read_depth;
+mod run_record;
 mod site_analysis;
 mod snp;
 
@@ -26,6 +27,7 @@ use m6a::run::*;
 use pipeline::args::*;
 use pipeline::run::*;
 use read_depth::run::*;
+use run_record::recorded;
 use site_analysis::metagene::*;
 use site_analysis::pileup::*;
 use site_analysis::scan_pwm::*;
@@ -443,16 +445,18 @@ fn main() -> anyhow::Result<()> {
     // process simply appeared to ignore you until you pressed it a second time.
     let _stop = legume_numeric::matrix::stop::stop_flag();
 
+    // Each producer leaves `{job}.run.json` in its output directory: the inputs
+    // it read, the files it wrote, and every effective option.
     match cli.commands {
-        Commands::DartSeq(ref args) => run_m6a(args)?,
-        Commands::Apa(mut args) => run_apa(&mut args)?,
-        Commands::AtoI(ref args) => run_atoi(args)?,
-        Commands::Count(ref args) => run_gene_count(args)?,
-        Commands::Depth(ref args) => run_read_depth(args)?,
+        Commands::DartSeq(ref args) => recorded(args.run_record(), || run_m6a(args))?,
+        Commands::Apa(mut args) => recorded(args.run_record(), || run_apa(&mut args))?,
+        Commands::AtoI(ref args) => recorded(args.run_record(), || run_atoi(args))?,
+        Commands::Count(ref args) => recorded(args.run_record(), || run_gene_count(args))?,
+        Commands::Depth(ref args) => recorded(args.run_record(), || run_read_depth(args))?,
         Commands::Pwm(ref args) => run_scan_pwm(args)?,
         Commands::Pileup(ref args) => run_pileup(args)?,
         Commands::Metagene(ref args) => run_metagene(args)?,
-        Commands::Snp(ref args) => run_snp(args)?,
+        Commands::Snp(ref args) => recorded(args.run_record(), || run_snp(args))?,
         Commands::Qc(ref args) => run_qc(args)?,
         Commands::QcReport(ref args) => run_qc_report(args)?,
         Commands::Docs(ref args) => run_docs(args)?,

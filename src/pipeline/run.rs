@@ -2,8 +2,8 @@ use super::args::*;
 use super::steps::*;
 use crate::common::*;
 use crate::quant::check_all_bam_indices;
+use crate::run_record::{recorded, RunRecord};
 
-use anyhow::Context;
 use log::info;
 use rayon::ThreadPoolBuilder;
 
@@ -38,6 +38,7 @@ pub fn run_pipeline(args: &PipelineArgs) -> anyhow::Result<()> {
         .num_threads(args.max_threads)
         .build_global()?;
     std::fs::create_dir_all(&*args.output)?;
+    let summary = step_record(args, "all");
 
     // Validate inputs
     check_all_bam_indices(&args.bam_files)?;
@@ -49,7 +50,7 @@ pub fn run_pipeline(args: &PipelineArgs) -> anyhow::Result<()> {
     // outputs stand alone; no later step consumes them as a mask.
     if !args.skip_snp {
         info!("Step 0/{}: SNP genotyping", n_steps);
-        match run_snp_step(args) {
+        match recorded(step_record(args, "snp"), || run_snp_step(args)) {
             Ok(()) => info!("SNP complete"),
             Err(e) => log::warn!("SNP step failed: {}. Continuing.", e),
         }
@@ -60,7 +61,7 @@ pub fn run_pipeline(args: &PipelineArgs) -> anyhow::Result<()> {
     // Step 1: gene counting and cell calling
     let gene_count_qc = if !args.skip_count {
         info!("Step 1/{}: gene counting and cell calling", n_steps);
-        run_gene_counting_step(args)?
+        recorded(step_record(args, "count"), || run_gene_counting_step(args))?
     } else {
         info!("Step 1/{}: SKIPPED (--skip-count)", n_steps);
         None
@@ -74,7 +75,9 @@ pub fn run_pipeline(args: &PipelineArgs) -> anyhow::Result<()> {
     // it can also fail without costing anything that follows.
     if args.depth_resolution_kb.is_some() {
         info!("Step 2/{}: per-cell read depth", n_steps);
-        match run_read_depth_step(args, &gene_count_qc) {
+        match recorded(step_record(args, "depth"), || {
+            run_read_depth_step(args, &gene_count_qc)
+        }) {
             Ok(_) => info!("Read depth complete"),
             Err(e) => log::warn!("Read depth step failed: {}", e),
         }
@@ -83,7 +86,9 @@ pub fn run_pipeline(args: &PipelineArgs) -> anyhow::Result<()> {
     // Step 3: ATOI Detection
     if !args.skip_atoi {
         info!("Step 3/{}: ATOI detection", n_steps);
-        match run_atoi_step(args, &gene_count_qc) {
+        match recorded(step_record(args, "atoi"), || {
+            run_atoi_step(args, &gene_count_qc)
+        }) {
             Ok(n_sites) => info!("ATOI complete: {} putative sites", n_sites),
             Err(e) => log::warn!("ATOI step failed: {}. Continuing.", e),
         }
@@ -102,7 +107,9 @@ pub fn run_pipeline(args: &PipelineArgs) -> anyhow::Result<()> {
         );
     } else {
         info!("Step 4/{}: m6A detection", n_steps);
-        match run_dart_step(args, &gene_count_qc) {
+        match recorded(step_record(args, "dartseq"), || {
+            run_dart_step(args, &gene_count_qc)
+        }) {
             Ok(_) => info!("m6A complete"),
             Err(e) => log::warn!("m6A step failed: {}", e),
         }
@@ -112,7 +119,9 @@ pub fn run_pipeline(args: &PipelineArgs) -> anyhow::Result<()> {
     // fast modalities (genes / depth / ATOI / m6A) that downstream work needs first.
     if !args.skip_apa {
         info!("Step 5/{}: APA analysis", n_steps);
-        match run_apa_step(args, &gene_count_qc) {
+        match recorded(step_record(args, "apa"), || {
+            run_apa_step(args, &gene_count_qc)
+        }) {
             Ok(_) => info!("APA complete"),
             Err(e) => log::warn!("APA step failed: {}", e),
         }
@@ -120,38 +129,60 @@ pub fn run_pipeline(args: &PipelineArgs) -> anyhow::Result<()> {
         info!("Step 5/{}: SKIPPED (--skip-apa)", n_steps);
     }
 
-    write_pipeline_summary(args)?;
+    summary.finish(&Ok(()));
     info!("Pipeline complete! Results in: {}", args.output);
     Ok(())
 }
 
-/// Write `{output}/pipeline_summary.json`: the faba version, the exact command line, and the
-/// **effective** value of every pipeline option.
+/// A record for one step of the run, with the inputs that step reads, under
+/// the name the standalone subcommand writes, so a step's outputs can be
+/// traced to it. As `all`, the whole run: every input, written to
+/// `pipeline_summary.json`.
 ///
-/// "Effective" is the whole point, and it is why this serializes [`PipelineArgs`] itself
-/// rather than re-listing fields by hand. A run is defined as much by the defaults it did not
-/// override as by the flags it passed — and faba's options have changed between builds
-/// (`--cluster-resolution` defaulted to 0.5, then to 0, and is now gone entirely;
-/// `--n-bootstrap` existed and then did not). Recording only the command line would leave a
-/// rerun unable to tell whether an output was produced with grouping on or off, and
-/// `faba --version` cannot settle it either (the
-/// version has gone 0.10.3 → 0.13.0 → 0.11.0 → 0.12.0, non-monotonic). The previous summary
-/// recorded four input paths and no parameters at all, so it could not answer the question it
-/// existed to answer.
-///
-/// Serializing the struct also means a new option cannot be silently *omitted* here: it
-/// appears the moment it is added to `PipelineArgs`, with no second list to keep in sync.
-fn write_pipeline_summary(args: &PipelineArgs) -> anyhow::Result<()> {
-    let summary_path = format!("{}/pipeline_summary.json", args.output);
-    let summary = serde_json::json!({
-        "faba_version": env!("CARGO_PKG_VERSION"),
-        "command_line": std::env::args().collect::<Vec<_>>(),
-        "options": args,
-    });
-    std::fs::write(&summary_path, serde_json::to_string_pretty(&summary)?)
-        .with_context(|| format!("writing {summary_path}"))?;
-    info!("Wrote pipeline summary (version + argv + effective options) to {summary_path}");
-    Ok(())
+/// Every option is recorded, and it is [`PipelineArgs`] itself that is
+/// serialized rather than a hand-kept list: a run is defined as much by the
+/// defaults it did not override as by the flags it passed, and faba's options
+/// have changed between builds (`--cluster-resolution` defaulted to 0.5, then
+/// to 0, and is now gone; `--n-bootstrap` existed and then did not), with a
+/// version history that is not monotonic. A new option appears here the moment
+/// it is added to `PipelineArgs`, with no second list to keep in sync.
+fn step_record(args: &PipelineArgs, job: &str) -> RunRecord {
+    let record = RunRecord::start(job, &args.output).options(args);
+    let (gff, genome) = (Some(&*args.gff_file), Some(&*args.genome_file));
+    match job {
+        "all" => record
+            .file_name("pipeline_summary.json")
+            .inputs("bam", &args.bam_files)
+            .inputs("control_bam", &args.control_bam_files)
+            .input("gff", gff)
+            .input("genome", genome)
+            .input("known_snps", args.known_snps.as_deref()),
+        "dartseq" => {
+            let signal: Vec<&str> = args
+                .bam_files
+                .iter()
+                .filter(|b| !args.control_bam_files.contains(b))
+                .map(|b| &**b)
+                .collect();
+            record
+                .inputs("bam", &signal)
+                .inputs("control_bam", &args.control_bam_files)
+                .input("gff", gff)
+                .input("genome", genome)
+        }
+        _ => {
+            let record = record.inputs("bam", &all_quant_bam_files(args));
+            match job {
+                "snp" => record
+                    .input("genome", genome)
+                    .input("gff", gff)
+                    .input("known_snps", args.known_snps.as_deref()),
+                "atoi" => record.input("gff", gff).input("genome", genome),
+                "count" | "apa" => record.input("gff", gff),
+                _ => record,
+            }
+        }
+    }
 }
 
 #[cfg(test)]

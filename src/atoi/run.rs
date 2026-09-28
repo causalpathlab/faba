@@ -13,7 +13,7 @@ use genomic_data::gff::GeneType as GffGeneType;
 use genomic_data::gff::GffRecordMap;
 use rayon::ThreadPoolBuilder;
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, serde::Serialize)]
 pub struct AtoICountArgs {
     #[arg(
         value_delimiter = ',',
@@ -110,6 +110,7 @@ pub struct AtoICountArgs {
         default_value = "zarr",
         help = "Sparse matrix backend (zarr or hdf5)"
     )]
+    #[serde(serialize_with = "crate::run_record::ser_debug")]
     pub backend: SparseIoBackend,
 
     #[arg(
@@ -155,6 +156,7 @@ pub struct AtoICountArgs {
     pub exact_barcode_match: bool,
 
     #[arg(long, value_enum, help = "Gene type filter")]
+    #[serde(serialize_with = "crate::run_record::ser_debug")]
     gene_type: Option<GffGeneType>,
 
     #[arg(
@@ -291,6 +293,20 @@ pub struct AtoICountArgs {
         help = "Disable UMI deduplication"
     )]
     pub no_umi_dedup: bool,
+}
+
+impl AtoICountArgs {
+    /// A record of this run: its inputs and every option.
+    pub fn run_record(&self) -> crate::run_record::RunRecord {
+        crate::run_record::RunRecord::start("atoi", &self.output)
+            .inputs("bam", &self.bam_files)
+            .input("gff", Some(&self.gff_file))
+            .input("genome", Some(&self.genome_file))
+            .input("cell_membership", self.cell_membership_file.as_deref())
+            .input("valid_cells", self.valid_cells_file.as_deref())
+            .input("valid_genes", self.valid_genes_file.as_deref())
+            .options(self)
+    }
 }
 
 impl From<&AtoICountArgs> for ConversionParams {

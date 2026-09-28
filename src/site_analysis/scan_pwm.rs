@@ -37,7 +37,9 @@ pub struct ScanPwmArgs {
     #[arg(
         short = 'f',
         long = "genome",
-        help = "Reference genome FASTA (required for --source reference)"
+        help = "Reference genome FASTA for --source reference (default: the one recorded next to --sites)",
+        long_help = "Reference genome FASTA, read with --source reference.\n\
+                     Without it, the FASTA recorded in the `*.run.json` next to --sites is used."
     )]
     genome_file: Option<Box<str>>,
 
@@ -261,11 +263,20 @@ pub fn run_scan_pwm(args: &ScanPwmArgs) -> anyhow::Result<()> {
 
     let pwm = match args.source {
         PwmSource::Reference => {
-            let genome = args
-                .genome_file
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("--genome is required when --source reference"))?;
-            collect_from_reference(&sites, genome, args.window)?
+            let genome = crate::run_record::explicit_or_recorded(
+                args.genome_file.as_deref(),
+                &args.site_file,
+                "genome",
+                "genome",
+            )
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "--genome is required when --source reference: \
+                         no run record next to {} names a genome",
+                    args.site_file
+                )
+            })?;
+            collect_from_reference(&sites, &genome, args.window)?
         }
         PwmSource::Reads => {
             if args.bam_files.is_empty() {
