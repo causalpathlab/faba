@@ -597,16 +597,19 @@ fn allocate_bins(n: usize, m: &[i64; 3]) -> [usize; 3] {
 struct BinGrid([usize; 4]);
 
 impl BinGrid {
-    /// Placements per bin, one row per track.
-    fn tally<'a>(&self, assignments: impl Iterator<Item = &'a SiteAssignment>) -> [Vec<usize>; 4] {
+    /// Placements per bin, one row per track, each adding its weight.
+    fn tally<'a>(
+        &self,
+        weighted: impl Iterator<Item = (&'a SiteAssignment, usize)>,
+    ) -> [Vec<usize>; 4] {
         let mut counts: [Vec<usize>; 4] =
             std::array::from_fn(|region| vec![0usize; self.0[region]]);
-        for a in assignments {
+        for (a, w) in weighted {
             let track = &mut counts[a.region];
             let width = track.len();
             if width > 0 {
                 // `bin` already clamps to the track width.
-                track[a.bin(width)] += 1;
+                track[a.bin(width)] += w;
             }
         }
         counts
@@ -645,7 +648,7 @@ pub struct GeneFeatureHistogram {
 impl GeneFeatureHistogram {
     /// Tally every placement, once the grid has fixed the bin widths.
     fn accumulate(grid: &BinGrid, scale: ScaleFactors, assignments: &[SiteAssignment]) -> Self {
-        let counts = grid.tally(assignments.iter());
+        let counts = grid.tally(assignments.iter().map(|a| (a, 1)));
         GeneFeatureHistogram { counts, scale }
     }
 
@@ -1002,13 +1005,9 @@ pub struct MetaModels {
 }
 
 impl MetaModels {
-    pub fn load(gff_file: &str) -> anyhow::Result<Self> {
-        let models = Self::from_records(&read_gff_record_vec(gff_file)?);
-        anyhow::ensure!(
-            !models.models.is_empty(),
-            "no coding transcript could be built from {gff_file}"
-        );
-        Ok(models)
+    /// Whether no coding transcript could be built.
+    pub fn is_empty(&self) -> bool {
+        self.models.is_empty()
     }
 
     pub(crate) fn from_records(records: &[GffRecord]) -> Self {
@@ -1049,13 +1048,15 @@ impl MetaLayout {
         [self.grid.0[UTR5], self.grid.0[CDS], self.grid.0[UTR3]]
     }
 
-    /// Placements per bin, 5'UTR then CDS then 3'UTR, of the sites `keep`
-    /// admits (by index into the placed sites). A site on two isoforms counts
-    /// on each, as in `faba metagene`.
-    pub fn counts(&self, keep: impl Fn(usize) -> bool) -> Vec<usize> {
-        let [utr5, cds, utr3, _] = self
-            .grid
-            .tally(self.assignments.iter().filter(|a| keep(a.site as usize)));
+    /// Per bin, 5'UTR then CDS then 3'UTR, the sum of `weight` over the
+    /// placed sites (by index into them): 1 counts sites, 0 leaves one out. A
+    /// site on two isoforms counts on each, as in `faba metagene`.
+    pub fn counts(&self, weight: impl Fn(usize) -> usize) -> Vec<usize> {
+        let weighted = self
+            .assignments
+            .iter()
+            .map(|a| (a, weight(a.site as usize)));
+        let [utr5, cds, utr3, _] = self.grid.tally(weighted);
         [utr5, cds, utr3].concat()
     }
 }

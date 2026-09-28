@@ -42,9 +42,17 @@ pub fn load_gene_models_where(
     gtf: &str,
     keep: impl Fn(&str) -> bool,
 ) -> anyhow::Result<Vec<GeneModel>> {
-    let records = read_gene_and_exon_records(gtf)?;
-    let gene_map = build_gene_map(&records, Some(&FeatureType::Gene))?;
-    let exon_map = build_exon_intervals(&records);
+    gene_models_from_records(&read_gene_and_exon_records(gtf)?, keep)
+}
+
+/// Every gene model in `records` (at least their `gene` and `exon` lines)
+/// whose `{gene_id}_{symbol}` key passes `keep`.
+pub fn gene_models_from_records(
+    records: &[GffRecord],
+    keep: impl Fn(&str) -> bool,
+) -> anyhow::Result<Vec<GeneModel>> {
+    let gene_map = build_gene_map(records, Some(&FeatureType::Gene))?;
+    let exon_map = build_exon_intervals(records);
 
     let mut out = Vec::new();
     for entry in gene_map.iter() {

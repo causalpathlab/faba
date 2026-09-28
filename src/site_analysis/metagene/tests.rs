@@ -734,16 +734,19 @@ fn a_subset_is_counted_on_the_full_set_axis() {
     assert_eq!(layout.unassigned, 1);
     assert_eq!(layout.region_bins().iter().sum::<usize>(), 30);
 
-    let all = layout.counts(|_| true);
+    let all = layout.counts(|_| 1);
     assert_eq!(all.iter().sum::<usize>(), 4);
     // Keeping only the CDS sites leaves the axis as it was.
-    let cds_only = layout.counts(|i| i == 1 || i == 2);
+    let cds_only = layout.counts(|i| usize::from(i == 1 || i == 2));
     assert_eq!(cds_only.len(), all.len());
     assert_eq!(cds_only.iter().sum::<usize>(), 2);
     let [utr5, cds, _] = layout.region_bins();
     assert_eq!(cds_only[utr5..utr5 + cds].iter().sum::<usize>(), 2);
     assert!(cds_only.iter().zip(&all).all(|(k, a)| k <= a));
-    assert!(layout.counts(|_| false).iter().all(|&n| n == 0));
+    assert!(layout.counts(|_| 0).iter().all(|&n| n == 0));
+    // A weight sums: every site at 3 is three times the site count.
+    let tripled = layout.counts(|_| 3);
+    assert!(tripled.iter().zip(&all).all(|(t, a)| *t == 3 * a));
 }
 
 #[test]

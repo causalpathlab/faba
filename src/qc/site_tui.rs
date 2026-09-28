@@ -5,7 +5,7 @@
 //! modalities, as they are on the command line. Every count on screen comes
 //! from [`Criterion::fails`], the checks [`SiteFilterArgs::reason`] walks, so
 //! the view and the written fileset never disagree. The histogram draws the
-//! sites that pass every other threshold in front of all sites, so it shows
+//! sites that pass every other threshold over all sites, so it shows
 //! what the focused threshold decides among sites that would otherwise be
 //! kept.
 
@@ -17,6 +17,7 @@ use data_beans::interactive::ui::{
 use data_beans::qc::pct;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
@@ -26,11 +27,17 @@ use crate::figure::term::PlotImage;
 use crate::figure::{self, Anchor, Bars, Canvas, Controls, Key, INK, MUTED};
 
 use crate::site_analysis::metagene::{MetaLayout, MetaModels, REGION_NAMES};
+use crate::site_analysis::miami::genemodel::{gene_models_from_records, GeneModel};
 use arrow::record_batch::RecordBatch;
+use genomic_data::gff::read_gff_record_vec;
+use rustc_hash::FxHashSet;
 
 use super::args::SiteFilterArgs;
 use super::layout::{file_name, SITE_MODALITIES};
-use super::sites::{genomic_sites, Criterion, SiteTable};
+use super::sites::{genomic_sites, Criterion, GeneSites, SiteTable};
+
+/// Width of HistPlot's y gutter.
+const GUTTER: u16 = 6;
 
 /// Upper bound on histogram bins, whatever the scale and data.
 const MAX_BINS: i32 = 400;
@@ -174,6 +181,9 @@ struct SiteView<'a> {
     criteria: Vec<Criterion>,
     /// Per site, a [`Criterion::bit`] for every check it fails.
     fails: Vec<u8>,
+    /// Sites by gene, for the gene list; `None` for a table without the
+    /// columns.
+    genes: Option<GeneSites>,
 }
 
 impl<'a> SiteView<'a> {
@@ -187,6 +197,7 @@ impl<'a> SiteView<'a> {
             n_cells,
             criteria,
             fails: vec![0; table.len()],
+            genes: GeneSites::new(table).ok(),
         };
         for c in view.criteria.clone() {
             view.update(c, f);
@@ -223,9 +234,9 @@ struct Tally {
     /// Sites that fail each criterion, whatever the others say. By
     /// `c as usize`.
     fail: [usize; 8],
-    /// Sites that fail each criterion and no other: turning it off keeps
-    /// them. By `c as usize`.
-    only: [usize; 8],
+    /// Sites that fail the focused criterion and no other: the dropped part
+    /// of the histogram's front, and what turning it off would keep.
+    only: usize,
     /// Bin counts of the sites that pass every other criterion.
     subset: Vec<usize>,
 }
@@ -245,9 +256,7 @@ impl Tally {
                 t.genes += usize::from(!gene_seen[g]);
                 gene_seen[g] = true;
             } else {
-                if m.count_ones() == 1 {
-                    t.only[m.trailing_zeros() as usize] += 1;
-                }
+                t.only += usize::from(m == focus.bit());
                 for (b, n) in t.fail.iter_mut().enumerate() {
                     *n += usize::from(m >> b & 1 == 1);
                 }
@@ -399,62 +408,93 @@ fn meta_marks(regions: [usize; 3]) -> Vec<usize> {
     vec![regions[0], regions[0] + regions[1]]
 }
 
-/// A view's placed sites and its all-site profile, which no threshold moves.
-struct ViewMeta {
-    layout: MetaLayout,
-    all: Vec<usize>,
+/// What the gene and metagene bars add up: sites, or their converted reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Weight {
+    Sites,
+    Converted,
 }
 
-/// One per view, in view order; `None` where no site is on a coding
-/// transcript.
-type Layouts = Vec<Option<ViewMeta>>;
+impl Weight {
+    /// The y axis, as the titles name it.
+    fn unit(self) -> &'static str {
+        match self {
+            Weight::Sites => "sites",
+            Weight::Converted => "converted reads",
+        }
+    }
 
-/// The metagene panel's state.
+    fn other(self) -> Self {
+        match self {
+            Weight::Sites => Weight::Converted,
+            Weight::Converted => Weight::Sites,
+        }
+    }
+}
+
+/// What the annotation gives the picker: per view, in view order, the
+/// metagene layout (`None` where no site is on a coding transcript); and the
+/// gene models of the genes the tables name, by `{gene_id}_{symbol}`.
+struct Annotation {
+    views: Vec<Option<MetaLayout>>,
+    /// Why there is no metagene at all, when the annotation is to blame.
+    no_metagene: Option<String>,
+    models: FxHashMap<Box<str>, GeneModel>,
+}
+
+/// The annotation's state.
 enum Meta {
-    /// Nothing to draw; the reason, for the panel.
+    /// Nothing to draw; the reason, for the panels.
     Unavailable(String),
     /// The annotation being read and the sites placed, on a thread.
-    Pending(std::thread::JoinHandle<Result<Layouts, String>>),
-    Ready(Layouts),
+    Pending(std::thread::JoinHandle<Result<Annotation, String>>),
+    Ready(Annotation),
 }
 
 impl Meta {
-    /// Read `gff` and place every table's sites (`batches`, in view order),
-    /// on a thread.
-    fn start(gff: Option<&str>, batches: Vec<RecordBatch>) -> Self {
+    /// Read `gff` once, on a thread: place every table's sites (`batches`,
+    /// in view order) on the metagene, and keep the models of the genes in
+    /// `keys`.
+    fn start(gff: Option<&str>, batches: Vec<RecordBatch>, keys: FxHashSet<Box<str>>) -> Self {
         let Some(gff) = gff.map(str::to_string) else {
             return Meta::Unavailable(
                 "no annotation: pass --gff, or keep the run record next to the sites".into(),
             );
         };
         Meta::Pending(std::thread::spawn(move || {
-            let models = MetaModels::load(&gff).map_err(|e| format!("{gff}: {e:#}"))?;
-            batches
+            let fail = |e: anyhow::Error| format!("{gff}: {e:#}");
+            let records = read_gff_record_vec(&gff).map_err(fail)?;
+            let meta = MetaModels::from_records(&records);
+            let no_metagene = meta.is_empty().then(|| {
+                format!("{gff}: no coding transcript (exon and CDS lines) to build a metagene")
+            });
+            let views = batches
                 .iter()
                 .map(|b| {
                     let sites = genomic_sites(b).map_err(|e| format!("{e:#}"))?;
-                    Ok(models.layout(&sites, META_BINS))
+                    Ok(meta.layout(&sites, META_BINS))
                 })
-                .collect::<Result<Vec<_>, String>>()
-                .map(Meta::views)
+                .collect::<Result<Vec<_>, String>>()?;
+            let models = gene_models_from_records(&records, |k| keys.contains(k))
+                .map_err(fail)?
+                .into_iter()
+                .map(|m| (m.key.clone(), m))
+                .collect();
+            Ok(Annotation {
+                views,
+                no_metagene,
+                models,
+            })
         }))
     }
 
     #[cfg(test)]
-    fn ready(layouts: Vec<Option<MetaLayout>>) -> Self {
-        Meta::Ready(Meta::views(layouts))
-    }
-
-    fn views(layouts: Vec<Option<MetaLayout>>) -> Layouts {
-        layouts
-            .into_iter()
-            .map(|l| {
-                l.map(|layout| ViewMeta {
-                    all: layout.counts(|_| true),
-                    layout,
-                })
-            })
-            .collect()
+    fn ready(layouts: Vec<Option<MetaLayout>>, models: Vec<GeneModel>) -> Self {
+        Meta::Ready(Annotation {
+            views: layouts,
+            no_metagene: None,
+            models: models.into_iter().map(|m| (m.key.clone(), m)).collect(),
+        })
     }
 
     /// Take the thread's result if it has arrived; true when it just did.
@@ -465,15 +505,105 @@ impl Meta {
         if !handle.is_finished() {
             return false;
         }
-        let Meta::Pending(handle) = std::mem::replace(self, Meta::Ready(Vec::new())) else {
+        let Meta::Pending(handle) = std::mem::replace(self, Meta::Unavailable(String::new()))
+        else {
             unreachable!()
         };
         *self = match handle.join() {
-            Ok(Ok(layouts)) => Meta::Ready(layouts),
+            Ok(Ok(annotation)) => Meta::Ready(annotation),
             Ok(Err(e)) => Meta::Unavailable(e),
             Err(_) => Meta::Unavailable("reading the annotation panicked".into()),
         };
         true
+    }
+}
+
+/// A colour key: a block in each bar style, then what it stands for.
+fn key_line(items: &[(Style, String)]) -> Line<'static> {
+    let mut spans = Vec::new();
+    for (style, what) in items {
+        spans.push(Span::styled("█ ", *style));
+        spans.push(Span::styled(format!("{what}   "), DIM));
+    }
+    Line::from(spans)
+}
+
+/// The key of the gene and metagene plots, with the key that switches
+/// what they add up.
+fn kept_key(weight: Weight) -> Line<'static> {
+    let mut line = key_line(&[
+        (DIM, format!("all {}", weight.unit())),
+        (PLAIN, "kept".into()),
+    ]);
+    line.push_span(Span::styled(format!("c: {}", weight.other().unit()), DIM));
+    line
+}
+
+/// One gene's sites along its span, all and kept, with its exons.
+struct GeneProfile {
+    symbol: String,
+    chr: Option<String>,
+    lo: i64,
+    hi: i64,
+    forward: Option<bool>,
+    all: Vec<usize>,
+    kept: Vec<usize>,
+    /// What `all` and `kept` add up.
+    unit: &'static str,
+    /// Per bin, whether it overlaps an exon; `None` without a gene model.
+    exons: Option<Vec<bool>>,
+}
+
+impl GeneProfile {
+    /// Base pairs per bin.
+    fn bin_bp(&self) -> i64 {
+        ((self.hi - self.lo) as f64 / self.all.len().max(1) as f64).round() as i64
+    }
+
+    fn title(&self) -> String {
+        let strand = match self.forward {
+            Some(true) => " (+)",
+            Some(false) => " (-)",
+            None => "",
+        };
+        let chr = self
+            .chr
+            .as_deref()
+            .map_or(String::new(), |c| format!("{c}:"));
+        format!("{}  {chr}{}-{}{strand}", self.symbol, self.lo, self.hi)
+    }
+}
+
+/// A gene's profile in the box `(x, y, w, h)`: its sites as bars, all
+/// behind and kept in front, over its exons.
+fn draw_gene(canvas: &mut Canvas, p: &GeneProfile, (x, y, w, h): (f64, f64, f64, f64)) {
+    let all: Vec<f64> = p.all.iter().map(|&v| v as f64).collect();
+    let kept: Vec<f64> = p.kept.iter().map(|&v| v as f64).collect();
+    Bars {
+        values: &all,
+        front: Some(&kept),
+        accent: &|_| false,
+        y_scale: Scale::Linear,
+        y_max: None,
+        ticks: Vec::new(),
+        pointer: None,
+        marks: Vec::new(),
+        title: format!("{}: {} per {} bp", p.title(), p.unit, p.bin_bp()),
+        x_title: String::new(),
+        y_title: p.unit.into(),
+    }
+    .draw(canvas, x, y, w, h);
+    // The exon track in the space Bars keeps for x labels (52 left, 12
+    // right, 38 below), which a gene's bars leave empty.
+    let (px, pw) = (x + 52.0, w - 64.0);
+    let ty = y + h - 38.0 + 14.0;
+    canvas.line(px, ty, px + pw, ty, MUTED, 0.6);
+    if let Some(exons) = &p.exons {
+        let bw = pw / exons.len().max(1) as f64;
+        for (b, _) in exons.iter().enumerate().filter(|(_, &e)| e) {
+            let x0 = px + b as f64 * bw;
+            canvas.line(x0, ty, x0 + bw, ty, INK, 5.0);
+        }
     }
 }
 
@@ -489,16 +619,31 @@ enum Mode {
     Browse,
     /// Typing an exact raw threshold for the focused criterion.
     Edit(String),
+    /// Typing into the gene list's filter.
+    Find,
 }
 
 /// What the table's two counts mean, a line each for the screen and the
 /// figure.
 const LEGEND: [&str; 4] = [
-    "Counts are sites (not cells or genes).",
-    "this: sites that fail this threshold",
-    "only this: sites that fail this and no other;",
-    "  turning it off would keep them",
+    "filtered out: sites failing this threshold.",
+    "  A site failing several thresholds counts in",
+    "  each row, so the rows add up to more than the",
+    "  sites removed.",
 ];
+
+/// What the figure's bar colours mean; on screen each plot has its own key.
+const FIGURE_KEY: [&str; 3] = [
+    "Bars: light gray, all sites; dark gray, kept;",
+    "  orange, filtered out only by the focused",
+    "  threshold.",
+];
+
+/// The count column's header, a line each.
+const COUNT_HEADER: (&str, &str) = ("sites", "filtered out");
+
+/// Widths of the table's columns: marker and name, threshold, count.
+const TABLE_WIDTHS: [usize; 3] = [17, 10, 14];
 
 /// State of the picker, independent of the terminal so it can be tested.
 struct SitePicker<'a> {
@@ -518,9 +663,21 @@ struct SitePicker<'a> {
     controls: Controls,
     plot: PlotImage,
     meta: Meta,
-    /// The focused view's kept-site profile, refreshed with the tally.
+    /// What the gene and metagene bars add up.
+    weight: Weight,
+    /// The focused view's metagene over all sites, which no threshold moves.
+    meta_all: Vec<usize>,
+    /// The focused view's metagene over the kept sites, refreshed with the
+    /// tally.
     meta_kept: Vec<usize>,
     meta_plot: PlotImage,
+    /// Per view, its genes (dense ids) in list order: pinned first, then
+    /// by number of putative sites.
+    gene_order: Vec<Vec<u32>>,
+    /// The gene list's filter, matched against symbols.
+    gene_find: String,
+    /// Position of the selected gene in the filtered list.
+    gene_at: usize,
     decision: Option<Picked>,
 }
 
@@ -545,11 +702,230 @@ impl<'a> SitePicker<'a> {
             controls: Controls::new("qc_sites"),
             plot: PlotImage::default(),
             meta: Meta::Unavailable(String::new()),
+            weight: Weight::Sites,
+            meta_all: Vec::new(),
             meta_kept: Vec::new(),
             meta_plot: PlotImage::default(),
+            gene_order: Vec::new(),
+            gene_find: String::new(),
+            gene_at: 0,
             decision: None,
         }
         .with_meta(meta)
+        .pin_genes(&[])
+    }
+
+    /// List `pinned` (symbols or keys, case-insensitive) first, in the order
+    /// given, then every other gene by number of putative sites.
+    fn pin_genes(mut self, pinned: &[Box<str>]) -> Self {
+        let rank = |key: &str, symbol: &str| {
+            pinned
+                .iter()
+                .position(|p| p.eq_ignore_ascii_case(key) || p.eq_ignore_ascii_case(symbol))
+        };
+        self.gene_order = self
+            .views
+            .iter()
+            .map(|v| {
+                let Some(g) = &v.genes else {
+                    return Vec::new();
+                };
+                let mut order: Vec<u32> = (0..g.keys.len() as u32).collect();
+                order.sort_by_key(|&i| {
+                    let i = i as usize;
+                    let pin = rank(&g.keys[i], g.symbol(i)).unwrap_or(usize::MAX);
+                    (
+                        pin,
+                        std::cmp::Reverse(g.rows[i].len()),
+                        g.symbol(i).to_string(),
+                    )
+                });
+                order
+            })
+            .collect();
+        self
+    }
+
+    /// The focused view's genes that pass the filter, in list order.
+    fn gene_list(&self) -> Vec<u32> {
+        let Some(g) = &self.view().genes else {
+            return Vec::new();
+        };
+        let find = self.gene_find.to_lowercase();
+        self.gene_order[self.modality]
+            .iter()
+            .copied()
+            .filter(|&i| find.is_empty() || g.symbol(i as usize).to_lowercase().contains(&find))
+            .collect()
+    }
+
+    /// The selected gene's dense id.
+    fn gene(&self) -> Option<usize> {
+        self.gene_list().get(self.gene_at).map(|&g| g as usize)
+    }
+
+    fn step_gene(&mut self, delta: isize) {
+        let n = self.gene_list().len() as isize;
+        if n > 0 {
+            self.gene_at = (self.gene_at as isize + delta).clamp(0, n - 1) as usize;
+        }
+    }
+
+    /// Kept and all sites of gene `g` in the focused view.
+    fn gene_kept(&self, g: usize) -> (usize, usize) {
+        let Some(genes) = &self.view().genes else {
+            return (0, 0);
+        };
+        let rows = &genes.rows[g];
+        let fails = &self.view().fails;
+        let kept = rows.iter().filter(|&&i| fails[i as usize] == 0).count();
+        (kept, rows.len())
+    }
+
+    /// The selected gene's sites along its span in `n` bins: all, kept,
+    /// and which bins overlap an exon (`None` without a gene model).
+    fn gene_profile(&self, n: usize) -> Option<GeneProfile> {
+        let g = self.gene()?;
+        let genes = self.view().genes.as_ref()?;
+        let rows = &genes.rows[g];
+        let model = match &self.meta {
+            Meta::Ready(a) => a.models.get(&genes.keys[g]),
+            _ => None,
+        };
+        let pos = |i: &u32| genes.pos[*i as usize];
+        // The model's span, widened to every site: an annotation other than
+        // the one the sites were called on may not cover them all.
+        let (min, max) = (rows.iter().map(pos).min()?, rows.iter().map(pos).max()? + 1);
+        let (lo, hi) = model.map_or((min, max), |m| (m.lo.min(min), m.hi.max(max)));
+        let n = n.max(1);
+        let span = (hi - lo).max(1);
+        let bin = |p: i64| (((p - lo).clamp(0, span - 1) * n as i64) / span) as usize;
+        let (mut all, mut kept) = (vec![0usize; n], vec![0usize; n]);
+        let fails = &self.view().fails;
+        for i in rows {
+            let b = bin(pos(i));
+            let w = self.site_weight(*i as usize);
+            all[b] += w;
+            if fails[*i as usize] == 0 {
+                kept[b] += w;
+            }
+        }
+        let exons = model.map(|m| {
+            (0..n as i64)
+                .map(|b| {
+                    let (a, z) = (lo + b * span / n as i64, lo + (b + 1) * span / n as i64);
+                    m.exons.iter().any(|&(s, e)| s < z.max(a + 1) && e > a)
+                })
+                .collect()
+        });
+        Some(GeneProfile {
+            symbol: genes.symbol(g).to_string(),
+            chr: model.map(|m| m.chr.to_string()),
+            lo,
+            hi,
+            forward: model.map(|m| m.forward),
+            all,
+            kept,
+            unit: self.weight.unit(),
+            exons,
+        })
+    }
+
+    fn render_gene_list(&self, frame: &mut Frame, area: Rect) {
+        let block = panel(" genes: kept / all sites ".into(), false);
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        let Some(genes) = &self.view().genes else {
+            let why = "this site table has no gene column";
+            frame.render_widget(Paragraph::new(Span::styled(why, DIM)), inner);
+            return;
+        };
+        let list = self.gene_list();
+        let rows = inner.height.saturating_sub(1) as usize;
+        let first = self.gene_at.saturating_sub(rows.saturating_sub(1) / 2);
+        let first = first.min(list.len().saturating_sub(rows));
+        let width = inner.width as usize;
+        let mut lines: Vec<Line> = list
+            .iter()
+            .enumerate()
+            .skip(first)
+            .take(rows)
+            .map(|(j, &g)| {
+                let g = g as usize;
+                let (kept, all) = self.gene_kept(g);
+                let counts = format!("{kept} / {all}");
+                let name_w = width.saturating_sub(counts.len() + 3);
+                let selected = j == self.gene_at;
+                let style = if selected { HIGHLIGHT } else { PLAIN };
+                Line::from(vec![
+                    Span::styled(if selected { "▸ " } else { "  " }, HIGHLIGHT),
+                    Span::styled(format!("{:<name_w$.name_w$}", genes.symbol(g)), style),
+                    Span::styled(format!(" {counts}"), DIM),
+                ])
+            })
+            .collect();
+        if list.is_empty() {
+            lines.push(Line::from(Span::styled("  no gene matches", DIM)));
+        }
+        let find = match self.mode {
+            Mode::Find => format!("  / {}_", self.gene_find),
+            _ if !self.gene_find.is_empty() => format!("  / {}", self.gene_find),
+            _ => format!("  {} genes   [ ] move  / find", list.len()),
+        };
+        let [list_area, find_area] =
+            Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(inner);
+        frame.render_widget(Paragraph::new(lines), list_area);
+        frame.render_widget(Paragraph::new(Span::styled(find, DIM)), find_area);
+    }
+
+    fn render_gene(&self, frame: &mut Frame, area: Rect) {
+        let n = area.width.saturating_sub(2 + 6).max(10) as usize;
+        let profile = self.gene_profile(n);
+        let title = match &profile {
+            Some(p) => format!(" {} · y: {} per {} bp ", p.title(), p.unit, p.bin_bp()),
+            None => " gene ".into(),
+        };
+        let block = panel(title, true);
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        let Some(p) = profile else {
+            let why = "no gene selected";
+            frame.render_widget(Paragraph::new(Span::styled(why, DIM)), inner);
+            return;
+        };
+        let [plot, track, key] = Layout::vertical([
+            Constraint::Min(4),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .areas(inner);
+        frame.render_widget(Paragraph::new(kept_key(self.weight)), key);
+        HistPlot {
+            bins: Binning::with_width(Scale::Linear, 1.0),
+            kmin: 0,
+            counts: &p.all,
+            style: &|_| PLAIN,
+            subset: Some(&p.kept),
+            y_scale: Scale::Linear,
+            y_max: None,
+            pointer: None,
+            marks: Vec::new(),
+            x_label: Some(&|_| None),
+            tick_every: None,
+        }
+        .render(frame.buffer_mut(), plot);
+        let model = match &p.exons {
+            Some(exons) => exons
+                .iter()
+                .map(|&e| if e { "▬" } else { "─" })
+                .collect::<String>(),
+            None => "(no gene model)".into(),
+        };
+        let line = Line::from(vec![
+            Span::styled(format!("{:<6}", "exons"), DIM),
+            Span::styled(model, DIM),
+        ]);
+        frame.render_widget(Paragraph::new(line), track);
     }
 
     fn with_meta(mut self, meta: Meta) -> Self {
@@ -559,14 +935,33 @@ impl<'a> SitePicker<'a> {
 
     fn set_meta(&mut self, meta: Meta) {
         self.meta = meta;
-        self.update_meta();
+        self.refresh_meta();
     }
 
-    fn view_meta(&self) -> Option<&ViewMeta> {
-        let Meta::Ready(layouts) = &self.meta else {
+    fn view_meta(&self) -> Option<&MetaLayout> {
+        let Meta::Ready(a) = &self.meta else {
             return None;
         };
-        layouts.get(self.modality)?.as_ref()
+        a.views.get(self.modality)?.as_ref()
+    }
+
+    /// Site `i`'s bar weight in the focused view.
+    fn site_weight(&self, i: usize) -> usize {
+        match self.weight {
+            Weight::Sites => 1,
+            Weight::Converted => self.view().table.converted[i] as usize,
+        }
+    }
+
+    /// Recount the focused view's metagene over all sites, after the view,
+    /// the annotation or the weight changed; then the kept sites.
+    fn refresh_meta(&mut self) {
+        self.meta_all = self
+            .view_meta()
+            .map(|m| m.counts(|i| self.site_weight(i)))
+            .unwrap_or_default();
+        self.meta_plot.invalidate();
+        self.update_meta();
     }
 
     /// Recount the focused view's kept sites; redraw only if they changed.
@@ -574,7 +969,15 @@ impl<'a> SitePicker<'a> {
         let fails = &self.views[self.modality].fails;
         let kept = self
             .view_meta()
-            .map(|m| m.layout.counts(|i| fails[i] == 0))
+            .map(|m| {
+                m.counts(|i| {
+                    if fails[i] == 0 {
+                        self.site_weight(i)
+                    } else {
+                        0
+                    }
+                })
+            })
             .unwrap_or_default();
         if kept != self.meta_kept {
             self.meta_kept = kept;
@@ -582,15 +985,20 @@ impl<'a> SitePicker<'a> {
         }
     }
 
+    fn switch_weight(&mut self) {
+        self.weight = self.weight.other();
+        self.refresh_meta();
+    }
+
     /// The focused view's metagene under the current thresholds, `None`
     /// until the layouts arrive or when no site is on a coding transcript.
     fn meta_counts(&self) -> Option<MetaCounts<'_>> {
         let m = self.view_meta()?;
         Some(MetaCounts {
-            all: &m.all,
+            all: &self.meta_all,
             kept: &self.meta_kept,
-            regions: m.layout.region_bins(),
-            unassigned: m.layout.unassigned,
+            regions: m.region_bins(),
+            unassigned: m.unassigned,
         })
     }
 
@@ -599,7 +1007,10 @@ impl<'a> SitePicker<'a> {
         match &self.meta {
             Meta::Unavailable(why) => why.clone(),
             Meta::Pending(_) => "reading gene models ...".into(),
-            Meta::Ready(_) => "no site on a coding transcript".into(),
+            Meta::Ready(a) => a
+                .no_metagene
+                .clone()
+                .unwrap_or_else(|| "no site on a coding transcript".into()),
         }
     }
 
@@ -625,7 +1036,7 @@ impl<'a> SitePicker<'a> {
             marks: meta_marks(m.regions),
             title,
             x_title: "metagene position (MetaPlotR scale)".into(),
-            y_title: "sites".into(),
+            y_title: self.weight.unit().into(),
         }
         .draw(canvas, bbox.0, bbox.1, bbox.2, bbox.3);
     }
@@ -639,7 +1050,10 @@ impl<'a> SitePicker<'a> {
     /// The metagene panel, drawn as an image into `image` where the
     /// terminal shows images.
     fn draw_meta_panel(&self, frame: &mut Frame, area: Rect, image: &mut PlotImage) {
-        let block = panel(" metagene: all sites behind, kept in front ".into(), true);
+        let block = panel(
+            format!(" metagene · y: {} per bin ", self.weight.unit()),
+            true,
+        );
         let inner = block.inner(area);
         frame.render_widget(block, area);
         let Some(m) = self.meta_counts() else {
@@ -649,11 +1063,17 @@ impl<'a> SitePicker<'a> {
             );
             return;
         };
-        let [stats, plot] =
-            Layout::vertical([Constraint::Length(1), Constraint::Min(4)]).areas(inner);
+        let [stats, plot, key] = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Min(4),
+            Constraint::Length(1),
+        ])
+        .areas(inner);
+        frame.render_widget(Paragraph::new(kept_key(self.weight)), key);
         let region_sum = |c: &[usize], r: usize| {
             let start: usize = m.regions[..r].iter().sum();
-            c[start..start + m.regions[r]].iter().sum::<usize>()
+            c.get(start..start + m.regions[r])
+                .map_or(0, |bins| bins.iter().sum::<usize>())
         };
         let dim = |t: String| Span::styled(t, DIM);
         let mut line = vec![dim("kept / all  ".into())];
@@ -678,7 +1098,18 @@ impl<'a> SitePicker<'a> {
         if drawn {
             return;
         }
-        let ticks = meta_ticks(m.regions);
+        // Stretch the bins over the whole chart, one column each: HistPlot
+        // gives a bin a whole number of columns, which leaves the rest of a
+        // panel empty.
+        let n = m.all.len().max(1);
+        let cols = (plot.width.saturating_sub(GUTTER) as usize).max(n);
+        let bin_of = |x: usize| x * n / cols;
+        let stretch = |v: &[usize]| (0..cols).map(|x| v[bin_of(x)]).collect::<Vec<_>>();
+        let (all, kept) = (stretch(m.all), stretch(m.kept));
+        let ticks: Vec<(usize, String)> = meta_ticks(m.regions)
+            .into_iter()
+            .map(|(b, t)| ((2 * b + 1) * cols / (2 * n), t))
+            .collect();
         let label = |k: i32| {
             ticks
                 .iter()
@@ -688,9 +1119,9 @@ impl<'a> SitePicker<'a> {
         HistPlot {
             bins: Binning::with_width(Scale::Linear, 1.0),
             kmin: 0,
-            counts: m.all,
+            counts: &all,
             style: &|_| PLAIN,
-            subset: Some(m.kept),
+            subset: Some(&kept),
             y_scale: Scale::Linear,
             y_max: None,
             pointer: None,
@@ -784,6 +1215,8 @@ impl<'a> SitePicker<'a> {
         let c = self.criterion();
         let n = self.views.len() as isize;
         self.modality = (self.modality as isize + delta).rem_euclid(n) as usize;
+        self.gene_at = 0;
+        self.refresh_meta();
         self.focus = self
             .view()
             .criteria
@@ -810,15 +1243,22 @@ impl<'a> SitePicker<'a> {
 
     fn criteria_lines(&self) -> Vec<Line<'static>> {
         let dim = |t: String| Span::styled(t, DIM);
+        let [name_w, value_w, count_w] = TABLE_WIDTHS;
+        let header = |first: &str, second: &str, count: &str| {
+            Line::from(dim(format!(
+                "{first:<name_w$}{second:>value_w$} │{count:>w$}",
+                w = count_w - 1
+            )))
+        };
+        let rule = format!(
+            "{}┼{}",
+            "─".repeat(name_w + value_w + 1),
+            "─".repeat(count_w)
+        );
         let mut lines = vec![
-            Line::from(dim(format!(
-                "  {:<15}{:>11}{:>21}",
-                "", "", "sites that fail"
-            ))),
-            Line::from(dim(format!(
-                "  {:<15}{:>11}{:>10}{:>11}",
-                "", "threshold", "this", "only this"
-            ))),
+            header("", "", COUNT_HEADER.0),
+            header("  threshold", "value", COUNT_HEADER.1),
+            Line::from(dim(rule)),
         ];
         for (j, &c) in self.view().criteria.iter().enumerate() {
             let focused = j == self.focus;
@@ -829,12 +1269,15 @@ impl<'a> SitePicker<'a> {
             lines.push(Line::from(vec![
                 Span::styled(if focused { "▸ " } else { "  " }, HIGHLIGHT),
                 Span::styled(
-                    format!("{:<15}", c.label()),
+                    format!("{:<w$}", c.label(), w = name_w - 2),
                     if focused { HIGHLIGHT } else { PLAIN },
                 ),
-                Span::styled(format!("{value:>11}"), value_style),
-                Span::styled(format!("{:>10}", self.tally.fail[c as usize]), ACCENTED),
-                Span::styled(format!("{:>11}", self.tally.only[c as usize]), PLAIN),
+                Span::styled(format!("{value:>value_w$}"), value_style),
+                dim(" │".into()),
+                Span::styled(
+                    format!("{:>w$}", self.tally.fail[c as usize], w = count_w - 1),
+                    ACCENTED,
+                ),
             ]));
         }
         let n = self.view().table.len();
@@ -861,7 +1304,10 @@ impl<'a> SitePicker<'a> {
         let view = self.view();
         let n = view.table.len();
         let meta = self.meta_counts();
-        let height = if meta.is_some() { 560.0 } else { 340.0 };
+        let gene = self.gene_profile(80);
+        let height = 340.0
+            + if gene.is_some() { 220.0 } else { 0.0 }
+            + if meta.is_some() { 220.0 } else { 0.0 };
         let mut canvas = Canvas::new(720.0, height);
         canvas.bold(16.0, 22.0, &self.title, 12.0, Anchor::Start, INK);
         canvas.text(
@@ -882,46 +1328,48 @@ impl<'a> SitePicker<'a> {
         );
 
         let (x0, mut y) = (16.0, 60.0);
-        let cols = [x0 + 150.0, x0 + 210.0, x0 + 280.0];
-        let over_counts = (cols[1] + cols[2]) / 2.0 - 12.0;
-        canvas.text(
-            over_counts,
-            y,
-            "sites that fail",
-            8.0,
-            Anchor::Middle,
-            MUTED,
-        );
-        for (&x, header) in cols.iter().zip(["threshold", "this", "only this"]) {
-            canvas.text(x, y + 10.0, header, 8.0, Anchor::End, MUTED);
-        }
-        y += 10.0;
+        // Right edges of the value and count columns, and the rule between.
+        let cols = [x0 + 150.0, x0 + 230.0];
+        let sep = cols[0] + 8.0;
+        canvas.text(x0, y + 10.0, "threshold", 8.0, Anchor::Start, MUTED);
+        canvas.text(cols[0], y + 10.0, "value", 8.0, Anchor::End, MUTED);
+        canvas.text(cols[1], y, COUNT_HEADER.0, 8.0, Anchor::End, MUTED);
+        canvas.text(cols[1], y + 10.0, COUNT_HEADER.1, 8.0, Anchor::End, MUTED);
+        let top = y - 9.0;
+        y += 15.0;
+        canvas.line(x0, y, cols[1] + 4.0, y, MUTED, 0.6);
+        let rows_end = y + 16.0 * view.criteria.len() as f64 + 5.0;
+        canvas.line(sep, top, sep, rows_end, MUTED, 0.6);
+        y -= 5.0;
         for &k in &view.criteria {
             y += 16.0;
             let value = k.shown(&self.filter).unwrap_or_else(|| "off".into());
             let colour = if k == c { figure::ACCENT } else { INK };
             canvas.text(x0, y, k.label(), 9.0, Anchor::Start, colour);
             canvas.text(cols[0], y, &value, 9.0, Anchor::End, colour);
-            let i = k as usize;
-            let counts = [self.tally.fail[i], self.tally.only[i]];
-            for (&x, n) in cols[1..].iter().zip(counts) {
-                canvas.text(x, y, &n.to_string(), 9.0, Anchor::End, INK);
-            }
+            let n = self.tally.fail[k as usize].to_string();
+            canvas.text(cols[1], y, &n, 9.0, Anchor::End, INK);
         }
         y += 8.0;
-        for line in LEGEND {
+        for line in LEGEND.iter().chain(&FIGURE_KEY) {
             y += 10.0;
             canvas.text(x0, y, line, 7.5, Anchor::Start, MUTED);
         }
 
-        let title = format!(
-            "{}: sites passing every other threshold in front",
-            c.label()
-        );
+        let title = format!("{}: sites per bin", c.label());
         self.draw_hist(&mut canvas, (320.0, 50.0, 390.0, 280.0), title);
+        let mut below = 340.0;
+        if let Some(p) = &gene {
+            draw_gene(&mut canvas, p, (320.0, below, 390.0, 210.0));
+            below += 220.0;
+        }
         if let Some(m) = &meta {
-            let title = format!("{}: metagene, kept sites in front", view.table.modality);
-            self.draw_meta(&mut canvas, m, (320.0, 340.0, 390.0, 210.0), title);
+            let title = format!(
+                "{} metagene: {} per bin",
+                view.table.modality,
+                self.weight.unit()
+            );
+            self.draw_meta(&mut canvas, m, (320.0, below, 390.0, 210.0), title);
         }
         canvas.finish()
     }
@@ -968,11 +1416,30 @@ impl<'a> SitePicker<'a> {
 
     fn render_hist(&mut self, frame: &mut Frame, area: Rect) {
         let c = self.criterion();
-        let block = panel(format!(" {} ", c.axis()), true);
+        let block = panel(format!(" {} · y: sites per bin ", c.axis()), true);
         let inner = block.inner(area);
         frame.render_widget(block, area);
-        let [stats, plot] =
-            Layout::vertical([Constraint::Length(2), Constraint::Min(5)]).areas(inner);
+        let front: usize = self.tally.subset.iter().sum();
+        let n = self.view().table.len();
+        let key_text = key_line(&[
+            (DIM, format!("all sites {n}")),
+            (PLAIN, format!("pass the other thresholds {front}")),
+            (
+                ACCENTED,
+                format!("filtered out only by this {}", self.tally.only),
+            ),
+        ]);
+        let key_rows = if key_text.width() > inner.width as usize {
+            2
+        } else {
+            1
+        };
+        let [stats, plot, key] = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Min(5),
+            Constraint::Length(key_rows),
+        ])
+        .areas(inner);
 
         let col = &self.column;
         let dim = |t: String| Span::styled(t, DIM);
@@ -988,17 +1455,10 @@ impl<'a> SitePicker<'a> {
                 col.n_inf
             )));
         }
-        let front: usize = self.tally.subset.iter().sum();
-        let second = vec![
-            dim("front: ".into()),
-            Span::raw(front.to_string()),
-            dim(" sites passing every other threshold   ".into()),
-            Span::styled("accent", ACCENTED),
-            dim(" = dropped".into()),
-        ];
+        frame.render_widget(Paragraph::new(Line::from(first)), stats);
         frame.render_widget(
-            Paragraph::new(vec![Line::from(first), Line::from(second)]),
-            stats,
+            Paragraph::new(key_text).wrap(ratatui::widgets::Wrap { trim: true }),
+            key,
         );
 
         let mut image = std::mem::take(&mut self.plot);
@@ -1043,8 +1503,7 @@ impl Screen for SitePicker<'_> {
     fn tick(&mut self) -> bool {
         let arrived = self.meta.poll();
         if arrived {
-            self.meta_plot.invalidate();
-            self.update_meta();
+            self.refresh_meta();
         }
         arrived
     }
@@ -1078,7 +1537,28 @@ impl Screen for SitePicker<'_> {
                 KeyCode::Esc => self.mode = Mode::Browse,
                 _ => {}
             },
+            Mode::Find => match key.code {
+                KeyCode::Char(ch) if self.gene_find.len() < 32 => {
+                    self.gene_find.push(ch);
+                    self.gene_at = 0;
+                }
+                KeyCode::Backspace => {
+                    self.gene_find.pop();
+                    self.gene_at = 0;
+                }
+                KeyCode::Enter => self.mode = Mode::Browse,
+                KeyCode::Esc => {
+                    self.gene_find.clear();
+                    self.gene_at = 0;
+                    self.mode = Mode::Browse;
+                }
+                _ => {}
+            },
             Mode::Browse => match key.code {
+                KeyCode::Char('[') => self.step_gene(-1),
+                KeyCode::Char(']') => self.step_gene(1),
+                KeyCode::Char('/') => self.mode = Mode::Find,
+                KeyCode::Char('c') => self.switch_weight(),
                 KeyCode::Up | KeyCode::Char('k') => self.move_focus(-1),
                 KeyCode::Down | KeyCode::Char('j') => self.move_focus(1),
                 KeyCode::Tab => self.switch_modality(1),
@@ -1127,13 +1607,25 @@ impl Screen for SitePicker<'_> {
 
         let [left, right] =
             Layout::horizontal([Constraint::Length(56), Constraint::Fill(1)]).areas(body);
+        let table = self.criteria_lines();
+        let [table_area, genes] = Layout::vertical([
+            Constraint::Length(table.len() as u16 + 2),
+            Constraint::Fill(1),
+        ])
+        .areas(left);
         let block = panel(" site thresholds ".into(), false);
-        let inner = block.inner(left);
-        frame.render_widget(block, left);
-        frame.render_widget(Paragraph::new(self.criteria_lines()), inner);
-        let [hist, meta] =
-            Layout::vertical([Constraint::Fill(3), Constraint::Fill(2)]).areas(right);
+        let inner = block.inner(table_area);
+        frame.render_widget(block, table_area);
+        frame.render_widget(Paragraph::new(table), inner);
+        self.render_gene_list(frame, genes);
+        let [hist, gene, meta] = Layout::vertical([
+            Constraint::Fill(3),
+            Constraint::Fill(2),
+            Constraint::Fill(2),
+        ])
+        .areas(right);
         self.render_hist(frame, hist);
+        self.render_gene(frame, gene);
         self.render_meta(frame, meta);
 
         let help = match (&self.mode, self.controls.footer()) {
@@ -1142,6 +1634,11 @@ impl Screen for SitePicker<'_> {
                 &format!("{} {}: ", self.criterion().label(), self.criterion().flag()),
                 buf,
                 &[("Enter", "set"), ("Esc", "back")],
+            ),
+            (Mode::Find, None) => input_line(
+                "gene: ",
+                &self.gene_find,
+                &[("Enter", "keep"), ("Esc", "clear")],
             ),
             (Mode::Browse, None) => {
                 let mut keys = vec![
@@ -1184,6 +1681,7 @@ pub fn run_site_picker(
     site_cells: &FxHashMap<Box<str>, FxHashMap<Box<str>, usize>>,
     filter: &SiteFilterArgs,
     gff: Option<&str>,
+    pinned: &[Box<str>],
 ) -> anyhow::Result<Picked> {
     if !tui_available() {
         log::warn!("--interactive needs stdin and stdout on a terminal; skipping the view");
@@ -1203,8 +1701,14 @@ pub fn run_site_picker(
         return Ok(Picked::Skipped);
     }
     let batches = views.iter().map(|v| v.table.batch.clone()).collect();
-    let meta = Meta::start(gff, batches);
-    let mut picker = SitePicker::new(&file_name(input_dir), views, filter.clone(), meta);
+    let keys = views
+        .iter()
+        .filter_map(|v| v.genes.as_ref())
+        .flat_map(|g| g.keys.iter().cloned())
+        .collect();
+    let meta = Meta::start(gff, batches, keys);
+    let mut picker =
+        SitePicker::new(&file_name(input_dir), views, filter.clone(), meta).pin_genes(pinned);
     picker.controls = Controls::new("qc_sites").detect();
     data_beans::interactive::ui::run_screen(&mut picker)?;
     Ok(picker.decision.unwrap_or(Picked::Cancelled))

@@ -684,10 +684,25 @@ any other column should be calibrated is left to the user, with the table as the
 same panels are drawn to `{prefix}.qc_report.pdf` and `.png`.
 
 **`qc -I/--interactive`.** Opens a full-screen view of the site thresholds *combined*, where the
-`qc-report` sweep moves them one at a time. Each knob is a row with its threshold and two site
-counts: the sites that fail it (`this`), and the sites that fail it and no other knob (`only this`),
-which turning it off would keep. Beside the table is a histogram of the column it cuts; the sites that pass every other knob are drawn in front, and the bars the
-threshold drops are drawn in the accent colour. Every count is decided by the same rule `qc`
+`qc-report` sweep moves them one at a time. Each knob is a row with its threshold and the number of
+sites it filters out; a site failing several knobs counts in each row, so the rows add up to more
+than the sites removed. On the right, stacked, are three plots of the same sites, all drawn behind
+and the ones kept in front:
+
+- a histogram of the column the focused knob cuts, over the sites that pass every other knob, with
+  the bars it drops in the accent colour and their count, the sites filtered out only by this knob;
+- the selected gene's sites along its span, over its exons;
+- a metagene of every site (§7), with region widths fixed from all putative sites so the axis does
+  not move with the thresholds.
+
+The histogram counts sites. The gene and metagene bars count sites too, or with `c` the sites'
+converted reads, which shows where the signal is rather than where the calls are.
+
+A gene list at the bottom left shows each gene's kept and putative sites. Genes named by
+`--genes` come first, then the rest by number of putative sites; `[` and `]` move through it and
+`/` filters it by symbol. The gene models and the metagene come from the annotation, read on a
+thread once (`--gff`, or the one in the input directory's run record); without one, the gene plot
+spans the gene's own sites and the metagene is left out. Every count is decided by the same rule `qc`
 applies, so the view cannot disagree with the written fileset. Enter applies the thresholds on
 screen; `p` prints the matching `faba qc` flags and writes nothing; `s` saves the view as a PDF
 and PNG under a name it asks for. Nothing is written until the thresholds are applied. Without a

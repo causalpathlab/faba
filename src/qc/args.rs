@@ -193,6 +193,16 @@ pub struct QcArgs {
     )]
     pub gff: Option<Box<str>>,
 
+    #[arg(
+        long = "genes",
+        value_delimiter = ',',
+        help = "Genes to list first in the --interactive gene list (symbols or gene keys)",
+        long_help = "Genes to list first in the --interactive gene list, in the order given:\n\
+                     comma-separated symbols or `{gene_id}_{symbol}` keys, case-insensitive.\n\
+                     The other genes follow, most putative sites first."
+    )]
+    pub genes: Vec<Box<str>>,
+
     #[command(flatten)]
     pub site: SiteFilterArgs,
 }
