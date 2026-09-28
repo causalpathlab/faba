@@ -506,7 +506,7 @@ fn the_metagene_panel_says_why_it_is_empty_and_draws_when_ready() {
     assert!(text.contains("kept / all"));
     assert!(text.contains("CDS"));
     // The export carries the metagene too.
-    assert!(p.figure().contains("m6a metagene: sites per bin"));
+    assert!(p.figure().contains("m6a metagene · y: sites per bin"));
     assert!(text.contains("metagene · y: sites per bin"));
 }
 
@@ -580,7 +580,7 @@ fn the_gene_profile_follows_the_thresholds() {
     assert_eq!(before.all.iter().sum::<usize>(), all);
     assert_eq!(before.kept.iter().sum::<usize>(), kept);
     // No gene model yet: the span is the sites' own, and no exon track.
-    assert!(before.exons.is_none());
+    assert!(before.model.is_none() && before.exonic(0).is_none());
 
     focus_on(&mut p, Criterion::MinCoverage);
     for _ in 0..5 {
@@ -609,8 +609,8 @@ fn the_gene_panel_draws_its_model_once_the_annotation_arrives() {
     };
     p.set_meta(Meta::ready(vec![None], vec![model]));
     let profile = p.gene_profile(44).unwrap();
-    let exons = profile.exons.as_ref().unwrap();
-    assert!(exons[0] && exons[43] && !exons[22]);
+    let exonic = |b| profile.exonic(b).unwrap();
+    assert!(exonic(0) && exonic(43) && !exonic(22));
 
     let mut term = Terminal::new(TestBackend::new(150, 44)).unwrap();
     term.draw(|f| p.render(f)).unwrap();
@@ -724,7 +724,7 @@ fn sites_outside_the_gene_model_widen_its_span() {
     let genes = p.view().genes.as_ref().unwrap();
     let pos: Vec<i64> = genes.rows[g]
         .iter()
-        .map(|&i| genes.pos[i as usize])
+        .map(|&i| genes.pos.value(i as usize))
         .collect();
     let (min, max) = (*pos.iter().min().unwrap(), *pos.iter().max().unwrap());
     assert!(
@@ -732,9 +732,9 @@ fn sites_outside_the_gene_model_widen_its_span() {
         "the fixture's sites overhang the model"
     );
     let profile = p.gene_profile(40).unwrap();
-    assert_eq!((profile.lo, profile.hi), (min, max + 1));
-    let exons = profile.exons.unwrap();
-    assert!(!exons[0] && !exons[39]);
+    let edges = &profile.edges;
+    assert_eq!((edges.min_pos, edges.max_pos), (min, max + 1));
+    assert!(profile.exonic(0) == Some(false) && profile.exonic(39) == Some(false));
 }
 
 #[test]

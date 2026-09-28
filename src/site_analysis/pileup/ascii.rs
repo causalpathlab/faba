@@ -60,7 +60,7 @@ pub(super) fn pos_to_col(pos: i64, min_pos: i64, max_pos: i64, num_bins: usize) 
 /// Right-side legend listing each site location top-to-bottom (genomic
 /// order, mirroring the `+` marks left-to-right). First line is a title;
 /// the list is capped to the rows available, with an overflow note.
-pub(super) fn build_site_legend(pileup: &BinnedPileup, height: usize) -> Vec<String> {
+fn build_site_legend(pileup: &BinnedPileup, height: usize) -> Vec<String> {
     if pileup.sites.is_empty() {
         return Vec::new();
     }

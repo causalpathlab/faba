@@ -22,8 +22,7 @@ mod track;
 
 pub use track::*;
 
-/// Width of HistPlot's y gutter.
-const GUTTER: u16 = 6;
+use crate::figure::GUTTER;
 
 /// The footer while the gene models load.
 const LOADING: &str = "gene models are loading";

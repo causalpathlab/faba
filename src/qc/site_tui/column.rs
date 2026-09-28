@@ -177,7 +177,7 @@ impl Column {
 
 /// A column binned: the histogram, each site's slot, the stops, and each
 /// bin's smallest value.
-pub(super) type ColumnBins = (Binned, Vec<u16>, Vec<(i32, f64)>, Vec<f64>);
+type ColumnBins = (Binned, Vec<u16>, Vec<(i32, f64)>, Vec<f64>);
 
 /// Bin `display` on `scale`: the histogram, each site's slot, and the stops.
 pub(super) fn bin(

@@ -42,8 +42,7 @@ fn base_style(b: usize) -> Style {
         .add_modifier(Modifier::BOLD)
 }
 
-/// Width of the y-axis gutter.
-const GUTTER: u16 = 6;
+use crate::figure::GUTTER;
 
 /// Widest column a position gets.
 const MAX_COL: u16 = 5;

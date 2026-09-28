@@ -5,6 +5,9 @@
 use std::fmt::Write as _;
 use std::sync::{Arc, OnceLock};
 
+/// Width of `HistPlot`'s y-axis gutter, in terminal columns.
+pub const GUTTER: u16 = 6;
+
 pub mod term;
 
 use data_beans::interactive::ui::{compact, input_line, Scale, DIM, HIGHLIGHT};

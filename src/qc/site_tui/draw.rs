@@ -1,10 +1,11 @@
 //! Drawing: the threshold table, the three plots, and the saved figure.
 
 use super::*;
+use crate::site_analysis::miami::genemodel::draw_gene_model;
 
 /// Each coding region's name at its middle bin, where a short UTR's label
 /// does not run into the next one.
-pub(super) fn meta_ticks(regions: [usize; 3]) -> Vec<(usize, String)> {
+fn meta_ticks(regions: [usize; 3]) -> Vec<(usize, String)> {
     let mut at = 0;
     let mut out = Vec::new();
     for (r, &n) in regions.iter().enumerate() {
@@ -17,12 +18,12 @@ pub(super) fn meta_ticks(regions: [usize; 3]) -> Vec<(usize, String)> {
 }
 
 /// The first bin of the CDS and of the 3'UTR: the region boundaries.
-pub(super) fn meta_marks(regions: [usize; 3]) -> Vec<usize> {
+fn meta_marks(regions: [usize; 3]) -> Vec<usize> {
     vec![regions[0], regions[0] + regions[1]]
 }
 
 /// A colour key: a block in each bar style, then what it stands for.
-pub(super) fn key_line(items: &[(Style, String)]) -> Line<'static> {
+fn key_line(items: &[(Style, String)]) -> Line<'static> {
     let mut spans = Vec::new();
     for (style, what) in items {
         spans.push(Span::styled("█ ", *style));
@@ -33,7 +34,7 @@ pub(super) fn key_line(items: &[(Style, String)]) -> Line<'static> {
 
 /// The key of the gene and metagene plots, with the key that switches
 /// what they add up.
-pub(super) fn kept_key(weight: Weight) -> Line<'static> {
+fn kept_key(weight: Weight) -> Line<'static> {
     let mut line = key_line(&[
         (DIM, format!("all {}", weight.unit())),
         (PLAIN, "kept".into()),
@@ -42,42 +43,58 @@ pub(super) fn kept_key(weight: Weight) -> Line<'static> {
     line
 }
 
-/// A gene's profile in the box `(x, y, w, h)`: its sites as bars, all
-/// behind and kept in front, over its exons.
-pub(super) fn draw_gene(canvas: &mut Canvas, p: &GeneProfile, (x, y, w, h): (f64, f64, f64, f64)) {
-    let all: Vec<f64> = p.all.iter().map(|&v| v as f64).collect();
-    let kept: Vec<f64> = p.kept.iter().map(|&v| v as f64).collect();
+/// Bars of `all` sites behind the `kept` ones, in the box `(x, y, w, h)`.
+#[allow(clippy::too_many_arguments)]
+fn kept_bars(
+    canvas: &mut Canvas,
+    (all, kept): (&[usize], &[usize]),
+    (x, y, w, h): (f64, f64, f64, f64),
+    ticks: Vec<(usize, String)>,
+    marks: Vec<usize>,
+    title: String,
+    x_title: &str,
+    y_title: &str,
+) {
+    let f = |v: &[usize]| v.iter().map(|&n| n as f64).collect::<Vec<_>>();
+    let (all, kept) = (f(all), f(kept));
     Bars {
         values: &all,
         front: Some(&kept),
         accent: &|_| false,
         y_scale: Scale::Linear,
         y_max: None,
-        ticks: Vec::new(),
+        ticks,
         pointer: None,
-        marks: Vec::new(),
-        title: format!("{}: {} per {} bp", p.title(), p.unit, p.bin_bp()),
-        x_title: String::new(),
-        y_title: p.unit.into(),
+        marks,
+        title,
+        x_title: x_title.into(),
+        y_title: y_title.into(),
     }
     .draw(canvas, x, y, w, h);
-    // The exon track in the space Bars keeps for x labels (52 left, 12
-    // right, 38 below), which a gene's bars leave empty.
-    let (px, pw) = (x + 52.0, w - 64.0);
-    let ty = y + h - 38.0 + 14.0;
-    canvas.line(px, ty, px + pw, ty, MUTED, 0.6);
-    if let Some(exons) = &p.exons {
-        let bw = pw / exons.len().max(1) as f64;
-        for (b, _) in exons.iter().enumerate().filter(|(_, &e)| e) {
-            let x0 = px + b as f64 * bw;
-            canvas.line(x0, ty, x0 + bw, ty, INK, 5.0);
-        }
+}
+
+/// A gene's profile in the box `(x, y, w, h)`, with its gene model in the
+/// space Bars keeps for x labels (52 left, 12 right, 38 below).
+fn draw_gene(canvas: &mut Canvas, p: &GeneProfile, (x, y, w, h): (f64, f64, f64, f64)) {
+    let bars = (&p.all[..], &p.kept[..]);
+    kept_bars(
+        canvas,
+        bars,
+        (x, y, w, h),
+        Vec::new(),
+        Vec::new(),
+        p.title(),
+        "",
+        p.unit,
+    );
+    if let Some(m) = &p.model {
+        draw_gene_model(canvas, m, &p.edges, x + 52.0, w - 64.0, y + h - 24.0, 8.0);
     }
 }
 
 /// What the table's two counts mean, a line each for the screen and the
 /// figure.
-pub(super) const LEGEND: [&str; 4] = [
+const LEGEND: [&str; 4] = [
     "filtered out: sites failing this threshold.",
     "  A site failing several thresholds counts in",
     "  each row, so the rows add up to more than the",
@@ -85,17 +102,17 @@ pub(super) const LEGEND: [&str; 4] = [
 ];
 
 /// What the figure's bar colours mean; on screen each plot has its own key.
-pub(super) const FIGURE_KEY: [&str; 3] = [
+const FIGURE_KEY: [&str; 3] = [
     "Bars: light gray, all sites; dark gray, kept;",
     "  orange, filtered out only by the focused",
     "  threshold.",
 ];
 
 /// The count column's header, a line each.
-pub(super) const COUNT_HEADER: (&str, &str) = ("sites", "filtered out");
+const COUNT_HEADER: (&str, &str) = ("sites", "filtered out");
 
 /// Widths of the table's columns: marker and name, threshold, count.
-pub(super) const TABLE_WIDTHS: [usize; 3] = [17, 10, 14];
+const TABLE_WIDTHS: [usize; 3] = [17, 10, 14];
 
 impl<'a> SitePicker<'a> {
     pub(super) fn render_gene_list(&self, frame: &mut Frame, area: Rect) {
@@ -108,8 +125,9 @@ impl<'a> SitePicker<'a> {
             return;
         };
         let list = self.gene_list();
+        let at = self.list.at;
         let rows = inner.height.saturating_sub(1) as usize;
-        let first = self.gene_at.saturating_sub(rows.saturating_sub(1) / 2);
+        let first = at.saturating_sub(rows.saturating_sub(1) / 2);
         let first = first.min(list.len().saturating_sub(rows));
         let width = inner.width as usize;
         let mut lines: Vec<Line> = list
@@ -122,7 +140,7 @@ impl<'a> SitePicker<'a> {
                 let (kept, all) = self.gene_kept(g);
                 let counts = format!("{kept} / {all}");
                 let name_w = width.saturating_sub(counts.len() + 3);
-                let selected = j == self.gene_at;
+                let selected = j == at;
                 let style = if selected { HIGHLIGHT } else { PLAIN };
                 Line::from(vec![
                     Span::styled(if selected { "▸ " } else { "  " }, HIGHLIGHT),
@@ -135,21 +153,27 @@ impl<'a> SitePicker<'a> {
             lines.push(Line::from(Span::styled("  no gene matches", DIM)));
         }
         let find = match self.mode {
-            Mode::Find => format!("  / {}_", self.gene_find),
-            _ if !self.gene_find.is_empty() => format!("  / {}", self.gene_find),
-            _ => format!("  {} genes   [ ] move  / find", list.len()),
+            Mode::Find => input_line("gene: ", &self.list.find, &[]),
+            _ if !self.list.find.is_empty() => {
+                input_line("gene: ", &self.list.find, &[("[ ]", "move"), ("/", "find")])
+            }
+            _ => {
+                let mut hint = help_line(&[("[ ]", "move"), ("/", "find")]);
+                hint.push_span(Span::styled(format!("  {} genes", list.len()), DIM));
+                hint
+            }
         };
         let [list_area, find_area] =
             Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(inner);
         frame.render_widget(Paragraph::new(lines), list_area);
-        frame.render_widget(Paragraph::new(Span::styled(find, DIM)), find_area);
+        frame.render_widget(find, find_area);
     }
 
     pub(super) fn render_gene(&self, frame: &mut Frame, area: Rect) {
-        let n = area.width.saturating_sub(2 + 6).max(10) as usize;
+        let n = area.width.saturating_sub(2 + GUTTER).max(10) as usize;
         let profile = self.gene_profile(n);
         let title = match &profile {
-            Some(p) => format!(" {} · y: {} per {} bp ", p.title(), p.unit, p.bin_bp()),
+            Some(p) => format!(" {} ", p.title()),
             None => " gene ".into(),
         };
         let block = panel(title, true);
@@ -181,10 +205,15 @@ impl<'a> SitePicker<'a> {
             tick_every: None,
         }
         .render(frame.buffer_mut(), plot);
-        let model = match &p.exons {
-            Some(exons) => exons
-                .iter()
-                .map(|&e| if e { "▬" } else { "─" })
+        let model = match p.model {
+            Some(_) => (0..p.edges.num_bins)
+                .map(|b| {
+                    if p.exonic(b) == Some(true) {
+                        "▬"
+                    } else {
+                        "─"
+                    }
+                })
                 .collect::<String>(),
             None => "(no gene model)".into(),
         };
@@ -195,31 +224,31 @@ impl<'a> SitePicker<'a> {
         frame.render_widget(Paragraph::new(line), track);
     }
 
-    /// The metagene in the box `(x, y, w, h)`: all sites behind, the kept
-    /// sites in front.
-    pub(super) fn draw_meta(
+    /// The metagene's title: what the bars add up.
+    fn meta_title(&self) -> String {
+        format!("metagene · y: {} per bin", self.weight.unit())
+    }
+
+    /// The metagene in the box `bbox`: all sites behind, the kept in front.
+    fn draw_meta(
         &self,
         canvas: &mut Canvas,
         m: &MetaCounts,
         bbox: (f64, f64, f64, f64),
         title: String,
     ) {
-        let all: Vec<f64> = m.all.iter().map(|&v| v as f64).collect();
-        let kept: Vec<f64> = m.kept.iter().map(|&v| v as f64).collect();
-        Bars {
-            values: &all,
-            front: Some(&kept),
-            accent: &|_| false,
-            y_scale: Scale::Linear,
-            y_max: None,
-            ticks: meta_ticks(m.regions),
-            pointer: None,
-            marks: meta_marks(m.regions),
+        let (ticks, marks) = (meta_ticks(m.regions), meta_marks(m.regions));
+        let x_title = "metagene position (MetaPlotR scale)";
+        kept_bars(
+            canvas,
+            (m.all, m.kept),
+            bbox,
+            ticks,
+            marks,
             title,
-            x_title: "metagene position (MetaPlotR scale)".into(),
-            y_title: self.weight.unit().into(),
-        }
-        .draw(canvas, bbox.0, bbox.1, bbox.2, bbox.3);
+            x_title,
+            self.weight.unit(),
+        );
     }
 
     pub(super) fn render_meta(&mut self, frame: &mut Frame, area: Rect) {
@@ -228,13 +257,10 @@ impl<'a> SitePicker<'a> {
         self.meta_plot = image;
     }
 
-    /// The metagene panel, drawn as an image into `image` where the
-    /// terminal shows images.
-    pub(super) fn draw_meta_panel(&self, frame: &mut Frame, area: Rect, image: &mut PlotImage) {
-        let block = panel(
-            format!(" metagene · y: {} per bin ", self.weight.unit()),
-            true,
-        );
+    /// The metagene panel; `image` is taken out of the picker because the
+    /// counts drawn into it borrow the picker.
+    fn draw_meta_panel(&self, frame: &mut Frame, area: Rect, image: &mut PlotImage) {
+        let block = panel(format!(" {} ", self.meta_title()), true);
         let inner = block.inner(area);
         frame.render_widget(block, area);
         let Some(m) = self.meta_counts() else {
@@ -428,7 +454,7 @@ impl<'a> SitePicker<'a> {
             canvas.text(x0, y, line, 7.5, Anchor::Start, MUTED);
         }
 
-        let title = format!("{}: sites per bin", c.label());
+        let title = format!("{} · y: sites per bin", c.label());
         self.draw_hist(&mut canvas, (320.0, 50.0, 390.0, 280.0), title);
         let mut below = 340.0;
         if let Some(p) = &gene {
@@ -436,11 +462,7 @@ impl<'a> SitePicker<'a> {
             below += 220.0;
         }
         if let Some(m) = &meta {
-            let title = format!(
-                "{} metagene: {} per bin",
-                view.table.modality,
-                self.weight.unit()
-            );
+            let title = format!("{} {}", view.table.modality, self.meta_title());
             self.draw_meta(&mut canvas, m, (320.0, below, 390.0, 210.0), title);
         }
         canvas.finish()

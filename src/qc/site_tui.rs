@@ -27,9 +27,10 @@ use crate::figure::term::PlotImage;
 use crate::figure::{self, Anchor, Bars, Canvas, Controls, Key, INK, MUTED};
 
 use crate::site_analysis::metagene::{MetaLayout, MetaModels, REGION_NAMES};
-use crate::site_analysis::miami::genemodel::{gene_models_from_records, GeneModel};
+use crate::site_analysis::miami::genemodel::{
+    gene_models_from_records, read_records_of, GeneModel,
+};
 use arrow::record_batch::RecordBatch;
-use genomic_data::gff::read_gff_record_vec;
 use rustc_hash::FxHashSet;
 
 use super::args::SiteFilterArgs;
@@ -46,7 +47,7 @@ use column::*;
 use genes::*;
 
 /// Width of HistPlot's y gutter.
-const GUTTER: u16 = 6;
+use crate::figure::GUTTER;
 
 /// Upper bound on histogram bins, whatever the scale and data.
 const MAX_BINS: i32 = 400;
@@ -198,19 +199,10 @@ struct SitePicker<'a> {
     meta: Meta,
     /// What the gene and metagene bars add up.
     weight: Weight,
-    /// The focused view's metagene over all sites, which no threshold moves.
-    meta_all: Vec<usize>,
-    /// The focused view's metagene over the kept sites, refreshed with the
-    /// tally.
-    meta_kept: Vec<usize>,
+    /// The focused view's metagene bars: all sites, then the kept ones.
+    meta_bars: (Vec<usize>, Vec<usize>),
     meta_plot: PlotImage,
-    /// Per view, its genes (dense ids) in list order: pinned first, then
-    /// by number of putative sites.
-    gene_order: Vec<Vec<u32>>,
-    /// The gene list's filter, matched against symbols.
-    gene_find: String,
-    /// Position of the selected gene in the filtered list.
-    gene_at: usize,
+    list: GeneList,
     decision: Option<Picked>,
 }
 
@@ -234,18 +226,15 @@ impl<'a> SitePicker<'a> {
             mode: Mode::Browse,
             controls: Controls::new("qc_sites"),
             plot: PlotImage::default(),
-            meta: Meta::Unavailable(String::new()),
+            meta,
             weight: Weight::Sites,
-            meta_all: Vec::new(),
-            meta_kept: Vec::new(),
+            meta_bars: Default::default(),
             meta_plot: PlotImage::default(),
-            gene_order: Vec::new(),
-            gene_find: String::new(),
-            gene_at: 0,
+            list: GeneList::default(),
             decision: None,
         }
-        .with_meta(meta)
         .pin_genes(&[])
+        .with_refreshed_meta()
     }
 
     fn view(&self) -> &SiteView<'a> {
@@ -263,7 +252,8 @@ impl<'a> SitePicker<'a> {
 
     fn retally(&mut self) {
         self.tally = Tally::new(self.view(), self.criterion(), &self.column);
-        self.update_meta();
+        self.refresh_meta();
+        self.refresh_genes(false);
     }
 
     /// Rebuild the focused column, after a modality or focus change.
@@ -331,8 +321,7 @@ impl<'a> SitePicker<'a> {
         let c = self.criterion();
         let n = self.views.len() as isize;
         self.modality = (self.modality as isize + delta).rem_euclid(n) as usize;
-        self.gene_at = 0;
-        self.refresh_meta();
+        self.refresh_genes(true);
         self.focus = self
             .view()
             .criteria
@@ -411,18 +400,13 @@ impl Screen for SitePicker<'_> {
                 _ => {}
             },
             Mode::Find => match key.code {
-                KeyCode::Char(ch) if self.gene_find.len() < 32 => {
-                    self.gene_find.push(ch);
-                    self.gene_at = 0;
-                }
-                KeyCode::Backspace => {
-                    self.gene_find.pop();
-                    self.gene_at = 0;
-                }
+                KeyCode::Char(ch) if self.list.find.len() < 32 => self.set_find(|f| f.push(ch)),
+                KeyCode::Backspace => self.set_find(|f| {
+                    f.pop();
+                }),
                 KeyCode::Enter => self.mode = Mode::Browse,
                 KeyCode::Esc => {
-                    self.gene_find.clear();
-                    self.gene_at = 0;
+                    self.set_find(String::clear);
                     self.mode = Mode::Browse;
                 }
                 _ => {}
@@ -510,7 +494,7 @@ impl Screen for SitePicker<'_> {
             ),
             (Mode::Find, None) => input_line(
                 "gene: ",
-                &self.gene_find,
+                &self.list.find,
                 &[("Enter", "keep"), ("Esc", "clear")],
             ),
             (Mode::Browse, None) => {

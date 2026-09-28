@@ -65,7 +65,10 @@ impl Meta {
         };
         Meta::Pending(std::thread::spawn(move || {
             let fail = |e: anyhow::Error| format!("{gff}: {e:#}");
-            let records = read_gff_record_vec(&gff).map_err(fail)?;
+            // Gene models use gene and exon lines; the metagene's transcripts
+            // exon, CDS and stop codon lines. Nothing else is parsed.
+            let features = ["gene", "Gene", "exon", "CDS", "cds", "stop_codon"];
+            let records = read_records_of(&gff, &features).map_err(fail)?;
             let meta = MetaModels::from_records(&records);
             let no_metagene = meta.is_empty().then(|| {
                 format!("{gff}: no coding transcript (exon and CDS lines) to build a metagene")
@@ -129,17 +132,18 @@ pub(super) struct MetaCounts<'m> {
 }
 
 impl<'a> SitePicker<'a> {
-    pub(super) fn with_meta(mut self, meta: Meta) -> Self {
-        self.set_meta(meta);
+    pub(super) fn with_refreshed_meta(mut self) -> Self {
+        self.refresh_meta();
         self
     }
 
+    #[cfg(test)]
     pub(super) fn set_meta(&mut self, meta: Meta) {
         self.meta = meta;
         self.refresh_meta();
     }
 
-    pub(super) fn view_meta(&self) -> Option<&MetaLayout> {
+    fn view_meta(&self) -> Option<&MetaLayout> {
         let Meta::Ready(a) = &self.meta else {
             return None;
         };
@@ -154,34 +158,25 @@ impl<'a> SitePicker<'a> {
         }
     }
 
-    /// Recount the focused view's metagene over all sites, after the view,
-    /// the annotation or the weight changed; then the kept sites.
+    /// Recount the focused view's metagene bars; redraw only if they changed.
     pub(super) fn refresh_meta(&mut self) {
-        self.meta_all = self
-            .view_meta()
-            .map(|m| m.counts(|i| self.site_weight(i)))
-            .unwrap_or_default();
-        self.meta_plot.invalidate();
-        self.update_meta();
-    }
-
-    /// Recount the focused view's kept sites; redraw only if they changed.
-    pub(super) fn update_meta(&mut self) {
         let fails = &self.views[self.modality].fails;
-        let kept = self
+        let bars = self
             .view_meta()
             .map(|m| {
-                m.counts(|i| {
+                let all = m.counts(|i| self.site_weight(i));
+                let kept = m.counts(|i| {
                     if fails[i] == 0 {
                         self.site_weight(i)
                     } else {
                         0
                     }
-                })
+                });
+                (all, kept)
             })
             .unwrap_or_default();
-        if kept != self.meta_kept {
-            self.meta_kept = kept;
+        if bars != self.meta_bars {
+            self.meta_bars = bars;
             self.meta_plot.invalidate();
         }
     }
@@ -196,8 +191,8 @@ impl<'a> SitePicker<'a> {
     pub(super) fn meta_counts(&self) -> Option<MetaCounts<'_>> {
         let m = self.view_meta()?;
         Some(MetaCounts {
-            all: &self.meta_all,
-            kept: &self.meta_kept,
+            all: &self.meta_bars.0,
+            kept: &self.meta_bars.1,
             regions: m.region_bins(),
             unassigned: m.unassigned,
         })

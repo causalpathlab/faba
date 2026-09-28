@@ -2,7 +2,7 @@
 
 use super::*;
 
-pub(super) struct PosAgg {
+struct PosAgg {
     pub(super) sum: f64,
     pub(super) nnz: usize,
 }

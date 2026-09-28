@@ -91,8 +91,8 @@ pub struct GeneSites {
     pub keys: Vec<Box<str>>,
     /// Row indices of each gene's sites, by dense gene id.
     pub rows: Vec<Vec<u32>>,
-    /// Each row's `primary_pos`.
-    pub pos: Vec<i64>,
+    /// Each row's `primary_pos` (the table's column, shared, not copied).
+    pub pos: Int64Array,
 }
 
 impl GeneSites {
@@ -111,7 +111,7 @@ impl GeneSites {
         Ok(Self {
             keys,
             rows,
-            pos: pos.values().to_vec(),
+            pos: pos.clone(),
         })
     }
 

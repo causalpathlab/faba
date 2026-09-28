@@ -57,7 +57,7 @@ pub(super) fn parse_row_channel(name: &str) -> Option<(&str, &str, &str, i64, Op
 /// stripped) — so both a symbol (`GENE1`) and an Ensembl ID
 /// (`ENSG00000000001`) query resolve the same row. Case-insensitive.
 /// `query_sym` is the pre-canonicalized query symbol.
-pub(super) fn gene_matches(query: &str, query_sym: &str, gene_part: &str) -> bool {
+pub(crate) fn gene_matches(query: &str, query_sym: &str, gene_part: &str) -> bool {
     // Allocation-free component check first — it directly covers symbol and
     // Ensembl-ID queries (and subsumes a full-composite match). Fall back to
     // the suffix-stripping canonicalizer only when the components miss.
@@ -68,7 +68,7 @@ pub(super) fn gene_matches(query: &str, query_sym: &str, gene_part: &str) -> boo
 }
 
 /// Canonical query symbol used by [`gene_matches`].
-pub(super) fn query_symbol(query: &str) -> Box<str> {
+pub(crate) fn query_symbol(query: &str) -> Box<str> {
     FeatureNameKind::Gene { delim: '_' }.canonicalize(query)
 }
 
@@ -193,7 +193,7 @@ impl Selector {
             .any(|(g, sym)| gene_matches(g, sym, gene_part))
     }
 
-    pub(super) fn matches_region(&self, chr: &str, pos: i64) -> bool {
+    fn matches_region(&self, chr: &str, pos: i64) -> bool {
         // Mixture rows carry no chromosome (empty `chr`); they can never sit
         // inside a region, so guard explicitly rather than relying on
         // `parse_region` having rejected empty region chromosomes.

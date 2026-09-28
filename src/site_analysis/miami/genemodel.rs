@@ -93,9 +93,14 @@ pub fn gene_models_from_records(
     Ok(out)
 }
 
-/// The `gene` and `exon` records of a GTF/GFF, read line by line: only
-/// those lines are split and kept, not the transcripts, CDS and UTRs.
+/// The `gene` and `exon` records of a GTF/GFF.
 fn read_gene_and_exon_records(gtf: &str) -> anyhow::Result<Vec<GffRecord>> {
+    read_records_of(gtf, &["gene", "Gene", "exon"])
+}
+
+/// The records of a GTF/GFF whose feature (column 3) is one of `features`,
+/// read line by line: only those lines are split and parsed.
+pub fn read_records_of(gtf: &str, features: &[&str]) -> anyhow::Result<Vec<GffRecord>> {
     use std::io::BufRead;
     let reader = legume_numeric::matrix::common_io::open_buf_reader(gtf)
         .map_err(|e| anyhow::anyhow!("opening {gtf}: {e}"))?;
@@ -105,7 +110,11 @@ fn read_gene_and_exon_records(gtf: &str) -> anyhow::Result<Vec<GffRecord>> {
         if line.starts_with('#') {
             continue;
         }
-        if !matches!(line.split('\t').nth(2), Some("gene" | "Gene" | "exon")) {
+        if !line
+            .split('\t')
+            .nth(2)
+            .is_some_and(|f| features.contains(&f))
+        {
             continue;
         }
         let words = line.split('\t').map(|w| Box::from(w.trim())).collect();
