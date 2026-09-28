@@ -1,16 +1,8 @@
 //! Metagene profiles over a simplified 5'UTR / CDS / 3'UTR transcript.
 //!
-//! This follows MetaPlotR, which is what the published m6A metagenes we compare
-//! against were made with, so that a difference between our profile and theirs
-//! is a difference in the DATA rather than in the procedure:
-//!
-//! Olarerin-George AO, Jaffrey SR. *MetaPlotR: a Perl/R pipeline for plotting
-//! metagenes of nucleotide modifications and other transcriptomic sites.*
-//! Bioinformatics 33, 1563–1564 (2017).
-//! <https://doi.org/10.1093/bioinformatics/btx002>
-//!
-//! Two places where we follow its stated procedure rather than its published
-//! code are called out on [`elect_longest_isoform`] and [`ScaleFactors`].
+//! Follows MetaPlotR, so a difference from a published profile is one of data,
+//! not procedure (Olarerin-George & Jaffrey, Bioinformatics 33:1563, 2017,
+//! <https://doi.org/10.1093/bioinformatics/btx002>).
 
 use super::site_io::*;
 use clap::{Args, ValueEnum};
@@ -132,16 +124,7 @@ pub struct MetageneArgs {
     max_width: u32,
 }
 
-/////////////////////
-// Feature labels  //
-/////////////////////
-
-/// The four feature classes, in report order, named ONCE.
-///
-/// These strings are an output contract: downstream scripts select rows by
-/// `#feature`. Spelled without apostrophes because that is what the established
-/// TSV has always emitted; a second speller once wrote `5'UTR`/`3'UTR` for the
-/// same logical row, and a script grepping `^5UTR` silently matched nothing.
+/// TSV feature labels in report order; an output contract (no apostrophes).
 const FEATURE_LABELS: [&str; 4] = ["5UTR", "CDS", "3UTR", "ncRNA"];
 
 /// On-screen region names (the TSV's `FEATURE_LABELS` avoid apostrophes).
@@ -154,35 +137,24 @@ const CDS: usize = 1;
 const UTR3: usize = 2;
 const NCRNA: usize = 3;
 
-////////////////////////////
-// Feature interval index  //
-////////////////////////////
-
-/// One interval of one region of one transcript, plus what it takes to place a
-/// genomic position along that region.
+/// One interval of one region of one transcript.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct IndexedInterval {
     start: i64,
     stop: i64,
     strand: Strand,
-    /// Spliced length of the same region lying genomically BEFORE this
-    /// interval — the offset that turns a genomic position into a spliced one.
+    /// Spliced length of the same region lying genomically before this interval.
     cum_before: i64,
     /// Spliced length of the region this interval belongs to.
     total_len: i64,
     /// Which of [`FEATURE_LABELS`] this interval is.
     region: usize,
-    /// Index into the model table, so an assignment can report its
-    /// transcript's three region sizes. `u32::MAX` for the ncRNA track, which
-    /// has no transcript.
+    /// Index into the model table; `u32::MAX` for the ncRNA track.
     model: u32,
 }
 
 impl IndexedInterval {
     /// 0-based offset of `pos` along the spliced region, read 5'->3'.
-    ///
-    /// A reverse-strand transcript reads 5'->3' as the genomic coordinate
-    /// DECREASES, so its offsets are mirrored about the region's length.
     fn relative_pos(&self, pos: i64) -> i64 {
         let rel_genomic = self.cum_before + (pos - self.start);
         let rel = match self.strand {
@@ -193,10 +165,6 @@ impl IndexedInterval {
     }
 
     /// This interval's placement of `pos`, ready to bin.
-    ///
-    /// Binning lives on [`SiteAssignment`] rather than here: the bin widths are
-    /// not known until every site has been placed, because MetaPlotR weights its
-    /// medians by the sites.
     fn place(&self, site: u32, pos: i64) -> SiteAssignment {
         SiteAssignment {
             site,
@@ -211,17 +179,11 @@ impl IndexedInterval {
 /// One chromosome's intervals, sorted by start.
 struct ChromIntervals {
     intervals: Vec<IndexedInterval>,
-    /// `max_stop[i]` = the largest `stop` among `intervals[..=i]`. Sorted-ness
-    /// bounds where an interval BEGINS, not how far it reaches, so this is the
-    /// only thing that licenses stopping a backward scan early.
+    /// Largest `stop` among `intervals[..=i]`; lets a backward scan stop early.
     max_stop: Vec<i64>,
 }
 
 /// Per-chromosome sorted interval index over every region of every transcript.
-///
-/// `IndexedInterval::model` indexes the SAME `models` slice this was built from;
-/// keeping a private copy of each transcript's region sizes here would be a
-/// second table that has to stay index-aligned with the first.
 struct RegionIndex {
     by_chr: FxHashMap<Box<str>, ChromIntervals>,
 }
@@ -253,7 +215,6 @@ impl RegionIndex {
             }
         }
 
-        // Same shape as the coding loop: one lookup and one clone per LOCUS.
         for body in non_coding.iter() {
             let chrom = by_chr.entry(body.seqname.clone()).or_default();
             let total_len: i64 = body.intervals.iter().map(|&(s, e)| e - s + 1).sum();
@@ -275,14 +236,7 @@ impl RegionIndex {
         let by_chr = by_chr
             .into_iter()
             .map(|(chr, mut intervals)| {
-                // A total order, not just by start: ties on every key place a
-                // site identically, so the run is reproducible whatever order
-                // the parser handed the records over in.
-                // A total order that does NOT include `model`: that index comes
-                // from iterating an FxHashMap filled in `par_bridge` order, so
-                // it varies between runs on identical input, and two isoforms
-                // sharing an exon are separated by nothing else — which made
-                // `--dist-measures` row order irreproducible.
+                // Total order, without run-dependent `model`, for reproducibility.
                 intervals.sort_by_key(|iv| {
                     (
                         iv.start,
@@ -314,30 +268,16 @@ impl RegionIndex {
         RegionIndex { by_chr }
     }
 
-    /// Every interval on `strand` containing `position` (1-based GFF coords).
-    ///
-    /// All of them, not the first: MetaPlotR emits one row per site and
-    /// transcript, so a site inside two overlapping transcripts is counted in
-    /// each. That is `intersectBed -wo`.
-    ///
-    /// SAME STRAND ONLY, which is the `-s` in that same `intersectBed` call.
-    /// Without it a site also lands on every antisense transcript overlapping
-    /// it — and `relative_pos` mirrors on the reverse strand, so the phantom
-    /// copy sits at `1 - p` instead of `p`. Measured on the shipped m6A calls
-    /// before this filter existed: 1,631 of 55,504 rows, 2.9%.
+    /// Every interval on `strand` containing `position` (1-based GFF coords),
+    /// as MetaPlotR's `intersectBed -wo -s`.
     fn find_all(&self, chr: &str, position: i64, strand: Strand, out: &mut Vec<IndexedInterval>) {
         out.clear();
         let Some(chrom) = self.by_chr.get(chr) else {
             return;
         };
-        // Rightmost interval with start <= position; everything left of it
-        // also starts at or before `position`, so only `stop` is still open.
+        // Every interval left of `idx` starts at or before `position`.
         let idx = chrom.intervals.partition_point(|iv| iv.start <= position);
         for i in (0..idx).rev() {
-            // An earlier-STARTING interval can still reach much further than
-            // its neighbours — a first CDS exon of a long gene outruns every
-            // short exon that starts after it. Only "nothing up to here
-            // reaches `position`" is a sound reason to stop looking.
             if chrom.max_stop[i] < position {
                 break;
             }
@@ -349,28 +289,14 @@ impl RegionIndex {
     }
 }
 
-///////////////////////
-// Site assignments  //
-///////////////////////
-
-/// One site placed on one transcript.
-///
-/// Placement only — nothing here depends on how many bins a track ends up with,
-/// which matters because the bin widths are not known until every site has been
-/// placed (they come from the site-weighted medians below).
+/// One site placed on one transcript, independent of the bin grid.
 struct SiteAssignment {
-    /// Index into the site list. The row owns no strings: with ~240k rows over
-    /// ~25 distinct chromosome names, a `Box<str>` per row is pure waste, and
-    /// only `--dist-measures` ever reads the name back.
+    /// Index into the site list.
     site: u32,
-    /// `None` on the ncRNA track, which has no transcript. An in-band sentinel
-    /// here would have to be remembered at every site that indexes the model
-    /// table; this makes the compiler ask.
+    /// `None` on the ncRNA track, which has no transcript.
     model: Option<u32>,
     region: usize,
-    /// 0-based offset along the spliced region, and that region's spliced
-    /// length. Kept as integers so [`SiteAssignment::bin`] is the same exact
-    /// arithmetic as [`IndexedInterval::bin`] rather than a float round-trip.
+    /// 0-based offset along the spliced region and its length (exact binning).
     rel: i64,
     total_len: i64,
 }
@@ -382,8 +308,7 @@ impl SiteAssignment {
         ((self.rel as usize) * nbins / total).min(nbins.saturating_sub(1))
     }
 
-    /// MetaPlotR's coordinate: 5'UTR in [0,1), CDS in [1,2), 3'UTR in [2,3).
-    /// The ncRNA track is on its own [0,1) axis.
+    /// MetaPlotR's coordinate: 5'UTR [0,1), CDS [1,2), 3'UTR [2,3); ncRNA [0,1).
     fn rel_location(&self) -> f64 {
         let base = if self.region == NCRNA {
             0.0
@@ -408,14 +333,7 @@ fn assign_sites(sites: &[GenomicSite], index: &RegionIndex) -> (Vec<SiteAssignme
             unassigned += 1;
             continue;
         }
-        // The ncRNA track is a fallback, not a parallel one. A site inside a
-        // coding transcript belongs to that transcript's region; letting it
-        // ALSO land on an overlapping non-coding gene body counts it twice and
-        // reprints the coding profile on a track that has no stop codon.
-        // Non-coding gene bodies span coding genes constantly — antisense
-        // lincRNAs, snoRNA/miRNA hosts — so this is the common case, not a
-        // corner. MetaPlotR has no ncRNA track at all, so nothing here is
-        // constrained by it.
+        // ncRNA is a fallback, never a second placement of a coding site.
         let on_coding = hits.iter().any(|iv| iv.region != NCRNA);
         for iv in hits.iter() {
             if on_coding && iv.region == NCRNA {
@@ -427,33 +345,17 @@ fn assign_sites(sites: &[GenomicSite], index: &RegionIndex) -> (Vec<SiteAssignme
     (out, unassigned)
 }
 
-//////////////////////
-// Scale factors    //
-//////////////////////
-
 /// MetaPlotR's display widths: each UTR's median size relative to the CDS's.
-///
-/// The medians are taken over the ASSIGNED SITES, not over the transcript set —
-/// `visualize_metagenes.R` computes them from `dist`, which holds one row per
-/// site, so a transcript carrying many sites weighs more than one carrying few.
-/// Measured on our own m6A calls the two differ by 59% in the 3'UTR
-/// (site-weighted 1.68 against transcript-weighted 1.06), which is enough to
-/// make a profile look comparable to a published one when it is not.
+/// Medians are site-weighted, as in `visualize_metagenes.R`.
 struct ScaleFactors {
-    /// Each region's median size, DOUBLED — which is what everything downstream
-    /// actually computes on, so it is what gets stored. Halving here to report
-    /// a "median" would throw away the exactness the doubling exists for, and
-    /// an even-n median is not an integer.
+    /// Each region's median size, doubled so an even-n median stays exact.
     twice_median: [i64; 3],
     utr5_sf: f64,
     utr3_sf: f64,
 }
 
 impl ScaleFactors {
-    /// Place a within-region fraction on MetaPlotR's rescaled axis, where the
-    /// CDS keeps width 1 and each UTR is scaled to its median size relative to
-    /// the CDS. Bin edges and per-site coordinates both go through here so the
-    /// two cannot describe different axes.
+    /// Place a within-region fraction on MetaPlotR's rescaled axis (CDS width 1).
     fn rescale(&self, region: usize, within: f64) -> f64 {
         match region {
             UTR5 => 1.0 - self.utr5_sf * (1.0 - within),
@@ -463,9 +365,7 @@ impl ScaleFactors {
         }
     }
 
-    /// Stand-in for a run with no coding assignment. The coding tracks are then
-    /// zero-wide so nothing reads these widths; it exists so the histogram and
-    /// the writers stay total instead of threading an `Option` everywhere.
+    /// Stand-in when no site is coding; the coding tracks are then zero-wide.
     fn none() -> Self {
         Self {
             twice_median: [0; 3],
@@ -484,11 +384,7 @@ impl ScaleFactors {
     }
 }
 
-/// Median of a slice, doubled, so an even-length median stays an integer.
-///
-/// Doubled because the bin allocation divides medians by their sum and must
-/// stay in integer arithmetic to be reproducible. Only the two middle order
-/// statistics are needed, so this selects rather than sorts.
+/// Median, doubled so it stays an integer for exact bin allocation.
 fn twice_median(values: &mut [i64]) -> i64 {
     if values.is_empty() {
         return 0;
@@ -522,10 +418,7 @@ fn scale_factors(
         m[r] = twice_median(&mut per_region[r]);
     }
     if m[CDS] == 0 {
-        // Every width MetaPlotR draws is relative to the median CDS, so with no
-        // coding assignment there is no coding axis. `None` rather than an
-        // error: the ncRNA track is on its own [0,1] axis and needs none of
-        // this, so a run whose sites are all non-coding still has an answer.
+        // No coding axis; not an error, as the ncRNA track needs none.
         return None;
     }
     Some(ScaleFactors {
@@ -535,25 +428,15 @@ fn scale_factors(
     })
 }
 
-/// Split `n` bins between the three regions in proportion to their medians.
-///
-/// Integer throughout, with the remainder going to the largest fractional
-/// parts, so the three always sum to `n` and the result does not depend on
-/// float rounding.
-/// A region with sites in it must never get zero bins: `accumulate` would drop
-/// every one of them, and because `to_tsv` takes its denominator from the
-/// BINNED counts they would leave the `frac`/`density` denominator too — the
-/// file would still integrate to 1 and give the reader no sign a whole track
-/// had gone. So each represented region is floored at one bin, taken from the
-/// widest.
+/// Split `n` bins between the three regions in proportion to their medians,
+/// by exact largest remainder. A region with sites keeps at least one bin,
+/// or its sites would silently vanish from the counts and the density.
 fn allocate_bins(n: usize, m: &[i64; 3]) -> [usize; 3] {
     let total: i64 = m.iter().sum();
     if total <= 0 || n == 0 {
         return [0, n, 0];
     }
-    // i128 so a large --bins cannot wrap: n is an unbounded usize and the
-    // medians are genomic lengths, so the product leaves i64 for absurd but
-    // reachable inputs.
+    // i128 so a large --bins times a genomic length cannot overflow.
     let total = total as i128;
     let mut out = [0usize; 3];
     let mut rem = [(0i128, 0usize); 3];
@@ -570,9 +453,7 @@ fn allocate_bins(n: usize, m: &[i64; 3]) -> [usize; 3] {
         out[r] += 1;
     }
 
-    // Floor every represented region at one bin, paying from the widest. Only
-    // reachable when `n` is small relative to the spread of the medians: at the
-    // measured [310, 2052, 3440], `--bins 10` gives the 5'UTR zero.
+    // Floor every represented region at one bin, paying from the widest.
     for r in 0..3 {
         if m[r] > 0 && out[r] == 0 {
             let donor = (0..3)
@@ -588,40 +469,33 @@ fn allocate_bins(n: usize, m: &[i64; 3]) -> [usize; 3] {
     out
 }
 
-/// The bin width of every track, decided in one place.
-///
-/// All four widths come out of one constructor on purpose. They were split once
-/// before — the ncRNA width sized by its own statement beside a `[usize; 3]` —
-/// and a track sized against a different grid than its neighbours is exactly
-/// the drift this type exists to prevent.
+/// The bin count of every track, decided in one constructor.
 struct BinGrid([usize; 4]);
 
 impl BinGrid {
-    /// Placements per bin, one row per track.
-    fn tally<'a>(&self, assignments: impl Iterator<Item = &'a SiteAssignment>) -> [Vec<usize>; 4] {
+    /// Placements per bin, one row per track, each adding its weight.
+    fn tally<'a>(
+        &self,
+        weighted: impl Iterator<Item = (&'a SiteAssignment, usize)>,
+    ) -> [Vec<usize>; 4] {
         let mut counts: [Vec<usize>; 4] =
             std::array::from_fn(|region| vec![0usize; self.0[region]]);
-        for a in assignments {
+        for (a, w) in weighted {
             let track = &mut counts[a.region];
             let width = track.len();
             if width > 0 {
-                // `bin` already clamps to the track width.
-                track[a.bin(width)] += 1;
+                track[a.bin(width)] += w;
             }
         }
         counts
     }
 
     fn new(n: usize, scale: Option<&ScaleFactors>, include_non_coding: bool) -> Self {
-        // No coding assignment means no coding axis, so those tracks get no
-        // bins rather than the whole budget.
         let coding = match scale {
             Some(s) => allocate_bins(n, &s.twice_median),
             None => [0usize; 3],
         };
-        // The ncRNA track is on its own axis, so it gets the whole budget —
-        // and `0` when it was not asked for, which is what makes `to_tsv` emit
-        // no rows for it rather than a run of zeros a reader must know to skip.
+        // ncRNA: whole budget on its own axis, or 0 (no TSV rows) if not asked.
         BinGrid([
             coding[UTR5],
             coding[CDS],
@@ -631,13 +505,8 @@ impl BinGrid {
     }
 }
 
-//////////////////
-// Histogram    //
-//////////////////
-
 pub struct GeneFeatureHistogram {
-    /// One row of bins per track. Each track's bin count is its own length —
-    /// carrying `nbins` beside this would be a second copy that could disagree.
+    /// One row of bins per track; each row's length is its bin count.
     counts: [Vec<usize>; 4],
     scale: ScaleFactors,
 }
@@ -645,7 +514,7 @@ pub struct GeneFeatureHistogram {
 impl GeneFeatureHistogram {
     /// Tally every placement, once the grid has fixed the bin widths.
     fn accumulate(grid: &BinGrid, scale: ScaleFactors, assignments: &[SiteAssignment]) -> Self {
-        let counts = grid.tally(assignments.iter());
+        let counts = grid.tally(assignments.iter().map(|a| (a, 1)));
         GeneFeatureHistogram { counts, scale }
     }
 
@@ -688,15 +557,13 @@ impl GeneFeatureHistogram {
 
     pub fn to_tsv(&self, file_path: &str) -> anyhow::Result<()> {
         let mut writer = legume_numeric::matrix::common_io::open_buf_writer(file_path)?;
-        // Line 1 is unchanged: downstream scripts read the first three columns
-        // positionally and select rows by `#feature`.
+        // Contract: scripts read the first three columns positionally.
         writeln!(
             writer,
             "#feature\tgenomic_bin\tcount\tbin_start\tbin_end\tfrac\tdensity"
         )?;
 
-        // Coding regions share one density; the ncRNA track is on a different
-        // axis and normalizes within itself, or `density` would mean two things.
+        // Coding regions share one density; ncRNA normalizes within itself.
         let coding_total: usize = self.counts[..3].iter().flat_map(|c| c.iter()).sum();
         let nc_total: usize = self.counts[NCRNA].iter().sum();
 
@@ -728,25 +595,14 @@ impl GeneFeatureHistogram {
 }
 
 /// MetaPlotR's `*.dist.measures.txt` schema, so its `visualize_metagenes.R`
-/// runs on this file with only its input path changed.
+/// runs on this file unmodified.
 ///
-/// The first fourteen columns and their order are `rel_and_abs_dist_calc.pl`'s,
-/// not ours; `strand` and `rescaled_location` are appended after them so a
-/// positional reader of theirs is unaffected.
-///
-/// The six `_st`/`_end` columns are that script's ABSOLUTE distances:
-/// `mrna_pos - endpoint`, in 1-based spliced coordinates running 5'->3'
-/// (`make_annot_bed.pl` numbers the first exonic base 1 on either strand).
-/// `utr3_st` is therefore the signed distance from the stop codon — negative
-/// inside the CDS, positive into the 3'UTR — which is the coordinate its
-/// feature-distance plot is drawn on, and the one a landmark-anchored profile
-/// needs. A region the transcript does not have prints `NA`, as theirs does.
-///
-/// `coord` is 1-BASED. MetaPlotR reads it off the `end` field of a 0-based BED
-/// (`chr1 566859 566860` yields 566860), whereas the site parquet stores the
-/// 0-based position — verified against hg38: at `primary_pos` chr1:169804275
-/// the reference base is G, and only at `primary_pos + 1` is it the A of the
-/// RAC, with the deaminated C following.
+/// The first fourteen columns are `rel_and_abs_dist_calc.pl`'s, in its order;
+/// `strand` and `rescaled_location` are appended. The six `_st`/`_end` columns
+/// are absolute distances `mrna_pos - endpoint` in 1-based spliced coordinates
+/// running 5'->3' (so `utr3_st` is the signed distance from the stop codon);
+/// a missing region prints `NA`. `coord` is 1-based, as MetaPlotR reads it
+/// from a BED `end`; the site parquet stores 0-based positions.
 const DIST_MEASURES_HEADER: &str = "chr\tcoord\tgene_name\trefseqID\trel_location\t\
      utr5_st\tutr5_end\tcds_st\tcds_end\tutr3_st\tutr3_end\t\
      utr5_size\tcds_size\tutr3_size\tstrand\trescaled_location";
@@ -816,30 +672,16 @@ fn write_dist_measures(
     Ok(())
 }
 
-/// One non-coding gene's merged EXONS, in the same shape the coding path uses:
-/// a locus with its intervals, so the index builder clones the sequence name
-/// once per gene rather than once per interval.
+/// One non-coding gene's merged exons.
 struct NonCodingBody {
     seqname: Box<str>,
     strand: Strand,
     intervals: Vec<(i64, i64)>,
 }
 
-/// Merged exons per non-coding gene — the mature transcript, not the locus.
-///
-/// Exons, not the `gene` row's `min..max` span: that span carries the introns,
-/// so an intronic site would be assigned to the ncRNA track and given a
-/// position, while the identical case inside a coding gene is correctly left
-/// unassigned. Introns consume no metagene coordinate, on either track.
-///
-/// Exons are pooled across the gene's isoforms, which is the gene-union model
-/// (§1.1) rather than the elected-transcript one the coding tracks use. A
-/// non-coding gene has no CDS to elect on, and this track is our own extension
-/// with no MetaPlotR counterpart, so there is nothing to be faithful to.
+/// Merged exons (not the gene span, so introns are excluded) per non-coding gene.
 fn non_coding_bodies(records: &[GffRecord]) -> Vec<NonCodingBody> {
-    // Keyed on gene AND sequence name: `parse_ensembl_id` drops the `_PAR_Y`
-    // suffix, so keying on the id alone would fuse the chrX and chrY copies of
-    // a pseudoautosomal gene into one cross-chromosome body.
+    // Keyed on sequence name too, so pseudoautosomal copies stay apart.
     let mut by_gene: FxHashMap<(GeneId, Box<str>), NonCodingBody> = FxHashMap::default();
     for rec in records.iter() {
         if rec.gene_type == GeneType::CodingGene
@@ -885,10 +727,7 @@ pub fn run_metagene(args: &MetageneArgs) -> anyhow::Result<()> {
 
     let models = build_transcript_models(&records);
     if models.is_empty() {
-        // The region split is derived from `exon` records minus the coding
-        // extent, so an annotation that carries CDS/UTR/codon lines but no
-        // `exon` lines yields nothing — and would otherwise die much later, in
-        // `scale_factors`, with a message about the SITES. Name the real cause.
+        // Models are built from `exon` records; name that cause if missing.
         let has_exon = records.iter().any(|r| r.feature_type == FeatureType::Exon);
         let has_cds = records.iter().any(|r| r.feature_type == FeatureType::CDS);
         if has_cds && !has_exon {
@@ -927,8 +766,7 @@ pub fn run_metagene(args: &MetageneArgs) -> anyhow::Result<()> {
 
     let index = RegionIndex::build(&models, &non_coding);
 
-    // Placement first, widths second: MetaPlotR's scale factors are weighted by
-    // the sites themselves, so no bin width is known until every site is placed.
+    // Placement first: bin widths depend on the site-weighted medians.
     let (assignments, unassigned) = assign_sites(&sites, &index);
     let scale = scale_factors(&assignments, &models);
     let grid = BinGrid::new(
@@ -990,25 +828,16 @@ pub fn run_metagene(args: &MetageneArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-////////////////////////////
-// Fixed layout for subsets //
-////////////////////////////
-
-/// Coding transcripts of an annotation, one per gene (the longest spliced,
-/// as `faba metagene` elects by default), indexed for placing sites.
+/// Longest coding transcript per gene, indexed for placing sites.
 pub struct MetaModels {
     models: Vec<TranscriptModel>,
     index: RegionIndex,
 }
 
 impl MetaModels {
-    pub fn load(gff_file: &str) -> anyhow::Result<Self> {
-        let models = Self::from_records(&read_gff_record_vec(gff_file)?);
-        anyhow::ensure!(
-            !models.models.is_empty(),
-            "no coding transcript could be built from {gff_file}"
-        );
-        Ok(models)
+    /// Whether no coding transcript could be built.
+    pub fn is_empty(&self) -> bool {
+        self.models.is_empty()
     }
 
     pub(crate) fn from_records(records: &[GffRecord]) -> Self {
@@ -1017,9 +846,8 @@ impl MetaModels {
         Self { models, index }
     }
 
-    /// Place `sites` on the coding track of a metagene whose region widths
-    /// are fixed by all of them, `n_bins` in total. `None` when no site lands
-    /// on a coding transcript.
+    /// Place `sites` on a coding metagene of `n_bins` whose widths all of them
+    /// fix. `None` when no site lands on a coding transcript.
     pub fn layout(&self, sites: &[GenomicSite], n_bins: usize) -> Option<MetaLayout> {
         let (assignments, unassigned) = assign_sites(sites, &self.index);
         let scale = scale_factors(&assignments, &self.models)?;
@@ -1032,10 +860,8 @@ impl MetaModels {
     }
 }
 
-/// Every site placed once, on an axis that does not move: [`Self::counts`]
-/// re-tallies any subset of the sites on it, so a subset's profile changes
-/// only because sites left it, never because the region widths were
-/// recomputed from what remains.
+/// Every site placed once on a fixed axis; [`Self::counts`] re-tallies any
+/// subset without recomputing region widths.
 pub struct MetaLayout {
     grid: BinGrid,
     assignments: Vec<SiteAssignment>,
@@ -1049,13 +875,14 @@ impl MetaLayout {
         [self.grid.0[UTR5], self.grid.0[CDS], self.grid.0[UTR3]]
     }
 
-    /// Placements per bin, 5'UTR then CDS then 3'UTR, of the sites `keep`
-    /// admits (by index into the placed sites). A site on two isoforms counts
-    /// on each, as in `faba metagene`.
-    pub fn counts(&self, keep: impl Fn(usize) -> bool) -> Vec<usize> {
-        let [utr5, cds, utr3, _] = self
-            .grid
-            .tally(self.assignments.iter().filter(|a| keep(a.site as usize)));
+    /// Per bin (5'UTR, CDS, 3'UTR), the sum of `weight(site index)` over
+    /// placements; a site on two isoforms counts on each.
+    pub fn counts(&self, weight: impl Fn(usize) -> usize) -> Vec<usize> {
+        let weighted = self
+            .assignments
+            .iter()
+            .map(|a| (a, weight(a.site as usize)));
+        let [utr5, cds, utr3, _] = self.grid.tally(weighted);
         [utr5, cds, utr3].concat()
     }
 }

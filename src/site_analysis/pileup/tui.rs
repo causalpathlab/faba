@@ -1,213 +1,34 @@
-//! Full-screen gene-body browser for `faba pileup --interactive`.
-//!
-//! The matrix track, and the site track when a site table was given, share
-//! one genomic axis. Every frame re-bins the raw positions of the visible
-//! window, one bar per terminal column, with the same rule as the printed
-//! pileup ([`BinEdges`]), so zooming in resolves single sites. The cursor is a
-//! genomic coordinate, so it stays put through zooms and resizes.
-
+//! Full-screen gene-body browser for `faba pileup --interactive`. Tracks share one axis,
+//! re-binned each frame (a bar per column, via [`BinEdges`]); the cursor is a genomic position.
+use super::{distinct_positions, fmt_thousands, BinEdges};
+use super::{genes_to_draw, SharedModels};
+use crate::figure::term::PlotImage;
+use crate::figure::{
+    self, status_line, Anchor, Bars, Canvas, Controls, Edit, Key, LineInput, INK, MUTED,
+};
+use crate::site_analysis::miami::genemodel::{draw_gene_model, GeneModel};
 use data_beans::interactive::ui::{
     compact, header, help_line, input_line, panel, Binning, HistPlot, MirrorPlot, MirrorSide,
     Scale, Screen, ACCENTED, DIM, HIGHLIGHT, PLAIN,
 };
+use genomic_data::coordinates::chr_eq;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
-use crate::figure::term::PlotImage;
-use crate::figure::{
-    self, status_line, Anchor, Bars, Canvas, Controls, Edit, Key, LineInput, INK, MUTED,
-};
+mod track;
 
-use genomic_data::coordinates::chr_eq;
+pub use track::*;
 
-use super::{distinct_positions, fmt_thousands, BinEdges};
-use super::{genes_to_draw, SharedModels};
-use crate::site_analysis::miami::genemodel::{draw_gene_model, GeneModel};
-
-/// Width of HistPlot's y gutter.
-const GUTTER: u16 = 6;
+use crate::figure::GUTTER;
 
 /// The footer while the gene models load.
 const LOADING: &str = "gene models are loading";
 
 /// Columns between labelled ticks, at least.
 const TICK_SPACING: usize = 14;
-
-/// What a track holds.
-pub enum Values<'a> {
-    /// Sorted `(position, value)` pairs, optionally drawn in front of a
-    /// total per position (converted reads over all reads).
-    Reads {
-        front: &'a [(i64, f64)],
-        behind: Option<&'a [(i64, f64)]>,
-    },
-    /// Genomic bins `(start, end, value)`: each column shows the bin
-    /// covering it (read depth).
-    Ranges(&'a [(i64, i64, f64)]),
-}
-
-/// One track of the browser.
-pub struct Track<'a> {
-    pub label: &'a str,
-    /// What the values are, for the panel title.
-    pub name: &'a str,
-    pub values: Values<'a>,
-    /// Bins become `log10(1 + sum)`, as the printed pileup does.
-    pub log: bool,
-}
-
-/// A track binned over the window: front, and the total when there is one.
-type Binned = (Vec<f64>, Option<Vec<f64>>);
-
-impl<'a> Track<'a> {
-    /// A read track with no total.
-    pub fn single(label: &'a str, name: &'a str, front: &'a [(i64, f64)], log: bool) -> Self {
-        Track {
-            label,
-            name,
-            values: Values::Reads {
-                front,
-                behind: None,
-            },
-            log,
-        }
-    }
-
-    /// This read track drawn in front of `total`.
-    pub fn with_total(mut self, total: &'a [(i64, f64)]) -> Self {
-        if let Values::Reads { behind, .. } = &mut self.values {
-            *behind = Some(total);
-        }
-        self
-    }
-
-    /// A read-depth track over genomic bins.
-    pub fn depth(label: &'a str, ranges: &'a [(i64, i64, f64)]) -> Self {
-        Track {
-            label,
-            name: "reads per depth bin",
-            values: Values::Ranges(ranges),
-            log: false,
-        }
-    }
-
-    /// The read positions; none for a depth track.
-    fn front(&self) -> &'a [(i64, f64)] {
-        match self.values {
-            Values::Reads { front, .. } => front,
-            Values::Ranges(_) => &[],
-        }
-    }
-
-    /// The total behind the reads, when there is one.
-    fn behind(&self) -> Option<&'a [(i64, f64)]> {
-        match self.values {
-            Values::Reads { behind, .. } => behind,
-            Values::Ranges(_) => None,
-        }
-    }
-
-    fn is_reads(&self) -> bool {
-        matches!(self.values, Values::Reads { .. })
-    }
-
-    /// Binned over `edges`.
-    fn bin(&self, edges: &BinEdges) -> Binned {
-        match self.values {
-            Values::Reads { front, behind } => (
-                edges.bin(front, self.log),
-                behind.map(|b| edges.bin(b, self.log)),
-            ),
-            Values::Ranges(ranges) => (ranges_per_column(ranges, edges), None),
-        }
-    }
-
-    /// Distinct positions inside `lo..=hi`.
-    fn sites_in(&self, lo: i64, hi: i64) -> Vec<i64> {
-        let front = self.front();
-        let a = front.partition_point(|p| p.0 < lo);
-        let b = front.partition_point(|p| p.0 <= hi);
-        distinct_positions(&front[a..b])
-    }
-}
-
-/// Every track binned over one window, once per frame.
-struct Bins {
-    edges: BinEdges,
-    tracks: Vec<Binned>,
-    /// One y-axis top for every read track (not depth), so they are drawn
-    /// on the same scale: the tallest bar, total included, over them.
-    shared: Option<f64>,
-}
-
-/// Per column, the value of the genomic bin covering the column's middle.
-fn ranges_per_column(ranges: &[(i64, i64, f64)], edges: &BinEdges) -> Vec<f64> {
-    (0..edges.num_bins)
-        .map(|k| {
-            let (start, stop) = edges.col_range(k);
-            let mid = (start + stop) / 2;
-            let i = ranges.partition_point(|r| r.1 <= mid);
-            ranges.get(i).filter(|r| r.0 <= mid).map_or(0.0, |r| r.2)
-        })
-        .collect()
-}
-
-/// How the contrast row compares two tracks' converted fractions per bar.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Measure {
-    /// Fraction A minus fraction B, in percentage points.
-    Difference,
-    /// log2 of fraction A over fraction B, half a read of pseudocount.
-    Log2Fold,
-}
-
-impl Measure {
-    fn name(self, on: &str) -> String {
-        match self {
-            Measure::Difference => format!("{on} fraction difference (pp)"),
-            Measure::Log2Fold => format!("log2 fold of {on} fraction"),
-        }
-    }
-
-    fn next(self) -> Self {
-        match self {
-            Measure::Difference => Measure::Log2Fold,
-            Measure::Log2Fold => Measure::Difference,
-        }
-    }
-
-    /// The measure for converted `(ma, na)` of A and `(mb, nb)` of B;
-    /// `None` when either has no reads.
-    pub fn of(self, (ma, na): (f64, f64), (mb, nb): (f64, f64)) -> Option<f64> {
-        if na <= 0.0 || nb <= 0.0 {
-            return None;
-        }
-        Some(match self {
-            Measure::Difference => 100.0 * (ma / na - mb / nb),
-            Measure::Log2Fold => {
-                ((ma + 0.5) / (na + 1.0)).log2() - ((mb + 0.5) / (nb + 1.0)).log2()
-            }
-        })
-    }
-
-    fn label(self, v: f64) -> String {
-        match self {
-            Measure::Difference => format!("{v:+.1}"),
-            Measure::Log2Fold => format!("{v:+.2}"),
-        }
-    }
-}
-
-/// Two tracks compared bar by bar, `a` against `b`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Contrast {
-    a: usize,
-    b: usize,
-    measure: Measure,
-}
 
 /// A row of the browser.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -227,15 +48,13 @@ pub struct View<'a> {
     pub extent: (i64, i64),
     /// The converted channel's name, e.g. `methylated`.
     pub on: &'static str,
-    /// The genes whose models to draw; `None` for a searched locus, which
-    /// draws every gene in view.
+    /// The genes whose models to draw; `None` (searched locus) draws every gene in view.
     pub keys: Option<&'a [Box<str>]>,
     /// The annotation's gene models, possibly still loading.
     pub genes: Option<SharedModels>,
 }
 
-/// Genes sharing a lane leave at least this share of the window between
-/// them, so their labels stay apart.
+/// Minimum gap between genes in one lane, as a share of the window, so labels stay apart.
 const LANE_GAP: f64 = 0.08;
 
 /// Most gene lanes drawn.
@@ -243,6 +62,7 @@ const MAX_LANES: usize = 4;
 
 /// Exon height and lane pitch of the gene models in figures.
 const GENE_BAND: f64 = 8.0;
+
 const GENE_LANE: f64 = 18.0;
 
 /// How the user left the browser.
@@ -279,8 +99,7 @@ pub struct PileupView<'a> {
     contrast: Option<Contrast>,
     /// The converted channel's name, e.g. `methylated`.
     on: &'static str,
-    /// The genes whose models to draw; `None` for a searched locus, which
-    /// draws every gene in view.
+    /// The genes whose models to draw; `None` (searched locus) draws every gene in view.
     keys: Option<Vec<Box<str>>>,
     /// The first two tracks share one mirrored row (`m` splits them).
     mirror: bool,
@@ -300,7 +119,6 @@ impl<'a> PileupView<'a> {
         sites.sort_unstable();
         sites.dedup();
         let (lo, hi) = (extent.0.min(extent.1), extent.0.max(extent.1));
-        // Compare the first two tracks when both have totals.
         let paired = tracks
             .iter()
             .take(2)
@@ -335,8 +153,7 @@ impl<'a> PileupView<'a> {
         }
     }
 
-    /// Pick this view's genes out of the annotation once it has arrived,
-    /// keeping those on this chromosome within the extent.
+    /// Take this chromosome's genes within the extent once the annotation has arrived.
     fn take_genes(&mut self) {
         let Some(read) = self.pending_genes.as_ref().and_then(|m| m.get()) else {
             return;
@@ -359,8 +176,7 @@ impl<'a> PileupView<'a> {
         self.plots.iter_mut().for_each(PlotImage::invalidate);
     }
 
-    /// The rows top to bottom: the contrast first, as the main row, then
-    /// the tracks.
+    /// The rows top to bottom: contrast, tracks, then genes.
     fn rows(&self) -> Vec<Row> {
         let contrast = self.contrast.map(Row::Contrast);
         let genes = (!self.genes.is_empty()).then_some(Row::Genes);
@@ -377,8 +193,7 @@ impl<'a> PileupView<'a> {
             .collect()
     }
 
-    /// Whether the first two tracks are drawn as one mirrored row: asked
-    /// for, and they can be.
+    /// The first two tracks are drawn as one mirrored row (asked for and possible).
     fn mirrored(&self) -> bool {
         self.mirror && self.mirrorable()
     }
@@ -409,8 +224,7 @@ impl<'a> PileupView<'a> {
         }
     }
 
-    /// Genes overlapping the window, each with a lane so that genes in one
-    /// lane (and their labels) do not collide.
+    /// Genes overlapping the window, each with a lane so labels do not collide.
     fn gene_lanes(&self) -> Vec<(usize, &GeneModel)> {
         let (lo, hi) = self.window;
         let gap = ((hi - lo) as f64 * LANE_GAP) as i64;
@@ -472,8 +286,7 @@ impl<'a> PileupView<'a> {
         }
     }
 
-    /// The contrast per bar over the window, from raw sums (rebinned when
-    /// the tracks show logs).
+    /// The contrast per bar, from raw sums (rebinned when the tracks show logs).
     fn contrast_values(&self, c: Contrast, bins: &Bins) -> Vec<Option<f64>> {
         let counts = |k: usize| -> (Vec<f64>, Vec<f64>) {
             let t = &self.tracks[k];
@@ -542,8 +355,7 @@ impl<'a> PileupView<'a> {
         }
     }
 
-    /// Zoom by `factor` (< 1 in, > 1 out) around the cursor; a bar never
-    /// gets narrower than one base.
+    /// Zoom by `factor` (< 1 in, > 1 out) around the cursor; a bar spans at least one base.
     fn zoom(&mut self, factor: f64) {
         let (lo, hi) = self.window;
         let min_w = self.columns.max(1) as i64;
@@ -555,8 +367,7 @@ impl<'a> PileupView<'a> {
         self.clamp_window();
     }
 
-    /// Act on a `/` search: a locus inside this view moves the window
-    /// there; anything else leaves the view for the caller to open.
+    /// A `/` search: a locus in this view moves there; anything else exits to the caller.
     fn submit(&mut self, query: &str) {
         match super::parse_query(query) {
             Some(super::Query::Locus(r, single)) if chr_eq(&r.chr, &self.chr) => {
@@ -624,8 +435,7 @@ impl<'a> PileupView<'a> {
         c.finish()
     }
 
-    /// A row in the box: a track's bars, the contrast's signed bars, two
-    /// tracks mirrored, or the genes.
+    /// Draw one row (track, contrast, mirror or genes) in the box.
     fn draw_row(
         &self,
         row: Row,
@@ -820,7 +630,6 @@ impl Screen for PileupView<'_> {
         let areas = Layout::vertical(layout).split(frame.area());
         let (top, readout, footer) = (areas[0], areas[areas.len() - 2], areas[areas.len() - 1]);
 
-        // One bar per chart column, re-binned from the raw positions.
         let inner_width = areas[1].width.saturating_sub(2 + GUTTER);
         self.columns = (inner_width as usize).max(1);
         self.clamp_window();
@@ -952,8 +761,7 @@ impl Screen for PileupView<'_> {
 }
 
 impl PileupView<'_> {
-    /// The genes row as text, a line per lane: exons as a heavy line on a
-    /// thin intron line with strand arrows, the symbol beside the gene.
+    /// The genes row as text, a lane per line: heavy exons on a thin arrowed intron line.
     fn render_genes(&self, buf: &mut ratatui::buffer::Buffer, area: ratatui::layout::Rect) {
         let chart_x = area.x + GUTTER;
         if area.width <= GUTTER || area.height == 0 {
@@ -1018,9 +826,8 @@ impl PileupView<'_> {
     }
 }
 
-/// Browse full screen until the user quits, asks for the gene list, or
-/// searches for something outside the view. `status` shows on the footer
-/// first.
+/// Browse until the user quits, asks for the gene list, or searches outside the view.
+/// `status` shows on the footer first.
 pub fn show_pileup(view: View, tracks: Vec<Track>, status: Option<String>) -> anyhow::Result<Exit> {
     let mut browser = PileupView::new(view.title, view.chr, tracks, view.extent);
     browser.on = view.on;

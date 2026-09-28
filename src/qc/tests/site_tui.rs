@@ -1,4 +1,5 @@
 use super::*;
+use crate::site_analysis::miami::genemodel::GeneModel;
 use crate::site_analysis::site_io::GenomicSite;
 use arrow::datatypes::Schema;
 use arrow::record_batch::RecordBatch;
@@ -228,10 +229,16 @@ fn keys_type_reset_off_and_decide() {
     press(&mut p, KeyCode::Char('2'));
     press(&mut p, KeyCode::Esc);
     assert_eq!(p.filter.site_min_coverage, start.site_min_coverage);
+    // Enter asks first; Esc goes back, Enter again applies.
+    press(&mut p, KeyCode::Enter);
+    assert!(!p.done());
+    press(&mut p, KeyCode::Esc);
+    assert!(!p.done() && matches!(p.mode, Mode::Browse));
+    press(&mut p, KeyCode::Enter);
     press(&mut p, KeyCode::Enter);
     assert!(p.done());
     let Some(Picked::Apply(got)) = p.decision.clone() else {
-        panic!("Enter applies");
+        panic!("Enter, Enter applies");
     };
     assert_eq!(qc_flags(&got), qc_flags(&start));
 
@@ -385,16 +392,16 @@ fn edit_ratio_rows_are_named_by_bound() {
 fn only_is_what_turning_the_threshold_off_keeps() {
     let t = table(M6A, 1500);
     let c = cells(t.len());
-    let p = picker(&t, Some(c.clone()), SiteFilterArgs::default_values());
+    let mut p = picker(&t, Some(c.clone()), SiteFilterArgs::default_values());
     let kept = kept_linear(&t, Some(&c), &p.filter);
-    for &k in &p.view().criteria {
+    for k in p.view().criteria.clone() {
+        focus_on(&mut p, k);
         let mut off = p.filter.clone();
         k.set(&mut off, k.permissive());
         let regained = kept_linear(&t, Some(&c), &off) - kept;
-        assert_eq!(p.tally.only[k as usize], regained, "{k:?}");
+        assert_eq!(p.tally.only, regained, "{k:?}");
     }
-    let mut term = Terminal::new(TestBackend::new(130, 34)).unwrap();
-    let mut p = p;
+    let mut term = Terminal::new(TestBackend::new(150, 40)).unwrap();
     term.draw(|f| p.render(f)).unwrap();
     let text: String = term
         .backend()
@@ -403,8 +410,11 @@ fn only_is_what_turning_the_threshold_off_keeps() {
         .iter()
         .map(|c| c.symbol())
         .collect();
-    assert!(text.contains("Counts are sites (not cells or genes)."));
-    assert!(text.contains("only this: sites that fail this and no other;"));
+    assert!(text.contains("filtered out: sites failing this threshold."));
+    assert!(text.contains("filtered out only by this "));
+    assert!(text.contains("█ all sites "));
+    assert!(text.contains("pass the other thresholds "));
+    assert!(!text.contains("rescued"));
     assert!(!text.contains("reason"));
 }
 
@@ -454,7 +464,7 @@ fn the_metagene_follows_the_thresholds_on_a_fixed_axis() {
     let t = table(M6A, 1500);
     let mut p = picker(&t, None, SiteFilterArgs::default_values());
     assert!(p.meta_counts().is_none());
-    p.set_meta(Meta::ready(vec![Some(meta_layout(t.len()))]));
+    p.set_meta(Meta::ready(vec![Some(meta_layout(t.len()))], Vec::new()));
     let placed = |i: usize| i % 10 != 9;
 
     let before = p.meta_counts().unwrap();
@@ -497,10 +507,295 @@ fn the_metagene_panel_says_why_it_is_empty_and_draws_when_ready() {
     assert!(text.contains("metagene"));
     assert!(text.contains("no annotation: pass --gff"));
 
-    p.set_meta(Meta::ready(vec![Some(meta_layout(t.len()))]));
+    p.set_meta(Meta::ready(vec![Some(meta_layout(t.len()))], Vec::new()));
     let text = screen(&mut p);
     assert!(text.contains("kept / all"));
     assert!(text.contains("CDS"));
     // The export carries the metagene too.
-    assert!(p.figure().contains("metagene, kept sites in front"));
+    assert!(p.figure().contains("m6a metagene · y: sites per bin"));
+    assert!(text.contains("metagene · y: sites per bin"));
+}
+
+/// `t` with a batch carrying the gene and position columns the gene view
+/// reads: gene `GENE{g}` for the fixture's dense id `g`, sites spread along
+/// `[1000, 3000)`.
+fn with_genes(mut t: SiteTable) -> SiteTable {
+    use arrow::array::{ArrayRef, Int64Array, StringArray};
+    use arrow::datatypes::{DataType, Field};
+    let gene: Vec<String> = t
+        .gene_id
+        .iter()
+        .map(|g| format!("ENSG{g}_GENE{g}"))
+        .collect();
+    let pos: Vec<i64> = (0..t.len() as i64).map(|i| 1000 + i * 37 % 2000).collect();
+    let schema = Schema::new(vec![
+        Field::new("gene", DataType::Utf8, false),
+        Field::new("primary_pos", DataType::Int64, false),
+    ]);
+    let columns: Vec<ArrayRef> = vec![
+        Arc::new(StringArray::from(gene)),
+        Arc::new(Int64Array::from(pos)),
+    ];
+    t.batch = RecordBatch::try_new(Arc::new(schema), columns).unwrap();
+    t
+}
+
+#[test]
+fn genes_list_pinned_first_then_by_sites_and_filter_by_symbol() {
+    let t = with_genes(table(M6A, 100));
+    let p = picker(&t, None, SiteFilterArgs::default_values());
+    let genes = p.view().genes.as_ref().unwrap();
+    let sizes: Vec<usize> = p
+        .gene_list()
+        .iter()
+        .map(|&g| genes.rows[g as usize].len())
+        .collect();
+    assert!(sizes.windows(2).all(|w| w[0] >= w[1]), "{sizes:?}");
+
+    let mut p = p.pin_genes(&["gene5".into(), "ENSG2_GENE2".into()]);
+    let first: Vec<&str> = {
+        let genes = p.view().genes.as_ref().unwrap();
+        p.gene_list()[..2]
+            .iter()
+            .map(|&g| genes.symbol(g as usize))
+            .collect()
+    };
+    assert_eq!(first, ["GENE5", "GENE2"]);
+
+    press(&mut p, KeyCode::Char('/'));
+    for ch in "ne3".chars() {
+        press(&mut p, KeyCode::Char(ch));
+    }
+    press(&mut p, KeyCode::Enter);
+    assert_eq!(p.gene_list().len(), 1);
+    let g = p.gene().unwrap();
+    assert_eq!(p.view().genes.as_ref().unwrap().symbol(g), "GENE3");
+    press(&mut p, KeyCode::Char('/'));
+    press(&mut p, KeyCode::Esc);
+    assert_eq!(p.gene_list().len(), 7);
+}
+
+#[test]
+fn the_gene_profile_follows_the_thresholds() {
+    let t = with_genes(table(M6A, 1500));
+    let mut p = picker(&t, None, SiteFilterArgs::default_values());
+    press(&mut p, KeyCode::Char(']'));
+    let g = p.gene().unwrap();
+    let before = p.gene_profile(40).unwrap();
+    let (kept, all) = p.gene_kept(g);
+    assert_eq!(before.all.iter().sum::<usize>(), all);
+    assert_eq!(before.kept.iter().sum::<usize>(), kept);
+    // No gene model yet: the span is the sites' own, and no exon track.
+    assert!(before.model.is_none() && before.exonic(0).is_none());
+
+    focus_on(&mut p, Criterion::MinCoverage);
+    for _ in 0..5 {
+        press(&mut p, KeyCode::Right);
+    }
+    let after = p.gene_profile(40).unwrap();
+    assert_eq!(after.all, before.all);
+    assert_eq!(after.kept.iter().sum::<usize>(), p.gene_kept(g).0);
+    assert!(after.kept.iter().sum::<usize>() < kept);
+}
+
+#[test]
+fn the_gene_panel_draws_its_model_once_the_annotation_arrives() {
+    let t = with_genes(table(M6A, 400));
+    let mut p = picker(&t, None, SiteFilterArgs::default_values());
+    let g = p.gene().unwrap();
+    let key = p.view().genes.as_ref().unwrap().keys[g].clone();
+    let model = GeneModel {
+        chr: "chr1".into(),
+        lo: 900,
+        hi: 3100,
+        forward: true,
+        exons: vec![(900, 1500), (2500, 3100)],
+        symbol: key.split_once('_').unwrap().1.into(),
+        key,
+    };
+    p.set_meta(Meta::ready(vec![None], vec![model]));
+    let profile = p.gene_profile(44).unwrap();
+    let exonic = |b| profile.exonic(b).unwrap();
+    assert!(exonic(0) && exonic(43) && !exonic(22));
+
+    let mut term = Terminal::new(TestBackend::new(150, 44)).unwrap();
+    term.draw(|f| p.render(f)).unwrap();
+    let text: String = term
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+    assert!(text.contains("chr1:900-3100 (+) · y: sites per "));
+    assert!(text.contains("genes: kept / all sites"));
+    assert!(text.contains("[ ] move  / find"));
+    assert!(text.contains("█ all sites   █ kept"));
+    assert!(text.contains("▬"));
+    assert!(p.figure().contains("chr1:900-3100 (+)"));
+}
+
+#[test]
+fn c_switches_the_gene_and_metagene_bars_to_converted_reads() {
+    let t = with_genes(table(M6A, 1500));
+    let mut p = picker(&t, None, SiteFilterArgs::default_values());
+    p.set_meta(Meta::ready(vec![Some(meta_layout(t.len()))], Vec::new()));
+    let g = p.gene().unwrap();
+    let rows = p.view().genes.as_ref().unwrap().rows[g].clone();
+    let sites = p.gene_profile(40).unwrap();
+    assert_eq!(sites.all.iter().sum::<usize>(), rows.len());
+    let metagene_sites: usize = p.meta_counts().unwrap().all.iter().sum();
+
+    press(&mut p, KeyCode::Char('c'));
+    let reads = p.gene_profile(40).unwrap();
+    let want: u64 = rows.iter().map(|&i| t.converted[i as usize]).sum();
+    assert_eq!(reads.all.iter().sum::<usize>() as u64, want);
+    let kept_want: u64 = rows
+        .iter()
+        .filter(|&&i| p.view().fails[i as usize] == 0)
+        .map(|&i| t.converted[i as usize])
+        .sum();
+    assert_eq!(reads.kept.iter().sum::<usize>() as u64, kept_want);
+    assert_eq!(reads.unit, "converted reads");
+    let placed_reads: u64 = (0..t.len())
+        .filter(|i| i % 10 != 9)
+        .map(|i| t.converted[i])
+        .sum();
+    assert_eq!(
+        p.meta_counts().unwrap().all.iter().sum::<usize>() as u64,
+        placed_reads
+    );
+
+    let mut term = Terminal::new(TestBackend::new(150, 44)).unwrap();
+    term.draw(|f| p.render(f)).unwrap();
+    let text: String = term
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+    assert!(text.contains("metagene · y: converted reads per bin"));
+    assert!(text.contains("█ all converted reads"));
+    assert!(text.contains("c: sites"));
+
+    press(&mut p, KeyCode::Char('c'));
+    assert_eq!(
+        p.meta_counts().unwrap().all.iter().sum::<usize>(),
+        metagene_sites
+    );
+}
+
+#[test]
+fn an_annotation_arriving_on_its_thread_fills_the_metagene() {
+    let t = with_genes(table(M6A, 400));
+    let n = t.len();
+    let pending = Meta::Pending(std::thread::spawn(move || {
+        Ok(Annotation {
+            views: vec![Some(meta_layout(n))],
+            no_metagene: None,
+            models: Default::default(),
+        })
+    }));
+    let mut p = picker(&t, None, SiteFilterArgs::default_values());
+    p.set_meta(pending);
+    assert!(p.meta_counts().is_none());
+    while !p.tick() {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let m = p.meta_counts().unwrap();
+    assert_eq!(m.all.len(), m.regions.iter().sum::<usize>());
+    assert_eq!(m.kept.len(), m.all.len());
+    let mut term = Terminal::new(TestBackend::new(150, 44)).unwrap();
+    term.draw(|f| p.render(f)).unwrap();
+}
+
+#[test]
+fn sites_outside_the_gene_model_widen_its_span() {
+    let t = with_genes(table(M6A, 400));
+    let mut p = picker(&t, None, SiteFilterArgs::default_values());
+    let g = p.gene().unwrap();
+    let key = p.view().genes.as_ref().unwrap().keys[g].clone();
+    // A model narrower than the sites, which span [1000, 3000).
+    let model = GeneModel {
+        chr: "chr1".into(),
+        lo: 1500,
+        hi: 2500,
+        forward: true,
+        exons: vec![(1500, 2500)],
+        symbol: "GENE".into(),
+        key,
+    };
+    p.set_meta(Meta::ready(vec![None], vec![model]));
+    let genes = p.view().genes.as_ref().unwrap();
+    let pos: Vec<i64> = genes.rows[g]
+        .iter()
+        .map(|&i| genes.pos.value(i as usize))
+        .collect();
+    let (min, max) = (*pos.iter().min().unwrap(), *pos.iter().max().unwrap());
+    assert!(
+        min < 1500 && max >= 2500,
+        "the fixture's sites overhang the model"
+    );
+    let profile = p.gene_profile(40).unwrap();
+    let edges = &profile.edges;
+    assert_eq!((edges.min_pos, edges.max_pos), (min, max + 1));
+    assert!(profile.exonic(0) == Some(false) && profile.exonic(39) == Some(false));
+}
+
+#[test]
+fn an_annotation_without_coding_transcripts_is_named_in_the_panel() {
+    let t = with_genes(table(M6A, 100));
+    let mut p = picker(&t, None, SiteFilterArgs::default_values());
+    p.set_meta(Meta::Ready(Annotation {
+        views: vec![None],
+        no_metagene: Some("x.gff: no coding transcript".into()),
+        models: Default::default(),
+    }));
+    assert_eq!(p.meta_status(), "x.gff: no coding transcript");
+}
+
+#[test]
+fn the_confirmation_recaps_output_changes_and_every_modality() {
+    let (m6a, atoi) = (table(M6A, 600), table(ATOI, 300));
+    let start = SiteFilterArgs::default_values();
+    let views = vec![
+        SiteView::new(&m6a, None, &start),
+        SiteView::new(&atoi, None, &start),
+    ];
+    let mut p = SitePicker::new("x", views, start, Meta::Unavailable("none".into()));
+    p.output = "out_qc".into();
+    focus_on(&mut p, Criterion::MinCoverage);
+    for _ in 0..3 {
+        press(&mut p, KeyCode::Right);
+    }
+    press(&mut p, KeyCode::Enter);
+    assert!(matches!(p.mode, Mode::Confirm));
+    let text: String = p
+        .confirm_lines()
+        .iter()
+        .map(|l| l.to_string() + "\n")
+        .collect();
+    assert!(text.contains("out_qc"));
+    let coverage: Vec<&str> = text.lines().filter(|l| l.contains("coverage")).collect();
+    assert!(
+        coverage[0].starts_with("* ") && coverage[0].contains("(was ≥ 3)"),
+        "{coverage:?}"
+    );
+    assert!(text.lines().any(|l| l.trim_start().starts_with(M6A)));
+    assert!(text.lines().any(|l| l.trim_start().starts_with(ATOI)));
+
+    let mut term = Terminal::new(TestBackend::new(150, 44)).unwrap();
+    term.draw(|f| p.render(f)).unwrap();
+    let screen: String = term
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+    assert!(screen.contains("apply these thresholds?"));
+    assert!(screen.contains("apply and write"));
+    press(&mut p, KeyCode::Char('n'));
+    assert!(matches!(p.mode, Mode::Browse) && !p.done());
 }

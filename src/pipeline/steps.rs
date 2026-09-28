@@ -453,8 +453,8 @@ pub(super) fn run_dart_step(
 ///
 /// Passing `cells_by_batch` is not just for column-compatibility with the other
 /// modalities. `ReadCoverageCollector` stores one interval PER READ per cell, so
-/// without a keep-set it holds intervals for every ambient droplet in the BAM.
-/// Measured on one chr19 BAM: peak RSS 1108 MB unfiltered vs 157 MB restricted.
+/// without a keep-set it holds intervals for every ambient droplet in the BAM,
+/// several times the memory of the called cells alone.
 pub(super) fn run_read_depth_step(
     args: &PipelineArgs,
     gene_count_qc: &Option<GeneCountQc>,

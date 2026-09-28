@@ -80,7 +80,7 @@ fn log_odds_is_exactly_zero_on_a_genomic_variant() {
     }
 }
 
-/// `a_m = 0` at most DART sites (57% on chr19+MYC), so this is the common case, not an edge
+/// `a_m = 0` at most DART sites, so this is the common case, not an edge
 /// case: a control that never converts puts the WT odds infinitely above it.
 #[test]
 fn log_odds_is_infinite_when_the_control_never_converts() {
@@ -163,7 +163,7 @@ fn woolf_se_shrinks_when_every_cell_grows() {
 /// corrected control cell is 0.5, so `1/0.5 = 2` floors the variance and the SE
 /// cannot fall below ~1.41 however deep the run goes. It still says "this is a
 /// lower bound, uncertain ~16-fold", but it does NOT rank those sites -- and at
-/// most DART sites (57% on chr19+MYC) that is the situation.
+/// most DART sites that is the situation.
 #[test]
 fn woolf_se_is_floored_by_the_pseudo_count_at_an_empty_control() {
     let (_, se_shallow) = log_odds_ratio_woolf(1, 4, 0, 50);

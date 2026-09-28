@@ -32,7 +32,7 @@ pub struct GeneModel {
 
 /// Load the gene model(s) matching `selector` from the GTF. Matching
 /// reuses the same `{gene_id}_{symbol}` key + relaxed canonicalizer the
-/// matrix rows use, so a `-q BRCA2` query resolves the GTF gene too.
+/// matrix rows use, so a `-q GENE1` query resolves the GTF gene too.
 pub fn load_gene_models(gtf: &str, selector: &Selector) -> anyhow::Result<Vec<GeneModel>> {
     load_gene_models_where(gtf, |key| selector.matches_gene(key))
 }
@@ -42,9 +42,17 @@ pub fn load_gene_models_where(
     gtf: &str,
     keep: impl Fn(&str) -> bool,
 ) -> anyhow::Result<Vec<GeneModel>> {
-    let records = read_gene_and_exon_records(gtf)?;
-    let gene_map = build_gene_map(&records, Some(&FeatureType::Gene))?;
-    let exon_map = build_exon_intervals(&records);
+    gene_models_from_records(&read_gene_and_exon_records(gtf)?, keep)
+}
+
+/// Every gene model in `records` (at least their `gene` and `exon` lines)
+/// whose `{gene_id}_{symbol}` key passes `keep`.
+pub fn gene_models_from_records(
+    records: &[GffRecord],
+    keep: impl Fn(&str) -> bool,
+) -> anyhow::Result<Vec<GeneModel>> {
+    let gene_map = build_gene_map(records, Some(&FeatureType::Gene))?;
+    let exon_map = build_exon_intervals(records);
 
     let mut out = Vec::new();
     for entry in gene_map.iter() {
@@ -85,9 +93,14 @@ pub fn load_gene_models_where(
     Ok(out)
 }
 
-/// The `gene` and `exon` records of a GTF/GFF, read line by line: only
-/// those lines are split and kept, not the transcripts, CDS and UTRs.
+/// The `gene` and `exon` records of a GTF/GFF.
 fn read_gene_and_exon_records(gtf: &str) -> anyhow::Result<Vec<GffRecord>> {
+    read_records_of(gtf, &["gene", "Gene", "exon"])
+}
+
+/// The records of a GTF/GFF whose feature (column 3) is one of `features`,
+/// read line by line: only those lines are split and parsed.
+pub fn read_records_of(gtf: &str, features: &[&str]) -> anyhow::Result<Vec<GffRecord>> {
     use std::io::BufRead;
     let reader = legume_numeric::matrix::common_io::open_buf_reader(gtf)
         .map_err(|e| anyhow::anyhow!("opening {gtf}: {e}"))?;
@@ -97,7 +110,11 @@ fn read_gene_and_exon_records(gtf: &str) -> anyhow::Result<Vec<GffRecord>> {
         if line.starts_with('#') {
             continue;
         }
-        if !matches!(line.split('\t').nth(2), Some("gene" | "Gene" | "exon")) {
+        if !line
+            .split('\t')
+            .nth(2)
+            .is_some_and(|f| features.contains(&f))
+        {
             continue;
         }
         let words = line.split('\t').map(|w| Box::from(w.trim())).collect();

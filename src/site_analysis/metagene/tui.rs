@@ -21,8 +21,7 @@ use crate::figure::{self, Anchor, Bars, Canvas, Controls, Key, INK, MUTED};
 
 use super::{GeneFeatureHistogram, CDS, NCRNA, REGION_NAMES, UTR3, UTR5};
 
-/// Width of HistPlot's y gutter.
-const GUTTER: u16 = 6;
+use crate::figure::GUTTER;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Track {

@@ -178,7 +178,8 @@ pub struct QcArgs {
         long_help = "Pick the site thresholds in a full-screen view before cutting.\n\
                      The view starts from the --site-* values given, shows each knob's column\n\
                      as a histogram with live kept and dropped counts, and a metagene of all\n\
-                     and kept sites below it. Enter applies the thresholds on screen.\n\
+                     and kept sites below it. Enter asks to confirm (a recap of the output,\n\
+                     the changed thresholds and what each modality keeps) before applying.\n\
                      Needs stdin and stdout on a terminal; otherwise the --site-* values are\n\
                      used as given."
     )]
@@ -192,6 +193,16 @@ pub struct QcArgs {
                      with neither, the view has no metagene."
     )]
     pub gff: Option<Box<str>>,
+
+    #[arg(
+        long = "genes",
+        value_delimiter = ',',
+        help = "Genes to list first in the --interactive gene list (symbols or gene keys)",
+        long_help = "Genes to list first in the --interactive gene list, in the order given:\n\
+                     comma-separated symbols or `{gene_id}_{symbol}` keys, case-insensitive.\n\
+                     The other genes follow, most putative sites first."
+    )]
+    pub genes: Vec<Box<str>>,
 
     #[command(flatten)]
     pub site: SiteFilterArgs,

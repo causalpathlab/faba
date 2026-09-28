@@ -5,7 +5,7 @@
 //! modalities, as they are on the command line. Every count on screen comes
 //! from [`Criterion::fails`], the checks [`SiteFilterArgs::reason`] walks, so
 //! the view and the written fileset never disagree. The histogram draws the
-//! sites that pass every other threshold in front of all sites, so it shows
+//! sites that pass every other threshold over all sites, so it shows
 //! what the focused threshold decides among sites that would otherwise be
 //! kept.
 
@@ -17,6 +17,7 @@ use data_beans::interactive::ui::{
 use data_beans::qc::pct;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
@@ -26,11 +27,27 @@ use crate::figure::term::PlotImage;
 use crate::figure::{self, Anchor, Bars, Canvas, Controls, Key, INK, MUTED};
 
 use crate::site_analysis::metagene::{MetaLayout, MetaModels, REGION_NAMES};
+use crate::site_analysis::miami::genemodel::{
+    gene_models_from_records, read_records_of, GeneModel,
+};
 use arrow::record_batch::RecordBatch;
+use rustc_hash::FxHashSet;
 
 use super::args::SiteFilterArgs;
 use super::layout::{file_name, SITE_MODALITIES};
-use super::sites::{genomic_sites, Criterion, SiteTable};
+use super::sites::{genomic_sites, Criterion, GeneSites, SiteTable};
+
+mod annotation;
+mod column;
+mod draw;
+mod genes;
+
+use annotation::*;
+use column::*;
+use genes::*;
+
+/// Width of HistPlot's y gutter.
+use crate::figure::GUTTER;
 
 /// Upper bound on histogram bins, whatever the scale and data.
 const MAX_BINS: i32 = 400;
@@ -46,114 +63,6 @@ const SHOWN: [Criterion; 8] = [
     Criterion::MaxEditRatio,
     Criterion::MinCells,
 ];
-
-/// How each criterion is drawn.
-impl Criterion {
-    fn label(self) -> &'static str {
-        match self {
-            Criterion::MaxPv => "p-value",
-            Criterion::MinLogOdds => "log odds",
-            Criterion::MinFold => "fold",
-            Criterion::MinCoverage => "coverage",
-            Criterion::MinConverted => "converted",
-            Criterion::MinEditRatio => "min edit ratio",
-            Criterion::MaxEditRatio => "max edit ratio",
-            Criterion::MinCells => "cells",
-        }
-    }
-
-    /// What the histogram's x axis shows.
-    fn axis(self) -> &'static str {
-        match self {
-            Criterion::MaxPv => "-log10 p",
-            Criterion::MinLogOdds => "raw log odds ratio",
-            Criterion::MinFold => "signal / control edit rate",
-            Criterion::MinCoverage => "signal + control reads",
-            Criterion::MinConverted => "converted signal reads",
-            Criterion::MinEditRatio => "converted / coverage: low is weak editing",
-            Criterion::MaxEditRatio => "converted / coverage: high is variant-like",
-            Criterion::MinCells => "kept cells with a converted read",
-        }
-    }
-
-    /// Whether the site keeps the high end of the displayed axis (all but
-    /// the upper edit-ratio bound: a p-value is shown as -log10 p).
-    fn keeps_high(self) -> bool {
-        self != Criterion::MaxEditRatio
-    }
-
-    /// Whether bin `k` lies on the dropped side of the threshold's bin.
-    fn drops(self, k: i32, threshold: Option<i32>) -> bool {
-        match threshold {
-            Some(p) if self.keeps_high() => k < p,
-            Some(p) => k > p,
-            None => false,
-        }
-    }
-
-    /// The threshold as shown: `≥ v` or `≤ v`, `None` when off.
-    fn shown(self, f: &SiteFilterArgs) -> Option<String> {
-        let op = if self.is_max() { "≤" } else { "≥" };
-        (!self.is_off(f)).then(|| format!("{op} {}", self.fmt_short(self.get(f))))
-    }
-
-    fn is_integer(self) -> bool {
-        matches!(
-            self,
-            Criterion::MinCoverage | Criterion::MinConverted | Criterion::MinCells
-        )
-    }
-
-    fn scales(self) -> &'static [Scale] {
-        match self {
-            Criterion::MinLogOdds => &[Scale::Linear],
-            // Log bins resolve the p ~ 0.05 region the decision is made in.
-            Criterion::MaxPv => &[Scale::Log, Scale::Sqrt, Scale::Linear],
-            Criterion::MinEditRatio | Criterion::MaxEditRatio => &[Scale::Linear, Scale::Sqrt],
-            _ => &[Scale::Log, Scale::Sqrt, Scale::Linear],
-        }
-    }
-
-    /// Position of a raw value on the displayed axis (may be infinite).
-    fn display(self, raw: f64) -> f64 {
-        match self {
-            Criterion::MaxPv if raw <= 0.0 => f64::INFINITY,
-            Criterion::MaxPv => (-raw.log10()).max(0.0),
-            _ => raw,
-        }
-    }
-
-    /// Exact, for the flags.
-    fn fmt(self, v: f64) -> String {
-        if self.is_integer() {
-            format!("{}", v as u64)
-        } else {
-            format!("{}", v as f32)
-        }
-    }
-
-    /// Three significant digits, for the screen.
-    fn fmt_short(self, v: f64) -> String {
-        let a = v.abs();
-        if self.is_integer() || !v.is_finite() || a == 0.0 {
-            self.fmt(v)
-        } else if !(1e-3..1e5).contains(&a) {
-            format!("{v:.2e}")
-        } else {
-            let decimals = (2 - a.log10().floor() as i32).max(0) as usize;
-            let s = format!("{v:.decimals$}");
-            if s.contains('.') {
-                s.trim_end_matches('0').trim_end_matches('.').to_string()
-            } else {
-                s
-            }
-        }
-    }
-
-    fn bit(self) -> u8 {
-        1 << self as u8
-    }
-}
 
 /// The `faba qc` flags that reproduce `f`, as `--flag=value` so negative and
 /// infinite values parse.
@@ -174,6 +83,9 @@ struct SiteView<'a> {
     criteria: Vec<Criterion>,
     /// Per site, a [`Criterion::bit`] for every check it fails.
     fails: Vec<u8>,
+    /// Sites by gene, for the gene list; `None` for a table without the
+    /// columns.
+    genes: Option<GeneSites>,
 }
 
 impl<'a> SiteView<'a> {
@@ -187,6 +99,7 @@ impl<'a> SiteView<'a> {
             n_cells,
             criteria,
             fails: vec![0; table.len()],
+            genes: GeneSites::new(table).ok(),
         };
         for c in view.criteria.clone() {
             view.update(c, f);
@@ -223,9 +136,9 @@ struct Tally {
     /// Sites that fail each criterion, whatever the others say. By
     /// `c as usize`.
     fail: [usize; 8],
-    /// Sites that fail each criterion and no other: turning it off keeps
-    /// them. By `c as usize`.
-    only: [usize; 8],
+    /// Sites that fail the focused criterion and no other: the dropped part
+    /// of the histogram's front, and what turning it off would keep.
+    only: usize,
     /// Bin counts of the sites that pass every other criterion.
     subset: Vec<usize>,
 }
@@ -245,9 +158,7 @@ impl Tally {
                 t.genes += usize::from(!gene_seen[g]);
                 gene_seen[g] = true;
             } else {
-                if m.count_ones() == 1 {
-                    t.only[m.trailing_zeros() as usize] += 1;
-                }
+                t.only += usize::from(m == focus.bit());
                 for (b, n) in t.fail.iter_mut().enumerate() {
                     *n += usize::from(m >> b & 1 == 1);
                 }
@@ -260,245 +171,15 @@ impl Tally {
     }
 }
 
-/// The focused criterion's column, binned.
-struct Column {
-    /// Display value per site, infinities clamped to the finite range.
-    display: Vec<f32>,
-    n_inf: usize,
-    lo: f64,
-    hi: f64,
-    hist: Binned,
-    /// Histogram slot per site.
-    slot: Vec<u16>,
-    /// Thresholds the bin steps visit, ascending on the displayed axis:
-    /// `(bin, raw)` with `raw` the loosest threshold that keeps the whole bin
-    /// and drops the bins on the far side. Stops that keep everything are
-    /// left out: they read as off.
-    stops: Vec<(i32, f64)>,
-    /// The smallest display value in each bin, for tick labels.
-    lowest: Vec<f64>,
-}
-
-impl Column {
-    fn new(view: &SiteView, c: Criterion, scale: Scale) -> Self {
-        let mut display: Vec<f32> = (0..view.table.len())
-            .map(|i| c.display(c.raw(view.table, i, view.cells(i))) as f32)
-            .collect();
-        let (mut lo, mut hi, mut n_inf) = (f64::INFINITY, f64::NEG_INFINITY, 0);
-        for &d in &display {
-            if d.is_finite() {
-                lo = lo.min(d as f64);
-                hi = hi.max(d as f64);
-            } else {
-                n_inf += 1;
-            }
-        }
-        if lo > hi {
-            (lo, hi) = (0.0, 0.0);
-        }
-        display
-            .iter_mut()
-            .for_each(|d| *d = d.clamp(lo as f32, hi as f32));
-        let (hist, slot, stops, lowest) = bin(view, c, scale, &display, lo, hi);
-        Self {
-            display,
-            n_inf,
-            lo,
-            hi,
-            hist,
-            slot,
-            stops,
-            lowest,
-        }
-    }
-
-    fn rebin(&mut self, view: &SiteView, c: Criterion, scale: Scale) {
-        (self.hist, self.slot, self.stops, self.lowest) =
-            bin(view, c, scale, &self.display, self.lo, self.hi);
-    }
-
-    /// Bin key of a raw threshold, clamped to the histogram.
-    fn key_of(&self, c: Criterion, raw: f64) -> i32 {
-        let d = c.display(raw).clamp(self.lo, self.hi);
-        let kmax = self.hist.kmax();
-        self.hist.bins.key(d).clamp(self.hist.kmin, kmax)
-    }
-}
-
-/// A column binned: the histogram, each site's slot, the stops, and each
-/// bin's smallest value.
-type ColumnBins = (Binned, Vec<u16>, Vec<(i32, f64)>, Vec<f64>);
-
-/// Bin `display` on `scale`: the histogram, each site's slot, and the stops.
-fn bin(
-    view: &SiteView,
-    c: Criterion,
-    scale: Scale,
-    display: &[f32],
-    lo: f64,
-    hi: f64,
-) -> ColumnBins {
-    // A signed axis spans -max..max; widen so it still gets ~50 bins.
-    let max = if lo < 0.0 {
-        2.0 * lo.abs().max(hi.abs())
-    } else {
-        hi
-    };
-    let bins = Binning::new(scale, max, c.is_integer());
-    let kmin = bins.key(lo);
-    let n = (bins.key(hi) - kmin + 1).clamp(1, MAX_BINS) as usize;
-    let mut counts = vec![0; n];
-    let mut slot = Vec::with_capacity(display.len());
-    let mut edge: Vec<Option<f64>> = vec![None; n];
-    let mut lowest = vec![f64::INFINITY; n];
-    for (i, &d) in display.iter().enumerate() {
-        let b = (bins.key(d as f64) - kmin).clamp(0, n as i32 - 1) as usize;
-        counts[b] += 1;
-        lowest[b] = lowest[b].min(d as f64);
-        slot.push(b as u16);
-        let raw = c.raw(view.table, i, view.cells(i));
-        edge[b] = Some(match edge[b] {
-            None => raw,
-            Some(e) if c.is_max() => e.max(raw),
-            Some(e) => e.min(raw),
-        });
-    }
-    let stops = edge
-        .iter()
-        .enumerate()
-        .filter_map(|(b, e)| e.map(|raw| (kmin + b as i32, raw)))
-        .filter(|&(_, raw)| {
-            let mut f = SiteFilterArgs::permissive();
-            c.set(&mut f, raw);
-            !c.is_off(&f)
-        })
-        .collect();
-    (Binned { bins, kmin, counts }, slot, stops, lowest)
-}
-
-/// Total metagene bins across 5'UTR, CDS and 3'UTR: enough for the shape,
-/// and at two columns a bin they fill a panel on a 150-column terminal.
-const META_BINS: usize = 48;
-
-/// Each coding region's name at its middle bin, where a short UTR's label
-/// does not run into the next one.
-fn meta_ticks(regions: [usize; 3]) -> Vec<(usize, String)> {
-    let mut at = 0;
-    let mut out = Vec::new();
-    for (r, &n) in regions.iter().enumerate() {
-        if n > 0 {
-            out.push((at + n / 2, REGION_NAMES[r].to_string()));
-        }
-        at += n;
-    }
-    out
-}
-
-/// The first bin of the CDS and of the 3'UTR: the region boundaries.
-fn meta_marks(regions: [usize; 3]) -> Vec<usize> {
-    vec![regions[0], regions[0] + regions[1]]
-}
-
-/// A view's placed sites and its all-site profile, which no threshold moves.
-struct ViewMeta {
-    layout: MetaLayout,
-    all: Vec<usize>,
-}
-
-/// One per view, in view order; `None` where no site is on a coding
-/// transcript.
-type Layouts = Vec<Option<ViewMeta>>;
-
-/// The metagene panel's state.
-enum Meta {
-    /// Nothing to draw; the reason, for the panel.
-    Unavailable(String),
-    /// The annotation being read and the sites placed, on a thread.
-    Pending(std::thread::JoinHandle<Result<Layouts, String>>),
-    Ready(Layouts),
-}
-
-impl Meta {
-    /// Read `gff` and place every table's sites (`batches`, in view order),
-    /// on a thread.
-    fn start(gff: Option<&str>, batches: Vec<RecordBatch>) -> Self {
-        let Some(gff) = gff.map(str::to_string) else {
-            return Meta::Unavailable(
-                "no annotation: pass --gff, or keep the run record next to the sites".into(),
-            );
-        };
-        Meta::Pending(std::thread::spawn(move || {
-            let models = MetaModels::load(&gff).map_err(|e| format!("{gff}: {e:#}"))?;
-            batches
-                .iter()
-                .map(|b| {
-                    let sites = genomic_sites(b).map_err(|e| format!("{e:#}"))?;
-                    Ok(models.layout(&sites, META_BINS))
-                })
-                .collect::<Result<Vec<_>, String>>()
-                .map(Meta::views)
-        }))
-    }
-
-    #[cfg(test)]
-    fn ready(layouts: Vec<Option<MetaLayout>>) -> Self {
-        Meta::Ready(Meta::views(layouts))
-    }
-
-    fn views(layouts: Vec<Option<MetaLayout>>) -> Layouts {
-        layouts
-            .into_iter()
-            .map(|l| {
-                l.map(|layout| ViewMeta {
-                    all: layout.counts(|_| true),
-                    layout,
-                })
-            })
-            .collect()
-    }
-
-    /// Take the thread's result if it has arrived; true when it just did.
-    fn poll(&mut self) -> bool {
-        let Meta::Pending(handle) = self else {
-            return false;
-        };
-        if !handle.is_finished() {
-            return false;
-        }
-        let Meta::Pending(handle) = std::mem::replace(self, Meta::Ready(Vec::new())) else {
-            unreachable!()
-        };
-        *self = match handle.join() {
-            Ok(Ok(layouts)) => Meta::Ready(layouts),
-            Ok(Err(e)) => Meta::Unavailable(e),
-            Err(_) => Meta::Unavailable("reading the annotation panicked".into()),
-        };
-        true
-    }
-}
-
-/// A view's metagene: all sites, the kept ones, and the bins per region.
-struct MetaCounts<'m> {
-    all: &'m [usize],
-    kept: &'m [usize],
-    regions: [usize; 3],
-    unassigned: usize,
-}
-
 enum Mode {
     Browse,
     /// Typing an exact raw threshold for the focused criterion.
     Edit(String),
+    /// Typing into the gene list's filter.
+    Find,
+    /// Asking before the thresholds are applied and the fileset written.
+    Confirm,
 }
-
-/// What the table's two counts mean, a line each for the screen and the
-/// figure.
-const LEGEND: [&str; 4] = [
-    "Counts are sites (not cells or genes).",
-    "this: sites that fail this threshold",
-    "only this: sites that fail this and no other;",
-    "  turning it off would keep them",
-];
 
 /// State of the picker, independent of the terminal so it can be tested.
 struct SitePicker<'a> {
@@ -518,9 +199,14 @@ struct SitePicker<'a> {
     controls: Controls,
     plot: PlotImage,
     meta: Meta,
-    /// The focused view's kept-site profile, refreshed with the tally.
-    meta_kept: Vec<usize>,
+    /// What the gene and metagene bars add up.
+    weight: Weight,
+    /// The focused view's metagene bars: all sites, then the kept ones.
+    meta_bars: (Vec<usize>, Vec<usize>),
     meta_plot: PlotImage,
+    list: GeneList,
+    /// Where an applied cut is written, for the confirmation.
+    output: String,
     decision: Option<Picked>,
 }
 
@@ -544,161 +230,16 @@ impl<'a> SitePicker<'a> {
             mode: Mode::Browse,
             controls: Controls::new("qc_sites"),
             plot: PlotImage::default(),
-            meta: Meta::Unavailable(String::new()),
-            meta_kept: Vec::new(),
+            meta,
+            weight: Weight::Sites,
+            meta_bars: Default::default(),
             meta_plot: PlotImage::default(),
+            list: GeneList::default(),
+            output: String::new(),
             decision: None,
         }
-        .with_meta(meta)
-    }
-
-    fn with_meta(mut self, meta: Meta) -> Self {
-        self.set_meta(meta);
-        self
-    }
-
-    fn set_meta(&mut self, meta: Meta) {
-        self.meta = meta;
-        self.update_meta();
-    }
-
-    fn view_meta(&self) -> Option<&ViewMeta> {
-        let Meta::Ready(layouts) = &self.meta else {
-            return None;
-        };
-        layouts.get(self.modality)?.as_ref()
-    }
-
-    /// Recount the focused view's kept sites; redraw only if they changed.
-    fn update_meta(&mut self) {
-        let fails = &self.views[self.modality].fails;
-        let kept = self
-            .view_meta()
-            .map(|m| m.layout.counts(|i| fails[i] == 0))
-            .unwrap_or_default();
-        if kept != self.meta_kept {
-            self.meta_kept = kept;
-            self.meta_plot.invalidate();
-        }
-    }
-
-    /// The focused view's metagene under the current thresholds, `None`
-    /// until the layouts arrive or when no site is on a coding transcript.
-    fn meta_counts(&self) -> Option<MetaCounts<'_>> {
-        let m = self.view_meta()?;
-        Some(MetaCounts {
-            all: &m.all,
-            kept: &self.meta_kept,
-            regions: m.layout.region_bins(),
-            unassigned: m.layout.unassigned,
-        })
-    }
-
-    /// Why there is no metagene to draw.
-    fn meta_status(&self) -> String {
-        match &self.meta {
-            Meta::Unavailable(why) => why.clone(),
-            Meta::Pending(_) => "reading gene models ...".into(),
-            Meta::Ready(_) => "no site on a coding transcript".into(),
-        }
-    }
-
-    /// The metagene in the box `(x, y, w, h)`: all sites behind, the kept
-    /// sites in front.
-    fn draw_meta(
-        &self,
-        canvas: &mut Canvas,
-        m: &MetaCounts,
-        bbox: (f64, f64, f64, f64),
-        title: String,
-    ) {
-        let all: Vec<f64> = m.all.iter().map(|&v| v as f64).collect();
-        let kept: Vec<f64> = m.kept.iter().map(|&v| v as f64).collect();
-        Bars {
-            values: &all,
-            front: Some(&kept),
-            accent: &|_| false,
-            y_scale: Scale::Linear,
-            y_max: None,
-            ticks: meta_ticks(m.regions),
-            pointer: None,
-            marks: meta_marks(m.regions),
-            title,
-            x_title: "metagene position (MetaPlotR scale)".into(),
-            y_title: "sites".into(),
-        }
-        .draw(canvas, bbox.0, bbox.1, bbox.2, bbox.3);
-    }
-
-    fn render_meta(&mut self, frame: &mut Frame, area: Rect) {
-        let mut image = std::mem::take(&mut self.meta_plot);
-        self.draw_meta_panel(frame, area, &mut image);
-        self.meta_plot = image;
-    }
-
-    /// The metagene panel, drawn as an image into `image` where the
-    /// terminal shows images.
-    fn draw_meta_panel(&self, frame: &mut Frame, area: Rect, image: &mut PlotImage) {
-        let block = panel(" metagene: all sites behind, kept in front ".into(), true);
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-        let Some(m) = self.meta_counts() else {
-            frame.render_widget(
-                Paragraph::new(Line::from(Span::styled(self.meta_status(), DIM))),
-                inner,
-            );
-            return;
-        };
-        let [stats, plot] =
-            Layout::vertical([Constraint::Length(1), Constraint::Min(4)]).areas(inner);
-        let region_sum = |c: &[usize], r: usize| {
-            let start: usize = m.regions[..r].iter().sum();
-            c[start..start + m.regions[r]].iter().sum::<usize>()
-        };
-        let dim = |t: String| Span::styled(t, DIM);
-        let mut line = vec![dim("kept / all  ".into())];
-        for (r, name) in REGION_NAMES[..3].iter().enumerate() {
-            line.push(dim(format!("{name} ")));
-            line.push(Span::raw(format!(
-                "{}/{}   ",
-                region_sum(m.kept, r),
-                region_sum(m.all, r)
-            )));
-        }
-        line.push(dim(format!("off-transcript {}", m.unassigned)));
-        frame.render_widget(Paragraph::new(Line::from(line)), stats);
-
-        let drawn = self.controls.images().is_some_and(|picker| {
-            image.render(frame, plot, picker, |w, h| {
-                figure::svg(w, h, |c| {
-                    self.draw_meta(c, &m, (0.0, 0.0, w, h), String::new())
-                })
-            })
-        });
-        if drawn {
-            return;
-        }
-        let ticks = meta_ticks(m.regions);
-        let label = |k: i32| {
-            ticks
-                .iter()
-                .find(|(i, _)| *i as i32 == k)
-                .map(|(_, t)| t.clone())
-        };
-        HistPlot {
-            bins: Binning::with_width(Scale::Linear, 1.0),
-            kmin: 0,
-            counts: m.all,
-            style: &|_| PLAIN,
-            subset: Some(m.kept),
-            y_scale: Scale::Linear,
-            y_max: None,
-            pointer: None,
-            marks: Vec::new(),
-            x_label: Some(&label),
-            tick_every: Some(1),
-        }
-        .render(frame.buffer_mut(), plot);
+        .pin_genes(&[])
+        .with_refreshed_meta()
     }
 
     fn view(&self) -> &SiteView<'a> {
@@ -716,7 +257,8 @@ impl<'a> SitePicker<'a> {
 
     fn retally(&mut self) {
         self.tally = Tally::new(self.view(), self.criterion(), &self.column);
-        self.update_meta();
+        self.refresh_meta();
+        self.refresh_genes(false);
     }
 
     /// Rebuild the focused column, after a modality or focus change.
@@ -784,6 +326,7 @@ impl<'a> SitePicker<'a> {
         let c = self.criterion();
         let n = self.views.len() as isize;
         self.modality = (self.modality as isize + delta).rem_euclid(n) as usize;
+        self.refresh_genes(true);
         self.focus = self
             .view()
             .criteria
@@ -808,226 +351,10 @@ impl<'a> SitePicker<'a> {
         self.retally();
     }
 
-    fn criteria_lines(&self) -> Vec<Line<'static>> {
-        let dim = |t: String| Span::styled(t, DIM);
-        let mut lines = vec![
-            Line::from(dim(format!(
-                "  {:<15}{:>11}{:>21}",
-                "", "", "sites that fail"
-            ))),
-            Line::from(dim(format!(
-                "  {:<15}{:>11}{:>10}{:>11}",
-                "", "threshold", "this", "only this"
-            ))),
-        ];
-        for (j, &c) in self.view().criteria.iter().enumerate() {
-            let focused = j == self.focus;
-            let (value, value_style) = match c.shown(&self.filter) {
-                None => ("off".to_string(), DIM),
-                Some(v) => (v, if focused { HIGHLIGHT } else { PLAIN }),
-            };
-            lines.push(Line::from(vec![
-                Span::styled(if focused { "▸ " } else { "  " }, HIGHLIGHT),
-                Span::styled(
-                    format!("{:<15}", c.label()),
-                    if focused { HIGHLIGHT } else { PLAIN },
-                ),
-                Span::styled(format!("{value:>11}"), value_style),
-                Span::styled(format!("{:>10}", self.tally.fail[c as usize]), ACCENTED),
-                Span::styled(format!("{:>11}", self.tally.only[c as usize]), PLAIN),
-            ]));
-        }
-        let n = self.view().table.len();
-        lines.push(Line::from(""));
-        lines.push(Line::from(vec![
-            dim("  kept ".into()),
-            Span::styled(format!("{}", self.tally.kept), HIGHLIGHT),
-            dim(format!(" / {n} sites ({:.2}%)", pct(self.tally.kept, n))),
-        ]));
-        lines.push(Line::from(vec![
-            dim("  in ".into()),
-            Span::raw(format!("{}", self.tally.genes)),
-            dim(format!(" / {} genes", self.view().table.n_genes)),
-        ]));
-        lines.push(Line::from(""));
-        lines.extend(LEGEND.iter().map(|l| Line::from(dim(format!("  {l}")))));
-        lines
-    }
-
-    /// The current view as a figure: the threshold table beside the
-    /// focused column's histogram.
-    fn figure(&self) -> String {
-        let c = self.criterion();
-        let view = self.view();
-        let n = view.table.len();
-        let meta = self.meta_counts();
-        let height = if meta.is_some() { 560.0 } else { 340.0 };
-        let mut canvas = Canvas::new(720.0, height);
-        canvas.bold(16.0, 22.0, &self.title, 12.0, Anchor::Start, INK);
-        canvas.text(
-            16.0,
-            38.0,
-            &format!(
-                "{}: kept {} of {} sites ({:.2}%) in {} of {} genes",
-                view.table.modality,
-                self.tally.kept,
-                n,
-                pct(self.tally.kept, n),
-                self.tally.genes,
-                view.table.n_genes
-            ),
-            9.0,
-            Anchor::Start,
-            MUTED,
-        );
-
-        let (x0, mut y) = (16.0, 60.0);
-        let cols = [x0 + 150.0, x0 + 210.0, x0 + 280.0];
-        let over_counts = (cols[1] + cols[2]) / 2.0 - 12.0;
-        canvas.text(
-            over_counts,
-            y,
-            "sites that fail",
-            8.0,
-            Anchor::Middle,
-            MUTED,
-        );
-        for (&x, header) in cols.iter().zip(["threshold", "this", "only this"]) {
-            canvas.text(x, y + 10.0, header, 8.0, Anchor::End, MUTED);
-        }
-        y += 10.0;
-        for &k in &view.criteria {
-            y += 16.0;
-            let value = k.shown(&self.filter).unwrap_or_else(|| "off".into());
-            let colour = if k == c { figure::ACCENT } else { INK };
-            canvas.text(x0, y, k.label(), 9.0, Anchor::Start, colour);
-            canvas.text(cols[0], y, &value, 9.0, Anchor::End, colour);
-            let i = k as usize;
-            let counts = [self.tally.fail[i], self.tally.only[i]];
-            for (&x, n) in cols[1..].iter().zip(counts) {
-                canvas.text(x, y, &n.to_string(), 9.0, Anchor::End, INK);
-            }
-        }
-        y += 8.0;
-        for line in LEGEND {
-            y += 10.0;
-            canvas.text(x0, y, line, 7.5, Anchor::Start, MUTED);
-        }
-
-        let title = format!(
-            "{}: sites passing every other threshold in front",
-            c.label()
-        );
-        self.draw_hist(&mut canvas, (320.0, 50.0, 390.0, 280.0), title);
-        if let Some(m) = &meta {
-            let title = format!("{}: metagene, kept sites in front", view.table.modality);
-            self.draw_meta(&mut canvas, m, (320.0, 340.0, 390.0, 210.0), title);
-        }
-        canvas.finish()
-    }
-
     /// The histogram bin holding the focused threshold, `None` when off.
     fn pointer_key(&self) -> Option<i32> {
         let c = self.criterion();
         (!c.is_off(&self.filter)).then(|| self.column.key_of(c, c.get(&self.filter)))
-    }
-
-    /// The focused column's histogram in the box `(x, y, w, h)`, as the
-    /// export and the in-terminal image draw it.
-    fn draw_hist(&self, canvas: &mut Canvas, (x, y, w, h): (f64, f64, f64, f64), title: String) {
-        let c = self.criterion();
-        // Histogram ticks: the smallest value in about six bins.
-        let col = &self.column;
-        let (nb, lowest) = (col.lowest.len(), &col.lowest);
-        let every = (nb / 6).max(1);
-        let ticks = (0..nb)
-            .step_by(every)
-            .filter_map(|b| (b..nb).find(|&j| lowest[j].is_finite()))
-            .map(|b| (b, c.fmt_short(lowest[b])))
-            .collect::<Vec<_>>();
-        let key = self.pointer_key();
-        let pointer = key.map(|k| (k - col.hist.kmin) as usize);
-        let dropped = |b: usize| c.drops(col.hist.kmin + b as i32, key);
-        let values: Vec<f64> = col.hist.counts.iter().map(|&v| v as f64).collect();
-        let front: Vec<f64> = self.tally.subset.iter().map(|&v| v as f64).collect();
-        Bars {
-            values: &values,
-            front: Some(&front),
-            accent: &dropped,
-            y_scale: self.y_scale,
-            y_max: None,
-            ticks,
-            pointer,
-            marks: Vec::new(),
-            title,
-            x_title: format!("{} ({} bins)", c.axis(), self.scale().name()),
-            y_title: "sites".into(),
-        }
-        .draw(canvas, x, y, w, h);
-    }
-
-    fn render_hist(&mut self, frame: &mut Frame, area: Rect) {
-        let c = self.criterion();
-        let block = panel(format!(" {} ", c.axis()), true);
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-        let [stats, plot] =
-            Layout::vertical([Constraint::Length(2), Constraint::Min(5)]).areas(inner);
-
-        let col = &self.column;
-        let dim = |t: String| Span::styled(t, DIM);
-        let mut first = vec![
-            dim("min ".into()),
-            Span::raw(c.fmt_short(col.lo)),
-            dim("   max ".into()),
-            Span::raw(c.fmt_short(col.hi)),
-        ];
-        if col.n_inf > 0 {
-            first.push(dim(format!(
-                "   {} infinite, drawn at the end bin",
-                col.n_inf
-            )));
-        }
-        let front: usize = self.tally.subset.iter().sum();
-        let second = vec![
-            dim("front: ".into()),
-            Span::raw(front.to_string()),
-            dim(" sites passing every other threshold   ".into()),
-            Span::styled("accent", ACCENTED),
-            dim(" = dropped".into()),
-        ];
-        frame.render_widget(
-            Paragraph::new(vec![Line::from(first), Line::from(second)]),
-            stats,
-        );
-
-        let mut image = std::mem::take(&mut self.plot);
-        let drawn = self.controls.images().is_some_and(|picker| {
-            image.render(frame, plot, picker, |w, h| {
-                figure::svg(w, h, |c| self.draw_hist(c, (0.0, 0.0, w, h), String::new()))
-            })
-        });
-        self.plot = image;
-        if drawn {
-            return;
-        }
-        let col = &self.column;
-        let pointer = self.pointer_key();
-        let style = |k: i32| if c.drops(k, pointer) { ACCENTED } else { PLAIN };
-        HistPlot {
-            bins: col.hist.bins,
-            kmin: col.hist.kmin,
-            counts: &col.hist.counts,
-            style: &style,
-            subset: Some(&self.tally.subset),
-            y_scale: self.y_scale,
-            y_max: None,
-            pointer,
-            marks: Vec::new(),
-            x_label: None,
-            tick_every: None,
-        }
-        .render(frame.buffer_mut(), plot);
     }
 }
 
@@ -1043,8 +370,7 @@ impl Screen for SitePicker<'_> {
     fn tick(&mut self) -> bool {
         let arrived = self.meta.poll();
         if arrived {
-            self.meta_plot.invalidate();
-            self.update_meta();
+            self.refresh_meta();
         }
         arrived
     }
@@ -1078,7 +404,30 @@ impl Screen for SitePicker<'_> {
                 KeyCode::Esc => self.mode = Mode::Browse,
                 _ => {}
             },
+            Mode::Find => match key.code {
+                KeyCode::Char(ch) if self.list.find.len() < 32 => self.set_find(|f| f.push(ch)),
+                KeyCode::Backspace => self.set_find(|f| {
+                    f.pop();
+                }),
+                KeyCode::Enter => self.mode = Mode::Browse,
+                KeyCode::Esc => {
+                    self.set_find(String::clear);
+                    self.mode = Mode::Browse;
+                }
+                _ => {}
+            },
+            Mode::Confirm => match key.code {
+                KeyCode::Enter | KeyCode::Char('y') => {
+                    self.decision = Some(Picked::Apply(self.filter.clone()))
+                }
+                KeyCode::Esc | KeyCode::Char('n' | 'q') => self.mode = Mode::Browse,
+                _ => {}
+            },
             Mode::Browse => match key.code {
+                KeyCode::Char('[') => self.step_gene(-1),
+                KeyCode::Char(']') => self.step_gene(1),
+                KeyCode::Char('/') => self.mode = Mode::Find,
+                KeyCode::Char('c') => self.switch_weight(),
                 KeyCode::Up | KeyCode::Char('k') => self.move_focus(-1),
                 KeyCode::Down | KeyCode::Char('j') => self.move_focus(1),
                 KeyCode::Tab => self.switch_modality(1),
@@ -1093,7 +442,7 @@ impl Screen for SitePicker<'_> {
                 KeyCode::Char('y') => self.y_scale = self.y_scale.next(),
                 KeyCode::Char('e') => self.mode = Mode::Edit(String::new()),
                 KeyCode::Char(ch) if ch.is_ascii_digit() => self.mode = Mode::Edit(ch.to_string()),
-                KeyCode::Enter => self.decision = Some(Picked::Apply(self.filter.clone())),
+                KeyCode::Enter => self.mode = Mode::Confirm,
                 KeyCode::Char('p') => self.decision = Some(Picked::PrintOnly(self.filter.clone())),
                 KeyCode::Char('q') | KeyCode::Esc => self.decision = Some(Picked::Cancelled),
                 _ => {}
@@ -1123,17 +472,35 @@ impl Screen for SitePicker<'_> {
             let style = if i == self.modality { HIGHLIGHT } else { DIM };
             spans.push(Span::styled(format!("{}  ", v.table.modality), style));
         }
-        frame.render_widget(Line::from(spans), tabs);
+        let tabs_line = Line::from(spans);
+        // Keep the mark clear of the header's text and the modality tabs.
+        let reserve = (self.title.chars().count() + scales.chars().count() + 12)
+            .max(tabs_line.width()) as u16;
+        frame.render_widget(tabs_line, tabs);
+        let corner = Rect::new(top.x, top.y, top.width, 2);
+        crate::figure::logo::draw_mini_logo(frame.buffer_mut(), corner, reserve);
 
         let [left, right] =
             Layout::horizontal([Constraint::Length(56), Constraint::Fill(1)]).areas(body);
+        let table = self.criteria_lines();
+        let [table_area, genes] = Layout::vertical([
+            Constraint::Length(table.len() as u16 + 2),
+            Constraint::Fill(1),
+        ])
+        .areas(left);
         let block = panel(" site thresholds ".into(), false);
-        let inner = block.inner(left);
-        frame.render_widget(block, left);
-        frame.render_widget(Paragraph::new(self.criteria_lines()), inner);
-        let [hist, meta] =
-            Layout::vertical([Constraint::Fill(3), Constraint::Fill(2)]).areas(right);
+        let inner = block.inner(table_area);
+        frame.render_widget(block, table_area);
+        frame.render_widget(Paragraph::new(table), inner);
+        self.render_gene_list(frame, genes);
+        let [hist, gene, meta] = Layout::vertical([
+            Constraint::Fill(3),
+            Constraint::Fill(2),
+            Constraint::Fill(2),
+        ])
+        .areas(right);
         self.render_hist(frame, hist);
+        self.render_gene(frame, gene);
         self.render_meta(frame, meta);
 
         let help = match (&self.mode, self.controls.footer()) {
@@ -1142,6 +509,14 @@ impl Screen for SitePicker<'_> {
                 &format!("{} {}: ", self.criterion().label(), self.criterion().flag()),
                 buf,
                 &[("Enter", "set"), ("Esc", "back")],
+            ),
+            (Mode::Confirm, None) => {
+                help_line(&[("Enter/y", "apply and write"), ("Esc/n", "back")])
+            }
+            (Mode::Find, None) => input_line(
+                "gene: ",
+                &self.list.find,
+                &[("Enter", "keep"), ("Esc", "clear")],
             ),
             (Mode::Browse, None) => {
                 let mut keys = vec![
@@ -1160,6 +535,9 @@ impl Screen for SitePicker<'_> {
             }
         };
         frame.render_widget(help, footer);
+        if matches!(self.mode, Mode::Confirm) {
+            self.render_confirm(frame, body);
+        }
     }
 }
 
@@ -1184,6 +562,8 @@ pub fn run_site_picker(
     site_cells: &FxHashMap<Box<str>, FxHashMap<Box<str>, usize>>,
     filter: &SiteFilterArgs,
     gff: Option<&str>,
+    pinned: &[Box<str>],
+    output: &str,
 ) -> anyhow::Result<Picked> {
     if !tui_available() {
         log::warn!("--interactive needs stdin and stdout on a terminal; skipping the view");
@@ -1203,8 +583,15 @@ pub fn run_site_picker(
         return Ok(Picked::Skipped);
     }
     let batches = views.iter().map(|v| v.table.batch.clone()).collect();
-    let meta = Meta::start(gff, batches);
-    let mut picker = SitePicker::new(&file_name(input_dir), views, filter.clone(), meta);
+    let keys = views
+        .iter()
+        .filter_map(|v| v.genes.as_ref())
+        .flat_map(|g| g.keys.iter().cloned())
+        .collect();
+    let meta = Meta::start(gff, batches, keys);
+    let mut picker =
+        SitePicker::new(&file_name(input_dir), views, filter.clone(), meta).pin_genes(pinned);
+    picker.output = output.to_string();
     picker.controls = Controls::new("qc_sites").detect();
     data_beans::interactive::ui::run_screen(&mut picker)?;
     Ok(picker.decision.unwrap_or(Picked::Cancelled))

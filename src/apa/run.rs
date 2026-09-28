@@ -268,9 +268,8 @@ pub struct CountApaArgs {
         long_help = "UTRs shorter than this are skipped. Only used in mixture mode.\n\
                      \n\
                      The length is SPLICED: the merged annotated exons summed.\n\
-                     A first-base-to-last-base span is not the same thing.\n\
-                     It runs a mean 6.4x longer (p90 12.4x). Such a span swallows introns.\n\
-                     In 46% of genes it also reaches back into the CDS.\n\
+                     A first-base-to-last-base span is not the same thing:\n\
+                     it swallows introns and can reach back into the CDS.\n\
                      APA measures WHERE in the 3'UTR a poly(A) site sits.\n\
                      So that span is the wrong coordinate, not just a wrong length.\n\
                      \n\

@@ -85,6 +85,43 @@ impl SiteTable {
     }
 }
 
+/// A site table's sites grouped by gene, for the picker's gene view.
+pub struct GeneSites {
+    /// `{gene_id}_{symbol}` by the table's dense gene id.
+    pub keys: Vec<Box<str>>,
+    /// Row indices of each gene's sites, by dense gene id.
+    pub rows: Vec<Vec<u32>>,
+    /// Each row's `primary_pos` (the table's column, shared, not copied).
+    pub pos: Int64Array,
+}
+
+impl GeneSites {
+    pub fn new(t: &SiteTable) -> anyhow::Result<Self> {
+        let gene: &StringArray = col(&t.batch, "gene")?;
+        let pos: &Int64Array = col(&t.batch, "primary_pos")?;
+        let mut keys: Vec<Box<str>> = vec!["".into(); t.n_genes];
+        let mut rows = vec![Vec::new(); t.n_genes];
+        for (i, &g) in t.gene_id.iter().enumerate() {
+            let g = g as usize;
+            if rows[g].is_empty() {
+                keys[g] = gene.value(i).into();
+            }
+            rows[g].push(i as u32);
+        }
+        Ok(Self {
+            keys,
+            rows,
+            pos: pos.clone(),
+        })
+    }
+
+    /// The symbol part of a gene's key, for display.
+    pub fn symbol(&self, g: usize) -> &str {
+        let k = &self.keys[g];
+        k.split_once('_').map_or(k, |(_, s)| s)
+    }
+}
+
 /// Each row of a site table as a site for
 /// [`crate::site_analysis::metagene::MetaModels`], in row order, at
 /// `primary_pos` as `faba metagene` reads it.
