@@ -391,11 +391,7 @@ fn merge_close_sites(
 
     // Refit weights on the surviving subset.
     keep.sort_by(|&a, &b| cmp_f32(result.alphas[a], result.alphas[b]));
-    let n_frag = if n_candidates == 0 {
-        0
-    } else {
-        all_site_lls.len() / n_candidates
-    };
+    let n_frag = all_site_lls.len().checked_div(n_candidates).unwrap_or(0);
     let kept_alphas: Vec<f32> = keep.iter().map(|&i| result.alphas[i]).collect();
     let kept_betas: Vec<f32> = keep.iter().map(|&i| result.betas[i]).collect();
     let n_total = keep.len() + 1;

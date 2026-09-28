@@ -18,7 +18,7 @@ use genomic_data::gff::GffRecordMap;
 
 use rayon::ThreadPoolBuilder;
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, serde::Serialize)]
 pub struct DartSeqCountArgs {
     #[arg(
         value_delimiter = ',',
@@ -124,6 +124,7 @@ pub struct DartSeqCountArgs {
         long_help = "Filter analysis by gene type. Options include protein_coding, pseudogene,\n\
                      or lncRNA."
     )]
+    #[serde(serialize_with = "crate::run_record::ser_debug")]
     gene_type: Option<GffGeneType>,
 
     #[arg(
@@ -143,6 +144,7 @@ pub struct DartSeqCountArgs {
         help = "Sparse matrix backend (zarr or hdf5)",
         long_help = "File format for the output sparse matrix. Supported: zarr, hdf5."
     )]
+    #[serde(serialize_with = "crate::run_record::ser_debug")]
     pub backend: SparseIoBackend,
 
     #[arg(
@@ -398,6 +400,21 @@ pub struct DartSeqCountArgs {
         help = "Disable UMI deduplication"
     )]
     pub no_umi_dedup: bool,
+}
+
+impl DartSeqCountArgs {
+    /// A record of this run: its inputs and every option.
+    pub fn run_record(&self) -> crate::run_record::RunRecord {
+        crate::run_record::RunRecord::start("dartseq", &self.output)
+            .inputs("bam", &self.wt_bam_files)
+            .inputs("control_bam", &self.control_bam_files)
+            .input("gff", Some(&self.gff_file))
+            .input("genome", Some(&self.genome_file))
+            .input("cell_membership", self.cell_membership_file.as_deref())
+            .input("valid_cells", self.valid_cells_file.as_deref())
+            .input("valid_genes", self.valid_genes_file.as_deref())
+            .options(self)
+    }
 }
 
 /// Create m6A ConversionParams from DartSeqCountArgs

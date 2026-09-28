@@ -177,11 +177,21 @@ pub struct QcArgs {
         help = "Pick the site thresholds in a full-screen view before cutting (needs a terminal)",
         long_help = "Pick the site thresholds in a full-screen view before cutting.\n\
                      The view starts from the --site-* values given, shows each knob's column\n\
-                     as a histogram with live kept and dropped counts, and Enter applies the\n\
-                     thresholds on screen. Needs stdin and stdout on a terminal; otherwise the\n\
-                     --site-* values are used as given."
+                     as a histogram with live kept and dropped counts, and a metagene of all\n\
+                     and kept sites below it. Enter applies the thresholds on screen.\n\
+                     Needs stdin and stdout on a terminal; otherwise the --site-* values are\n\
+                     used as given."
     )]
     pub interactive: bool,
+
+    #[arg(
+        long = "gff",
+        help = "Annotation for the --interactive metagene (default: the one recorded in the input directory)",
+        long_help = "Gene annotation GFF/GTF for the --interactive metagene.\n\
+                     Without it, the GFF recorded in the input directory's `*.run.json` is used;\n\
+                     with neither, the view has no metagene."
+    )]
+    pub gff: Option<Box<str>>,
 
     #[command(flatten)]
     pub site: SiteFilterArgs,

@@ -3,7 +3,7 @@ use crate::data::util_htslib::*;
 use crate::gene_count::splice::CountReadOpts;
 
 /// simply count the occurence of gene and cell barcode
-#[derive(Args, Debug)]
+#[derive(Args, Debug, serde::Serialize)]
 pub struct GeneCountArgs {
     /// Input BAM file(s), comma-separated
     #[arg(
@@ -104,6 +104,7 @@ pub struct GeneCountArgs {
         help = "Sparse matrix output backend",
         long_help = "File format for the output sparse matrix. Supported: zarr, hdf5."
     )]
+    #[serde(serialize_with = "crate::run_record::ser_debug")]
     pub(crate) backend: SparseIoBackend,
 
     #[arg(
@@ -153,6 +154,16 @@ pub struct GeneCountArgs {
 
     #[command(flatten)]
     pub(crate) mito_qc: crate::quant::MitoQcArgs,
+}
+
+impl GeneCountArgs {
+    /// A record of this run: its inputs and every option.
+    pub fn run_record(&self) -> crate::run_record::RunRecord {
+        crate::run_record::RunRecord::start("count", &self.output)
+            .inputs("bam", &self.bam_files)
+            .input("gff", Some(&self.gff_file))
+            .options(self)
+    }
 }
 
 impl GeneCountArgs {

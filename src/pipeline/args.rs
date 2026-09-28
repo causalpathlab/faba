@@ -6,14 +6,6 @@
 
 use crate::common::*;
 
-/// Serialize a field by its `Debug` form — for foreign enums that carry no `Serialize`.
-pub(super) fn ser_debug<T: std::fmt::Debug, S: serde::Serializer>(
-    v: &T,
-    s: S,
-) -> Result<S::Ok, S::Error> {
-    s.serialize_str(&format!("{v:?}"))
-}
-
 #[derive(Args, Debug, serde::Serialize)]
 pub struct PipelineArgs {
     // Required inputs
@@ -85,7 +77,7 @@ pub struct PipelineArgs {
     )]
     // `SparseIoBackend` is data-beans' and does not implement `Serialize`; it is a plain
     // enum, so its `Debug` form ("Zarr" / "Hdf5") is exactly what belongs in the summary.
-    #[serde(serialize_with = "ser_debug")]
+    #[serde(serialize_with = "crate::run_record::ser_debug")]
     pub backend: SparseIoBackend,
 
     #[arg(
@@ -343,8 +335,9 @@ pub struct PipelineArgs {
                      Only the gene-level and per-site matrices are produced then.\n\
                      \n\
                      For m6A / A-to-I this SKIPS the 1-D Gaussian mixture EM entirely when off.\n\
-                     For APA the SCAPE poly-A fit always runs (PDUI needs it to identify proximal vs distal),\n\
-                     so this gates only the extra `_apa_mixture` component-matrix output."
+                     For APA it also runs the SCAPE poly-A EM and writes `_apa_mixture`;\n\
+                     when off, PDUI takes proximal and distal sites from a fast split of read\n\
+                     positions, with no EM."
     )]
     pub mixture: bool,
 

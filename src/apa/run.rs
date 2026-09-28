@@ -11,7 +11,7 @@ use genomic_data::sam::CellBarcode;
 use rayon::ThreadPoolBuilder;
 
 /// APA quantification method
-#[derive(clap::ValueEnum, Clone, Debug, Default)]
+#[derive(clap::ValueEnum, Clone, Debug, Default, serde::Serialize)]
 pub enum ApaMethod {
     /// Pileup-based poly-A site counting (fast, no EM)
     Simple,
@@ -20,7 +20,7 @@ pub enum ApaMethod {
     Mixture,
 }
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, serde::Serialize)]
 pub struct CountApaArgs {
     /// Input BAM file(s), comma-separated
     #[arg(
@@ -163,6 +163,7 @@ pub struct CountApaArgs {
         help = "Sparse matrix output backend",
         long_help = "File format for the output sparse matrix. Supported: zarr, hdf5."
     )]
+    #[serde(serialize_with = "crate::run_record::ser_debug")]
     pub(crate) backend: SparseIoBackend,
 
     #[arg(
@@ -238,6 +239,7 @@ pub struct CountApaArgs {
                      mixture mode filters the GFF records while building UTRs. Common values:\n\
                      protein_coding, pseudogene, lncRNA."
     )]
+    #[serde(serialize_with = "crate::run_record::ser_debug")]
     pub(crate) gene_type: Option<GffGeneType>,
 
     ///////////////////////////////
@@ -369,23 +371,23 @@ pub struct CountApaArgs {
     )]
     pub(crate) min_ws: f32,
 
-    /// Minimum fragments per UTR (mixture mode)
+    /// Minimum fragments per UTR
     #[arg(
         long,
         default_value_t = 50,
-        help = "Min fragments per UTR (mixture mode)",
-        long_help = "UTRs with fewer than this many fragments are skipped.\n\
-                     Only used in mixture mode."
+        help = "Min fragments per UTR",
+        long_help = "UTRs with fewer than this many fragments are skipped,\n\
+                     on the fast PDUI path and in mixture mode alike."
     )]
     pub(crate) min_fragments: usize,
 
-    /// Merge distance for nearby pA sites in bp (mixture mode)
+    /// Merge distance for nearby pA sites in bp
     #[arg(
         long,
         default_value_t = 50.0,
-        help = "pA site merge distance (bp, mixture mode)",
+        help = "pA site merge distance (bp)",
         long_help = "Candidate pA sites within this distance are merged into a single site.\n\
-                     Only used in mixture mode."
+                     On the fast PDUI path it is the smallest gap that splits two clusters."
     )]
     pub(crate) merge_distance: f32,
 
@@ -510,10 +512,12 @@ pub struct CountApaArgs {
 
     /// Valid gene IDs from gene count QC (pipeline mode or QC step)
     #[arg(skip)]
+    #[serde(skip)]
     pub(crate) valid_gene_ids: Option<rustc_hash::FxHashSet<GeneId>>,
 
     /// Per-batch valid cell barcodes from gene count QC (pipeline mode or QC step)
     #[arg(skip)]
+    #[serde(skip)]
     pub(crate) valid_cell_barcodes:
         Option<rustc_hash::FxHashMap<Box<str>, rustc_hash::FxHashSet<CellBarcode>>>,
 
@@ -533,6 +537,19 @@ pub struct CountApaArgs {
     /// Reuse the retained-gene set from `faba count` (its pooled `genes_kept.tsv.gz`)
     #[arg(long = "valid-genes")]
     pub(crate) valid_genes_file: Option<Box<str>>,
+}
+
+impl CountApaArgs {
+    /// A record of this run: its inputs and every option.
+    pub fn run_record(&self) -> crate::run_record::RunRecord {
+        crate::run_record::RunRecord::start("apa", &self.output)
+            .inputs("bam", &self.bam_files)
+            .input("gff", self.gff_file.as_deref())
+            .input("utr_bed", self.utr_bed.as_deref())
+            .input("valid_cells", self.valid_cells_file.as_deref())
+            .input("valid_genes", self.valid_genes_file.as_deref())
+            .options(self)
+    }
 }
 
 impl CountApaArgs {

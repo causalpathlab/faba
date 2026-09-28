@@ -17,7 +17,8 @@ use genomic_data::gff::{GeneId, GffRecordMap};
 /// Run per-gene 1D Gaussian mixture model on discovered sites and output results.
 ///
 /// For each gene, collects cell-level observations from the second-pass stats,
-/// fits a GMM via BIC model selection, and outputs:
+/// calls components from the modes of a smoothed site density (capped at
+/// `max_k`; no BIC selection), fits them by EM, and outputs:
 /// - A sparse (cells x mixture_components) count matrix
 ///   with feature IDs like `GENE/m6A/0`, `GENE/A2I/1`
 /// - A `{m6a,atoi}_components.parquet` file
@@ -387,7 +388,7 @@ pub fn run_mixture_model(
         let out = params.backend_output_path(&format!("{}_{}", batch_name, mod_tag));
         let data = format_data_triplets(trip).to_backend(&out.write_path)?;
         all_rows.extend(data.row_names()?);
-        info!("Mixture model: created {}", &out.target_path);
+        info!("Mixture model: created {}", out.target_path);
         drop(data);
         // Defer finalize() until rows are reordered on the staging .zarr.
         out_files.push(out);
@@ -410,7 +411,7 @@ pub fn run_mixture_model(
         };
         write_mixture_annotations(
             &annotations,
-            &format!("{}/{}.parquet", &params.output, components_name),
+            &format!("{}/{}.parquet", params.output, components_name),
         )?;
     }
 

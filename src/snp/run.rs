@@ -8,7 +8,7 @@ use genomic_data::gff::GeneType as GffGeneType;
 use genomic_data::gff::GffRecordMap;
 use rayon::ThreadPoolBuilder;
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, serde::Serialize)]
 pub struct SnpArgs {
     /// Input BAM files (comma-separated).
     /// For 10x data, these should be the possorted_genome_bam.bam files.
@@ -288,6 +288,7 @@ pub struct SnpArgs {
         long_help = "Format for per-cell sparse matrices. zarr:\n\
                      Zarr v2 store (default, faster for large datasets) hdf5: HDF5 file (.h5)"
     )]
+    #[serde(serialize_with = "crate::run_record::ser_debug")]
     pub backend: SparseIoBackend,
 
     #[arg(
@@ -322,6 +323,7 @@ pub struct SnpArgs {
                      Only genes matching this type are processed.\n\
                      Ignored when --gff is not provided."
     )]
+    #[serde(serialize_with = "crate::run_record::ser_debug")]
     gene_type: Option<GffGeneType>,
 
     /// Maximum number of threads for parallel processing.
@@ -334,6 +336,18 @@ pub struct SnpArgs {
                      Capped at the number of available CPU cores."
     )]
     max_threads: usize,
+}
+
+impl SnpArgs {
+    /// A record of this run: its inputs and every option.
+    pub fn run_record(&self) -> crate::run_record::RunRecord {
+        crate::run_record::RunRecord::start("snp", &self.output)
+            .inputs("bam", &self.bam_files)
+            .input("genome", Some(&self.genome_file))
+            .input("gff", self.gff_file.as_deref())
+            .input("known_snps", self.known_snps.as_deref())
+            .options(self)
+    }
 }
 
 /// Run SNP genotyping at known variant sites and/or de novo discovery.

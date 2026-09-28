@@ -713,3 +713,44 @@ fn dist_measures_writes_metaplotr_columns_and_distances() {
     assert_eq!((row[11], row[12], row[13]), ("100", "203", "97"));
     assert!(lines.next().is_none(), "exactly one assignment expected");
 }
+
+///////////////////////////
+// Fixed layout, subsets //
+///////////////////////////
+
+#[test]
+fn a_subset_is_counted_on_the_full_set_axis() {
+    let records = two_exon_tx("T1", "GENE1", Strand::Forward);
+    let models = MetaModels::from_records(&records);
+    // 5'UTR, CDS (two), 3'UTR, and one off any transcript.
+    let positions = [1050, 1150, 1550, 1650, 5000];
+    let sites: Vec<GenomicSite> = positions
+        .iter()
+        .map(|&p| site(p, Strand::Forward))
+        .collect();
+    let layout = models
+        .layout(&sites, 30)
+        .expect("sites on a coding transcript");
+    assert_eq!(layout.unassigned, 1);
+    assert_eq!(layout.region_bins().iter().sum::<usize>(), 30);
+
+    let all = layout.counts(|_| true);
+    assert_eq!(all.iter().sum::<usize>(), 4);
+    // Keeping only the CDS sites leaves the axis as it was.
+    let cds_only = layout.counts(|i| i == 1 || i == 2);
+    assert_eq!(cds_only.len(), all.len());
+    assert_eq!(cds_only.iter().sum::<usize>(), 2);
+    let [utr5, cds, _] = layout.region_bins();
+    assert_eq!(cds_only[utr5..utr5 + cds].iter().sum::<usize>(), 2);
+    assert!(cds_only.iter().zip(&all).all(|(k, a)| k <= a));
+    assert!(layout.counts(|_| false).iter().all(|&n| n == 0));
+}
+
+#[test]
+fn no_layout_without_a_coding_placement() {
+    let records = two_exon_tx("T1", "GENE1", Strand::Forward);
+    let models = MetaModels::from_records(&records);
+    // Wrong strand: placement is same-strand only.
+    let sites = [site(1150, Strand::Backward)];
+    assert!(models.layout(&sites, 30).is_none());
+}

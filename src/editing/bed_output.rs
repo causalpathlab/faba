@@ -47,7 +47,7 @@ pub fn process_all_bam_files_to_bed(
                 .then_with(|| a.0.cmp(&b.0))
         });
 
-        let bed_path = format!("{}/{}.bed.gz", &params.output, batch_name);
+        let bed_path = format!("{}/{}.bed.gz", params.output, batch_name);
         write_bed(
             &stats,
             gff_map,
@@ -95,10 +95,10 @@ pub fn write_bed(
             let gene_string = gff_map
                 .get(&bg.gene)
                 .map(|gff| match gff.gene_name {
-                    GeneSymbol::Symbol(x) => format!("{}_{}", &bg.gene, x),
-                    GeneSymbol::Missing => format!("{}", &bg.gene),
+                    GeneSymbol::Symbol(x) => format!("{}_{}", bg.gene, x),
+                    GeneSymbol::Missing => format!("{}", bg.gene),
                 })
-                .unwrap_or_else(|| format!("{}", &bg.gene));
+                .unwrap_or_else(|| format!("{}", bg.gene));
 
             if output_cell_types {
                 if let Some(membership) = cell_membership {

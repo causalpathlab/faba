@@ -321,7 +321,13 @@ fn qc_filters_cells_sites_and_repools_gene_level() {
     }
     assert_eq!(sums, [8.0, 12.0]);
 
-    assert!(std::path::Path::new(&format!("{output}/pipeline_summary.json")).exists());
+    // The input's run records describe the input: qc writes its own instead.
+    assert!(!std::path::Path::new(&format!("{output}/pipeline_summary.json")).exists());
+    let record: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(format!("{output}/qc.run.json")).unwrap())
+            .unwrap();
+    assert_eq!(record["status"], "ok");
+    assert!(record["inputs"]["fileset"]["path"].is_string());
     assert!(std::path::Path::new(&format!("{output}/b1_cells.tsv.gz")).exists());
     assert!(std::path::Path::new(&format!("{output}/qc_summary.tsv")).exists());
 }

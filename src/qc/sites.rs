@@ -8,6 +8,7 @@
 
 use std::sync::Arc;
 
+use crate::site_analysis::site_io::{parse_strand, GenomicSite};
 use arrow::array::{
     Array, ArrayRef, BooleanArray, Float32Array, Int64Array, StringArray, UInt64Array,
 };
@@ -82,6 +83,22 @@ impl SiteTable {
             .map(|k| acc.get(k).copied().unwrap_or(0))
             .collect()
     }
+}
+
+/// Each row of a site table as a site for
+/// [`crate::site_analysis::metagene::MetaModels`], in row order, at
+/// `primary_pos` as `faba metagene` reads it.
+pub fn genomic_sites(batch: &RecordBatch) -> anyhow::Result<Vec<GenomicSite>> {
+    let chr: &StringArray = col(batch, "chr")?;
+    let pos: &Int64Array = col(batch, "primary_pos")?;
+    let strand: &StringArray = col(batch, "strand")?;
+    Ok((0..batch.num_rows())
+        .map(|i| GenomicSite {
+            chr: chr.value(i).into(),
+            position: pos.value(i),
+            strand: parse_strand(strand.value(i)),
+        })
+        .collect())
 }
 
 fn col<'a, T: 'static>(batch: &'a RecordBatch, name: &str) -> anyhow::Result<&'a T> {

@@ -127,11 +127,7 @@ pub fn fixed_em_weighted(
     params: &EmParams,
 ) -> FixedEmResult {
     let n_total = n_components;
-    let n_obs = if n_total == 0 {
-        0
-    } else {
-        component_log_liks.len() / n_total
-    };
+    let n_obs = component_log_liks.len().checked_div(n_total).unwrap_or(0);
     debug_assert_eq!(
         component_log_liks.len(),
         n_obs * n_total,

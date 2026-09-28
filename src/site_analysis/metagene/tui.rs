@@ -19,13 +19,10 @@ use ratatui::Frame;
 use crate::figure::term::PlotImage;
 use crate::figure::{self, Anchor, Bars, Canvas, Controls, Key, INK, MUTED};
 
-use super::{GeneFeatureHistogram, CDS, NCRNA, UTR3, UTR5};
+use super::{GeneFeatureHistogram, CDS, NCRNA, REGION_NAMES, UTR3, UTR5};
 
 /// Width of HistPlot's y gutter.
 const GUTTER: u16 = 6;
-
-/// On-screen region names (the TSV's `FEATURE_LABELS` avoid apostrophes).
-const REGION_NAMES: [&str; 4] = ["5'UTR", "CDS", "3'UTR", "ncRNA"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Track {

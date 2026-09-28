@@ -13,20 +13,26 @@ than off the help text (where the two disagreed, §10 says so). References are c
 **Reading the BAM.** Reads are dropped if the duplicate flag is set. The pileup-based modalities
 (m6A, A-to-I, SNP) additionally require `MAPQ ≥ --min-mapping-quality` (20), drop secondary and
 supplementary alignments, drop paired reads that are not properly paired, and require each
-individual base to have `Phred ≥ --min-base-quality` (20). **`faba count` and `faba depth` do
-not apply those filters** — they take every non-duplicate read with a gene tag. That asymmetry is
-deliberate (counting wants sensitivity, variant calling wants specificity) but it is worth stating
-in a write-up rather than leaving for a reader to discover.
+individual base to have `Phred ≥ --min-base-quality` (20). **`faba count`** applies the same MAPQ
+floor and also drops secondary, supplementary and unmapped alignments, but has no proper-pair or
+base-quality check. **`faba apa`** applies the MAPQ floor too. **`faba depth`** applies none of
+these: it takes every non-duplicate read in a bin, with no MAPQ or gene-tag check. The asymmetry
+is deliberate (counting wants sensitivity, variant calling wants specificity) but it is worth
+stating in a write-up rather than leaving for a reader to discover.
 
 **Counting molecules, not reads.** Reads carrying the same UMI (`--umi-tag`, `UB`) are collapsed
 to one observation per cell per gene, in the manner of UMI-tools [7]. `--no-umi-dedup` turns this
-off. This is *separate from*, and on top of, the duplicate-flag filter.
+off. This is *separate from*, and on top of, the duplicate-flag filter. `faba depth` is the
+exception: it counts reads and has no UMI collapse.
 
 **Which cells are real.** Every modality inherits one cell set, called by `faba count` (§5).
 
 **Nothing is thresholded by the producers.** Every subcommand in §2–§6 writes every called cell,
 every gene with a count, and every putative site with its statistics. The only floors are the
-candidacy floors that keep an all-zero row from existing. p-values, odds ratios, edit ratios,
+candidacy floors that keep an all-zero row from existing, with two exceptions: `apa` drops rows
+with fewer than `--row-nnz-cutoff` (10) non-zero cells, and standalone `depth` drops bins and
+cells with fewer than 10 non-zeros (`--row-nnz-cutoff`, `--column-nnz-cutoff`; `faba all` passes
+0 for both). p-values, odds ratios, edit ratios,
 cells-per-site and nnz cutoffs are `faba qc` flags (§8), applied to stored columns, and
 `faba qc-report` shows what each one keeps before it is applied.
 
@@ -153,6 +159,34 @@ transcript, matching the stop-codon enrichment in §7. Under the old axis that f
 interpretable. Sites with no transcript position are dropped from the fit rather than nudged onto
 the nearest exon, and the count is logged.
 
+### 1.3 Run records: what each run read and wrote
+
+Every producer (`dartseq`, `atoi`, `apa`, `count`, `depth`, `snp`) writes `{job}.run.json` into
+its output directory, and so does `qc`. `faba all` writes one per step under the same names
+(`snp`, `count`, `depth`, `atoi`, `dartseq`, `apa`) and `pipeline_summary.json` for the whole
+run. A record holds the faba version, the command line, the working directory, `status` (`ok`, or
+`failed: ` and the error; a failed `all` step still leaves its record), the elapsed time, the
+`inputs` (`bam`, `control_bam`, `gff`, `genome`, `known_snps`, ...), the
+`outputs`, and every effective option, defaults included. Each input has a `path`, absolute
+with symlinks kept as given, and, when a symlink makes them differ, a `resolved` path: the file
+actually read.
+
+`outputs` is not a hand-kept list. The output directory is listed when the run starts, and
+every top-level entry that is new or rewritten when it ends is an output. A rerun into the same
+directory records only what it rewrote.
+
+The tools that read an output directory use the records to find the annotation and genome:
+`pileup` takes the GFF for its gene models (browser and figure) when `--gtf` is not given,
+`metagene` takes it when `-g` is not given, and `pwm --source reference` takes the genome when
+`-f` is not given. The newest record in the directory that names an existing file wins, and the
+file used is logged. Of the two paths, `path` is used while it still leads to `resolved`. If the
+link has been repointed since the run, or removed, `resolved` is used instead, because that is
+the file the outputs were made from, and a repointed link is warned about. `qc` does not copy the input's records, which describe the input directory,
+into the new fileset. Its own record names that directory as `fileset`, carries its `gff` and
+`genome` forward, and replaces the `--site-*` options with the
+thresholds actually applied (after `--interactive`). A `qc` run cancelled before writing leaves
+no record, so the empty output directory can be reused.
+
 ---
 
 ## 2. `dartseq` — m6A methylation
@@ -225,7 +259,7 @@ activity would select on background and inflate the null. There is no off switch
 discovering on cells where the reporter never worked is not an alternative analysis,
 just a diluted one. The scan no-ops on its own when there is no control arm to
 calibrate against (A-to-I, or m6A run without `--control-bam`). A per-cell audit goes
-to `{output}_m6a_cell_qc.tsv.gz`, with `scored` separating "assessed and rejected" from
+to `{output}/{batch}_m6a_cell_qc.tsv.gz`, one per batch, with `scored` separating "assessed and rejected" from
 "too little coverage to assess". `faba dartseq` and `faba all` share the same knobs, so
 the two paths cannot drift.
 
@@ -362,7 +396,7 @@ at the tens of thousands of putative sites of one library, i.e. calling almost n
 indefensible option. Two further measurements point the same way: BH was running on p-values that are
 not uniform under H₀ (a site only exists once it clears `--min-conversion`, so the null tail is
 truncated away), and on the post-guard subset. That second objection is *stronger* now than it was:
-the subset is filtered by `--m6a-min-log-odds`, which is monotone in a monotone transform of the
+the subset would be filtered by `faba qc --site-min-log-odds`, which is monotone in a monotone transform of the
 Fisher statistic itself rather than merely correlated with it as the old delta guard was, so the
 conditioning deflates every q by roughly #eligible/#putative and is even harder to defend. This
 matches the field: Bullseye and scDART call sites by thresholds plus control fold and replicate
@@ -410,9 +444,9 @@ real but it was competence-structured, not cell-type-structured, which is why th
 above recovers it — 18 → 66 reproducible sites — and the expression grouping did not.
 
 **Quantification.** A second pass counts, per cell and per site, converted and unconverted reads.
-Sites seen in fewer than `--site-min-cells` (10) cells are dropped — this is the **reproducibility**
-control, the single-cell analogue of the field's replicate-concordance requirement (scDART-seq keeps
-a site only if seen in ≥ 10 cells). **Only cells with at least one converted read at a site
+Every putative site is kept here. The **reproducibility** control, the single-cell analogue of the
+field's replicate-concordance requirement (scDART-seq keeps a site only if seen in ≥ 10 cells), is
+`faba qc --site-min-cells` (§8), applied to the written matrices. **Only cells with at least one converted read at a site
 contribute a row** — worth stating, because it means the zeros in the matrix are structural, not
 observed.
 
@@ -463,7 +497,8 @@ kept, stopping after two consecutive increases. Nearby sites are then merged if 
 Cells are assigned to components by hard argmax and UMI-deduplicated.
 
 **The fast default path.** When only PDUI is wanted (the default: `--no-pdui` off, `--mixture`
-off), the EM is skipped entirely. Read 3′-ends are clustered by **recursive bisection at the
+off, `--apa-em-pdui` off), the EM is skipped entirely. A UTR needs at least `--min-fragments` (50)
+fragments, on this path as in mixture mode. Read 3′-ends are clustered by **recursive bisection at the
 largest gap** that still leaves `≥ --min-coverage` (10) reads on each side, gaps below
 `--merge-distance` (50 bp) are not split, and the top two clusters are kept — provided the
 runner-up carries at least 2% of the dominant cluster's mass. Fragments are then assigned to the
@@ -572,10 +607,13 @@ None of these fit a model or produce a p-value.
 
 - **`depth`** bins the genome at `--resolution-kb` and counts, per cell, the **number of reads
   overlapping each bin** (via an interval tree) — not per-base coverage.
-- **`pwm`** collects base counts in a ± `--window` (10) bp window around called sites, reverse-
-  complementing minus-strand sites. The output is a base-frequency matrix, not a log-odds PWM.
-- **`pileup`** renders one gene's sites as an ASCII histogram, or (with `--gtf`/`--bam`) a faceted
-  Miami plot: sites above, gene model in the middle, read depth below, one panel per cell type.
+- **`pwm`** collects base counts in a ± `--window` (10) bp window around every site in the parquet,
+  reverse-complementing minus-strand sites. Bases come from the reference FASTA by default
+  (`--source reference`) or from the reads (`--source reads`). The output is a base-frequency
+  matrix, not a log-odds PWM.
+- **`pileup`** aggregates the matrix rows matched by `--genes` and/or `--regions` into one ASCII
+  histogram, or (with `--gtf`, `--bam`, `--format`, `--svg` or `--png`) a faceted Miami plot:
+  sites above, gene model in the middle, read depth below, one panel per cell type.
 - **`metagene`** follows MetaPlotR [19], so its output can be held against published m6A profiles.
   Each site is placed on **one elected transcript** — the longest spliced per gene, or every coding
   isoform under `--isoforms all` — and given that transcript's coordinate: 5′UTR in [0,1), CDS in
@@ -646,9 +684,9 @@ any other column should be calibrated is left to the user, with the table as the
 same panels are drawn to `{prefix}.qc_report.pdf` and `.png`.
 
 **`qc -I/--interactive`.** Opens a full-screen view of the site thresholds *combined*, where the
-`qc-report` sweep moves them one at a time. Each knob is a row with its threshold, the
-sites it drops alone and the sites for which it is the first failing check, beside a histogram of the
-column it cuts; the sites that pass every other knob are drawn in front, and the bars the
+`qc-report` sweep moves them one at a time. Each knob is a row with its threshold and two site
+counts: the sites that fail it (`this`), and the sites that fail it and no other knob (`only this`),
+which turning it off would keep. Beside the table is a histogram of the column it cuts; the sites that pass every other knob are drawn in front, and the bars the
 threshold drops are drawn in the accent colour. Every count is decided by the same rule `qc`
 applies, so the view cannot disagree with the written fileset. Enter applies the thresholds on
 screen; `p` prints the matching `faba qc` flags and writes nothing; `s` saves the view as a PDF
@@ -677,8 +715,9 @@ pipeline's output is the inclusive fileset `faba qc` (§8) cuts.
   without costing anything that follows. It sits directly after gene
   counting for one reason only — that is where the called-cell axis exists, and sharing it keeps
   the depth matrix's columns identical to every other modality's.
-- **ATOI** writes every putative site (§3). Discovery is in bulk, over the cells step 1 called —
-  as it is for m6A, so the two cannot disagree about which cells were compared. There is no cell
+- **ATOI** writes every putative site (§3). Discovery pools the reads of every barcode; the cells
+  step 1 called apply to the second-pass quantification. m6A discovery is restricted to its
+  competent cells (§2). There is no cell
   grouping step; `--cluster-resolution` and the Leiden grouping behind it were removed, for the
   reasons in §2.
 - **m6A** writes every putative site (§2). It is **skipped, not failed**, if no `--control-bam` is
@@ -687,20 +726,19 @@ pipeline's output is the inclusive fileset `faba qc` (§8) cuts.
 
 The per-modality floors are the same in `all` and standalone: `--gene-min-cells` 1 and
 `--cell-min-genes` 1 drop only empty rows and columns, so the cell and gene axes are set once, by
-the count step, and every modality carries them unchanged to `faba qc`. `--site-min-cells` (1) and
-the editing floors are likewise shared by const with the standalone commands.
+the count step, and every modality carries them unchanged to `faba qc`. The editing candidacy
+floors (coverage, conversion) are likewise shared by const with the standalone commands. The one
+difference is `depth`: `all` writes every bin and cell, where standalone `depth` drops those with
+fewer than 10 non-zeros.
 
 ---
 
 ## 10. Where the code and its own help text disagree
 
-Found by reading both. These are documentation bugs, not method bugs, but they will mislead anyone
-writing this up from `--help` alone. The rest of what this section used to list has since been
-fixed in the help text itself, so only the live discrepancy is kept here:
-
-| flag / text | says | actually |
-|---|---|---|
-| `--mixture-max-k` (m6A, A-to-I) | "max components to test **via BIC**" | m6A/A-to-I call components from smoothed-density **modes**, then truncate to `max_k` (`editing/mixture.rs`), so it is a plain cap and never a selection criterion. BIC genuinely selects `K` **in APA only**. The CLI help now says so; `fit_gene_mixture`'s own rustdoc still makes the stale claim |
+Found by reading both. Every discrepancy this section has listed so far has been fixed in the help
+text or rustdoc itself, most recently the BIC wording on `--mixture-max-k` and
+`run_mixture_model`, `--min-fragments` and `--merge-distance` (both also used on the fast PDUI
+path), and the APA line of `faba all --mixture`. A new one belongs here until it is fixed.
 
 ---
 

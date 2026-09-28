@@ -13,6 +13,15 @@ pub struct GenomicSite {
     pub strand: Strand,
 }
 
+/// A site table's `strand` column: `+` is forward, anything else reverse.
+pub fn parse_strand(s: &str) -> Strand {
+    if s == "+" {
+        Strand::Forward
+    } else {
+        Strand::Backward
+    }
+}
+
 /// Read sites from a parquet file, auto-detecting dart vs apa vs atoi format.
 pub fn read_sites(site_file: &str) -> anyhow::Result<Vec<GenomicSite>> {
     let field_names = legume_numeric::matrix::parquet::peek_parquet_field_names(site_file)?;
@@ -47,12 +56,7 @@ pub fn read_sites(site_file: &str) -> anyhow::Result<Vec<GenomicSite>> {
             let row = record?;
             let chr: Box<str> = row.get_string(chr_idx)?.clone().into_boxed_str();
             let position = row.get_long(pos_idx)?;
-            let strand_str = row.get_string(strand_idx)?;
-            let strand = if strand_str == "+" {
-                Strand::Forward
-            } else {
-                Strand::Backward
-            };
+            let strand = parse_strand(row.get_string(strand_idx)?);
             sites.push(GenomicSite {
                 chr,
                 position,
@@ -91,12 +95,7 @@ pub fn read_sites(site_file: &str) -> anyhow::Result<Vec<GenomicSite>> {
             let row = record?;
             let chr: Box<str> = row.get_string(chr_idx)?.clone().into_boxed_str();
             let position = row.get_long(pos_idx)?;
-            let strand_str = row.get_string(strand_idx)?;
-            let strand = if strand_str == "+" {
-                Strand::Forward
-            } else {
-                Strand::Backward
-            };
+            let strand = parse_strand(row.get_string(strand_idx)?);
             sites.push(GenomicSite {
                 chr,
                 position,

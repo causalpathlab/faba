@@ -63,7 +63,8 @@ pub struct InputLayout {
     pub matrices: Vec<MatrixFile>,
     /// `modality -> path` for every `{modality}_sites.parquet` present.
     pub site_tables: FxHashMap<Box<str>, Box<str>>,
-    /// Every other regular file, copied through untouched by `qc`.
+    /// Every other regular file but run records, copied through untouched by
+    /// `qc`.
     pub other_files: Vec<Box<str>>,
 }
 
@@ -146,6 +147,11 @@ pub fn scan_input_dir(dir: &str) -> anyhow::Result<InputLayout> {
                 layout.site_tables.insert(modality.into(), path_str);
                 continue;
             }
+        }
+        // A run record describes the directory it sits in; `qc` writes its
+        // own for the new fileset rather than carrying stale ones over.
+        if crate::run_record::is_run_record(name) {
+            continue;
         }
         layout.other_files.push(path_str);
     }
