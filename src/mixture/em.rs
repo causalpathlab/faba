@@ -69,9 +69,8 @@ pub fn log_sum_exp(a: f32, b: f32) -> f32 {
 /// E-step parallelism gate. Below this fragment count, rayon spawn overhead
 /// dominates the per-fragment work (~10 f32 ops × `n_total`); above it, the
 /// heavy-UTR tail dominates and parallelising the per-fragment log-norm +
-/// γ-update lets idle rayon workers steal it. 4096 was picked empirically
-/// as the smallest `n_obs` where chr1's housekeeping-gene UTRs (HSPA8,
-/// ACTB, …) start dwarfing all the rest combined.
+/// γ-update lets idle rayon workers steal it. 4096 was picked empirically,
+/// as the size above which the few heaviest UTRs outweigh all the rest.
 const E_STEP_PARALLEL_THRESHOLD: usize = 4096;
 
 #[cfg(test)]

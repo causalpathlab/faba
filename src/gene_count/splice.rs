@@ -13,7 +13,7 @@ pub struct SplicedUnsplicedTriplets {
 /// Format gene key as `"{gene_id}_{gene_symbol}"`.
 ///
 /// Feature naming convention: `{gene_key}/{modality}/{detail}`
-/// e.g. `ENSG00001234_BRCA2/count/spliced`
+/// e.g. `ENSG00000000001_GENE1/count/spliced`
 pub fn format_gene_key(rec: &GffRecord) -> Box<str> {
     match &rec.gene_name {
         GeneSymbol::Symbol(sym) if !sym.is_empty() => {

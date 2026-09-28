@@ -49,7 +49,7 @@ fn print_logo() {
     after_help = "\
 Feature naming convention:\n\
   All sparse matrix row names follow: {gene_key}/{modality}/{detail}\n\
-  where gene_key = {gene_id}_{symbol} (e.g. ENSG00001234_BRCA2)\n\n\
+  where gene_key = {gene_id}_{symbol} (e.g. ENSG00000000001_GENE1)\n\n\
   \n\
   * count:   {gene_key}/count/spliced, {gene_key}/count/unspliced\n\
   * dartseq: {gene_key}/m6a/{channel} (gene), {gene_key}/m6a/{chr}:{pos}/{channel}\n\
@@ -235,12 +235,12 @@ Example:\n  \
         after_long_help = "\
 	Examples:\n\
 	# ASCII histogram (unchanged)\n\
-	faba pileup out/rep1_wt_m6a.zarr.zip -q BRCA2\n\
-	faba pileup out/rep*_wt_m6a.zarr.zip -q BRCA2 -s out/m6a_sites.parquet\n\
+	faba pileup out/s1_wt_m6a.zarr.zip -q GENE1\n\
+	faba pileup out/s*_wt_m6a.zarr.zip -q GENE1 -s out/m6a_sites.parquet\n\
 	# Miami figure: epi sites / gene model / read depth, faceted by cell type\n\
-	faba pileup out/rep1_wt_m6a.zarr.zip -q BRCA2 \n\
+	faba pileup out/s1_wt_m6a.zarr.zip -q GENE1 \n\
 	--gtf gencode.gtf --bam sample.bam --cell-membership cells.tsv \n\
-    --top-modality m6A --out brca2_miami --svg --png"
+    --top-modality m6A --out gene1_miami --svg --png"
     )]
     Pileup(PileupArgs),
 

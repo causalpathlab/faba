@@ -32,7 +32,7 @@ pub struct GeneModel {
 
 /// Load the gene model(s) matching `selector` from the GTF. Matching
 /// reuses the same `{gene_id}_{symbol}` key + relaxed canonicalizer the
-/// matrix rows use, so a `-q BRCA2` query resolves the GTF gene too.
+/// matrix rows use, so a `-q GENE1` query resolves the GTF gene too.
 pub fn load_gene_models(gtf: &str, selector: &Selector) -> anyhow::Result<Vec<GeneModel>> {
     load_gene_models_where(gtf, |key| selector.matches_gene(key))
 }

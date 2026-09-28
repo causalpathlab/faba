@@ -4,13 +4,13 @@ use super::*;
 fn parse_site_and_mixture_rows() {
     // site output: gene/modality/chr:pos
     assert_eq!(
-        parse_row_name_full("ENSG00000139618_BRCA2/m6A/chr13:32350000"),
-        Some(("ENSG00000139618_BRCA2", "m6A", "chr13", 32350000))
+        parse_row_name_full("ENSG00000000003_GENE3/m6A/chr13:32350000"),
+        Some(("ENSG00000000003_GENE3", "m6A", "chr13", 32350000))
     );
     // mixture output: gene/modality/component
     assert_eq!(
-        parse_row_name_full("ENSG00000060558_GNA15/m6A/0"),
-        Some(("ENSG00000060558_GNA15", "m6A", "", 0))
+        parse_row_name_full("ENSG00000000002_GENE1/m6A/0"),
+        Some(("ENSG00000000002_GENE1", "m6A", "", 0))
     );
     // count rows (detail neither chr:pos nor an integer) don't parse
     assert_eq!(parse_row_name_full("gene_0/count/spliced"), None);
@@ -18,14 +18,14 @@ fn parse_site_and_mixture_rows() {
 
 #[test]
 fn relaxed_gene_matching() {
-    let gp = "ENSG00000060558_GNA15";
+    let gp = "ENSG00000000002_GENE1";
     // symbol, any case
-    assert!(gene_matches("GNA15", &query_symbol("GNA15"), gp));
-    assert!(gene_matches("gna15", &query_symbol("gna15"), gp));
+    assert!(gene_matches("GENE1", &query_symbol("GENE1"), gp));
+    assert!(gene_matches("gene1", &query_symbol("gene1"), gp));
     // Ensembl ID
     assert!(gene_matches(
-        "ENSG00000060558",
-        &query_symbol("ENSG00000060558"),
+        "ENSG00000000002",
+        &query_symbol("ENSG00000000002"),
         gp
     ));
     // full composite
@@ -59,9 +59,9 @@ fn region_parsing_and_matching() {
 
 #[test]
 fn selector_gene_or_region_union() {
-    let sel = Selector::build(&["GNA15".into()], &["chr17:100-200".into()]).unwrap();
+    let sel = Selector::build(&["GENE1".into()], &["chr17:100-200".into()]).unwrap();
     // gene branch (mixture row: no chr, component ordinal)
-    assert!(sel.selects("ENSG00000060558_GNA15", "", 0));
+    assert!(sel.selects("ENSG00000000002_GENE1", "", 0));
     // region branch (different gene, but inside the window)
     assert!(sel.selects("ENSG1_OTHER", "chr17", 150));
     // outside both
@@ -98,8 +98,8 @@ fn distinct_positions_dedups_sorted() {
 #[test]
 fn aggregate_labels() {
     let mut one: FxHashMap<Box<str>, usize> = FxHashMap::default();
-    one.insert("ENSG1_GNA15".into(), 2);
-    assert_eq!(summarize_genes(&one).as_ref(), "ENSG1_GNA15");
+    one.insert("ENSG1_GENE1".into(), 2);
+    assert_eq!(summarize_genes(&one).as_ref(), "ENSG1_GENE1");
 
     let mut many: FxHashMap<Box<str>, usize> = FxHashMap::default();
     many.insert("ENSG1_A".into(), 1);

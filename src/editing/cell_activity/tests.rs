@@ -636,17 +636,17 @@ fn feature_matching_survives_name_canonicalisation() {
     use crate::editing::cell_activity::feature_is_gene;
     // Raw matrix rows carry the Ensembl prefix...
     assert!(feature_is_gene(
-        "ENSG00000198492_YTHDF2/count/spliced",
-        "YTHDF2"
+        "ENSG00000000001_GENE1/count/spliced",
+        "GENE1"
     ));
     // ...but `load_unified_data` rsplits on '_', leaving the bare symbol. Matching
     // only the prefixed form reported "none matched" for genes that were present.
-    assert!(feature_is_gene("YTHDF2/count/spliced", "YTHDF2"));
+    assert!(feature_is_gene("GENE1/count/spliced", "GENE1"));
     // Anchored, so a longer symbol sharing a prefix does not match.
-    assert!(!feature_is_gene("METTL3L/count/spliced", "METTL3"));
+    assert!(!feature_is_gene("GENE3L/count/spliced", "GENE3"));
     assert!(!feature_is_gene(
-        "ENSG00000000000_RBM15B/count/spliced",
-        "RBM15"
+        "ENSG00000000000_GENE4B/count/spliced",
+        "GENE4"
     ));
-    assert!(!feature_is_gene("SOMETHING_ELSE/count/spliced", "YTHDF2"));
+    assert!(!feature_is_gene("SOMETHING_ELSE/count/spliced", "GENE1"));
 }

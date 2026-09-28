@@ -28,7 +28,7 @@ pub struct FigOpts {
     pub width_in: f32,
     pub dpi: u32,
     pub palette: Palette,
-    /// Title line (e.g. `BRCA2  chr13:32,000,000-32,100,000`).
+    /// Title line (e.g. `GENE1  chr1:32,000,000-32,100,000`).
     pub title: Box<str>,
     /// Top-track signal label (e.g. `m6A`).
     pub top_label: Box<str>,

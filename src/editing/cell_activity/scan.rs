@@ -42,9 +42,8 @@ pub fn channel_bases(mod_type: &ModificationType, forward: bool) -> (Dna, Dna) {
 
 /// Keep-out distance around a motif: DART's tether reaches beyond the motif C,
 /// so a nearby "background" position can still catch m6A-directed editing and
-/// would smuggle signal into the activity proxy. Measured on rep1, the WT/MUT
-/// background ratio is FLAT from 1 nt out to 500 nt, so leakage is not in fact
-/// visible — but the guard costs nothing and keeps the proxy interpretable.
+/// would smuggle signal into the activity proxy. The guard costs little and
+/// keeps the proxy interpretable.
 const BACKGROUND_MIN_DISTANCE: i64 = 25;
 
 /// Sample every Nth eligible background position. The rate is an average over

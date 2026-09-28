@@ -598,8 +598,7 @@ fn non_coding_genes_keep_whole_gene_boundaries() {
 fn a_site_is_not_placed_on_an_antisense_transcript() {
     // MetaPlotR intersects with `-s`. Without that filter a + strand site also
     // lands on every - strand transcript overlapping it, and `relative_pos`
-    // mirrors, so the phantom copy sits at 1-p instead of p. Measured on the
-    // shipped m6A calls before the filter: 1,631 of 55,504 rows.
+    // mirrors, so the phantom copy sits at 1-p instead of p.
     let mut records = two_exon_tx("FWD", "GF", Strand::Forward);
     records.extend(two_exon_tx("REV", "GR", Strand::Backward));
 

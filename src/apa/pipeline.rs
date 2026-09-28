@@ -213,7 +213,6 @@ fn collect_gene_stats(
 
     const PADDING: i64 = 100;
 
-    // Read the gene region ONCE for all sites instead of once per site
     let mut polya_map =
         PolyASiteMap::new_with_cell_barcode(args.polya_site_args(), &args.cell_barcode_tag);
 
@@ -298,18 +297,14 @@ where
     format_data_triplets(combined_data)
 }
 
-// ─────────────────────────────────────────────────────────
-// Mixture mode (SCAPE EM, migrated from run_apa_mix)
-// ─────────────────────────────────────────────────────────
+// Mixture mode (SCAPE EM)
 
 pub fn run_mixture(args: &CountApaArgs) -> anyhow::Result<()> {
     let mut utrs = load_utrs(args)?;
 
-    // Filter UTRs to expressed genes if available
     if let Some(ref valid_gene_ids) = args.valid_gene_ids {
         let before = utrs.len();
-        // UTR name format: "GENE_ID_SYMBOL" or "GENE_ID" (see load_utrs).
-        // Match on the gene_id token before the first '_' against the expressed set.
+        // UTR names are GENE_ID or GENE_ID_SYMBOL; match the gene_id token.
         let valid_ids: rustc_hash::FxHashSet<Box<str>> = valid_gene_ids
             .iter()
             .map(|gid| gid.to_string().into_boxed_str())
@@ -334,11 +329,7 @@ pub fn run_mixture(args: &CountApaArgs) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // Big-first scheduling (LPT): a few highly-expressed UTRs carry ~100x the
-    // fragments and dominate wall-clock. Start the heaviest first so they overlap
-    // the long tail of light UTRs instead of trailing it on one idle-starved
-    // thread. Output is unaffected — rows are reordered to a sorted vocabulary
-    // downstream, so the per-UTR schedule order does not change results.
+    // Heaviest UTRs first (LPT) so they overlap the light tail; rows are sorted downstream.
     utrs.sort_by_key(|u| std::cmp::Reverse(u.utr_length));
 
     let pre_sites = if let Some(ref pre_path) = args.pre_sites {
@@ -353,8 +344,7 @@ pub fn run_mixture(args: &CountApaArgs) -> anyhow::Result<()> {
     let njobs = utrs.len();
     info!("processing {} UTRs...", njobs);
 
-    // Per-phase wall-clock summed across worker threads: BAM fragment extraction
-    // (I/O) vs site-selection/EM (compute). Diagnoses where APA spends its time.
+    // Per-phase wall-clock (ns) summed across threads: extraction vs discovery/assign/EM.
     use std::sync::atomic::{AtomicU64, Ordering};
     let extract_ns = AtomicU64::new(0);
     let bic_ns = AtomicU64::new(0);
@@ -401,16 +391,9 @@ pub fn run_mixture(args: &CountApaArgs) -> anyhow::Result<()> {
 
     info!("collected {} cell-site counts", all_counts.len());
 
-    // Filter to QC-passing cells from gene count step. Each count carries its
-    // batch index, so it is checked against that batch's own called cell set
-    // (per-library knee); batches without a passed set are left unfiltered.
-    // `cells_by_batch` is keyed by BAM file path (see `GeneCountQc`), NOT batch
-    // name — basenames collide across 10x libraries — so look it up by the path,
-    // matching the conversion pipeline (`editing::pipeline`).
+    // Keep QC-passing cells per batch; the set is keyed by BAM path (basenames collide).
     if let Some(ref valid_cells) = args.valid_cell_barcodes {
-        // Resolve each batch index to its cell set once (one entry per BAM), so
-        // the per-count retain is a Vec index + barcode lookup instead of hashing
-        // the BAM-path key for every one of the (potentially millions of) counts.
+        // Resolve each batch to its cell set once; the per-count check is then a Vec index.
         let by_batch: Vec<_> = args.bam_files.iter().map(|f| valid_cells.get(f)).collect();
         let before = all_counts.len();
         all_counts
@@ -422,9 +405,7 @@ pub fn run_mixture(args: &CountApaArgs) -> anyhow::Result<()> {
         );
     }
 
-    // Optionally drop genes that resolved to a single pA site: a lone site
-    // carries no relative usage signal (PDUI is undefined, the count is the
-    // gene total). A gene's active-site count is its annotation count.
+    // A single-site gene has no relative usage signal (PDUI undefined).
     if args.drop_single_component {
         use rustc_hash::FxHashMap;
         let mut sites_per_gene: FxHashMap<Box<str>, usize> = FxHashMap::default();
@@ -449,20 +430,13 @@ pub fn run_mixture(args: &CountApaArgs) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // Compute PDUI before consuming all_counts (per batch, see below)
     if args.compute_pdui {
         compute_and_write_pdui(&all_counts, &all_annotations, &utrs, args)?;
     }
 
     let mut all_rows = rustc_hash::FxHashSet::<Box<str>>::default();
     let mut out_files: Vec<crate::quant::BackendOutputPath> = Vec::new();
-    // The per-cell component matrix is opt-in (`--mixture`); the SCAPE fit above
-    // already ran because PDUI needs it, so this only gates the extra output.
-    // Bucketing `all_counts` by batch is O(n_counts) + per-count allocations, so do
-    // it only when the mixture matrix is actually written (skipped on the default
-    // path). The fit is shared (pooled across BAMs) but each replicate gets its own
-    // `{batch}_apa_mixture`; rows (GENE/apa/component) share a vocabulary, reordered
-    // to a sorted union for stackability.
+    // Opt-in (`--mixture`): pooled fit, one `{batch}_apa_mixture` per batch, shared rows.
     if args.write_mixture {
         let batch_names = uniq_batch_names(&args.bam_files)?;
         let mut by_batch: rustc_hash::FxHashMap<u32, Vec<(CellBarcode, Box<str>, f32)>> =
@@ -502,7 +476,6 @@ pub fn run_mixture(args: &CountApaArgs) -> anyhow::Result<()> {
         out.finalize()?;
     }
 
-    // Write APA site annotation Parquet (shared definitions, single file)
     if !all_annotations.is_empty() {
         let parquet_path = format!("{}/apa_components.parquet", args.output);
         write_apa_annotations(&all_annotations, &parquet_path)?;
@@ -523,9 +496,7 @@ fn load_utrs(args: &CountApaArgs) -> anyhow::Result<Vec<UtrRegion>> {
         info!("parsing GFF/GTF file: {}", gff_file);
         let mut records = read_gff_record_vec(gff_file)?;
         info!("read {} GFF records", records.len());
-        // Honor --gene-type on the mixture path (run_simple subsets the GffRecordMap;
-        // mixture builds UTRs straight from records, so filter here). The pipeline
-        // leaves this None and inherits the biotype subset via valid_gene_ids.
+        // Honor --gene-type: mixture builds UTRs from raw records, not the subset GffRecordMap.
         if let Some(ref gt) = args.gene_type {
             let before = records.len();
             records.retain(|r| r.gene_type == *gt);
@@ -539,9 +510,7 @@ fn load_utrs(args: &CountApaArgs) -> anyhow::Result<Vec<UtrRegion>> {
         let mut utrs = build_utr_regions_from_gff(&records)?;
         info!("found {} 3'-UTR regions in gene model", utrs.len());
 
-        // Gate on the SPLICED length: an intron between two 3'UTR exons is not
-        // sequence a read can land on, so it must not count toward the length
-        // that decides whether a region is worth fitting.
+        // utr_length is spliced: introns between 3'UTR exons are not readable sequence.
         utrs.retain(|u| u.utr_length >= args.min_utr_length);
 
         info!("kept {} 3'-UTRs (>= {}bp)", utrs.len(), args.min_utr_length);
@@ -586,11 +555,7 @@ fn load_pre_sites(path: &str) -> anyhow::Result<rustc_hash::FxHashMap<Box<str>, 
     Ok(sites)
 }
 
-/// Fast 2-site PDUI path: treat a UTR as effectively single-site (no PDUI) unless
-/// the runner-up cluster carries at least this fraction of the dominant cluster's
-/// reads. Both sites already pass the min-coverage discovery gate, so this is a
-/// light floor that only rejects a near-degenerate minor peak (was 10%, lowered as
-/// too aggressive — it dropped genes with real but modest distal usage).
+/// Fast 2-site PDUI: minimum runner-up/dominant cluster read ratio (rejects degenerate peaks).
 const MIN_RUNNERUP_MASS_FRAC: f32 = 0.02;
 
 /// Process a single UTR: extract fragments, discover/load sites, run EM, assign cells.
@@ -607,9 +572,7 @@ fn process_utr(
     args: &CountApaArgs,
 ) -> anyhow::Result<(Vec<CellSiteCount>, Vec<ApaSiteAnnotation>)> {
     let mut all_fragments = Vec::new();
-    // Parallel to `all_fragments`: the batch (replicate) each fragment came
-    // from. Sites are fit on the pooled fragments, but counts are emitted
-    // per batch, so each fragment must remember its origin.
+    // Batch of each fragment: sites are fit pooled, counts are emitted per batch.
     let mut frag_batch: Vec<u32> = Vec::new();
     let t_extract = std::time::Instant::now();
     for (batch_idx, bam_file) in bam_files.iter().enumerate() {
@@ -636,9 +599,7 @@ fn process_utr(
         std::sync::atomic::Ordering::Relaxed,
     );
 
-    // When UMI dedup is disabled, give each fragment a unique UMI hash so the
-    // (cell, component) HashSet in cell_assign sees them as distinct reads
-    // rather than collapsing all UmiBarcode::Missing into one observation.
+    // Without UMI dedup, give each fragment a unique UMI so cell_assign counts every read.
     if args.no_umi_dedup {
         for (i, frag) in all_fragments.iter_mut().enumerate() {
             frag.umi = genomic_data::sam::UmiBarcode::Hash(i as u64);
@@ -659,9 +620,7 @@ fn process_utr(
         return Ok((Vec::new(), Vec::new()));
     }
 
-    // Fast PDUI path (default; no --mixture): find pA clusters by recursive mass
-    // bisection straight from read positions — no KDE / merge / EM — then take
-    // the two highest-mass clusters and hard-assign reads to the nearest.
+    // Fast PDUI (default): bisect read positions into pA clusters, hard-assign to the top two.
     let fast_pdui = args.compute_pdui && !args.write_mixture && !args.apa_em_pdui;
     if fast_pdui {
         let t_discover = std::time::Instant::now();
@@ -683,7 +642,6 @@ fn process_utr(
             return Ok((Vec::new(), Vec::new())); // single-site → no PDUI
         }
         clusters.sort_unstable_by_key(|a| std::cmp::Reverse(a.1)); // by read count, desc
-                                                                   // Require the runner-up to be a non-trivial fraction of the dominant peak.
         if (clusters[1].1 as f32) < MIN_RUNNERUP_MASS_FRAC * clusters[0].1 as f32 {
             return Ok((Vec::new(), Vec::new()));
         }
@@ -738,12 +696,7 @@ fn process_utr(
 
     let lik_params = args.lik_params();
 
-    // Cluster fragments before EM: the SCAPE likelihood depends only on
-    // (x, l, r, is_junction), so fragments sharing this tuple are
-    // mathematically identical and we can run inference on the
-    // representatives with multiplicity weights. Heavy UTRs typically
-    // collapse 5-50× — every downstream phase (theta_lik_matrix,
-    // all_site_lls, EM iterations) scales with M = # clusters, not N.
+    // Fragments sharing (x, l, r, is_junction) are identical to SCAPE; EM runs on weighted reps.
     let bins = crate::apa::fragment::ClusterBins::default();
     let (clusters, cluster_idx) = crate::apa::fragment::cluster_fragments(&all_fragments, bins);
     let cluster_counts: Vec<f32> = clusters.iter().map(|c| c.count as f32).collect();
@@ -764,11 +717,7 @@ fn process_utr(
 
     let em_params = args.em_params();
 
-    // Rank candidate sites by nearby fragment mass (descending) for greedy BIC
-    // model selection. Score on the clustered representatives (count = multiplicity,
-    // pa_site preserved within a 5bp bin) via a sorted-candidate sweep — O(M log K)
-    // instead of O(K*N) over raw fragments. site_order only sets the greedy add
-    // order, so the small binning is immaterial.
+    // Greedy BIC add order: candidates ranked by nearby clustered fragment mass, descending.
     let merge_dist = args.merge_distance;
     let site_order = {
         let mut sorted_cands: Vec<(f32, usize)> = candidate_sites
@@ -781,8 +730,6 @@ fn process_utr(
         let mut counts = vec![0u32; candidate_sites.len()];
         for cl in &clusters {
             if let Some(pa) = cl.pa_site {
-                // Candidates with |pa - site| < merge_dist (open interval, matching
-                // the original strict comparison).
                 let lo = sorted_cands.partition_point(|&(s, _)| s <= pa - merge_dist);
                 let hi = sorted_cands.partition_point(|&(s, _)| s < pa + merge_dist);
                 for &(_, idx) in &sorted_cands[lo..hi] {
@@ -828,10 +775,7 @@ fn process_utr(
     Ok((cell_counts, annotations))
 }
 
-/// Compute PDUI (per batch) for genes with exactly 2 active pA sites and
-/// write one `{batch}_apa` sparse matrix (proximal/distal count channels) per
-/// replicate. The 2-site definitions are shared (pooled fit); only the per-cell
-/// counts split by batch, so the matrices share a gene (row) vocabulary.
+/// Compute PDUI for 2-site genes; write one `{batch}_apa` proximal/distal matrix per batch.
 fn compute_and_write_pdui(
     all_counts: &[CellSiteCount],
     all_annotations: &[ApaSiteAnnotation],
@@ -843,11 +787,9 @@ fn compute_and_write_pdui(
 
     info!("Computing PDUI (per batch)...");
 
-    // Build a strand lookup from UTRs by gene name
     let strand_by_gene: FxHashMap<Box<str>, genomic_data::sam::Strand> =
         utrs.iter().map(|u| (u.name.clone(), u.strand)).collect();
 
-    // Group annotations by gene_name (shared 2-site definitions)
     let mut annots_by_gene: FxHashMap<Box<str>, Vec<ApaSiteAnnotation>> = FxHashMap::default();
     for a in all_annotations {
         annots_by_gene
@@ -856,7 +798,6 @@ fn compute_and_write_pdui(
             .push(a.clone());
     }
 
-    // Group counts by (batch, gene)
     let mut counts_by_batch_gene: FxHashMap<(u32, Box<str>), Vec<&CellSiteCount>> =
         FxHashMap::default();
     for c in all_counts {
@@ -894,8 +835,7 @@ fn compute_and_write_pdui(
             }
             if let Some(pdui_result) = compute_pdui(gene_counts, annots, strand) {
                 n_pdui_genes += 1;
-                // Emit proximal/distal COUNTS as channel rows (aggregated per
-                // gene = the 2-site UTR): {gene}/apa/{proximal,distal}.
+                // Proximal/distal counts as channel rows: {gene}/apa/{proximal,distal}.
                 for (cb, prox, dist) in &pdui_result.cell_counts {
                     push_channel_row(&mut apa_triplets, cb, gene_name, APA, PROXIMAL, None, *prox);
                     push_channel_row(&mut apa_triplets, cb, gene_name, APA, DISTAL, None, *dist);

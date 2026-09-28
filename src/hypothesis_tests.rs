@@ -123,29 +123,13 @@ pub fn fisher_exact_greater(a_w: u64, u_w: u64, a_m: u64, u_m: u64) -> f32 {
     ((max + sum.ln()).exp() as f32).clamp(0.0, 1.0)
 }
 
-/// Two-sample WT-vs-MUT conversion p-value for DART m6A. The domain-level name
-/// for the call, delegating to [`fisher_exact_greater`], which documents the
-/// 2x2 and the tail.
+/// Two-sample WT-vs-MUT conversion p-value for DART m6A, delegating to
+/// [`fisher_exact_greater`], which documents the 2x2 and the tail.
 ///
-/// This used to dispatch to an overdispersed beta-binomial LRT once every cell
-/// reached 5 and total coverage reached 100. Both tests were individually
-/// correct; the DISPATCH was not. Two different nulls met at a count threshold,
-/// so the p-value jumped discontinuously across it. Measured: one extra
-/// converted read in the control moved it 7.6e6-fold (3.7e-9 -> 2.8e-2), and
-/// doubling coverage at a fixed effect made a site LESS significant (5.6e-4 ->
-/// 5.3e-2). A statistic that is not monotone in its own evidence cannot rank
-/// sites, and BH then ranks them by which side of a count threshold they fell.
-///
-/// Dropping the asymptotic branch rather than the exact one was not close:
-/// measured on rep1, 94.6% of called sites already took Fisher, because DART
-/// control background is 0.1-1% so the control converted count is 0-2 at 88% of
-/// sites. The LRT was both the minority path and the only consumer of `rho`.
-///
-/// The cost, stated plainly: overdispersion (fitted at 0.022-0.045) is now
-/// unmodelled, rather than applied to the 5.4% of sites that reached the LRT.
-/// That is the configuration Phase A validated -- 32.1% replicate
-/// reproducibility, 270x over chance -- because that validation ran on a rule
-/// which was already 94.6% Fisher.
+/// There is one test for every site. An overdispersed beta-binomial LRT above
+/// a count threshold was dropped: two nulls meeting at a threshold made the
+/// p-value jump across it and not be monotone in its own evidence, so it could
+/// not rank sites. The cost is that overdispersion is not modelled.
 pub fn contrast_pvalue(a_w: u64, u_w: u64, a_m: u64, u_m: u64) -> f32 {
     fisher_exact_greater(a_w, u_w, a_m, u_m)
 }
@@ -165,14 +149,13 @@ pub fn contrast_pvalue(a_w: u64, u_w: u64, a_m: u64, u_m: u64) -> f32 {
 /// `ln( (a_w · u_m) / (u_w · a_m) )`. This is the parameter
 /// [`fisher_exact_greater`]'s null is about (`OR = 1`), which is the entire
 /// reason it exists: the site guard and the site test finally measure ONE
-/// quantity on ONE scale. Its predecessor, an absolute `p_WT − p_MUT` floor, did
-/// not — a difference is additive and the test is multiplicative, and at a
-/// 0.1–0.3% control background `p_WT − p_MUT` is numerically just `p_WT`, so a
-/// flag documented as an effect-size guard behaved as a minimum-WT-rate filter.
+/// quantity on ONE scale. An absolute `p_WT − p_MUT` floor would not: a
+/// difference is additive and the test multiplicative, and at a low control
+/// background `p_WT − p_MUT` is just `p_WT`, a minimum-WT-rate filter.
 ///
-/// **No continuity correction, deliberately.** `a_m = 0` at most DART sites (57% measured on
-/// chr19+MYC; the control converts 0-2 reads at 80-88% depending on library),
-/// so `+inf` here is the common case rather than an edge case, and it is the
+/// **No continuity correction, deliberately.** `a_m = 0` at most DART sites,
+/// since the control converts few reads, so `+inf` here is the common case
+/// rather than an edge case, and it is the
 /// right answer: a control that never converts puts the WT odds infinitely above
 /// it. Adding 0.5 to every cell instead makes this guard pass only when the WT
 /// odds exceed `0.5/(n_MUT + 0.5)` — an implied minimum WT rate of 12.5% at
