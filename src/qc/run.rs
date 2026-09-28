@@ -296,7 +296,15 @@ fn filter_fileset(args: &QcArgs, gff: Option<&str>) -> anyhow::Result<Option<Sit
     let mut site_args = args.site.clone();
     if args.interactive {
         let (tables, cells) = (&tables, &site_cells);
-        match run_site_picker(&args.input_dir, tables, cells, &args.site, gff, &args.genes)? {
+        match run_site_picker(
+            &args.input_dir,
+            tables,
+            cells,
+            &args.site,
+            gff,
+            &args.genes,
+            out_dir,
+        )? {
             Picked::Apply(f) => {
                 info!("site thresholds: {}", qc_flags(&f));
                 site_args = f;

@@ -703,8 +703,9 @@ A gene list at the bottom left shows each gene's kept and putative sites. Genes 
 `/` filters it by symbol. The gene models and the metagene come from the annotation, read on a
 thread once (`--gff`, or the one in the input directory's run record); without one, the gene plot
 spans the gene's own sites and the metagene is left out. Every count is decided by the same rule `qc`
-applies, so the view cannot disagree with the written fileset. Enter applies the thresholds on
-screen; `p` prints the matching `faba qc` flags and writes nothing; `s` saves the view as a PDF
+applies, so the view cannot disagree with the written fileset. Enter opens a confirmation that
+recaps the output directory, the thresholds changed from the start, and the sites every modality
+keeps; a second Enter (or `y`) applies them, Esc (or `n`) goes back; `p` prints the matching `faba qc` flags and writes nothing; `s` saves the view as a PDF
 and PNG under a name it asks for. Nothing is written until the thresholds are applied. Without a
 terminal on stdin and stdout the view is skipped and the `--site-*` values are used as given.
 

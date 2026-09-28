@@ -582,4 +582,85 @@ impl<'a> SitePicker<'a> {
         }
         .render(frame.buffer_mut(), plot);
     }
+
+    /// What applying would do: where it writes, each threshold (changed
+    /// ones marked, with their start), and what every modality keeps.
+    pub(super) fn confirm_lines(&self) -> Vec<Line<'static>> {
+        let dim = |t: String| Span::styled(t, DIM);
+        let output = if self.output.is_empty() {
+            "the output directory"
+        } else {
+            &self.output
+        };
+        let mut lines = vec![
+            Line::from(vec![dim(
+                "Cut every modality and write the filtered fileset to ".into(),
+            )]),
+            Line::from(Span::styled(format!("  {output}"), HIGHLIGHT)),
+            Line::from(""),
+            Line::from(dim("thresholds (* changed here)".into())),
+        ];
+        let used = SHOWN
+            .into_iter()
+            .filter(|c| self.views.iter().any(|v| v.criteria.contains(c)));
+        for c in used {
+            let now = c.shown(&self.filter).unwrap_or_else(|| "off".into());
+            let was = c.shown(&self.initial).unwrap_or_else(|| "off".into());
+            let changed = now != was;
+            let mut row = vec![
+                Span::styled(if changed { "* " } else { "  " }, HIGHLIGHT),
+                Span::styled(
+                    format!("{:<16}", c.label()),
+                    if changed { HIGHLIGHT } else { PLAIN },
+                ),
+                Span::styled(
+                    format!("{now:>11}"),
+                    if changed { HIGHLIGHT } else { PLAIN },
+                ),
+            ];
+            if changed {
+                row.push(dim(format!("   (was {was})")));
+            }
+            lines.push(Line::from(row));
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from(dim("kept sites".into())));
+        for v in &self.views {
+            let n = v.table.len();
+            let mut genes = vec![false; v.table.n_genes];
+            let mut kept = 0;
+            for (i, _) in v.fails.iter().enumerate().filter(|(_, &m)| m == 0) {
+                kept += 1;
+                genes[v.table.gene_id[i] as usize] = true;
+            }
+            let in_genes = genes.iter().filter(|&&g| g).count();
+            lines.push(Line::from(vec![
+                Span::raw(format!("  {:<6}", v.table.modality)),
+                Span::styled(format!("{kept:>9}"), HIGHLIGHT),
+                dim(format!(" / {n} ({:.1}%) in {in_genes} genes", pct(kept, n))),
+            ]));
+        }
+        lines
+    }
+
+    /// The confirmation, centred over `area`.
+    pub(super) fn render_confirm(&self, frame: &mut Frame, area: Rect) {
+        let lines = self.confirm_lines();
+        let width = lines.iter().map(Line::width).max().unwrap_or(0) as u16 + 4;
+        let (w, h) = (
+            width.clamp(40, area.width),
+            (lines.len() as u16 + 2).min(area.height),
+        );
+        let popup = Rect::new(
+            area.x + (area.width - w) / 2,
+            area.y + (area.height - h) / 2,
+            w,
+            h,
+        );
+        frame.render_widget(ratatui::widgets::Clear, popup);
+        let block = panel(" apply these thresholds? ".into(), true);
+        let inner = block.inner(popup);
+        frame.render_widget(block, popup);
+        frame.render_widget(Paragraph::new(lines), inner);
+    }
 }

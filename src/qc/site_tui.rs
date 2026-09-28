@@ -177,6 +177,8 @@ enum Mode {
     Edit(String),
     /// Typing into the gene list's filter.
     Find,
+    /// Asking before the thresholds are applied and the fileset written.
+    Confirm,
 }
 
 /// State of the picker, independent of the terminal so it can be tested.
@@ -203,6 +205,8 @@ struct SitePicker<'a> {
     meta_bars: (Vec<usize>, Vec<usize>),
     meta_plot: PlotImage,
     list: GeneList,
+    /// Where an applied cut is written, for the confirmation.
+    output: String,
     decision: Option<Picked>,
 }
 
@@ -231,6 +235,7 @@ impl<'a> SitePicker<'a> {
             meta_bars: Default::default(),
             meta_plot: PlotImage::default(),
             list: GeneList::default(),
+            output: String::new(),
             decision: None,
         }
         .pin_genes(&[])
@@ -411,6 +416,13 @@ impl Screen for SitePicker<'_> {
                 }
                 _ => {}
             },
+            Mode::Confirm => match key.code {
+                KeyCode::Enter | KeyCode::Char('y') => {
+                    self.decision = Some(Picked::Apply(self.filter.clone()))
+                }
+                KeyCode::Esc | KeyCode::Char('n' | 'q') => self.mode = Mode::Browse,
+                _ => {}
+            },
             Mode::Browse => match key.code {
                 KeyCode::Char('[') => self.step_gene(-1),
                 KeyCode::Char(']') => self.step_gene(1),
@@ -430,7 +442,7 @@ impl Screen for SitePicker<'_> {
                 KeyCode::Char('y') => self.y_scale = self.y_scale.next(),
                 KeyCode::Char('e') => self.mode = Mode::Edit(String::new()),
                 KeyCode::Char(ch) if ch.is_ascii_digit() => self.mode = Mode::Edit(ch.to_string()),
-                KeyCode::Enter => self.decision = Some(Picked::Apply(self.filter.clone())),
+                KeyCode::Enter => self.mode = Mode::Confirm,
                 KeyCode::Char('p') => self.decision = Some(Picked::PrintOnly(self.filter.clone())),
                 KeyCode::Char('q') | KeyCode::Esc => self.decision = Some(Picked::Cancelled),
                 _ => {}
@@ -460,7 +472,13 @@ impl Screen for SitePicker<'_> {
             let style = if i == self.modality { HIGHLIGHT } else { DIM };
             spans.push(Span::styled(format!("{}  ", v.table.modality), style));
         }
-        frame.render_widget(Line::from(spans), tabs);
+        let tabs_line = Line::from(spans);
+        // Keep the mark clear of the header's text and the modality tabs.
+        let reserve = (self.title.chars().count() + scales.chars().count() + 12)
+            .max(tabs_line.width()) as u16;
+        frame.render_widget(tabs_line, tabs);
+        let corner = Rect::new(top.x, top.y, top.width, 2);
+        crate::figure::logo::draw_mini_logo(frame.buffer_mut(), corner, reserve);
 
         let [left, right] =
             Layout::horizontal([Constraint::Length(56), Constraint::Fill(1)]).areas(body);
@@ -492,6 +510,9 @@ impl Screen for SitePicker<'_> {
                 buf,
                 &[("Enter", "set"), ("Esc", "back")],
             ),
+            (Mode::Confirm, None) => {
+                help_line(&[("Enter/y", "apply and write"), ("Esc/n", "back")])
+            }
             (Mode::Find, None) => input_line(
                 "gene: ",
                 &self.list.find,
@@ -514,6 +535,9 @@ impl Screen for SitePicker<'_> {
             }
         };
         frame.render_widget(help, footer);
+        if matches!(self.mode, Mode::Confirm) {
+            self.render_confirm(frame, body);
+        }
     }
 }
 
@@ -539,6 +563,7 @@ pub fn run_site_picker(
     filter: &SiteFilterArgs,
     gff: Option<&str>,
     pinned: &[Box<str>],
+    output: &str,
 ) -> anyhow::Result<Picked> {
     if !tui_available() {
         log::warn!("--interactive needs stdin and stdout on a terminal; skipping the view");
@@ -566,6 +591,7 @@ pub fn run_site_picker(
     let meta = Meta::start(gff, batches, keys);
     let mut picker =
         SitePicker::new(&file_name(input_dir), views, filter.clone(), meta).pin_genes(pinned);
+    picker.output = output.to_string();
     picker.controls = Controls::new("qc_sites").detect();
     data_beans::interactive::ui::run_screen(&mut picker)?;
     Ok(picker.decision.unwrap_or(Picked::Cancelled))

@@ -229,10 +229,16 @@ fn keys_type_reset_off_and_decide() {
     press(&mut p, KeyCode::Char('2'));
     press(&mut p, KeyCode::Esc);
     assert_eq!(p.filter.site_min_coverage, start.site_min_coverage);
+    // Enter asks first; Esc goes back, Enter again applies.
+    press(&mut p, KeyCode::Enter);
+    assert!(!p.done());
+    press(&mut p, KeyCode::Esc);
+    assert!(!p.done() && matches!(p.mode, Mode::Browse));
+    press(&mut p, KeyCode::Enter);
     press(&mut p, KeyCode::Enter);
     assert!(p.done());
     let Some(Picked::Apply(got)) = p.decision.clone() else {
-        panic!("Enter applies");
+        panic!("Enter, Enter applies");
     };
     assert_eq!(qc_flags(&got), qc_flags(&start));
 
@@ -747,4 +753,49 @@ fn an_annotation_without_coding_transcripts_is_named_in_the_panel() {
         models: Default::default(),
     }));
     assert_eq!(p.meta_status(), "x.gff: no coding transcript");
+}
+
+#[test]
+fn the_confirmation_recaps_output_changes_and_every_modality() {
+    let (m6a, atoi) = (table(M6A, 600), table(ATOI, 300));
+    let start = SiteFilterArgs::default_values();
+    let views = vec![
+        SiteView::new(&m6a, None, &start),
+        SiteView::new(&atoi, None, &start),
+    ];
+    let mut p = SitePicker::new("x", views, start, Meta::Unavailable("none".into()));
+    p.output = "out_qc".into();
+    focus_on(&mut p, Criterion::MinCoverage);
+    for _ in 0..3 {
+        press(&mut p, KeyCode::Right);
+    }
+    press(&mut p, KeyCode::Enter);
+    assert!(matches!(p.mode, Mode::Confirm));
+    let text: String = p
+        .confirm_lines()
+        .iter()
+        .map(|l| l.to_string() + "\n")
+        .collect();
+    assert!(text.contains("out_qc"));
+    let coverage: Vec<&str> = text.lines().filter(|l| l.contains("coverage")).collect();
+    assert!(
+        coverage[0].starts_with("* ") && coverage[0].contains("(was ≥ 3)"),
+        "{coverage:?}"
+    );
+    assert!(text.lines().any(|l| l.trim_start().starts_with(M6A)));
+    assert!(text.lines().any(|l| l.trim_start().starts_with(ATOI)));
+
+    let mut term = Terminal::new(TestBackend::new(150, 44)).unwrap();
+    term.draw(|f| p.render(f)).unwrap();
+    let screen: String = term
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+    assert!(screen.contains("apply these thresholds?"));
+    assert!(screen.contains("apply and write"));
+    press(&mut p, KeyCode::Char('n'));
+    assert!(matches!(p.mode, Mode::Browse) && !p.done());
 }
