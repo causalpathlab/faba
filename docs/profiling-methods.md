@@ -441,7 +441,7 @@ max-over-strata scan defeats. Biologically, the premise was wrong: conversion ra
 set by catalytic competence (does this cell express functional APOBEC1–YTH) and by the site's m6A
 occupancy, and neither is the axis a whole-transcriptome embedding partitions on. The dilution was
 real but it was competence-structured, not cell-type-structured, which is why the null-cell QC
-above recovers it — 18 → 66 reproducible sites — and the expression grouping did not.
+above recovers it and the expression grouping did not.
 
 **Quantification.** A second pass counts, per cell and per site, converted and unconverted reads.
 Every putative site is kept here. The **reproducibility** control, the single-cell analogue of the
