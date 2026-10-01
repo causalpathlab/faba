@@ -945,7 +945,8 @@ fn write_resolution_backend(
     let out = ctx
         .params
         .backend_output_path(&format!("{}_{}", batch_name, name_suffix));
-    let data = triplets.to_backend(&out.write_path)?;
+    let metadata = backend_meta(ctx.params.mod_type.command(), batch_name);
+    let data = triplets.to_backend(&out.write_path, &metadata)?;
     out_acc.rows.extend(data.row_names()?);
     info!("created {name_suffix} data: {}", out.target_path);
     drop(data);

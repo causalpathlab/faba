@@ -422,6 +422,8 @@ pub fn run_gene_count_qc(gff_file: &str, req: &GeneQcRequest) -> anyhow::Result<
                 sink.zip,
             );
             let merged: Vec<_> = spliced.into_iter().chain(unspliced).collect();
+            let mut metadata = backend_meta("count", batch_name);
+            metadata.insert(meta::CONTENT.to_string(), meta::GENE_COUNT.to_string());
             format_data_triplets_shared(
                 merged,
                 &feature_to_index,
@@ -429,7 +431,7 @@ pub fn run_gene_count_qc(gff_file: &str, req: &GeneQcRequest) -> anyhow::Result<
                 row_names,
                 col_names,
             )
-            .to_backend(&out.write_path)?;
+            .to_backend(&out.write_path, &metadata)?;
             out.finalize()?;
             info!(
                 "{}: wrote spliced + unspliced to {}",

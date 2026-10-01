@@ -157,7 +157,7 @@ fn process_simple_bam(
 
     let out = args.backend_output_path(batch_name);
     let triplets = summarize_simple_stats(&stats, |bed| site_key(bed, gff_map));
-    let data = triplets.to_backend(&out.write_path)?;
+    let data = triplets.to_backend(&out.write_path, &backend_meta("apa", batch_name))?;
     data.qc(cutoffs.clone())?;
     info!("created data backend: {}", out.target_path);
 
@@ -455,7 +455,8 @@ pub fn run_mixture(args: &CountApaArgs) -> anyhow::Result<()> {
                 continue;
             }
             let out = args.backend_output_path(&format!("{}_apa_mixture", batch_name));
-            let data = format_data_triplets(trip).to_backend(&out.write_path)?;
+            let data = format_data_triplets(trip)
+                .to_backend(&out.write_path, &backend_meta("apa", batch_name))?;
             data.qc(SqueezeCutoffs {
                 row: args.row_nnz_cutoff,
                 column: args.column_nnz_cutoff,
@@ -853,7 +854,8 @@ fn compute_and_write_pdui(
             apa_triplets.len()
         );
         let out = args.backend_output_path(&format!("{}_apa", batch_name));
-        let data = format_data_triplets(apa_triplets).to_backend(&out.write_path)?;
+        let data = format_data_triplets(apa_triplets)
+            .to_backend(&out.write_path, &backend_meta("apa", batch_name))?;
         data.qc(SqueezeCutoffs {
             row: args.row_nnz_cutoff,
             column: args.column_nnz_cutoff,

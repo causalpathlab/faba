@@ -30,18 +30,32 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all --check
 
+  # Default features (none) and with `hdf5`, whose paths a plain build never
+  # compiles.
   clippy:
-    name: clippy (-D warnings)
+    name: clippy (-D warnings) ${{ matrix.features }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - features: ""
+            hdf5: 'false'
+          - features: "--features hdf5"
+            hdf5: 'true'
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/system-deps
+        with:
+          hdf5: ${{ matrix.hdf5 }}
       - uses: dtolnay/rust-toolchain@1.94
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: clippy${{ matrix.features }}
       # --all-targets so test and bench code is linted too.
-      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo clippy --all-targets ${{ matrix.features }} -- -D warnings
 
   test:
     name: test
@@ -55,9 +69,10 @@ jobs:
 
   # Optional HDF5 feature: a plain build never touches `#[cfg(feature =
   # "hdf5")]` paths, so they can rot. This is the one optional feature a
-  # hosted runner can satisfy.
+  # hosted runner can satisfy; the tests run with it on, against the HDF5
+  # backend data-beans then builds.
   features:
-    name: check --features hdf5
+    name: test --features hdf5
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -66,7 +81,7 @@ jobs:
           hdf5: 'true'
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo check --all-targets --features hdf5
+      - run: cargo test --features hdf5
 
   # `rust-version` is the highest `rust-version` among resolved dependencies
   # (1.91, from the zarrs stack via data-beans). That is the floor the

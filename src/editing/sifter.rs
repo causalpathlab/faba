@@ -16,6 +16,16 @@ pub enum ModificationType {
     AtoI,
 }
 
+impl ModificationType {
+    /// The faba command that scans for this modification.
+    pub fn command(&self) -> &'static str {
+        match self {
+            Self::M6A { .. } => "dartseq",
+            Self::AtoI => "atoi",
+        }
+    }
+}
+
 //////////////////////
 // The m6A motif    //
 //////////////////////
