@@ -248,6 +248,13 @@ fn depth_rows_parse_as_bins() {
         Some(("GL000008.2", 100_000, 150_000))
     );
     assert_eq!(parse_depth_row("ENSG1_GENE1/m6a/chr1:100/methylated"), None);
+    // Alt contigs keep their underscores; other spellings are not loci.
+    assert_eq!(
+        parse_depth_row("chr1_KI270706v1_random:0-50000"),
+        Some(("chr1_KI270706v1_random", 0, 50_000))
+    );
+    assert_eq!(parse_depth_row("chr1_0_50000"), None);
+    assert_eq!(parse_depth_row("chr1:50000-0"), None);
 }
 
 /// The row names the producers write today (through the shared
