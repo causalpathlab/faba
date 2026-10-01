@@ -43,7 +43,7 @@ default = []
 hdf5 = ["data-beans/hdf5"]
 
 [dependencies]
-data-beans = { version = "0.6.17", default-features = false, features = ["aux", "tui"] }
+data-beans = { version = "0.6.19", default-features = false, features = ["aux", "tui"] }
 ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
 # Figures: one SVG per view, converted to PDF and PNG.
 usvg = "0.45"
@@ -53,8 +53,8 @@ svg2pdf = { version = "0.13", default-features = false, features = ["text"] }
 # (kitty, iTerm2, sixel); others keep the text plots.
 ratatui-image = { version = "11.1", default-features = false, features = ["crossterm"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
-legume-genomic-types = "0.4.1"
-legume-numeric = { version = "0.8.12", features = ["matrix", "param", "candle"] }
+legume-genomic-types = "0.4.4"
+legume-numeric = { version = "0.8.13", default-features = false, features = ["matrix", "param"] }
 
 anyhow = "1.0"
 clap = { version = "4.5.20", features = ["derive"] }
