@@ -210,9 +210,12 @@ pub fn unique_bam_files(bam_files: impl IntoIterator<Item = Box<str>>) -> (Vec<B
 // }
 
 pub trait ToBackend {
+    /// Write a new backend at `file_path`, carrying `metadata` (what it holds
+    /// and who wrote it, see [`backend_meta`]).
     fn to_backend(
         &self,
         file_path: &str,
+        metadata: &Metadata,
     ) -> anyhow::Result<Box<dyn SparseIo<IndexIter = Vec<usize>>>>;
 }
 
@@ -220,6 +223,7 @@ impl ToBackend for TripletsRowsCols {
     fn to_backend(
         &self,
         file_path: &str,
+        metadata: &Metadata,
     ) -> anyhow::Result<Box<dyn SparseIo<IndexIter = Vec<usize>>>> {
         let backend = match file_ext(file_path)?.as_ref() {
             "zarr" => SparseIoBackend::Zarr,
@@ -239,9 +243,20 @@ impl ToBackend for TripletsRowsCols {
             create_sparse_from_triplets(triplets, mtx_shape, Some(file_path), Some(&backend))?;
         data.register_column_names_vec(col_names);
         data.register_row_names_vec(row_names);
+        data.set_metadata(metadata)?;
 
         Ok(data)
     }
+}
+
+/// The metadata faba writes on a backend (`data_beans::sparse_io::meta`): the
+/// batch it holds as its sample, and the command that wrote it, `faba
+/// {command}`. Readers take the sample from here, not from the file name.
+pub fn backend_meta(command: &str, batch_name: &str) -> Metadata {
+    Metadata::from([
+        (meta::SAMPLE.to_string(), batch_name.to_string()),
+        (meta::PRODUCER.to_string(), format!("faba {command}")),
+    ])
 }
 
 pub trait BackendQc {
@@ -260,3 +275,6 @@ impl BackendQc for Box<dyn SparseIo<IndexIter = Vec<usize>>> {
         squeeze_by_nnz(self.as_ref(), cutoffs, None, false)
     }
 }
+
+#[cfg(test)]
+mod tests;

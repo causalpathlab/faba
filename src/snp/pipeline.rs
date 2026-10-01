@@ -803,8 +803,8 @@ pub fn run_snp_pipeline(
                     // two whose row orders a consumer had to trust.
                     let baf_out = params.backend_output_path(&format!("{}_baf", batch_name));
                     info!("Writing allele frequency matrix: {}", baf_out.target_path);
-                    let baf_io =
-                        format_data_triplets(baf_triplets).to_backend(&baf_out.write_path)?;
+                    let baf_io = format_data_triplets(baf_triplets)
+                        .to_backend(&baf_out.write_path, &backend_meta("snp", batch_name))?;
                     drop(baf_io);
                     baf_out.finalize()?;
                 }

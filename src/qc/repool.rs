@@ -120,6 +120,11 @@ pub fn repool_gene_level(
     )?;
     backend.register_row_names_vec(&out_rows);
     backend.register_column_names_vec(&out_cols);
+    // The same batch, written by the same command; the rows are genes now,
+    // which no shared `content` names.
+    let mut metadata = data.metadata();
+    metadata.remove(meta::CONTENT);
+    backend.set_metadata(&metadata)?;
     drop(backend);
     path.finalize()?;
     Ok(Some(Written {

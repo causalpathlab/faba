@@ -116,7 +116,7 @@ pub fn run_read_depth_pipeline_with_cells(
         let out = crate::quant::BackendOutputPath::new(&args.output, &name, &backend, args.zip);
 
         format_data_triplets(segment_stats)
-            .to_backend(&out.write_path)?
+            .to_backend(&out.write_path, &backend_meta("depth", batch_name))?
             .qc(cutoffs.clone())?;
 
         out.finalize()?;
