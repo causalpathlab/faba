@@ -290,3 +290,16 @@ fn a_gene_symbol_may_hold_a_slash() {
     assert_eq!(row, Some(("ID1_GENE1/B", "m6a", "chr1", 100, Some(true))));
     assert_eq!(parse_row_channel("ID1_GENE1/m6a/chr1:100/other"), None);
 }
+
+#[test]
+fn an_alt_contig_position_is_not_read_as_a_gene() {
+    // A BAF row's first segment is a position on an alt contig: no gene
+    // query may match a piece of it.
+    let gp = "chr1_KI270706v1_random:12345";
+    for q in ["random:12345", "random", "KI270706v1", "chr1"] {
+        assert!(!gene_matches(q, &query_symbol(q), gp), "{q}");
+    }
+    assert!(gene_matches(gp, &query_symbol(gp), gp));
+    // The shared gene rule leaves a coordinate whole.
+    assert_eq!(&*query_symbol(gp), gp);
+}
