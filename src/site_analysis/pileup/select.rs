@@ -58,6 +58,11 @@ pub(super) fn parse_row_channel(name: &str) -> Option<(&str, &str, &str, i64, Op
 /// (`ENSG00000000001`) query resolve the same row. Case-insensitive.
 /// `query_sym` is the pre-canonicalized query symbol.
 pub(crate) fn gene_matches(query: &str, query_sym: &str, gene_part: &str) -> bool {
+    // A position or locus (a BAF row's `chr:pos`) is not a gene name: only
+    // the whole of it matches, so an alt contig's `_` pieces never do.
+    if genomic_data::coordinates::is_region(gene_part) {
+        return gene_part.eq_ignore_ascii_case(query);
+    }
     // Allocation-free component check first — it directly covers symbol and
     // Ensembl-ID queries (and subsumes a full-composite match). Fall back to
     // the suffix-stripping canonicalizer only when the components miss.
