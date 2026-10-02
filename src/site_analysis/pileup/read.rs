@@ -411,11 +411,9 @@ pub(super) fn read_matrix_positions(
     }))
 }
 
-/// Parse a `_depth` row name `chr:start-end`.
+/// Parse a `_depth` row name `chr:start-end`, by the shared strict locus rule.
 pub(super) fn parse_depth_row(name: &str) -> Option<(&str, i64, i64)> {
-    let (chr, range) = name.rsplit_once(':')?;
-    let (start, end) = range.split_once('-')?;
-    Some((chr, start.parse().ok()?, end.parse().ok()?))
+    genomic_data::coordinates::split_interval(name)
 }
 
 /// Read depth over `chr:lo-hi` from `_depth` matrices: each overlapping
