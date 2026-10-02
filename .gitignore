@@ -7,3 +7,6 @@
 *.fai
 *.gz
 reference/
+
+# Not tracked; resolved fresh on each build
+Cargo.lock
