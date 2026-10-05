@@ -14,10 +14,7 @@ use data_beans::interactive::ui::{
     HIGHLIGHT, PLAIN,
 };
 use data_beans::qc::pct;
-use ratatui::crossterm::event::{
-    KeyCode, KeyEvent, KeyModifiers, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
-    PushKeyboardEnhancementFlags,
-};
+use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -39,7 +36,7 @@ use super::args::SiteFilterArgs;
 use super::layout::{file_name, SITE_MODALITIES};
 use super::progress::Progress;
 use super::sites::{genomic_sites, Criterion, GeneSites, SiteTable};
-use super::widgets::{first_visible, popup};
+use crate::tui::{first_visible, is_go, popup, ShiftEnter, GO_KEYS};
 
 mod annotation;
 mod column;
@@ -226,19 +223,6 @@ impl Writer<'_> {
     }
 }
 
-/// The apply keys, as the footer names them.
-const APPLY_KEYS: &str = "⇧Enter/A";
-
-/// Whether `key` asks to apply: Shift+Enter, or `A` where the terminal
-/// cannot tell Shift+Enter from Enter.
-fn is_apply(key: &KeyEvent) -> bool {
-    match key.code {
-        KeyCode::Enter => key.modifiers.contains(KeyModifiers::SHIFT),
-        KeyCode::Char('A') => true,
-        _ => false,
-    }
-}
-
 /// State of the picker, independent of the terminal so it can be tested.
 struct SitePicker<'a> {
     title: String,
@@ -255,11 +239,8 @@ struct SitePicker<'a> {
     tally: Tally,
     mode: Mode,
     panel: Panel,
-    /// Ask the terminal to tell Shift+Enter from Enter at the first draw
-    /// (the kitty keyboard protocol; others ignore the request).
-    want_shift_enter: bool,
-    /// The request is in force, to be withdrawn on the way out.
-    shift_enter_on: bool,
+    /// Shift+Enter reporting, asked for at the first draw.
+    shift_enter: ShiftEnter,
     /// Plain Enter was pressed: say how to apply instead.
     enter_hint: bool,
     /// Steps done the last time the write was drawn.
@@ -297,8 +278,7 @@ impl<'a> SitePicker<'a> {
             tally,
             mode: Mode::Browse,
             panel: Panel::Thresholds,
-            want_shift_enter: false,
-            shift_enter_on: false,
+            shift_enter: ShiftEnter::default(),
             enter_hint: false,
             drawn_steps: 0,
             controls: Controls::new("qc_sites"),
@@ -426,9 +406,7 @@ impl<'a> SitePicker<'a> {
 
     /// End the session, handing the terminal's keyboard back as it was.
     fn decide(&mut self, picked: Picked) {
-        if std::mem::take(&mut self.shift_enter_on) {
-            let _ = ratatui::crossterm::execute!(std::io::stdout(), PopKeyboardEnhancementFlags);
-        }
+        self.shift_enter.release();
         self.decision = Some(picked);
     }
 
@@ -567,14 +545,14 @@ impl Screen for SitePicker<'_> {
                 _ => {}
             },
             Mode::Confirm => match key.code {
-                _ if is_apply(&key) => self.apply(),
+                _ if is_go(&key) => self.apply(),
                 KeyCode::Char('y') => self.apply(),
                 KeyCode::Esc | KeyCode::Char('n' | 'q') => self.mode = Mode::Browse,
                 _ => {}
             },
             Mode::Writing => {}
             Mode::Browse => match key.code {
-                _ if is_apply(&key) => self.mode = Mode::Confirm,
+                _ if is_go(&key) => self.mode = Mode::Confirm,
                 KeyCode::Enter => self.enter_hint = true,
                 KeyCode::Tab | KeyCode::BackTab => {
                     self.panel = match self.panel {
@@ -616,16 +594,7 @@ impl Screen for SitePicker<'_> {
     }
 
     fn render(&mut self, frame: &mut Frame) {
-        // Ask for Shift+Enter on the screen the view draws on: terminals keep
-        // the main and alternate screens' keyboard modes apart.
-        if std::mem::take(&mut self.want_shift_enter) {
-            let flags = KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES;
-            self.shift_enter_on = ratatui::crossterm::execute!(
-                std::io::stdout(),
-                PushKeyboardEnhancementFlags(flags)
-            )
-            .is_ok();
-        }
+        self.shift_enter.arm();
         let [top, tabs, body, footer] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Length(1),
@@ -686,7 +655,7 @@ impl Screen for SitePicker<'_> {
                 &[("Enter", "set"), ("Esc", "back")],
             ),
             (Mode::Confirm, None) => help_line(&[
-                (APPLY_KEYS, "apply and write"),
+                (GO_KEYS, "apply and write"),
                 ("y", "apply and write"),
                 ("Esc/n", "back"),
             ]),
@@ -697,7 +666,7 @@ impl Screen for SitePicker<'_> {
                 &[("Enter", "keep"), ("Esc", "clear")],
             ),
             (Mode::Browse, None) => {
-                let apply = (APPLY_KEYS, "apply");
+                let apply = (GO_KEYS, "apply");
                 if self.enter_hint {
                     let mut line = help_line(&[apply]);
                     let hint = Span::styled("Enter does nothing here; ", DIM);
@@ -777,7 +746,7 @@ pub fn run_site_picker(
     let mut picker =
         SitePicker::new(&file_name(input_dir), views, filter.clone(), meta).pin_genes(pinned);
     picker.writer = writer;
-    picker.want_shift_enter = true;
+    picker.shift_enter = ShiftEnter::wanted();
     picker.controls = Controls::new("qc_sites").detect();
     data_beans::interactive::ui::run_screen(&mut picker)?;
     Ok(picker.decision.unwrap_or(Picked::Cancelled))

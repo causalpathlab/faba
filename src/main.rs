@@ -16,6 +16,7 @@ mod read_depth;
 mod run_record;
 mod site_analysis;
 mod snp;
+mod tui;
 
 use crate::common::*;
 use crate::qc::{run_qc, QcArgs};

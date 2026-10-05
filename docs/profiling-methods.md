@@ -696,7 +696,7 @@ applies, so the view cannot disagree with the written fileset. Shift+Enter opens
 recaps the output directory, the thresholds changed from the start, and the sites every modality
 keeps; a second Shift+Enter (or `y`) applies them, Esc (or `n`) goes back. Plain Enter does
 nothing, so a stray key cannot start a write; on a terminal that cannot tell Shift+Enter from
-Enter (no kitty keyboard protocol), `A` stands in for it. Once applied, the fileset is written
+Enter (no kitty keyboard protocol), `G` stands in for it. Once applied, the fileset is written
 with the view still up, under a pop-up showing each file as it goes. The view's figure for every
 modality and every knob, as set when the cut was applied (scales, selected gene, sites or reads),
 is saved beside it in `qc_plots/{modality}_{knob}.pdf` and `.png`. `p` prints the matching

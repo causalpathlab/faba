@@ -864,8 +864,8 @@ fn confirming_writes_in_the_view_and_shows_progress() {
         })),
     };
 
-    // `A` stands in for Shift+Enter where the terminal cannot report it.
-    press(&mut p, KeyCode::Char('A'));
+    // `G` stands in for Shift+Enter where the terminal cannot report it.
+    press(&mut p, KeyCode::Char('G'));
     assert!(matches!(p.mode, Mode::Confirm));
     press(&mut p, KeyCode::Char('y'));
     assert!(matches!(p.mode, Mode::Writing) && !p.done());

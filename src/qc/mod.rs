@@ -16,7 +16,6 @@ pub mod repool;
 pub mod run;
 pub mod site_tui;
 pub mod sites;
-pub mod widgets;
 
 pub use args::QcArgs;
 pub use run::run_qc;

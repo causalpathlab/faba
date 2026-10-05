@@ -12,8 +12,8 @@ use ratatui::Frame;
 use rustc_hash::FxHashMap;
 
 use super::layout::looks_like_faba_dir;
-use super::widgets::{first_visible, popup_frame};
 use crate::figure::{Edit, LineInput};
+use crate::tui::{first_visible, popup_frame};
 
 /// One subdirectory in the browser.
 struct Entry {
