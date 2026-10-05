@@ -1,5 +1,7 @@
 # `faba run`: set up and run the pipeline in the terminal
 
+> **Superseded on merge with 0.16.2:** only Shift+Enter opens the preview and starts the run; `G` and `y` do nothing (as in qc). `c` copies the command on every screen and `p` prints it and leaves.
+
 Status: design, approved in conversation; not implemented.
 Replaces: `faba all` (and its aliases `pipeline`, `full`, `magic`).
 Builds on: the `faba qc` view (#12) for the shared pop-up, list and Shift+Enter helpers.
