@@ -130,7 +130,6 @@ impl App {
     }
 
     /// Take what the command line gave: its flags, steps and inputs.
-    #[allow(dead_code)] // wired into the command line by the next task
     pub fn prefill(&mut self, m: &clap::ArgMatches, args: &PipelineArgs) {
         self.form.prefill(m);
         self.steps.prefill(args);
@@ -348,7 +347,6 @@ impl Screen for App {
 
 /// Open the setup view in `faba run`'s flags, pre-filled from a command
 /// line when one is given.
-#[allow(dead_code)] // wired into the command line by the next task
 pub fn run_view(
     run_cmd: clap::Command,
     prefill: Option<(&clap::ArgMatches, &PipelineArgs)>,

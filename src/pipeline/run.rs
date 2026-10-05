@@ -140,7 +140,7 @@ pub fn run_pipeline(args: &PipelineArgs) -> anyhow::Result<()> {
 
 /// A record for one step of the run, with the inputs that step reads, under
 /// the name the standalone subcommand writes, so a step's outputs can be
-/// traced to it. As `all`, the whole run: every input, written to
+/// traced to it. As `run`, the whole run: every input, written to
 /// `pipeline_summary.json`.
 ///
 /// Every option is recorded, and it is [`PipelineArgs`] itself that is
@@ -203,6 +203,13 @@ pub fn run_or_view(args: &PipelineArgs, cli: clap::Command) -> anyhow::Result<()
         "`faba run` sets up the run in a full-screen view, which needs stdin and stdout \
          on a terminal; pass --batch-process with the BAMs, -g, -f and -o to run without it"
     );
-    let _ = cli;
-    anyhow::bail!("the setup view is not built yet")
+    let mut run_cmd = cli
+        .find_subcommand("run")
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("faba has no run command"))?;
+    run_cmd.build();
+    let matches = run_cmd
+        .clone()
+        .try_get_matches_from(std::env::args().skip(1).skip_while(|a| a != "run"))?;
+    super::tui::run_view(run_cmd, Some((&matches, args)))
 }

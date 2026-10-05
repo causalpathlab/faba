@@ -136,7 +136,7 @@ faba <COMMAND> [OPTIONS]
 | `count` (`genes`)         | Count reads per gene and call cells (single-cell or bulk RNA-seq) |
 | `depth` (`rd`)            | Compute read depth over genomic intervals |
 | `snp` (`genotype`)        | Discover and genotype SNP variants from BAM pileup |
-| `all` (`pipeline`)        | Run the full profiling pipeline: SNP → count → ATOI → m6A → APA |
+| `run` | Set up the pipeline in a view (inputs, steps, flags), preview and save the command, and run it: SNP → count → ATOI → m6A → APA |
 | **QC — choose and apply thresholds after profiling** ||
 | `qc`                      | Pick thresholds in a full-screen view, then filter a faba output directory into a new fileset |
 | **Inspection & reference** ||
@@ -183,8 +183,10 @@ faba atoi sample.bam -g genes.gff -f genome.fa -o out/
 faba dartseq wt.bam --control-bam ctrl.bam -g genes.gff -f genome.fa -o out/
 
 # Everything in one pass (the m6A step runs only when --control-bam is given,
-# otherwise it is skipped; the other steps need no control)
-faba all sample.bam -g genes.gff -f genome.fa -o out/ --control-bam ctrl.bam
+# otherwise it is skipped; the other steps need no control).
+# Set up and run everything in a view (plain `faba run`), or straight through:
+faba run
+faba run --batch-process sample.bam -g genes.gff -f genome.fa -o out/ --control-bam ctrl.bam
 
 # The producers apply no p-value / effect-size / reproducibility cutoff.
 # Pick the thresholds in a full-screen view, then cut into a NEW directory

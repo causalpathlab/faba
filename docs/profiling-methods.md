@@ -31,7 +31,7 @@ exception: it counts reads and has no UMI collapse.
 every gene with a count, and every putative site with its statistics. The only floors are the
 candidacy floors that keep an all-zero row from existing, with two exceptions: `apa` drops rows
 with fewer than `--row-nnz-cutoff` (10) non-zero cells, and standalone `depth` drops bins and
-cells with fewer than 10 non-zeros (`--row-nnz-cutoff`, `--column-nnz-cutoff`; `faba all` passes
+cells with fewer than 10 non-zeros (`--row-nnz-cutoff`, `--column-nnz-cutoff`; `faba run` passes
 0 for both). p-values, odds ratios, edit ratios,
 cells-per-site and nnz cutoffs are `faba qc` flags (§8), applied to stored columns, and
 the `faba qc` view shows what each one keeps before it is applied.
@@ -162,10 +162,10 @@ the nearest exon, and the count is logged.
 ### 1.3 Run records: what each run read and wrote
 
 Every producer (`dartseq`, `atoi`, `apa`, `count`, `depth`, `snp`) writes `{job}.run.json` into
-its output directory, and so does `qc`. `faba all` writes one per step under the same names
+its output directory, and so does `qc`. `faba run` writes one per step under the same names
 (`snp`, `count`, `depth`, `atoi`, `dartseq`, `apa`) and `pipeline_summary.json` for the whole
 run. A record holds the faba version, the command line, the working directory, `status` (`ok`, or
-`failed: ` and the error; a failed `all` step still leaves its record), the elapsed time, the
+`failed: ` and the error; a failed `run` step still leaves its record), the elapsed time, the
 `inputs` (`bam`, `control_bam`, `gff`, `genome`, `known_snps`, ...), the
 `outputs`, and every effective option, defaults included. Each input has a `path`, absolute
 with symlinks kept as given, and, when a symlink makes them differ, a `resolved` path: the file
@@ -260,7 +260,7 @@ discovering on cells where the reporter never worked is not an alternative analy
 just a diluted one. The scan no-ops on its own when there is no control arm to
 calibrate against (A-to-I, or m6A run without `--control-bam`). A per-cell audit goes
 to `{output}/{batch}_m6a_cell_qc.tsv.gz`, one per batch, with `scored` separating "assessed and rejected" from
-"too little coverage to assess". `faba dartseq` and `faba all` share the same knobs, so
+"too little coverage to assess". `faba dartseq` and `faba run` share the same knobs, so
 the two paths cannot drift.
 
 **Putative sites, and no test.** A site is a *putative candidate* on the sequencing pattern alone:
@@ -466,7 +466,7 @@ noise: `k ~ BetaBinomial(n, α, β)` with mean `ε = --error-rate` (0.01) and in
 to a plain binomial. This is the single-condition test used by SAILOR [5] and JACUSA2 [6].
 
 Candidacy floors: `n ≥ --min-coverage` (**5**) and `k ≥ --min-conversion` (**3**), the same in
-`faba atoi` and `faba all`. They are higher than m6A's 1 / 1 because A-to-I has no motif anchor: at
+`faba atoi` and `faba run`. They are higher than m6A's 1 / 1 because A-to-I has no motif anchor: at
 1 / 1 every reference A with a single mismatching read would be a site. No p-value cutoff is applied
 here either — every putative site is written with its `pv`, and `faba qc --site-max-pv` decides, as a
 marginal cutoff with no multiplicity correction and no gene-level pooling, for the reasons given in
@@ -717,6 +717,14 @@ and features are cut as given.
 
 ## 9. `run` — the full pipeline
 
+Plain `faba run` opens a full-screen view: an Inputs screen (BAMs picked as foreground or
+background, annotation, genome, output directory), a Steps screen, and a flags form, all
+pre-filled from any flags given on the command line. A preview shows the exact command, which can
+be saved as `faba_run.cmd.sh` (an existing file is not overwritten without a guard). Starting the
+run launches the command as a child process with its output going to a log, and `s` stops it
+(interrupt first, then kill). `--batch-process` skips the view and runs straight through from the
+flags given; it needs the BAMs, `-g`, `-f` and `-o`.
+
 The steps run in this order, and each one's output constrains the next:
 
 ```
@@ -744,11 +752,11 @@ pipeline's output is the inclusive fileset `faba qc` (§8) cuts.
   given.
 - **APA** runs last, because the SCAPE EM is the expensive step.
 
-The per-modality floors are the same in `all` and standalone: `--gene-min-cells` 1 and
+The per-modality floors are the same in `run` and standalone: `--gene-min-cells` 1 and
 `--cell-min-genes` 1 drop only empty rows and columns, so the cell and gene axes are set once, by
 the count step, and every modality carries them unchanged to `faba qc`. The editing candidacy
 floors (coverage, conversion) are likewise shared by const with the standalone commands. The one
-difference is `depth`: `all` writes every bin and cell, where standalone `depth` drops those with
+difference is `depth`: `run` writes every bin and cell, where standalone `depth` drops those with
 fewer than 10 non-zeros.
 
 ---
@@ -758,7 +766,7 @@ fewer than 10 non-zeros.
 Found by reading both. Every discrepancy this section has listed so far has been fixed in the help
 text or rustdoc itself, most recently the BIC wording on `--mixture-max-k` and
 `run_mixture_model`, `--min-fragments` and `--merge-distance` (both also used on the fast PDUI
-path), and the APA line of `faba all --mixture`. A new one belongs here until it is fixed.
+path), and the APA line of `faba run --batch-process --mixture`. A new one belongs here until it is fixed.
 
 ---
 

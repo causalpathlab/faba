@@ -265,3 +265,38 @@ fn base64_matches_the_standard() {
     assert_eq!(base64(b"foo"), "Zm9v");
     assert_eq!(base64(b"foobar"), "Zm9vYmFy");
 }
+
+#[test]
+fn flags_on_the_command_line_prefill_the_view() {
+    use clap::FromArgMatches;
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("sample_A.bam"), b"").unwrap();
+    let bam = tmp
+        .path()
+        .join("sample_A.bam")
+        .to_string_lossy()
+        .into_owned();
+    let cmd = run_cmd();
+    let m = cmd
+        .clone()
+        .try_get_matches_from([
+            "run",
+            &bam,
+            "-g",
+            "genes.gff",
+            "--max-threads",
+            "3",
+            "--skip-apa",
+        ])
+        .unwrap();
+    let args = crate::pipeline::args::PipelineArgs::from_arg_matches(&m).unwrap();
+    let mut a = App::new(cmd, tmp.path().to_path_buf());
+    a.prefill(&m, &args);
+    let argv = a.argv();
+    assert!(argv.contains(&bam));
+    assert!(argv
+        .windows(2)
+        .any(|w| w[0] == "-g" && w[1].ends_with("genes.gff")));
+    assert!(argv.windows(2).any(|w| w == ["--max-threads", "3"]));
+    assert!(argv.contains(&"--skip-apa".to_string()));
+}
