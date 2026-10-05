@@ -2,8 +2,8 @@
 //!
 //! Producers write one matrix per (batch, kind) as `{batch}_{kind}.{zarr.zip|zarr|h5}`
 //! and one shared site table per editing modality (`{modality}_sites.parquet`).
-//! Nothing here opens a file; it only classifies names so `qc` and `qc-report`
-//! agree on which file is which.
+//! Nothing here opens a file; it only classifies names, so every step of
+//! `qc` agrees on which file is which.
 
 use std::path::Path;
 
@@ -81,6 +81,30 @@ impl InputLayout {
             .iter()
             .find(|m| &*m.batch == batch && &*m.kind == kind)
     }
+}
+
+/// Whether `dir` holds a faba matrix or site table: [`scan_input_dir`]'s
+/// test, stopping at the first hit and statting only `.zarr` names.
+pub fn looks_like_faba_dir(dir: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    entries.flatten().any(|e| {
+        let name = e.file_name();
+        let Some(name) = name.to_str() else {
+            return false;
+        };
+        let is_dir = || e.file_type().is_ok_and(|t| t.is_dir()) || e.path().is_dir();
+        let matrix = if name.ends_with(".zarr") {
+            is_dir()
+        } else {
+            classify_matrix_name(name, false).is_some()
+        };
+        matrix
+            || name
+                .strip_suffix("_sites.parquet")
+                .is_some_and(|m| SITE_MODALITIES.contains(&m))
+    })
 }
 
 /// Split a matrix file name into `(stem, backend, zipped)`; `None` when it is

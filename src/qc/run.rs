@@ -10,7 +10,9 @@
 //! 4. gene-level `{batch}_m6a` / `{batch}_atoi` are RE-POOLED from the filtered
 //!    site matrix, so they cannot disagree with the site cut;
 //! 5. every other matrix takes the cell keep set and `--row-nnz-cutoff`;
-//! 6. every other file is copied through.
+//! 6. every other file is copied through;
+//! 7. with the view, its figure for every modality and knob goes to
+//!    `qc_plots/` as PDF and PNG.
 
 use std::sync::Arc;
 
@@ -26,11 +28,14 @@ use super::matrix::{
     open_matrix, row_nnz_over_columns, select_columns, shape, write_subset, Backend, OutSpec,
     Written,
 };
+use super::path_tui::ask_paths;
+use super::progress::{FinishOnDrop, Progress};
 use super::repool::repool_gene_level;
-use super::site_tui::{qc_flags, run_site_picker, Picked};
+use super::site_tui::{qc_flags, run_site_picker, Figure, Picked, Writer};
 use super::sites::{
     accumulate_site_cells, read_site_table, site_matrix_rows, write_site_tables, SiteTable,
 };
+use data_beans::interactive::tui_available;
 
 struct SummaryRow {
     file: Box<str>,
@@ -199,25 +204,51 @@ struct SiteMatrix {
     cols: Vec<usize>,
 }
 
+/// The input and output directories: as given, else asked for in a pop-up.
+fn resolve_paths(args: &QcArgs) -> anyhow::Result<(String, String)> {
+    if let (Some(input), Some(output)) = (&args.input_dir, &args.output) {
+        return Ok((input.to_string(), output.to_string()));
+    }
+    anyhow::ensure!(
+        !args.batch_process,
+        "`faba qc --batch-process` needs INPUT_DIR and -o/--output"
+    );
+    let Some((input, output)) = ask_paths(args.input_dir.as_deref(), args.output.as_deref())?
+    else {
+        anyhow::bail!("cancelled at the directories; nothing written");
+    };
+    info!("faba qc {input} -o {output}");
+    Ok((input, output))
+}
+
 pub fn run_qc(args: &QcArgs) -> anyhow::Result<()> {
-    let out_dir = args.output.as_ref();
+    anyhow::ensure!(
+        args.batch_process || tui_available(),
+        "`faba qc` picks the site thresholds in a full-screen view, which needs stdin and \
+         stdout on a terminal; pass --batch-process to cut with the --site-* values as given"
+    );
+    let (input, output) = resolve_paths(args)?;
+    let (input, out_dir) = (input.as_str(), output.as_str());
     if std::path::Path::new(out_dir).exists() && std::fs::read_dir(out_dir)?.next().is_some() {
         anyhow::bail!("output directory {out_dir} already contains files; choose an empty one");
     }
     // Carry the annotation and genome forward, so tools reading the new
     // fileset find them as they would in the original.
-    let gff = explicit_or_recorded(args.gff.as_deref(), &args.input_dir, "gff", "annotation");
-    let genome = find_input(&args.input_dir, "genome", "genome");
+    let gff = explicit_or_recorded(args.gff.as_deref(), input, "gff", "annotation");
+    let genome = find_input(input, "genome", "genome");
     let mut record = RunRecord::start("qc", out_dir)
-        .input("fileset", Some(&args.input_dir))
+        .input("fileset", Some(input))
         .input("gff", gff.as_deref())
         .input("genome", genome.as_deref())
         .options(args);
-    let outcome = filter_fileset(args, gff.as_deref());
+    let outcome = filter_fileset(args, input, out_dir, gff.as_deref());
     // A run cancelled before writing leaves the directory empty, for a rerun.
     let wrote = std::fs::read_dir(out_dir).is_ok_and(|mut d| d.next().is_some());
     if wrote {
-        // The thresholds applied, which `--interactive` may have changed.
+        // The directories, which may have been asked for, and the thresholds
+        // applied, which the view may have changed.
+        record.set_option("input_dir", &input);
+        record.set_option("output", &out_dir);
         if let Ok(Some(site)) = &outcome {
             record.set_option("site", site);
         }
@@ -226,22 +257,123 @@ pub fn run_qc(args: &QcArgs) -> anyhow::Result<()> {
     outcome.map(|_| ())
 }
 
+/// Everything read before the site thresholds are decided: the input's
+/// layout, the cell verdicts, the site tables and the `_site` matrices with
+/// their kept cells per site.
+struct Prepared {
+    layout: InputLayout,
+    cells: FxHashMap<Box<str>, FxHashSet<Box<str>>>,
+    decisions: Vec<CellDecision>,
+    tables: FxHashMap<Box<str>, SiteTable>,
+    site_matrices: Vec<SiteMatrix>,
+    site_cells: FxHashMap<Box<str>, FxHashMap<Box<str>, usize>>,
+}
+
 /// [`run_qc`] once the output directory is known to be empty, with `gff` for
-/// the interactive metagene. Returns the site thresholds applied, `None` when
+/// the view's metagene. Returns the site thresholds applied, `None` when
 /// nothing was written.
-fn filter_fileset(args: &QcArgs, gff: Option<&str>) -> anyhow::Result<Option<SiteFilterArgs>> {
-    let out_dir = args.output.as_ref();
-    let layout: InputLayout = scan_input_dir(&args.input_dir)?;
+fn filter_fileset(
+    args: &QcArgs,
+    input: &str,
+    out_dir: &str,
+    gff: Option<&str>,
+) -> anyhow::Result<Option<SiteFilterArgs>> {
+    let prep = prepare(args, input)?;
+    let has_sites = prep.tables.values().any(|t| !t.is_empty());
+    if args.batch_process || !has_sites {
+        if !has_sites && !args.batch_process {
+            log::warn!(
+                "no editing site table to pick thresholds on; cutting cells and features only"
+            );
+        }
+        write_fileset(&prep, args, out_dir, &args.site, &[], &Progress::default())?;
+        return Ok(Some(args.site.clone()));
+    }
+    let progress = Progress::default();
+    let picked = std::thread::scope(|s| -> anyhow::Result<_> {
+        let mut writer = None;
+        let picked = run_site_picker(
+            input,
+            &prep.tables,
+            &prep.site_cells,
+            &args.site,
+            gff,
+            &args.genes,
+            Writer {
+                output: out_dir,
+                progress: &progress,
+                start: Some(Box::new(|site: SiteFilterArgs, figures: Vec<Figure>| {
+                    let (prep, progress) = (&prep, &progress);
+                    writer = Some(s.spawn(move || {
+                        let _finish = FinishOnDrop(progress);
+                        write_fileset(prep, args, out_dir, &site, &figures, progress)
+                    }));
+                })),
+            },
+        )?;
+        if let Some(w) = writer {
+            w.join()
+                .map_err(|_| anyhow::anyhow!("writing the filtered fileset panicked"))??;
+        }
+        Ok(picked)
+    })?;
+    match picked {
+        Picked::Apply(f) => {
+            info!("site thresholds: {}", qc_flags(&f));
+            Ok(Some(f))
+        }
+        Picked::PrintOnly(f) => {
+            println!("{}", batch_command(args, input, out_dir, &f));
+            Ok(None)
+        }
+        Picked::Cancelled => anyhow::bail!("cancelled at the site thresholds; nothing written"),
+    }
+}
+
+/// The `faba qc --batch-process` command that cuts `input` into `out_dir` as
+/// this run would, with the site thresholds `site`.
+fn batch_command(args: &QcArgs, input: &str, out_dir: &str, site: &SiteFilterArgs) -> String {
+    let mut cmd = format!(
+        "faba qc {} -o {} --batch-process -r {} -c {} --qc-mads {} --qc-min-cell-nnz {}",
+        input,
+        out_dir,
+        args.row_nnz_cutoff,
+        args.column_nnz_cutoff,
+        args.qc_mads,
+        args.qc_min_cell_nnz
+    );
+    for (on, flag) in [
+        (args.auto_cutoff, "--auto-cutoff"),
+        (args.no_cell_qc, "--no-cell-qc"),
+        (args.show_histogram, "--show-histogram"),
+        (args.no_zip, "--no-zip"),
+    ] {
+        if on {
+            cmd += &format!(" {flag}");
+        }
+    }
+    if let Some(b) = args.block_size {
+        cmd += &format!(" --block-size {b}");
+    }
+    if let Some(gff) = &args.gff {
+        cmd += &format!(" --gff {gff}");
+    }
+    format!("{cmd} {}", qc_flags(site))
+}
+
+/// Steps 1-2 up to the site thresholds: read, decide cells, and count kept
+/// cells per site. Nothing is written.
+fn prepare(args: &QcArgs, input: &str) -> anyhow::Result<Prepared> {
+    let layout: InputLayout = scan_input_dir(input)?;
     let batches = layout.batches();
     info!(
         "{}: {} matrices over {} batches, {} site tables, {} other files",
-        args.input_dir,
+        input,
         layout.matrices.len(),
         batches.len(),
         layout.site_tables.len(),
         layout.other_files.len()
     );
-    let mut summary: Vec<SummaryRow> = Vec::new();
 
     // 1. cells, per batch, on `_count`.
     let mut cells: FxHashMap<Box<str>, FxHashSet<Box<str>>> = FxHashMap::default();
@@ -293,34 +425,62 @@ fn filter_fileset(args: &QcArgs, gff: Option<&str>) -> anyhow::Result<Option<Sit
             cols,
         });
     }
-    let mut site_args = args.site.clone();
-    if args.interactive {
-        let (tables, cells) = (&tables, &site_cells);
-        match run_site_picker(
-            &args.input_dir,
-            tables,
-            cells,
-            &args.site,
-            gff,
-            &args.genes,
-            out_dir,
-        )? {
-            Picked::Apply(f) => {
-                info!("site thresholds: {}", qc_flags(&f));
-                site_args = f;
-            }
-            Picked::PrintOnly(f) => {
-                println!("faba qc {} -o {} {}", args.input_dir, out_dir, qc_flags(&f));
-                return Ok(None);
-            }
-            Picked::Cancelled => anyhow::bail!("cancelled at the site thresholds; nothing written"),
-            Picked::Skipped => {}
-        }
-    }
+    Ok(Prepared {
+        layout,
+        cells,
+        decisions,
+        tables,
+        site_matrices,
+        site_cells,
+    })
+}
 
-    // Nothing can cancel from here on: write.
+/// Steps 3-6 under the thresholds `site_args`, reporting each file to
+/// `progress`.
+fn write_fileset(
+    prep: &Prepared,
+    args: &QcArgs,
+    out_dir: &str,
+    site_args: &SiteFilterArgs,
+    figures: &[Figure],
+    progress: &Progress,
+) -> anyhow::Result<()> {
+    let Prepared {
+        layout,
+        cells,
+        decisions,
+        tables,
+        site_matrices,
+        site_cells,
+    } = prep;
+    let other_matrices: Vec<&MatrixFile> = {
+        let repooled: FxHashSet<(&str, &str)> = site_matrices
+            .iter()
+            .map(|sm| (&*sm.m.batch, sm.m.site_modality().unwrap_or_default()))
+            .collect();
+        layout
+            .matrices
+            .iter()
+            .filter(|m| m.site_modality().is_none() && !repooled.contains(&(&*m.batch, &*m.kind)))
+            .collect()
+    };
+    let n_site_tables = SITE_MODALITIES
+        .iter()
+        .filter(|m| tables.contains_key(**m))
+        .count();
+    // One step per file group below, in order.
+    let n_steps = decisions.len()
+        + n_site_tables
+        + 2 * site_matrices.len()
+        + other_matrices.len()
+        + figures.len()
+        + 2;
+    progress.plan(n_steps);
+    let mut summary: Vec<SummaryRow> = Vec::new();
+
     std::fs::create_dir_all(out_dir)?;
-    for d in &decisions {
+    for d in decisions {
+        progress.next(format!("{}: cell verdicts", d.batch));
         d.write(out_dir)?;
     }
     let mut kept_sites: FxHashMap<Box<str>, FxHashSet<Box<str>>> = FxHashMap::default();
@@ -328,6 +488,7 @@ fn filter_fileset(args: &QcArgs, gff: Option<&str>) -> anyhow::Result<Option<Sit
         let Some(t) = tables.get(*modality) else {
             continue;
         };
+        progress.next(format!("{modality}_sites.parquet"));
         let n_cells = site_cells.get(*modality).map(|acc| t.cells_per_site(acc));
         let reasons = site_args.reasons(t, n_cells.as_deref());
         let kept: FxHashSet<Box<str>> = t
@@ -361,11 +522,11 @@ fn filter_fileset(args: &QcArgs, gff: Option<&str>) -> anyhow::Result<Option<Sit
     }
 
     // 3 + 4. site matrices, then the re-pooled gene-level matrices.
-    let mut repooled: FxHashSet<(Box<str>, Box<str>)> = FxHashSet::default();
-    for sm in &site_matrices {
+    for sm in site_matrices {
         let modality = sm.m.site_modality().unwrap_or_default();
         let rows = site_matrix_rows(&sm.opened.row_names, kept_sites.get(modality));
         let stem = sm.m.stem();
+        progress.next(&*stem);
         let w = write_subset(
             sm.opened.data.as_ref(),
             &sm.cols,
@@ -377,6 +538,7 @@ fn filter_fileset(args: &QcArgs, gff: Option<&str>) -> anyhow::Result<Option<Sit
         record(&mut summary, &stem, sm.opened.before, w);
 
         let gene_stem = format!("{}_{}", sm.m.batch, modality);
+        progress.next(format!("{gene_stem} (re-pooled)"));
         let w = repool_gene_level(
             sm.opened.data.as_ref(),
             &sm.cols,
@@ -392,18 +554,15 @@ fn filter_fileset(args: &QcArgs, gff: Option<&str>) -> anyhow::Result<Option<Sit
             .map(|d| shape(d.as_ref()))
             .unwrap_or((0, 0, 0));
         record(&mut summary, &gene_stem, before, w);
-        repooled.insert((sm.m.batch.clone(), modality.into()));
     }
 
     // 5. everything else: cells + row nnz.
-    for m in &layout.matrices {
-        if m.site_modality().is_some() || repooled.contains(&(m.batch.clone(), m.kind.clone())) {
-            continue;
-        }
+    for m in other_matrices {
+        let stem = m.stem();
+        progress.next(&*stem);
         let opened = open_with_names(m)?;
         let cols = select_columns(opened.data.as_ref(), &opened.col_names, cells.get(&m.batch));
         let row_nnz = row_nnz_over_columns(opened.data.as_ref(), &cols)?;
-        let stem = m.stem();
         let cutoff = row_cutoff(args, &row_nnz, &format!("{stem} rows"));
         let rows: Vec<usize> = (0..row_nnz.len())
             .filter(|&r| row_nnz[r] >= cutoff)
@@ -420,6 +579,7 @@ fn filter_fileset(args: &QcArgs, gff: Option<&str>) -> anyhow::Result<Option<Sit
     }
 
     // 6. copy-through, except the per-batch cell lists `qc` rewrote.
+    progress.next("other files");
     for f in &layout.other_files {
         let name = file_name(f);
         if name
@@ -431,6 +591,7 @@ fn filter_fileset(args: &QcArgs, gff: Option<&str>) -> anyhow::Result<Option<Sit
         std::fs::copy(f.as_ref(), format!("{out_dir}/{name}"))?;
     }
 
+    progress.next("qc_summary.tsv");
     let mut lines: Vec<Box<str>> = vec![
         "#file\trows_before\tcols_before\tnnz_before\trows_after\tcols_after\tnnz_after".into(),
     ];
@@ -444,6 +605,66 @@ fn filter_fileset(args: &QcArgs, gff: Option<&str>) -> anyhow::Result<Option<Sit
         );
     }
     write_lines(&lines, &format!("{out_dir}/qc_summary.tsv"))?;
+    // 7. the view's figures, as it showed them when the cut was applied.
+    //    The fileset is complete without them, so a failed one only warns.
+    if !figures.is_empty() {
+        let dir = format!("{out_dir}/qc_plots");
+        let made = std::fs::create_dir_all(&dir);
+        for f in figures {
+            progress.next(format!("qc_plots/{}", f.stem));
+            let saved = match &made {
+                Ok(()) => crate::figure::save(&f.svg, &format!("{dir}/{}", f.stem)).map(|_| ()),
+                Err(e) => Err(anyhow::anyhow!("{e}")),
+            };
+            if let Err(e) = saved {
+                log::warn!("qc_plots/{}: not saved: {e}", f.stem);
+            }
+        }
+    }
+    debug_assert_eq!(
+        progress.started(),
+        n_steps,
+        "the progress plan missed a step"
+    );
     info!("done: {out_dir}");
-    Ok(Some(site_args))
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(cmd: &str) -> QcArgs {
+        #[derive(clap::Parser)]
+        struct Cli {
+            #[command(flatten)]
+            qc: QcArgs,
+        }
+        let words = cmd.split(' ').skip(2); // `faba qc`
+        <Cli as clap::Parser>::parse_from(std::iter::once("faba").chain(words)).qc
+    }
+
+    #[test]
+    fn the_printed_command_reruns_the_same_cut_in_batch() {
+        let args = parse("faba qc in -o out -r 3 --no-cell-qc --auto-cutoff --block-size 64");
+        let mut site = args.site.clone();
+        site.site_max_pv = 0.01;
+        site.site_min_cells = 4;
+        let again = parse(&batch_command(&args, "in", "out", &site));
+        assert!(again.batch_process);
+        assert_eq!(
+            (again.input_dir.as_deref(), again.output.as_deref()),
+            (Some("in"), Some("out"))
+        );
+        assert_eq!(qc_flags(&again.site), qc_flags(&site));
+        assert_eq!(
+            serde_json::to_value(QcArgs {
+                batch_process: false,
+                site: site.clone(),
+                ..again
+            })
+            .unwrap(),
+            serde_json::to_value(QcArgs { site, ..args }).unwrap()
+        );
+    }
 }

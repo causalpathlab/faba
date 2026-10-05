@@ -138,8 +138,7 @@ faba <COMMAND> [OPTIONS]
 | `snp` (`genotype`)        | Discover and genotype SNP variants from BAM pileup |
 | `all` (`pipeline`)        | Run the full profiling pipeline: SNP → count → ATOI → m6A → APA |
 | **QC — choose and apply thresholds after profiling** ||
-| `qc-report`               | Sweep every `qc` threshold and show kept sites / genes / cells, plus a -log10(p) histogram |
-| `qc`                      | Filter a faba output directory into a new fileset: cells, features and editing sites |
+| `qc`                      | Pick thresholds in a full-screen view, then filter a faba output directory into a new fileset |
 | **Inspection & reference** ||
 | `pwm`                     | Build a position weight matrix around genomic sites |
 | `pileup` (`inspect`)      | ASCII pileup, or a faceted Miami plot, for one gene |
@@ -188,9 +187,11 @@ faba dartseq wt.bam --control-bam ctrl.bam -g genes.gff -f genome.fa -o out/
 faba all sample.bam -g genes.gff -f genome.fa -o out/ --control-bam ctrl.bam
 
 # The producers apply no p-value / effect-size / reproducibility cutoff.
-# See what each threshold keeps, then cut into a NEW directory:
-faba qc-report out/ -o out/qc
-faba qc out/ -o out_qc/ --site-max-pv 0.05 --site-min-cells 10 --auto-cutoff
+# Pick the thresholds in a full-screen view, then cut into a NEW directory
+# (plain `faba qc` asks for both directories in a pop-up):
+faba qc out/ -o out_qc/
+# ...or, in a script, cut with the thresholds as given:
+faba qc out/ -o out_qc/ --batch-process --site-max-pv 0.05 --site-min-cells 10 --auto-cutoff
 ```
 
 ## License

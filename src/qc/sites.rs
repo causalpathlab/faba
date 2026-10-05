@@ -412,8 +412,7 @@ impl Criterion {
 }
 
 impl SiteFilterArgs {
-    /// Thresholds that keep everything; `qc-report` starts from it and moves
-    /// one knob at a time.
+    /// Thresholds that keep everything.
     pub fn permissive() -> Self {
         SiteFilterArgs {
             site_max_pv: 1.0,

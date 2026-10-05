@@ -1,9 +1,8 @@
-//! CLI surface for `faba qc` and `faba qc-report`.
+//! CLI surface for `faba qc`.
 
 use crate::common::*;
 
-/// Site-level thresholds shared by `faba qc` (as filters) and `faba qc-report`
-/// (as the criteria it sweeps). Every one of these is computed from columns
+/// Site-level thresholds `faba qc` filters on. Every one of these is computed from columns
 /// the producers write to `m6a_sites.parquet` / `atoi_sites.parquet`, plus
 /// the per-site cell count read off the `_site` matrices, so a cut can be
 /// revisited without touching a BAM.
@@ -17,7 +16,7 @@ use crate::common::*;
 /// valid procedure is Benjamini-Yekutieli, whose ~ln(m) penalty at the tens of
 /// thousands of putative sites of one library means "BY and call almost nothing"
 /// or "stop claiming FDR control". The p-values are also non-uniform under H0, because
-/// a site only exists once it clears `--min-conversion`. `faba qc-report`
+/// a site only exists once it clears `--min-conversion`. The `faba qc` view
 /// shows what each cutoff keeps; how to calibrate it is left to the user.
 #[derive(Args, Debug, Clone, serde::Serialize)]
 pub struct SiteFilterArgs {
@@ -92,16 +91,17 @@ pub struct SiteFilterArgs {
 
 #[derive(Args, Debug, serde::Serialize)]
 pub struct QcArgs {
-    #[arg(help = "A faba output directory (from `faba all` or the standalone producers)")]
-    pub input_dir: Box<str>,
+    #[arg(
+        help = "A faba output directory (from `faba all` or the standalone producers); asked for in a pop-up when left out"
+    )]
+    pub input_dir: Option<Box<str>>,
 
     #[arg(
         short = 'o',
         long = "output",
-        required = true,
-        help = "Output directory for the filtered fileset (must not already contain files)"
+        help = "Output directory for the filtered fileset (must not already contain files); asked for in a pop-up when left out"
     )]
-    pub output: Box<str>,
+    pub output: Option<Box<str>>,
 
     #[arg(
         long = "no-zip",
@@ -171,24 +171,24 @@ pub struct QcArgs {
     pub block_size: Option<usize>,
 
     #[arg(
-        short = 'I',
-        long = "interactive",
+        long = "batch-process",
         default_value_t = false,
-        help = "Pick the site thresholds in a full-screen view before cutting (needs a terminal)",
-        long_help = "Pick the site thresholds in a full-screen view before cutting.\n\
-                     The view starts from the --site-* values given, shows each knob's column\n\
-                     as a histogram with live kept and dropped counts, and a metagene of all\n\
-                     and kept sites below it. Enter asks to confirm (a recap of the output,\n\
-                     the changed thresholds and what each modality keeps) before applying.\n\
-                     Needs stdin and stdout on a terminal; otherwise the --site-* values are\n\
-                     used as given."
+        help = "Cut with the --site-* values as given, without the full-screen view",
+        long_help = "Cut with the --site-* values as given, without the full-screen view.\n\
+                     By default `faba qc` opens a view that starts from the --site-* values,\n\
+                     shows each knob's column as a histogram with live kept and dropped counts,\n\
+                     and a metagene of the kept sites below it. Tab moves between panels;\n\
+                     Shift+Enter asks to confirm (a recap of the output, the changed thresholds\n\
+                     and what each modality keeps) and the fileset is then written with its\n\
+                     progress shown, with the view's figures under qc_plots/. The view needs stdin and stdout on a terminal; pass this\n\
+                     flag for scripts and scheduled jobs."
     )]
-    pub interactive: bool,
+    pub batch_process: bool,
 
     #[arg(
         long = "gff",
-        help = "Annotation for the --interactive metagene (default: the one recorded in the input directory)",
-        long_help = "Gene annotation GFF/GTF for the --interactive metagene.\n\
+        help = "Annotation for the view's metagene (default: the one recorded in the input directory)",
+        long_help = "Gene annotation GFF/GTF for the view's metagene.\n\
                      Without it, the GFF recorded in the input directory's `*.run.json` is used;\n\
                      with neither, the view has no metagene."
     )]
@@ -197,8 +197,8 @@ pub struct QcArgs {
     #[arg(
         long = "genes",
         value_delimiter = ',',
-        help = "Genes to list first in the --interactive gene list (symbols or gene keys)",
-        long_help = "Genes to list first in the --interactive gene list, in the order given:\n\
+        help = "Genes to list first in the view's gene list (symbols or gene keys)",
+        long_help = "Genes to list first in the view's gene list, in the order given:\n\
                      comma-separated symbols or `{gene_id}_{symbol}` keys, case-insensitive.\n\
                      The other genes follow, most putative sites first."
     )]
@@ -206,34 +206,4 @@ pub struct QcArgs {
 
     #[command(flatten)]
     pub site: SiteFilterArgs,
-}
-
-#[derive(Args, Debug, serde::Serialize)]
-pub struct QcReportArgs {
-    #[arg(help = "A faba output directory (from `faba all` or the standalone producers)")]
-    pub input_dir: Box<str>,
-
-    #[arg(
-        short = 'o',
-        long = "output",
-        required = true,
-        help = "Output prefix: writes {prefix}.qc_report.parquet and the panels as {prefix}.qc_report.pdf/.png"
-    )]
-    pub output: Box<str>,
-
-    #[arg(long = "width", default_value_t = 50, help = "Width of the ASCII bars")]
-    pub width: usize,
-
-    #[arg(
-        long = "quiet",
-        default_value_t = false,
-        help = "Skip the ASCII chart on stderr"
-    )]
-    pub quiet: bool,
-
-    #[arg(
-        long = "block-size",
-        help = "Column block size for the streaming stat passes"
-    )]
-    pub block_size: Option<usize>,
 }

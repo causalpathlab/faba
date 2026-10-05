@@ -1,4 +1,4 @@
-//! End-to-end checks of `faba qc` and `faba qc-report` on a synthetic output
+//! End-to-end checks of `faba qc --batch-process` on a synthetic output
 //! directory: a count matrix, an m6A site matrix, a gene-level m6A matrix and
 //! an m6A site table, all in the producers' layout. Drives the built binary.
 
@@ -255,6 +255,7 @@ fn qc_filters_cells_sites_and_repools_gene_level() {
         .args([
             "qc",
             &input,
+            "--batch-process",
             "-o",
             &output,
             "--no-cell-qc",
@@ -330,67 +331,4 @@ fn qc_filters_cells_sites_and_repools_gene_level() {
     assert!(record["inputs"]["fileset"]["path"].is_string());
     assert!(std::path::Path::new(&format!("{output}/b1_cells.tsv.gz")).exists());
     assert!(std::path::Path::new(&format!("{output}/qc_summary.tsv")).exists());
-}
-
-#[test]
-fn qc_report_sweeps_every_criterion() {
-    let tmp = tempfile::tempdir().unwrap();
-    let input = format!("{}/in", tmp.path().display());
-    std::fs::create_dir_all(&input).unwrap();
-    build_fixture(&input);
-    let prefix = format!("{}/rep", tmp.path().display());
-
-    let status = faba()
-        .args(["qc-report", &input, "-o", &prefix, "--quiet"])
-        .status()
-        .unwrap();
-    assert!(status.success(), "faba qc-report failed");
-
-    let report = read_parquet(&format!("{prefix}.qc_report.parquet"));
-    let modality = strings(&report, "modality");
-    let criterion = strings(&report, "criterion");
-    let n_kept = report
-        .column_by_name("n_kept")
-        .unwrap()
-        .as_any()
-        .downcast_ref::<UInt64Array>()
-        .unwrap();
-    let threshold = report
-        .column_by_name("threshold")
-        .unwrap()
-        .as_any()
-        .downcast_ref::<arrow::array::Float64Array>()
-        .unwrap();
-
-    let mut seen = std::collections::BTreeSet::new();
-    for i in 0..report.num_rows() {
-        seen.insert((modality[i].clone(), criterion[i].clone()));
-        // A permissive threshold keeps everything: p <= 1 keeps all 4 sites.
-        if modality[i] == "m6a" && criterion[i] == "max_pv" && threshold.value(i) == 1.0 {
-            assert_eq!(n_kept.value(i), 4);
-        }
-        // min_cells 2 keeps S1 and S3 only (S3's methylated row is in C2 and,
-        // via the producer matrix, that is one cell; S1 in four) -> 1 site.
-        if modality[i] == "m6a" && criterion[i] == "min_cells" && threshold.value(i) == 2.0 {
-            assert_eq!(n_kept.value(i), 1);
-        }
-    }
-    for (m, c) in [
-        ("m6a", "neglog10_pv_hist"),
-        ("m6a", "max_pv"),
-        ("m6a", "min_log_odds"),
-        ("m6a", "min_fold"),
-        ("m6a", "min_coverage"),
-        ("m6a", "min_converted"),
-        ("m6a", "min_edit_ratio"),
-        ("m6a", "min_cells"),
-        ("count", "min_cells"),
-        ("count", "min_counts"),
-        ("count", "min_genes_per_cell"),
-    ] {
-        assert!(
-            seen.contains(&(m.to_string(), c.to_string())),
-            "missing panel {m}/{c}"
-        );
-    }
 }

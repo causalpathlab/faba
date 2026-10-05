@@ -80,6 +80,10 @@ fn press(p: &mut SitePicker, code: KeyCode) {
     p.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
 }
 
+fn shift_enter(p: &mut SitePicker) {
+    p.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
+}
+
 fn kept_linear(t: &SiteTable, c: Option<&[usize]>, f: &SiteFilterArgs) -> usize {
     f.reasons(t, c).iter().filter(|r| r.is_none()).count()
 }
@@ -229,16 +233,24 @@ fn keys_type_reset_off_and_decide() {
     press(&mut p, KeyCode::Char('2'));
     press(&mut p, KeyCode::Esc);
     assert_eq!(p.filter.site_min_coverage, start.site_min_coverage);
-    // Enter asks first; Esc goes back, Enter again applies.
+    // Plain Enter does nothing, in the view or the confirmation.
     press(&mut p, KeyCode::Enter);
-    assert!(!p.done());
+    assert!(!p.done() && matches!(p.mode, Mode::Browse));
+    // Shift+Enter asks first; Esc goes back, Shift+Enter twice applies.
+    shift_enter(&mut p);
+    assert!(!p.done() && matches!(p.mode, Mode::Confirm));
+    press(&mut p, KeyCode::Enter);
+    assert!(!p.done() && matches!(p.mode, Mode::Confirm));
     press(&mut p, KeyCode::Esc);
     assert!(!p.done() && matches!(p.mode, Mode::Browse));
-    press(&mut p, KeyCode::Enter);
-    press(&mut p, KeyCode::Enter);
+    shift_enter(&mut p);
+    shift_enter(&mut p);
+    // With nothing to write, the next tick ends the session.
+    assert!(matches!(p.mode, Mode::Writing));
+    p.tick();
     assert!(p.done());
     let Some(Picked::Apply(got)) = p.decision.clone() else {
-        panic!("Enter, Enter applies");
+        panic!("Shift+Enter, Shift+Enter applies");
     };
     assert_eq!(qc_flags(&got), qc_flags(&start));
 
@@ -264,7 +276,7 @@ fn modalities_share_thresholds_but_not_knobs() {
     assert!(p.view().criteria.contains(&Criterion::MinFold));
     assert!(!p.view().criteria.contains(&Criterion::MinCells));
     focus_on(&mut p, Criterion::MinFold);
-    press(&mut p, KeyCode::Tab);
+    press(&mut p, KeyCode::Char('m'));
     assert!(!p.view().criteria.contains(&Criterion::MinFold));
     assert!(!p.view().criteria.contains(&Criterion::MinLogOdds));
     assert_eq!(p.tally.kept, kept_linear(&atoi, None, &p.filter));
@@ -273,7 +285,7 @@ fn modalities_share_thresholds_but_not_knobs() {
     press(&mut p, KeyCode::Right);
     let cov = p.filter.site_min_coverage;
     assert_eq!(p.tally.kept, kept_linear(&atoi, None, &p.filter));
-    press(&mut p, KeyCode::BackTab);
+    press(&mut p, KeyCode::Char('M'));
     assert_eq!(p.criterion(), Criterion::MinCoverage);
     assert_eq!(p.filter.site_min_coverage, cov);
     assert_eq!(p.tally.kept, kept_linear(&m6a, None, &p.filter));
@@ -541,16 +553,28 @@ fn with_genes(mut t: SiteTable) -> SiteTable {
 }
 
 #[test]
-fn genes_list_pinned_first_then_by_sites_and_filter_by_symbol() {
+fn genes_list_pinned_first_then_by_kept_sites_and_filter_by_symbol() {
     let t = with_genes(table(M6A, 100));
     let p = picker(&t, None, SiteFilterArgs::default_values());
-    let genes = p.view().genes.as_ref().unwrap();
-    let sizes: Vec<usize> = p
-        .gene_list()
-        .iter()
-        .map(|&g| genes.rows[g as usize].len())
-        .collect();
-    assert!(sizes.windows(2).all(|w| w[0] >= w[1]), "{sizes:?}");
+    let kept = |p: &SitePicker| -> Vec<usize> {
+        p.gene_list()
+            .iter()
+            .map(|&g| p.gene_kept(g as usize).0)
+            .collect()
+    };
+    let sorted = |v: &[usize]| v.windows(2).all(|w| w[0] >= w[1]);
+    assert!(sorted(&kept(&p)), "{:?}", kept(&p));
+
+    // The order follows the thresholds, and the selection stays on its gene.
+    let mut p = p;
+    press(&mut p, KeyCode::Char(']'));
+    let selected = p.gene();
+    focus_on(&mut p, Criterion::MinCoverage);
+    for _ in 0..5 {
+        press(&mut p, KeyCode::Right);
+    }
+    assert!(sorted(&kept(&p)), "{:?}", kept(&p));
+    assert_eq!(p.gene(), selected);
 
     let mut p = p.pin_genes(&["gene5".into(), "ENSG2_GENE2".into()]);
     let first: Vec<&str> = {
@@ -627,10 +651,12 @@ fn the_gene_panel_draws_its_model_once_the_annotation_arrives() {
         .iter()
         .map(|c| c.symbol())
         .collect();
-    assert!(text.contains("chr1:900-3100 (+) · y: sites per "));
+    let sum = |v: &[usize]| v.iter().sum::<usize>();
+    let kept = format!("kept {} of {}", sum(&profile.kept), sum(&profile.all));
+    assert!(text.contains(&format!("chr1:900-3100 (+) · {kept} · y: sites per ")));
     assert!(text.contains("genes: kept / all sites"));
     assert!(text.contains("[ ] move  / find"));
-    assert!(text.contains("█ all sites   █ kept"));
+    assert!(text.contains("█ kept sites   c: converted reads"));
     assert!(text.contains("▬"));
     assert!(p.figure().contains("chr1:900-3100 (+)"));
 }
@@ -676,7 +702,7 @@ fn c_switches_the_gene_and_metagene_bars_to_converted_reads() {
         .map(|c| c.symbol())
         .collect();
     assert!(text.contains("metagene · y: converted reads per bin"));
-    assert!(text.contains("█ all converted reads"));
+    assert!(text.contains("█ kept converted reads"));
     assert!(text.contains("c: sites"));
 
     press(&mut p, KeyCode::Char('c'));
@@ -764,12 +790,12 @@ fn the_confirmation_recaps_output_changes_and_every_modality() {
         SiteView::new(&atoi, None, &start),
     ];
     let mut p = SitePicker::new("x", views, start, Meta::Unavailable("none".into()));
-    p.output = "out_qc".into();
+    p.writer.output = "out_qc";
     focus_on(&mut p, Criterion::MinCoverage);
     for _ in 0..3 {
         press(&mut p, KeyCode::Right);
     }
-    press(&mut p, KeyCode::Enter);
+    shift_enter(&mut p);
     assert!(matches!(p.mode, Mode::Confirm));
     let text: String = p
         .confirm_lines()
@@ -798,4 +824,121 @@ fn the_confirmation_recaps_output_changes_and_every_modality() {
     assert!(screen.contains("apply and write"));
     press(&mut p, KeyCode::Char('n'));
     assert!(matches!(p.mode, Mode::Browse) && !p.done());
+}
+
+#[test]
+fn tab_moves_between_panels_and_the_arrows_follow() {
+    let t = with_genes(table(M6A, 300));
+    let mut p = picker(&t, None, SiteFilterArgs::default_values());
+    assert_eq!(p.panel, Panel::Thresholds);
+    let (focus, gene) = (p.focus, p.list.at);
+    press(&mut p, KeyCode::Down);
+    assert_eq!((p.focus, p.list.at), (focus + 1, gene));
+
+    press(&mut p, KeyCode::Tab);
+    assert_eq!(p.panel, Panel::Genes);
+    press(&mut p, KeyCode::Down);
+    press(&mut p, KeyCode::Down);
+    assert_eq!((p.focus, p.list.at), (focus + 1, gene + 2));
+    press(&mut p, KeyCode::Up);
+    assert_eq!(p.list.at, gene + 1);
+
+    press(&mut p, KeyCode::BackTab);
+    assert_eq!(p.panel, Panel::Thresholds);
+    press(&mut p, KeyCode::Up);
+    assert_eq!((p.focus, p.list.at), (focus, gene + 1));
+}
+
+#[test]
+fn confirming_writes_in_the_view_and_shows_progress() {
+    let progress = Progress::default();
+    let started = std::cell::RefCell::new(None);
+    let t = table(M6A, 300);
+    let start = SiteFilterArgs::default_values();
+    let mut p = picker(&t, None, start.clone());
+    p.writer = Writer {
+        output: "out_qc",
+        progress: &progress,
+        start: Some(Box::new(|f, figures| {
+            *started.borrow_mut() = Some((f, figures))
+        })),
+    };
+
+    // `A` stands in for Shift+Enter where the terminal cannot report it.
+    press(&mut p, KeyCode::Char('A'));
+    assert!(matches!(p.mode, Mode::Confirm));
+    press(&mut p, KeyCode::Char('y'));
+    assert!(matches!(p.mode, Mode::Writing) && !p.done());
+    // The figures are drawn, and the writer started, on the next tick.
+    assert!(started.borrow().is_none());
+    assert!(p.tick() && !p.done());
+    let (f, figures) = started.borrow_mut().take().expect("the writer starts");
+    assert_eq!(qc_flags(&f), qc_flags(&start));
+    // A figure per knob, named after its flag, and the view left as it was.
+    assert_eq!(figures.len(), p.view().criteria.len());
+    assert!(figures.iter().any(|f| f.stem == format!("{M6A}_max-pv")));
+    assert!(figures.iter().all(|f| f.svg.starts_with("<svg")));
+    assert_eq!((p.modality, p.focus), (0, 0));
+
+    // Keys and Ctrl-C wait while the fileset is written.
+    press(&mut p, KeyCode::Char('q'));
+    p.interrupt();
+    assert!(matches!(p.mode, Mode::Writing) && !p.done());
+
+    progress.plan(4);
+    progress.next("first");
+    progress.next("m6a_sites.parquet");
+    assert!(p.tick() && !p.done());
+    let mut term = Terminal::new(TestBackend::new(150, 44)).unwrap();
+    term.draw(|f| p.render(f)).unwrap();
+    let screen: String = term
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+    assert!(screen.contains("writing"));
+    assert!(screen.contains("1 / 4"));
+    assert!(screen.contains("m6a_sites.parquet"));
+
+    progress.finish();
+    p.tick();
+    assert!(p.done());
+    assert!(matches!(p.decision, Some(Picked::Apply(_))));
+}
+
+#[test]
+fn figures_cover_every_modality_and_leave_the_view_as_it_was() {
+    let m6a = with_genes(table(M6A, 400));
+    let atoi = with_genes(table(ATOI, 300));
+    let start = SiteFilterArgs::default_values();
+    let views = vec![
+        SiteView::new(&m6a, None, &start),
+        SiteView::new(&atoi, None, &start),
+    ];
+    let mut p = SitePicker::new("x", views, start, Meta::Unavailable("none".into()));
+    press(&mut p, KeyCode::Char('m'));
+    press(&mut p, KeyCode::Down);
+    // A filter on the view, matching one gene of the modality on screen.
+    press(&mut p, KeyCode::Char('/'));
+    for ch in "ne3".chars() {
+        press(&mut p, KeyCode::Char(ch));
+    }
+    press(&mut p, KeyCode::Enter);
+    assert_eq!(p.gene_list().len(), 1);
+    let (modality, focus, gene) = (p.modality, p.focus, p.gene());
+
+    let figures = p.figures();
+    // The filter is put back for the view, and kept out of the figures:
+    // every one, of either modality, has its gene panel.
+    assert_eq!(p.list.find, "ne3");
+    assert!(figures.iter().all(|f| f.svg.contains(" bp")));
+    let n: usize = p.views.iter().map(|v| v.criteria.len()).sum();
+    assert_eq!(figures.len(), n);
+    for v in &p.views {
+        let m = &*v.table.modality;
+        assert!(figures.iter().any(|f| f.stem.starts_with(&format!("{m}_"))));
+    }
+    assert_eq!((p.modality, p.focus, p.gene()), (modality, focus, gene));
 }
