@@ -717,13 +717,17 @@ and features are cut as given.
 
 ## 9. `run` — the full pipeline
 
-Plain `faba run` opens a full-screen view: an Inputs screen (BAMs picked as foreground or
-background, annotation, genome, output directory), a Steps screen, and a flags form, all
-pre-filled from any flags given on the command line. A preview shows the exact command, which can
-be saved as `faba_run.cmd.sh` (an existing file is not overwritten without a guard). Starting the
-run launches the command as a child process with its output going to a log, and `s` stops it
-(interrupt first, then kill). `--batch-process` skips the view and runs straight through from the
-flags given; it needs the BAMs, `-g`, `-f` and `-o`.
+Plain `faba run` opens a full-screen view, pre-filled from any flags given on the command line:
+an Inputs screen (BAMs picked as foreground, passed positionally, or background, passed as
+`--control-bam`; annotation, genome, known SNPs, output directory, threads), a Steps screen, a
+Flags screen, and, once a run has started, a Run screen. Shift+Enter (or `G`) opens a preview of
+the exact command and of anything that keeps it from starting; Shift+Enter, `G` or `y` there
+starts the run. Starting saves the command as `faba_run.cmd.sh` in the output directory: it is
+created only if absent (never overwritten), it is executable, and its guard refuses to run when
+`pipeline_summary.json` already exists there. Run it again with `bash faba_run.cmd.sh`. The run is
+a child process whose log the Run screen shows; `s` asks first, `s` again interrupts it, and a
+further `s` kills it. `q` is refused while a run is going. `--batch-process` skips the view and
+runs straight through from the flags given; it needs the BAMs, `-g`, `-f` and `-o`.
 
 The steps run in this order, and each one's output constrains the next:
 
