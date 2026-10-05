@@ -8,19 +8,21 @@ use super::site_io::*;
 use clap::{Args, ValueEnum};
 use genomic_data::gff::*;
 use genomic_data::sam::Strand;
-use genomic_data::transcript::{
-    build_transcript_models, elect_longest_isoform, merge_intervals, TranscriptModel,
-};
+use genomic_data::transcript::{build_transcript_models, merge_intervals, TranscriptModel};
 use log::info;
 use rustc_hash::FxHashMap;
 use std::io::Write;
 
-/// Which isoforms carry the sites.
+/// How a site in several coding isoforms is counted. Every isoform carries
+/// it either way: electing one transcript per gene (MetaPlotR's longest)
+/// drops sites on exons only other isoforms use, and puts a site near a
+/// proximal poly(A) site mid-3'UTR on the distal isoform.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum IsoformPolicy {
-    /// One transcript per gene, the longest spliced one. MetaPlotR's procedure.
-    Longest,
-    /// Every coding transcript. A site in several isoforms is counted in each.
+    /// A site's weight split evenly over the k transcripts it lies in, so
+    /// each site adds 1 in all. Guitar's procedure.
+    Weighted,
+    /// Counted in full on each transcript, as MetaPlotR's distance table is.
     All,
 }
 
@@ -53,7 +55,8 @@ pub struct MetageneArgs {
                      \n\
                      MetaPlotR plots its metagene with 200 breaks, hence the default.\n\
                      Bins are split between the three regions in proportion,\n\
-                     by each region's MEDIAN spliced length over the assigned sites.\n\
+                     by each region's MEDIAN spliced length over the transcripts\n\
+                     that carry a site, each transcript counted once.\n\
                      The median rather than the maximum, which one gene would set:\n\
                      titin's merged CDS is 114,586 nt against a median of 1,347.\n\
                      A region that has sites always keeps at least one bin.\n\
@@ -65,14 +68,20 @@ pub struct MetageneArgs {
     #[arg(
         long = "isoforms",
         value_enum,
-        default_value = "longest",
-        help = "Which isoforms sites are placed on",
-        long_help = "Which isoforms sites are placed on.\n\
+        default_value = "weighted",
+        help = "How a site in several coding isoforms is counted",
+        long_help = "How a site in several coding isoforms is counted.\n\
+                     Sites are placed on every coding transcript that contains them.\n\
                      \n\
-                     `longest` keeps one transcript per gene, the longest spliced one.\n\
-                     That is MetaPlotR's stated procedure. `all` keeps every coding transcript.\n\
-                     A site inside several isoforms is then counted once per isoform,\n\
-                     which is what MetaPlotR's own distance table does."
+                     `weighted`: a site inside k transcripts adds 1/k to each,\n\
+                     so every placed site adds 1 in all (Guitar's procedure).\n\
+                     Bin counts are then fractional.\n\
+                     `all`: the site is counted in full on each transcript,\n\
+                     which is what MetaPlotR's own distance table does.\n\
+                     \n\
+                     MetaPlotR's longest-isoform election is not offered: it drops sites\n\
+                     on exons only other isoforms use, and puts a site near a proximal\n\
+                     poly(A) site mid-3'UTR on the distal isoform."
     )]
     isoforms: IsoformPolicy,
 
@@ -130,6 +139,16 @@ const FEATURE_LABELS: [&str; 4] = ["5UTR", "CDS", "3UTR", "ncRNA"];
 /// On-screen region names (the TSV's `FEATURE_LABELS` avoid apostrophes).
 pub(crate) const REGION_NAMES: [&str; 4] = ["5'UTR", "CDS", "3'UTR", "ncRNA"];
 
+/// Bar colour per region, Okabe-Ito so they stay apart under colour
+/// blindness, and clear of the orange accent the cursor and drops use.
+pub(crate) const REGION_COLOURS: [&str; 4] = ["#56b4e9", "#0072b2", "#009e73", crate::figure::BAR];
+
+/// [`REGION_COLOURS`] as a terminal style, for the glyph plots.
+pub(crate) fn region_style(region: usize) -> ratatui::style::Style {
+    let colour = REGION_COLOURS[region].parse().unwrap_or_default();
+    ratatui::style::Style::new().fg(colour)
+}
+
 /// Region indices into [`FEATURE_LABELS`], and the base of each region's
 /// MetaPlotR coordinate: 5'UTR spans [0,1), CDS [1,2), 3'UTR [2,3).
 const UTR5: usize = 0;
@@ -164,14 +183,15 @@ impl IndexedInterval {
         rel.clamp(0, (self.total_len - 1).max(0))
     }
 
-    /// This interval's placement of `pos`, ready to bin.
-    fn place(&self, site: u32, pos: i64) -> SiteAssignment {
+    /// This interval's placement of `pos`, carrying `weight`, ready to bin.
+    fn place(&self, site: u32, pos: i64, weight: f64) -> SiteAssignment {
         SiteAssignment {
             site,
             model: (self.region != NCRNA).then_some(self.model),
             region: self.region,
             rel: self.relative_pos(pos),
             total_len: self.total_len,
+            weight,
         }
     }
 }
@@ -299,6 +319,9 @@ struct SiteAssignment {
     /// 0-based offset along the spliced region and its length (exact binning).
     rel: i64,
     total_len: i64,
+    /// The site's share on this transcript: 1, or 1/k over k placements
+    /// under [`IsoformPolicy::Weighted`].
+    weight: f64,
 }
 
 impl SiteAssignment {
@@ -319,8 +342,12 @@ impl SiteAssignment {
     }
 }
 
-/// Collect every (site, transcript) placement.
-fn assign_sites(sites: &[GenomicSite], index: &RegionIndex) -> (Vec<SiteAssignment>, usize) {
+/// Collect every (site, transcript) placement, weighted by `policy`.
+fn assign_sites(
+    sites: &[GenomicSite],
+    index: &RegionIndex,
+    policy: IsoformPolicy,
+) -> (Vec<SiteAssignment>, usize) {
     let mut out = Vec::new();
     let mut hits = Vec::new();
     let mut unassigned = 0usize;
@@ -335,18 +362,23 @@ fn assign_sites(sites: &[GenomicSite], index: &RegionIndex) -> (Vec<SiteAssignme
         }
         // ncRNA is a fallback, never a second placement of a coding site.
         let on_coding = hits.iter().any(|iv| iv.region != NCRNA);
+        hits.retain(|iv| !(on_coding && iv.region == NCRNA));
+        let weight = match policy {
+            IsoformPolicy::Weighted => 1.0 / hits.len() as f64,
+            IsoformPolicy::All => 1.0,
+        };
         for iv in hits.iter() {
-            if on_coding && iv.region == NCRNA {
-                continue;
-            }
-            out.push(iv.place(si as u32, gff_pos));
+            out.push(iv.place(si as u32, gff_pos, weight));
         }
     }
     (out, unassigned)
 }
 
 /// MetaPlotR's display widths: each UTR's median size relative to the CDS's.
-/// Medians are site-weighted, as in `visualize_metagenes.R`.
+/// Medians are over the transcripts carrying a site, each counted once.
+/// `visualize_metagenes.R` takes them over its per-site table instead, which
+/// suits a few peaks per gene; with many sites per gene, genes with long
+/// 3'UTRs (which collect the most sites) set the widths.
 struct ScaleFactors {
     /// Each region's median size, doubled so an even-n median stays exact.
     twice_median: [i64; 3],
@@ -403,12 +435,17 @@ fn scale_factors(
     assignments: &[SiteAssignment],
     models: &[TranscriptModel],
 ) -> Option<ScaleFactors> {
+    let mut carrying = vec![false; models.len()];
+    for mi in assignments.iter().filter_map(|a| a.model) {
+        carrying[mi as usize] = true;
+    }
     let mut per_region: [Vec<i64>; 3] = Default::default();
-    for a in assignments.iter() {
-        let Some(mi) = a.model else {
-            continue; // ncRNA: no transcript, no region sizes
-        };
-        let m = &models[mi as usize];
+    for m in models
+        .iter()
+        .zip(&carrying)
+        .filter(|(_, &c)| c)
+        .map(|(m, _)| m)
+    {
         per_region[UTR5].push(m.utr5_size);
         per_region[CDS].push(m.cds_size);
         per_region[UTR3].push(m.utr3_size);
@@ -473,18 +510,18 @@ fn allocate_bins(n: usize, m: &[i64; 3]) -> [usize; 3] {
 struct BinGrid([usize; 4]);
 
 impl BinGrid {
-    /// Placements per bin, one row per track, each adding its weight.
+    /// Placements per bin, one row per track, each adding its weight
+    /// times its share of the site.
     fn tally<'a>(
         &self,
-        weighted: impl Iterator<Item = (&'a SiteAssignment, usize)>,
-    ) -> [Vec<usize>; 4] {
-        let mut counts: [Vec<usize>; 4] =
-            std::array::from_fn(|region| vec![0usize; self.0[region]]);
+        weighted: impl Iterator<Item = (&'a SiteAssignment, f64)>,
+    ) -> [Vec<f64>; 4] {
+        let mut counts: [Vec<f64>; 4] = std::array::from_fn(|region| vec![0.0; self.0[region]]);
         for (a, w) in weighted {
             let track = &mut counts[a.region];
             let width = track.len();
             if width > 0 {
-                track[a.bin(width)] += w;
+                track[a.bin(width)] += w * a.weight;
             }
         }
         counts
@@ -507,14 +544,15 @@ impl BinGrid {
 
 pub struct GeneFeatureHistogram {
     /// One row of bins per track; each row's length is its bin count.
-    counts: [Vec<usize>; 4],
+    /// Whole numbers unless placements split a site's weight.
+    counts: [Vec<f64>; 4],
     scale: ScaleFactors,
 }
 
 impl GeneFeatureHistogram {
     /// Tally every placement, once the grid has fixed the bin widths.
     fn accumulate(grid: &BinGrid, scale: ScaleFactors, assignments: &[SiteAssignment]) -> Self {
-        let counts = grid.tally(assignments.iter().map(|a| (a, 1)));
+        let counts = grid.tally(assignments.iter().map(|a| (a, 1.0)));
         GeneFeatureHistogram { counts, scale }
     }
 
@@ -533,23 +571,21 @@ impl GeneFeatureHistogram {
             .iter()
             .flat_map(|c| c.iter())
             .cloned()
-            .max()
-            .unwrap_or(0);
-        if nmax == 0 {
+            .fold(0.0, f64::max);
+        if nmax <= 0.0 {
             eprintln!("(no sites mapped to gene features)");
             return;
         }
-        let scale = nmax.div_ceil(max_width);
         for (region, data) in self.counts.iter().enumerate() {
             for &n in data.iter() {
-                let n1 = n.div_ceil(scale);
-                let n0 = max_width.saturating_sub(n1);
+                let n1 = ((n / nmax * max_width as f64).ceil() as usize).min(max_width);
+                let n0 = max_width - n1;
                 eprintln!(
                     "{:<6}{}{} {}",
                     FEATURE_LABELS[region],
                     "*".repeat(n1),
                     " ".repeat(n0),
-                    n
+                    count_text(n, 4)
                 );
             }
         }
@@ -564,8 +600,8 @@ impl GeneFeatureHistogram {
         )?;
 
         // Coding regions share one density; ncRNA normalizes within itself.
-        let coding_total: usize = self.counts[..3].iter().flat_map(|c| c.iter()).sum();
-        let nc_total: usize = self.counts[NCRNA].iter().sum();
+        let coding_total: f64 = self.counts[..3].iter().flat_map(|c| c.iter()).sum();
+        let nc_total: f64 = self.counts[NCRNA].iter().sum();
 
         for (region, data) in self.counts.iter().enumerate() {
             let total = if region == NCRNA {
@@ -576,16 +612,22 @@ impl GeneFeatureHistogram {
             for (i, &n) in data.iter().enumerate() {
                 let (lo, hi) = self.bin_edges(region, i);
                 let width = hi - lo;
-                let (frac, density) = if total == 0 || width <= 0.0 {
+                let (frac, density) = if total <= 0.0 || width <= 0.0 {
                     (0.0, 0.0)
                 } else {
-                    let f = n as f64 / total as f64;
+                    let f = n / total;
                     (f, f / width)
                 };
                 writeln!(
                     writer,
                     "{}\t{}\t{}\t{:.6}\t{:.6}\t{:.6}\t{:.6}",
-                    FEATURE_LABELS[region], i, n, lo, hi, frac, density
+                    FEATURE_LABELS[region],
+                    i,
+                    count_text(n, 4),
+                    lo,
+                    hi,
+                    frac,
+                    density
                 )?;
             }
         }
@@ -594,18 +636,29 @@ impl GeneFeatureHistogram {
     }
 }
 
+/// A bin count as written: a whole count as an integer, a fractional one
+/// (from split weights) to `decimals`.
+fn count_text(n: f64, decimals: usize) -> String {
+    if n.fract() == 0.0 {
+        format!("{n}")
+    } else {
+        format!("{n:.decimals$}")
+    }
+}
+
 /// MetaPlotR's `*.dist.measures.txt` schema, so its `visualize_metagenes.R`
 /// runs on this file unmodified.
 ///
 /// The first fourteen columns are `rel_and_abs_dist_calc.pl`'s, in its order;
-/// `strand` and `rescaled_location` are appended. The six `_st`/`_end` columns
+/// `strand`, `rescaled_location` and `weight` (the row's share of its site,
+/// 1 unless `--isoforms weighted`) are appended. The six `_st`/`_end` columns
 /// are absolute distances `mrna_pos - endpoint` in 1-based spliced coordinates
 /// running 5'->3' (so `utr3_st` is the signed distance from the stop codon);
 /// a missing region prints `NA`. `coord` is 1-based, as MetaPlotR reads it
 /// from a BED `end`; the site parquet stores 0-based positions.
 const DIST_MEASURES_HEADER: &str = "chr\tcoord\tgene_name\trefseqID\trel_location\t\
      utr5_st\tutr5_end\tcds_st\tcds_end\tutr3_st\tutr3_end\t\
-     utr5_size\tcds_size\tutr3_size\tstrand\trescaled_location";
+     utr5_size\tcds_size\tutr3_size\tstrand\trescaled_location\tweight";
 
 fn write_dist_measures(
     path: &str,
@@ -654,7 +707,7 @@ fn write_dist_measures(
 
         writeln!(
             w,
-            "{}\t{}\t{}\t{}\t{:.6}\t{}{}\t{}\t{}\t{}\t{:.6}",
+            "{}\t{}\t{}\t{}\t{:.6}\t{}{}\t{}\t{}\t{}\t{:.6}\t{:.6}",
             site.chr,
             site.position + 1,
             m.gene_name,
@@ -665,7 +718,8 @@ fn write_dist_measures(
             m.cds_size,
             m.utr3_size,
             m.strand,
-            scale.rescale(a.region, rel_location - a.region as f64)
+            scale.rescale(a.region, rel_location - a.region as f64),
+            a.weight
         )?;
     }
     w.flush()?;
@@ -745,11 +799,6 @@ pub fn run_metagene(args: &MetageneArgs) -> anyhow::Result<()> {
             gff_file
         );
     }
-    let n_models = models.len();
-    let models = match args.isoforms {
-        IsoformPolicy::Longest => elect_longest_isoform(models),
-        IsoformPolicy::All => models,
-    };
     let non_coding = if args.include_non_coding {
         non_coding_bodies(&records)
     } else {
@@ -758,16 +807,15 @@ pub fn run_metagene(args: &MetageneArgs) -> anyhow::Result<()> {
     drop(records);
 
     info!(
-        "{} coding transcripts, {} kept under --isoforms {:?}",
-        n_models,
+        "{} coding transcripts, sites counted under --isoforms {:?}",
         models.len(),
         args.isoforms
     );
 
     let index = RegionIndex::build(&models, &non_coding);
 
-    // Placement first: bin widths depend on the site-weighted medians.
-    let (assignments, unassigned) = assign_sites(&sites, &index);
+    // Placement first: bin widths depend on the medians of the transcripts placed on.
+    let (assignments, unassigned) = assign_sites(&sites, &index, args.isoforms);
     let scale = scale_factors(&assignments, &models);
     let grid = BinGrid::new(
         args.num_bins as usize,
@@ -800,7 +848,7 @@ pub fn run_metagene(args: &MetageneArgs) -> anyhow::Result<()> {
     );
     let median = scale.median();
     info!(
-        "site-weighted medians 5'UTR/CDS/3'UTR = {:.1}/{:.1}/{:.1} nt; SF5 = {:.4}, SF3 = {:.4}",
+        "per-transcript medians 5'UTR/CDS/3'UTR = {:.1}/{:.1}/{:.1} nt; SF5 = {:.4}, SF3 = {:.4}",
         median[0], median[1], median[2], scale.utr5_sf, scale.utr3_sf
     );
     info!(
@@ -828,7 +876,8 @@ pub fn run_metagene(args: &MetageneArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Longest coding transcript per gene, indexed for placing sites.
+/// Every coding transcript, indexed for placing sites with split weights
+/// ([`IsoformPolicy::Weighted`]).
 pub struct MetaModels {
     models: Vec<TranscriptModel>,
     index: RegionIndex,
@@ -841,7 +890,7 @@ impl MetaModels {
     }
 
     pub(crate) fn from_records(records: &[GffRecord]) -> Self {
-        let models = elect_longest_isoform(build_transcript_models(records));
+        let models = build_transcript_models(records);
         let index = RegionIndex::build(&models, &[]);
         Self { models, index }
     }
@@ -849,7 +898,7 @@ impl MetaModels {
     /// Place `sites` on a coding metagene of `n_bins` whose widths all of them
     /// fix. `None` when no site lands on a coding transcript.
     pub fn layout(&self, sites: &[GenomicSite], n_bins: usize) -> Option<MetaLayout> {
-        let (assignments, unassigned) = assign_sites(sites, &self.index);
+        let (assignments, unassigned) = assign_sites(sites, &self.index, IsoformPolicy::Weighted);
         let scale = scale_factors(&assignments, &self.models)?;
         let grid = BinGrid::new(n_bins, Some(&scale), false);
         Some(MetaLayout {
@@ -876,8 +925,9 @@ impl MetaLayout {
     }
 
     /// Per bin (5'UTR, CDS, 3'UTR), the sum of `weight(site index)` over
-    /// placements; a site on two isoforms counts on each.
-    pub fn counts(&self, weight: impl Fn(usize) -> usize) -> Vec<usize> {
+    /// placements, each scaled by its share of the site: a site on two
+    /// isoforms adds half its weight to each.
+    pub fn counts(&self, weight: impl Fn(usize) -> f64) -> Vec<f64> {
         let weighted = self
             .assignments
             .iter()

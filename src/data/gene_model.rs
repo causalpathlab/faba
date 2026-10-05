@@ -9,7 +9,7 @@
 //! This module supplies the other meaning: the offset along the gene's merged
 //! exons, which is what a reader means by "position in the transcript". APA's
 //! 3'UTR takes the same correction — see `docs/profiling-methods.md` section
-//! 1.1. The metagene takes it along one elected transcript instead (§1.2).
+//! 1.1. The metagene takes it along each coding transcript instead (§1.2).
 
 use genomic_data::gff::{build_exon_intervals, GeneId, GffRecord};
 use genomic_data::sam::Strand;
@@ -26,10 +26,11 @@ use rustc_hash::FxHashMap;
 /// isoform is exonic here. That is deliberate: a read at such a base is real
 /// evidence, and electing one canonical transcript would discard it.
 ///
-/// `faba metagene` is the one exception, and elects the longest transcript
-/// (`genomic_data::transcript`). Its estimand is different: it reports *where
-/// along a transcript* sites fall, for comparison against published MetaPlotR
-/// profiles, and that comparison needs one transcript's disjoint regions. What
+/// `faba metagene` is the one exception, and places sites on each coding
+/// transcript (`genomic_data::transcript`), a site split 1/k over the k it
+/// lies in. Its estimand is different: it reports *where along a transcript*
+/// sites fall, for comparison against published MetaPlotR profiles, and that
+/// needs each transcript's own disjoint regions. What
 /// reads this type — `rel_pos`, the methylation mixture, APA's 3'UTR — is
 /// asking whether a base is exonic or how a 3' end is used, where any-isoform
 /// evidence is the right answer. See `docs/profiling-methods.md` §1.2.

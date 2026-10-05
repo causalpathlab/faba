@@ -9,7 +9,6 @@
 use data_beans::interactive::ui::{
     header, help_line, panel, Binning, HistPlot, Scale, Screen, DIM, HIGHLIGHT, PLAIN,
 };
-use data_beans::qc::pct;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout};
 use ratatui::text::{Line, Span};
@@ -19,7 +18,9 @@ use ratatui::Frame;
 use crate::figure::term::PlotImage;
 use crate::figure::{self, Anchor, Bars, Canvas, Controls, Key, INK, MUTED};
 
-use super::{GeneFeatureHistogram, CDS, NCRNA, REGION_NAMES, UTR3, UTR5};
+use super::{
+    region_style, GeneFeatureHistogram, CDS, NCRNA, REGION_COLOURS, REGION_NAMES, UTR3, UTR5,
+};
 
 use crate::figure::GUTTER;
 
@@ -39,12 +40,12 @@ impl Track {
 }
 
 /// One drawn bar: bins `first..=last` of one region, summed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 struct Bar {
     region: usize,
     first: usize,
     last: usize,
-    count: usize,
+    count: f64,
 }
 
 /// Bars of `track`, `merge` bins per bar within each region.
@@ -80,6 +81,22 @@ fn region_starts(bars: &[Bar]) -> impl Iterator<Item = (usize, &'static str)> + 
         .enumerate()
         .filter(|(i, b)| *i == 0 || bars[i - 1].region != b.region)
         .map(|(i, b)| (i, REGION_NAMES[b.region]))
+}
+
+/// Each region's name at its middle bar, between the dividers.
+fn region_middles(bars: &[Bar]) -> Vec<(usize, String)> {
+    let starts: Vec<(usize, &str)> = region_starts(bars).collect();
+    let ends = starts.iter().skip(1).map(|&(i, _)| i).chain([bars.len()]);
+    starts
+        .iter()
+        .zip(ends)
+        .map(|(&(start, name), end)| (start + (end - start) / 2, name.to_string()))
+        .collect()
+}
+
+/// A count as shown: whole when it is, else to one decimal.
+fn count_text(n: f64) -> String {
+    super::count_text(n, 1)
 }
 
 /// The smallest merge factor whose bars fit `width` columns; when even one
@@ -197,7 +214,7 @@ impl<'a> MetageneView<'a> {
                 format!(
                     "{} {}",
                     REGION_NAMES[r],
-                    self.hist.counts[r].iter().sum::<usize>()
+                    count_text(self.hist.counts[r].iter().sum::<f64>())
                 )
             })
             .collect();
@@ -223,19 +240,23 @@ impl<'a> MetageneView<'a> {
         title: String,
     ) {
         let bars = self.bars();
-        let values: Vec<f64> = bars.iter().map(|b| b.count as f64).collect();
-        let ticks = region_starts(&bars)
-            .map(|(i, name)| (i, name.to_string()))
+        let values: Vec<f64> = bars.iter().map(|b| b.count).collect();
+        let ticks = region_middles(&bars);
+        let dividers = region_starts(&bars)
+            .map(|(i, _)| i)
+            .filter(|&i| i > 0)
             .collect();
         Bars {
             values: &values,
             front: None,
             accent: &|_| false,
+            colour: &|i| REGION_COLOURS[bars[i].region],
             y_scale: self.y_scale,
             y_max: None,
             ticks,
             pointer,
             marks: Vec::new(),
+            dividers,
             title,
             x_title: "metagene position (MetaPlotR scale)".into(),
             y_title: "sites".into(),
@@ -248,7 +269,7 @@ impl<'a> MetageneView<'a> {
         let Some(b) = bars.get(self.cursor_bar(bars)) else {
             return Line::from(dim(" no bins".into()));
         };
-        let total: usize = bars.iter().map(|b| b.count).sum();
+        let total: f64 = bars.iter().map(|b| b.count).sum();
         let (lo, _) = self.hist.bin_edges(b.region, b.first);
         let (_, hi) = self.hist.bin_edges(b.region, b.last);
         let bins = if b.first == b.last {
@@ -259,8 +280,15 @@ impl<'a> MetageneView<'a> {
         Line::from(vec![
             Span::styled(format!(" {}", REGION_NAMES[b.region]), HIGHLIGHT),
             dim(format!("  {bins}   coordinate {lo:.3}-{hi:.3}   ")),
-            Span::raw(format!("{} sites", b.count)),
-            dim(format!(" ({:.2}% of the track)", pct(b.count, total))),
+            Span::raw(format!("{} sites", count_text(b.count))),
+            dim(format!(
+                " ({:.2}% of the track)",
+                if total > 0.0 {
+                    100.0 * b.count / total
+                } else {
+                    0.0
+                }
+            )),
         ])
     }
 
@@ -268,9 +296,9 @@ impl<'a> MetageneView<'a> {
         let dim = |t: String| Span::styled(t, DIM);
         let mut spans = vec![dim(" sites per region:".into())];
         for &r in self.track.regions() {
-            let n: usize = self.hist.counts[r].iter().sum();
+            let n: f64 = self.hist.counts[r].iter().sum();
             spans.push(dim(format!("  {} ", REGION_NAMES[r])));
-            spans.push(Span::raw(n.to_string()));
+            spans.push(Span::raw(count_text(n)));
         }
         if self.track == Track::Coding {
             let m = self.hist.scale.median();
@@ -354,7 +382,8 @@ impl Screen for MetageneView<'_> {
         });
         self.plot = plot;
 
-        let counts: Vec<usize> = bars.iter().map(|b| b.count).collect();
+        // The glyph plot counts whole sites; split weights round.
+        let counts: Vec<usize> = bars.iter().map(|b| b.count.round() as usize).collect();
         let mut starts: Vec<Option<&str>> = vec![None; bars.len()];
         for (i, name) in region_starts(&bars) {
             starts[i] = Some(name);
@@ -371,7 +400,10 @@ impl Screen for MetageneView<'_> {
                 bins: Binning::with_width(Scale::Linear, 1.0),
                 kmin: 0,
                 counts: &counts,
-                style: &|_| PLAIN,
+                style: &|k| {
+                    bars.get(k as usize)
+                        .map_or(PLAIN, |b| region_style(b.region))
+                },
                 subset: None,
                 y_scale: self.y_scale,
                 y_max: None,

@@ -28,7 +28,9 @@ use rustc_hash::FxHashMap;
 use crate::figure::term::PlotImage;
 use crate::figure::{self, Anchor, Bars, Canvas, Controls, Key, INK, MUTED};
 
-use crate::site_analysis::metagene::{MetaLayout, MetaModels, REGION_NAMES};
+use crate::site_analysis::metagene::{
+    region_style, MetaLayout, MetaModels, REGION_COLOURS, REGION_NAMES,
+};
 use crate::site_analysis::miami::genemodel::{
     gene_models_from_records, read_records_of, GeneModel,
 };
@@ -36,10 +38,11 @@ use arrow::record_batch::RecordBatch;
 use rustc_hash::FxHashSet;
 
 use super::args::SiteFilterArgs;
+use super::browser::{Browser, Listing, Nav};
 use super::layout::{file_name, SITE_MODALITIES};
 use super::progress::Progress;
 use super::sites::{genomic_sites, Criterion, GeneSites, SiteTable};
-use super::widgets::{first_visible, popup};
+use super::widgets::{first_visible, popup, popup_frame};
 
 mod annotation;
 mod column;
@@ -48,6 +51,7 @@ mod genes;
 
 use annotation::*;
 use column::*;
+use draw::render_gff;
 use genes::*;
 
 /// Width of HistPlot's y gutter.
@@ -185,6 +189,8 @@ enum Mode {
     Confirm,
     /// Writing the fileset; keys wait until it is done.
     Writing,
+    /// Browsing for an annotation to read.
+    Gff(Browser),
 }
 
 /// The panel Tab moves to, which the arrow keys then drive.
@@ -267,10 +273,12 @@ struct SitePicker<'a> {
     controls: Controls,
     plot: PlotImage,
     meta: Meta,
+    /// Where `meta` comes from, to read another annotation in its place.
+    annotation: AnnotationSource,
     /// What the gene and metagene bars add up.
     weight: Weight,
     /// The focused view's metagene bars: all sites, then the kept ones.
-    meta_bars: (Vec<usize>, Vec<usize>),
+    meta_bars: (Vec<f64>, Vec<f64>),
     meta_plot: PlotImage,
     list: GeneList,
     /// Writes the fileset in the view once the thresholds are applied.
@@ -304,7 +312,8 @@ impl<'a> SitePicker<'a> {
             controls: Controls::new("qc_sites"),
             plot: PlotImage::default(),
             meta,
-            weight: Weight::Sites,
+            annotation: AnnotationSource::default(),
+            weight: Weight::Coverage,
             meta_bars: Default::default(),
             meta_plot: PlotImage::default(),
             list: GeneList::default(),
@@ -534,6 +543,9 @@ impl Screen for SitePicker<'_> {
             }
         }
         self.plot.invalidate();
+        if matches!(self.mode, Mode::Gff(_)) {
+            return self.gff_key(key);
+        }
         match &mut self.mode {
             Mode::Edit(buf) => match key.code {
                 KeyCode::Char(ch)
@@ -554,16 +566,18 @@ impl Screen for SitePicker<'_> {
                 KeyCode::Esc => self.mode = Mode::Browse,
                 _ => {}
             },
+            // Letters type, so only the arrow keys move through the matches.
             Mode::Find => match key.code {
                 KeyCode::Char(ch) if self.list.find.len() < 32 => self.set_find(|f| f.push(ch)),
                 KeyCode::Backspace => self.set_find(|f| {
                     f.pop();
                 }),
-                KeyCode::Enter => self.mode = Mode::Browse,
-                KeyCode::Esc => {
-                    self.set_find(String::clear);
-                    self.mode = Mode::Browse;
-                }
+                KeyCode::Up => self.step_gene(-1),
+                KeyCode::Down => self.step_gene(1),
+                KeyCode::PageUp => self.step_gene(-10),
+                KeyCode::PageDown => self.step_gene(10),
+                KeyCode::Enter => self.end_find(true),
+                KeyCode::Esc => self.end_find(false),
                 _ => {}
             },
             Mode::Confirm => match key.code {
@@ -572,7 +586,7 @@ impl Screen for SitePicker<'_> {
                 KeyCode::Esc | KeyCode::Char('n' | 'q') => self.mode = Mode::Browse,
                 _ => {}
             },
-            Mode::Writing => {}
+            Mode::Writing | Mode::Gff(_) => {}
             Mode::Browse => match key.code {
                 _ if is_apply(&key) => self.mode = Mode::Confirm,
                 KeyCode::Enter => self.enter_hint = true,
@@ -586,8 +600,9 @@ impl Screen for SitePicker<'_> {
                 KeyCode::Char('M') => self.switch_modality(-1),
                 KeyCode::Char('[') => self.step_gene(-1),
                 KeyCode::Char(']') => self.step_gene(1),
-                KeyCode::Char('/') => self.mode = Mode::Find,
+                KeyCode::Char('/') => self.start_find(),
                 KeyCode::Char('c') => self.switch_weight(),
+                KeyCode::Char('g') => self.open_gff_browser(),
                 KeyCode::Up | KeyCode::Char('k') if self.panel == Panel::Genes => {
                     self.step_gene(-1)
                 }
@@ -691,10 +706,16 @@ impl Screen for SitePicker<'_> {
                 ("Esc/n", "back"),
             ]),
             (Mode::Writing, None) => help_line(&[("", "writing; the view closes when done")]),
+            (Mode::Gff(_), None) => help_line(&[
+                ("↑/↓", "move"),
+                ("Enter", "open / read"),
+                ("←", "up"),
+                ("Esc", "back"),
+            ]),
             (Mode::Find, None) => input_line(
                 "gene: ",
                 &self.list.find,
-                &[("Enter", "keep"), ("Esc", "clear")],
+                &[("↑/↓", "move"), ("Enter", "focus"), ("Esc", "cancel")],
             ),
             (Mode::Browse, None) => {
                 let apply = (APPLY_KEYS, "apply");
@@ -719,6 +740,7 @@ impl Screen for SitePicker<'_> {
                     ("o", "off"),
                     ("r", "reset"),
                     ("x/y", "scale"),
+                    ("g", "annotation"),
                 ]);
                 help_line(&keys)
             }
@@ -727,6 +749,7 @@ impl Screen for SitePicker<'_> {
         match self.mode {
             Mode::Confirm => self.render_confirm(frame, body),
             Mode::Writing => self.render_writing(frame, body),
+            Mode::Gff(ref browser) => render_gff(frame, body, browser),
             _ => {}
         }
     }
@@ -745,6 +768,8 @@ pub enum Picked {
 /// Open the picker over the non-empty site tables, in [`SITE_MODALITIES`]
 /// order, with each modality's kept cells per site where `_site` matrices
 /// gave them. Needs a terminal and at least one non-empty site table.
+/// Returns how it ended and the annotation it ended on, which `g` may have
+/// changed from `gff`.
 pub fn run_site_picker(
     input_dir: &str,
     tables: &FxHashMap<Box<str>, SiteTable>,
@@ -753,7 +778,7 @@ pub fn run_site_picker(
     gff: Option<&str>,
     pinned: &[Box<str>],
     writer: Writer<'_>,
-) -> anyhow::Result<Picked> {
+) -> anyhow::Result<(Picked, Option<Box<str>>)> {
     let views: Vec<SiteView> = SITE_MODALITIES
         .iter()
         .filter_map(|m| tables.get(*m))
@@ -767,20 +792,26 @@ pub fn run_site_picker(
         !views.is_empty(),
         "no editing site table to pick thresholds on"
     );
-    let batches = views.iter().map(|v| v.table.batch.clone()).collect();
-    let keys = views
-        .iter()
-        .filter_map(|v| v.genes.as_ref())
-        .flat_map(|g| g.keys.iter().cloned())
-        .collect();
-    let meta = Meta::start(gff, batches, keys);
+    let annotation = AnnotationSource {
+        gff: gff.map(Box::from),
+        dir: std::path::PathBuf::from(input_dir),
+        batches: views.iter().map(|v| v.table.batch.clone()).collect(),
+        keys: views
+            .iter()
+            .filter_map(|v| v.genes.as_ref())
+            .flat_map(|g| g.keys.iter().cloned())
+            .collect(),
+    };
+    let meta = Meta::start(&annotation);
     let mut picker =
         SitePicker::new(&file_name(input_dir), views, filter.clone(), meta).pin_genes(pinned);
+    picker.annotation = annotation;
     picker.writer = writer;
     picker.want_shift_enter = true;
     picker.controls = Controls::new("qc_sites").detect();
     data_beans::interactive::ui::run_screen(&mut picker)?;
-    Ok(picker.decision.unwrap_or(Picked::Cancelled))
+    let gff = picker.gff().map(Box::from);
+    Ok((picker.decision.unwrap_or(Picked::Cancelled), gff))
 }
 
 #[cfg(test)]

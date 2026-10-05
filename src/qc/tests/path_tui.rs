@@ -23,7 +23,12 @@ fn tree() -> tempfile::TempDir {
 }
 
 fn select(p: &mut PathPicker, name: &str) {
-    p.at = p.entries.iter().position(|e| e.name == name).unwrap();
+    p.browser.at = p
+        .browser
+        .entries
+        .iter()
+        .position(|e| e.name == name)
+        .unwrap();
 }
 
 #[test]
@@ -31,9 +36,9 @@ fn browse_choose_an_input_and_name_the_output() {
     let tmp = tree();
     let root = tmp.path().to_path_buf();
     let mut p = PathPicker::new(root.clone(), None, None);
-    let names: Vec<&str> = p.entries.iter().map(|e| e.name.as_str()).collect();
+    let names: Vec<&str> = p.browser.entries.iter().map(|e| e.name.as_str()).collect();
     assert_eq!(names, ["..", "plain", "prof"]);
-    assert!(p.entries[2].faba && !p.entries[1].faba);
+    assert!(p.browser.entries[2].tagged && !p.browser.entries[1].tagged);
 
     // Not a faba directory: refused, still browsing.
     select(&mut p, "plain");
@@ -43,10 +48,10 @@ fn browse_choose_an_input_and_name_the_output() {
     // Into `prof` and back up lands on it again.
     select(&mut p, "prof");
     press(&mut p, KeyCode::Enter);
-    assert_eq!(p.cwd, root.join("prof"));
+    assert_eq!(p.browser.cwd, root.join("prof"));
     press(&mut p, KeyCode::Left);
-    assert_eq!(p.cwd, root);
-    assert_eq!(p.entries[p.at].name, "prof");
+    assert_eq!(p.browser.cwd, root);
+    assert_eq!(p.browser.entries[p.browser.at].name, "prof");
 
     press(&mut p, KeyCode::Char(' '));
     let suggested = format!("{}_qc", root.join("prof").display());
@@ -89,7 +94,7 @@ fn only_what_is_missing_is_asked() {
 
     // The input given: straight to the output, and nothing listed.
     let p = PathPicker::new(root.clone(), Some(input.clone()), None);
-    assert!(matches!(p.step, Step::Output { .. }) && p.entries.is_empty());
+    assert!(matches!(p.step, Step::Output { .. }) && p.browser.entries.is_empty());
 
     // An output given but not empty: asked again, with why.
     let p = PathPicker::new(

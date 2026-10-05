@@ -17,9 +17,44 @@ fn meta_ticks(regions: [usize; 3]) -> Vec<(usize, String)> {
     out
 }
 
-/// The first bin of the CDS and of the 3'UTR: the region boundaries.
-fn meta_marks(regions: [usize; 3]) -> Vec<usize> {
-    vec![regions[0], regions[0] + regions[1]]
+/// The first bin of the CDS and of the 3'UTR: the start and stop codons,
+/// drawn as dividers on those bins' left edges. A region with no bins
+/// adds no divider.
+fn meta_dividers(regions: [usize; 3]) -> Vec<usize> {
+    let mut out = Vec::new();
+    if regions[0] > 0 && regions[1] + regions[2] > 0 {
+        out.push(regions[0]);
+    }
+    if regions[2] > 0 && regions[0] + regions[1] > 0 {
+        out.push(regions[0] + regions[1]);
+    }
+    out
+}
+
+/// The coding region of metagene bin `bin`, given the bins per region.
+fn meta_region(regions: [usize; 3], bin: usize) -> usize {
+    if bin < regions[0] {
+        0
+    } else if bin < regions[0] + regions[1] {
+        1
+    } else {
+        2
+    }
+}
+
+/// The annotation browser, centred over `area`.
+pub(super) fn render_gff(frame: &mut Frame, area: Rect, browser: &Browser) {
+    let w = area.width.saturating_sub(4).clamp(20, 90);
+    let rows = area.height.saturating_sub(6).clamp(3, 20);
+    let title = format!(" annotation (GTF/GFF) · {} ", browser.cwd.display());
+    let inner = popup_frame(frame, area, w, rows + 2, title);
+    let lines = browser.lines(
+        rows as usize,
+        inner.width as usize,
+        "",
+        "no subdirectory or GTF/GFF file",
+    );
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 /// A colour key: a block in each bar style, then what it stands for.
@@ -36,32 +71,46 @@ fn key_line(items: &[(Style, String)]) -> Line<'static> {
 /// what they add up.
 fn kept_key(weight: Weight) -> Line<'static> {
     let mut line = key_line(&[(PLAIN, format!("kept {}", weight.unit()))]);
-    line.push_span(Span::styled(format!("c: {}", weight.other().unit()), DIM));
+    line.push_span(Span::styled(format!("c: {}", weight.next().unit()), DIM));
     line
 }
 
-/// Bars of the `kept` sites, in the box `(x, y, w, h)`.
+/// The metagene's key: the kept sites in each region's colour, with the key
+/// that switches what they add up.
+fn meta_key(weight: Weight) -> Line<'static> {
+    let mut line = Line::from(Span::styled(format!("kept {}:  ", weight.unit()), DIM));
+    let regions: Vec<(Style, String)> = (0..3)
+        .map(|r| (region_style(r), REGION_NAMES[r].to_string()))
+        .collect();
+    line.extend(key_line(&regions).spans);
+    line.push_span(Span::styled(format!("c: {}", weight.next().unit()), DIM));
+    line
+}
+
+/// Bars of the `kept` sites, in the box `(x, y, w, h)`, each in `colour`.
 #[allow(clippy::too_many_arguments)]
 fn kept_bars(
     canvas: &mut Canvas,
-    kept: &[usize],
+    kept: &[f64],
     (x, y, w, h): (f64, f64, f64, f64),
     ticks: Vec<(usize, String)>,
-    marks: Vec<usize>,
+    dividers: Vec<usize>,
+    colour: &dyn Fn(usize) -> &'static str,
     title: String,
     x_title: &str,
     y_title: &str,
 ) {
-    let kept: Vec<f64> = kept.iter().map(|&n| n as f64).collect();
     Bars {
-        values: &kept,
+        values: kept,
         front: None,
         accent: &|_| false,
+        colour,
         y_scale: Scale::Linear,
         y_max: None,
         ticks,
         pointer: None,
-        marks,
+        marks: Vec::new(),
+        dividers,
         title,
         x_title: x_title.into(),
         y_title: y_title.into(),
@@ -72,12 +121,14 @@ fn kept_bars(
 /// A gene's profile in the box `(x, y, w, h)`, with its gene model in the
 /// space Bars keeps for x labels (52 left, 12 right, 38 below).
 fn draw_gene(canvas: &mut Canvas, p: &GeneProfile, (x, y, w, h): (f64, f64, f64, f64)) {
+    let kept: Vec<f64> = p.kept.iter().map(|&n| n as f64).collect();
     kept_bars(
         canvas,
-        &p.kept,
+        &kept,
         (x, y, w, h),
         Vec::new(),
         Vec::new(),
+        &|_| figure::BAR,
         p.title(),
         "",
         p.unit,
@@ -234,14 +285,15 @@ impl<'a> SitePicker<'a> {
         bbox: (f64, f64, f64, f64),
         title: String,
     ) {
-        let (ticks, marks) = (meta_ticks(m.regions), meta_marks(m.regions));
+        let (ticks, dividers) = (meta_ticks(m.regions), meta_dividers(m.regions));
         let x_title = "metagene position (MetaPlotR scale)";
         kept_bars(
             canvas,
             m.kept,
             bbox,
             ticks,
-            marks,
+            dividers,
+            &|i| REGION_COLOURS[meta_region(m.regions, i)],
             title,
             x_title,
             self.weight.unit(),
@@ -261,10 +313,11 @@ impl<'a> SitePicker<'a> {
         let inner = block.inner(area);
         frame.render_widget(block, area);
         let Some(m) = self.meta_counts() else {
-            frame.render_widget(
-                Paragraph::new(Line::from(Span::styled(self.meta_status(), DIM))),
-                inner,
-            );
+            let mut lines = vec![Line::from(Span::styled(self.meta_status(), DIM))];
+            if !matches!(self.meta, Meta::Pending(_)) {
+                lines.push(help_line(&[("g", "choose an annotation (GTF/GFF)")]));
+            }
+            frame.render_widget(Paragraph::new(lines), inner);
             return;
         };
         let [stats, plot, key] = Layout::vertical([
@@ -273,11 +326,13 @@ impl<'a> SitePicker<'a> {
             Constraint::Length(1),
         ])
         .areas(inner);
-        frame.render_widget(Paragraph::new(kept_key(self.weight)), key);
-        let region_sum = |c: &[usize], r: usize| {
+        frame.render_widget(Paragraph::new(meta_key(self.weight)), key);
+        // Whole sites: split weights add back up to one per site.
+        let region_sum = |c: &[f64], r: usize| {
             let start: usize = m.regions[..r].iter().sum();
             c.get(start..start + m.regions[r])
-                .map_or(0, |bins| bins.iter().sum::<usize>())
+                .map_or(0.0, |bins| bins.iter().sum::<f64>())
+                .round()
         };
         let dim = |t: String| Span::styled(t, DIM);
         let mut line = vec![dim("kept / all  ".into())];
@@ -308,7 +363,12 @@ impl<'a> SitePicker<'a> {
         let n = m.kept.len().max(1);
         let cols = (plot.width.saturating_sub(GUTTER) as usize).max(n);
         let bin_of = |x: usize| x * n / cols;
-        let stretch = |v: &[usize]| (0..cols).map(|x| v[bin_of(x)]).collect::<Vec<_>>();
+        // The glyph plot counts whole sites; split weights round.
+        let stretch = |v: &[f64]| {
+            (0..cols)
+                .map(|x| v[bin_of(x)].round() as usize)
+                .collect::<Vec<_>>()
+        };
         let kept = stretch(m.kept);
         let ticks: Vec<(usize, String)> = meta_ticks(m.regions)
             .into_iter()
@@ -324,7 +384,7 @@ impl<'a> SitePicker<'a> {
             bins: Binning::with_width(Scale::Linear, 1.0),
             kmin: 0,
             counts: &kept,
-            style: &|_| PLAIN,
+            style: &|k| region_style(meta_region(m.regions, bin_of(k.max(0) as usize))),
             subset: None,
             y_scale: Scale::Linear,
             y_max: None,
@@ -492,11 +552,13 @@ impl<'a> SitePicker<'a> {
             values: &values,
             front: Some(&front),
             accent: &dropped,
+            colour: &|_| figure::BAR,
             y_scale: self.y_scale,
             y_max: None,
             ticks,
             pointer,
             marks: Vec::new(),
+            dividers: Vec::new(),
             title,
             x_title: format!("{} ({} bins)", c.axis(), self.scale().name()),
             y_title: "sites".into(),
