@@ -21,6 +21,8 @@ pub(super) struct GeneList {
     shown: Vec<u32>,
     /// Position of the selected gene in `shown`.
     pub(super) at: usize,
+    /// The gene selected when the search began, to go back to on Esc.
+    before_find: Option<u32>,
     /// The focused view's kept sites per gene id.
     kept: Vec<u32>,
 }
@@ -191,6 +193,29 @@ impl<'a> SitePicker<'a> {
         edit(&mut self.list.find);
         self.list.at = 0;
         self.list.refilter(self.modality, None);
+    }
+
+    /// Start a gene search, remembering the gene selected now.
+    pub(super) fn start_find(&mut self) {
+        self.list.before_find = self.list.selected().map(|g| g as u32);
+        self.mode = Mode::Find;
+    }
+
+    /// End the search on the whole list: with `focus`, on the gene under the
+    /// cursor, in the gene panel; else back on the gene selected before.
+    pub(super) fn end_find(&mut self, focus: bool) {
+        let keep = if focus {
+            self.list.selected().map(|g| g as u32)
+        } else {
+            self.list.before_find
+        };
+        if focus && keep.is_some() {
+            self.panel = Panel::Genes;
+        }
+        self.list.find.clear();
+        self.list
+            .refilter(self.modality, keep.or(self.list.before_find));
+        self.mode = Mode::Browse;
     }
 
     /// The gene list for a new focused view, or new thresholds.

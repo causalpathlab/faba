@@ -4,23 +4,17 @@
 
 use std::path::{Path, PathBuf};
 
-use data_beans::interactive::ui::{header, help_line, input_line, Screen, DIM, HIGHLIGHT, PLAIN};
+use data_beans::interactive::ui::{header, help_line, input_line, Screen, DIM, HIGHLIGHT};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use rustc_hash::FxHashMap;
 
+use super::browser::{Browser, Listing, Nav};
 use super::layout::looks_like_faba_dir;
 use crate::figure::{Edit, LineInput};
-use crate::tui::{first_visible, next_free, output_problem, popup_frame};
-
-/// One subdirectory in the browser.
-struct Entry {
-    name: String,
-    /// It holds faba matrices or site tables.
-    faba: bool,
-}
+use crate::tui::{next_free, output_problem, popup_frame};
 
 enum Step {
     /// Browsing for the input directory.
@@ -32,10 +26,9 @@ enum Step {
 /// The two questions, independent of the terminal so they can be tested.
 struct PathPicker {
     step: Step,
-    cwd: PathBuf,
-    /// `cwd`'s subdirectories; listed when the browser first shows.
-    entries: Vec<Entry>,
-    at: usize,
+    /// Subdirectories only, tagged when they hold faba matrices or site
+    /// tables; listed when the browser first shows.
+    browser: Browser,
     /// Directories already checked for faba files.
     faba: FxHashMap<PathBuf, bool>,
     /// Why the last choice was refused.
@@ -43,6 +36,13 @@ struct PathPicker {
     /// The output as given on the command line, if it was.
     given_output: Option<String>,
     decision: Option<Option<(String, String)>>,
+}
+
+/// Whether `dir` holds faba matrices or site tables, checked once.
+fn cached_faba(cache: &mut FxHashMap<PathBuf, bool>, dir: &Path) -> bool {
+    *cache
+        .entry(dir.to_path_buf())
+        .or_insert_with(|| looks_like_faba_dir(dir))
 }
 
 /// A directory next to `input` named after it, that does not exist yet.
@@ -58,9 +58,7 @@ impl PathPicker {
     fn new(cwd: PathBuf, input: Option<PathBuf>, given_output: Option<String>) -> Self {
         let mut p = Self {
             step: Step::Input,
-            cwd: cwd.clone(),
-            entries: Vec::new(),
-            at: 0,
+            browser: Browser::new(cwd.clone()),
             faba: FxHashMap::default(),
             error: None,
             given_output,
@@ -76,54 +74,24 @@ impl PathPicker {
         p
     }
 
-    fn is_faba(&mut self, dir: &Path) -> bool {
-        *self
-            .faba
-            .entry(dir.to_path_buf())
-            .or_insert_with(|| looks_like_faba_dir(dir))
+    /// `f` on the browser, listing subdirectories only and tagging faba
+    /// output directories.
+    fn browse<R>(&mut self, f: impl FnOnce(&mut Browser, &mut Listing) -> R) -> R {
+        let faba = &mut self.faba;
+        let mut tag = |d: &Path| cached_faba(faba, d);
+        let mut listing = Listing {
+            keep: &|_| false,
+            tag: &mut tag,
+        };
+        f(&mut self.browser, &mut listing)
     }
 
-    /// Show `dir`'s visible subdirectories, sorted, with `..` first unless at
-    /// the root; going up lands on the directory just left.
     fn open(&mut self, dir: PathBuf) {
-        let mut names: Vec<String> = std::fs::read_dir(&dir)
-            .map(|rd| {
-                rd.flatten()
-                    .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()) || e.path().is_dir())
-                    .map(|e| e.file_name().to_string_lossy().into_owned())
-                    // A zarr store is a directory, but it is one matrix.
-                    .filter(|n| !n.starts_with('.') && !n.ends_with(".zarr"))
-                    .collect()
-            })
-            .unwrap_or_default();
-        names.sort();
-        if dir.parent().is_some() {
-            names.insert(0, "..".into());
-        }
-        let entries = names
-            .into_iter()
-            .map(|name| Entry {
-                faba: name != ".." && self.is_faba(&dir.join(&name)),
-                name,
-            })
-            .collect();
-        let left = (Some(dir.as_path()) == self.cwd.parent())
-            .then(|| self.cwd.file_name())
-            .flatten()
-            .map(|n| n.to_string_lossy().into_owned());
-        self.entries = entries;
-        self.at = left
-            .and_then(|l| self.entries.iter().position(|e| e.name == l))
-            .unwrap_or(0);
-        self.cwd = dir;
+        self.browse(|b, l| b.open(dir, l));
     }
 
-    fn highlighted(&self) -> Option<PathBuf> {
-        let e = self.entries.get(self.at)?;
-        Some(match e.name.as_str() {
-            ".." => self.cwd.parent()?.to_path_buf(),
-            name => self.cwd.join(name),
-        })
+    fn is_faba(&mut self, dir: &Path) -> bool {
+        cached_faba(&mut self.faba, dir)
     }
 
     /// Take `dir` as the input, if it is a faba output directory.
@@ -152,66 +120,20 @@ impl PathPicker {
         self.decision = Some(Some((input.to_string_lossy().into_owned(), out)));
     }
 
-    fn step_at(&mut self, delta: isize) {
-        let n = self.entries.len() as isize;
-        if n > 0 {
-            self.at = (self.at as isize + delta).clamp(0, n - 1) as usize;
-        }
-    }
-
     fn browse_key(&mut self, key: KeyEvent) {
+        if !matches!(self.browse(|b, l| b.key(key, l)), Nav::Ignored) {
+            return;
+        }
         match key.code {
-            KeyCode::Up | KeyCode::Char('k') => self.step_at(-1),
-            KeyCode::Down | KeyCode::Char('j') => self.step_at(1),
-            KeyCode::PageUp => self.step_at(-10),
-            KeyCode::PageDown => self.step_at(10),
-            KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
-                if let Some(dir) = self.highlighted() {
-                    self.open(dir);
-                }
-            }
-            KeyCode::Left | KeyCode::Backspace | KeyCode::Char('h') => {
-                if let Some(up) = self.cwd.parent().map(Path::to_path_buf) {
-                    self.open(up);
-                }
-            }
             KeyCode::Char(' ') => {
-                if let Some(dir) = self.highlighted() {
+                if let Some((dir, _)) = self.browser.highlighted() {
                     self.choose(dir);
                 }
             }
-            KeyCode::Char('.') => self.choose(self.cwd.clone()),
+            KeyCode::Char('.') => self.choose(self.browser.cwd.clone()),
             KeyCode::Esc | KeyCode::Char('q') => self.decision = Some(None),
             _ => {}
         }
-    }
-
-    fn lines(&self, rows: usize, width: usize) -> Vec<Line<'static>> {
-        let first = first_visible(self.at, self.entries.len(), rows);
-        let mut lines: Vec<Line> = self
-            .entries
-            .iter()
-            .enumerate()
-            .skip(first)
-            .take(rows)
-            .map(|(i, e)| {
-                let selected = i == self.at;
-                let tag = if e.faba { "  faba output" } else { "" };
-                let name_w = width.saturating_sub(tag.len() + 3);
-                Line::from(vec![
-                    Span::styled(if selected { "▸ " } else { "  " }, HIGHLIGHT),
-                    Span::styled(
-                        format!("{:<name_w$.name_w$}", format!("{}/", e.name)),
-                        if selected { HIGHLIGHT } else { PLAIN },
-                    ),
-                    Span::styled(tag, DIM),
-                ])
-            })
-            .collect();
-        if self.entries.is_empty() {
-            lines.push(Line::from(Span::styled("  no subdirectory", DIM)));
-        }
-        lines
     }
 }
 
@@ -243,8 +165,8 @@ impl Screen for PathPicker {
             },
             Edit::Cancelled => {
                 self.step = Step::Input;
-                if self.entries.is_empty() {
-                    self.open(self.cwd.clone());
+                if self.browser.entries.is_empty() {
+                    self.open(self.browser.cwd.clone());
                 }
             }
         }
@@ -256,7 +178,10 @@ impl Screen for PathPicker {
         let w = area.width.saturating_sub(4).clamp(20, 90);
         let (title, help, rows) = match &self.step {
             Step::Input => (
-                format!(" input: a faba output directory · {} ", self.cwd.display()),
+                format!(
+                    " input: a faba output directory · {} ",
+                    self.browser.cwd.display()
+                ),
                 help_line(&[
                     ("↑/↓", "move"),
                     ("Enter/→", "open"),
@@ -275,7 +200,12 @@ impl Screen for PathPicker {
         };
         let inner = popup_frame(frame, area, w, rows + 4, title);
         let mut lines = match &self.step {
-            Step::Input => self.lines(rows as usize, inner.width as usize),
+            Step::Input => self.browser.lines(
+                rows as usize,
+                inner.width as usize,
+                "faba output",
+                "no subdirectory",
+            ),
             Step::Output { input, line } => vec![
                 Line::from(vec![
                     Span::styled(" input  ", DIM),

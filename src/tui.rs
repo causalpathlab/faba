@@ -82,6 +82,15 @@ pub(crate) fn output_problem(out: &str) -> Option<String> {
     non_empty.then(|| format!("{out} already contains files; choose an empty one"))
 }
 
+/// The apply key, as footers name it.
+pub const APPLY_KEYS: &str = "⇧Enter";
+
+/// Whether `key` asks to apply: Shift+Enter, and nothing else, so a stray
+/// key cannot write anything.
+pub fn is_apply(key: &KeyEvent) -> bool {
+    key.code == KeyCode::Enter && key.modifiers.contains(KeyModifiers::SHIFT)
+}
+
 /// The go keys, as footers name them.
 pub const GO_KEYS: &str = "⇧Enter/G";
 

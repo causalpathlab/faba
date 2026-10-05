@@ -254,13 +254,37 @@ fn keys_type_reset_off_and_decide() {
     };
     assert_eq!(qc_flags(&got), qc_flags(&start));
 
+    // With nothing changed, q and p leave at once.
     let mut q = picker(&t, None, start.clone());
     press(&mut q, KeyCode::Char('q'));
     assert!(matches!(q.decision, Some(Picked::Cancelled)));
 
-    let mut r = picker(&t, None, start);
+    let mut r = picker(&t, None, start.clone());
     press(&mut r, KeyCode::Char('p'));
     assert!(matches!(r.decision, Some(Picked::PrintOnly(_))));
+
+    // Esc never leaves the view: it is how every pop-up is closed.
+    let mut e = picker(&t, None, start);
+    press(&mut e, KeyCode::Esc);
+    press(&mut e, KeyCode::Esc);
+    assert!(!e.done() && matches!(e.mode, Mode::Browse));
+
+    // With a threshold changed, q and p ask; Esc and other keys go back or
+    // wait, and only the same key again leaves.
+    press(&mut e, KeyCode::Char('+'));
+    press(&mut e, KeyCode::Char('q'));
+    assert!(matches!(e.mode, Mode::Leave(Picked::Cancelled)) && !e.done());
+    press(&mut e, KeyCode::Char('p'));
+    assert!(matches!(e.mode, Mode::Leave(_)) && !e.done());
+    press(&mut e, KeyCode::Esc);
+    assert!(matches!(e.mode, Mode::Browse) && !e.done());
+    press(&mut e, KeyCode::Char('p'));
+    assert!(matches!(e.mode, Mode::Leave(Picked::PrintOnly(_))));
+    press(&mut e, KeyCode::Char('n'));
+    assert!(matches!(e.mode, Mode::Browse) && !e.done());
+    press(&mut e, KeyCode::Char('q'));
+    press(&mut e, KeyCode::Char('q'));
+    assert!(matches!(e.decision, Some(Picked::Cancelled)));
 }
 
 #[test]
@@ -475,12 +499,13 @@ fn meta_layout(n: usize) -> MetaLayout {
 fn the_metagene_follows_the_thresholds_on_a_fixed_axis() {
     let t = table(M6A, 1500);
     let mut p = picker(&t, None, SiteFilterArgs::default_values());
+    p.weight = Weight::Sites;
     assert!(p.meta_counts().is_none());
     p.set_meta(Meta::ready(vec![Some(meta_layout(t.len()))], Vec::new()));
     let placed = |i: usize| i % 10 != 9;
 
     let before = p.meta_counts().unwrap();
-    let (all, kept_before) = (before.all.to_vec(), before.kept.iter().sum::<usize>());
+    let (all, kept_before) = (before.all.to_vec(), before.kept.iter().sum::<f64>());
     focus_on(&mut p, Criterion::MinCoverage);
     for _ in 0..5 {
         press(&mut p, KeyCode::Right);
@@ -492,8 +517,8 @@ fn the_metagene_follows_the_thresholds_on_a_fixed_axis() {
     let kept_placed = (0..t.len())
         .filter(|&i| p.view().fails[i] == 0 && placed(i))
         .count();
-    assert_eq!(after.kept.iter().sum::<usize>(), kept_placed);
-    assert!(after.kept.iter().sum::<usize>() < kept_before);
+    assert_eq!(after.kept.iter().sum::<f64>(), kept_placed as f64);
+    assert!(after.kept.iter().sum::<f64>() < kept_before);
     assert_eq!(
         after.unassigned,
         (0..t.len()).filter(|&i| !placed(i)).count()
@@ -523,9 +548,11 @@ fn the_metagene_panel_says_why_it_is_empty_and_draws_when_ready() {
     let text = screen(&mut p);
     assert!(text.contains("kept / all"));
     assert!(text.contains("CDS"));
-    // The export carries the metagene too.
-    assert!(p.figure().contains("m6a metagene · y: sites per bin"));
-    assert!(text.contains("metagene · y: sites per bin"));
+    // The export carries the metagene too; read coverage by default.
+    assert!(p
+        .figure()
+        .contains("m6a metagene · y: read coverage per bin"));
+    assert!(text.contains("metagene · y: read coverage per bin"));
 }
 
 /// `t` with a batch carrying the gene and position columns the gene view
@@ -586,23 +613,52 @@ fn genes_list_pinned_first_then_by_kept_sites_and_filter_by_symbol() {
     };
     assert_eq!(first, ["GENE5", "GENE2"]);
 
+    // Typing narrows the list; Enter focuses the match and leaves the
+    // search on the whole list, the gene still selected.
     press(&mut p, KeyCode::Char('/'));
     for ch in "ne3".chars() {
         press(&mut p, KeyCode::Char(ch));
     }
-    press(&mut p, KeyCode::Enter);
     assert_eq!(p.gene_list().len(), 1);
-    let g = p.gene().unwrap();
-    assert_eq!(p.view().genes.as_ref().unwrap().symbol(g), "GENE3");
+    press(&mut p, KeyCode::Enter);
+    assert!(matches!(p.mode, Mode::Browse));
+    assert_eq!(p.gene_list().len(), 7);
+    let symbol = |p: &SitePicker| {
+        let g = p.gene().unwrap();
+        p.view().genes.as_ref().unwrap().symbol(g).to_string()
+    };
+    assert_eq!(symbol(&p), "GENE3");
+    assert_eq!(p.panel, Panel::Genes);
+
+    // The arrows move through the matches; letters still type.
     press(&mut p, KeyCode::Char('/'));
+    for ch in "gene".chars() {
+        press(&mut p, KeyCode::Char(ch));
+    }
+    assert_eq!(p.list.find, "gene");
+    let first = symbol(&p);
+    press(&mut p, KeyCode::Down);
+    press(&mut p, KeyCode::Down);
+    let third = symbol(&p);
+    assert_ne!(third, first);
+    press(&mut p, KeyCode::Enter);
+    assert_eq!(symbol(&p), third);
+
+    // Esc goes back to the gene selected before the search.
+    press(&mut p, KeyCode::Char('/'));
+    for ch in "ne5".chars() {
+        press(&mut p, KeyCode::Char(ch));
+    }
     press(&mut p, KeyCode::Esc);
     assert_eq!(p.gene_list().len(), 7);
+    assert_eq!(symbol(&p), third);
 }
 
 #[test]
 fn the_gene_profile_follows_the_thresholds() {
     let t = with_genes(table(M6A, 1500));
     let mut p = picker(&t, None, SiteFilterArgs::default_values());
+    p.weight = Weight::Sites;
     press(&mut p, KeyCode::Char(']'));
     let g = p.gene().unwrap();
     let before = p.gene_profile(40).unwrap();
@@ -653,63 +709,69 @@ fn the_gene_panel_draws_its_model_once_the_annotation_arrives() {
         .collect();
     let sum = |v: &[usize]| v.iter().sum::<usize>();
     let kept = format!("kept {} of {}", sum(&profile.kept), sum(&profile.all));
-    assert!(text.contains(&format!("chr1:900-3100 (+) · {kept} · y: sites per ")));
+    assert!(text.contains(&format!(
+        "chr1:900-3100 (+) · {kept} · y: read coverage per "
+    )));
     assert!(text.contains("genes: kept / all sites"));
     assert!(text.contains("[ ] move  / find"));
-    assert!(text.contains("█ kept sites   c: converted reads"));
+    assert!(text.contains("█ kept read coverage   c: converted reads"));
     assert!(text.contains("▬"));
     assert!(p.figure().contains("chr1:900-3100 (+)"));
 }
 
 #[test]
-fn c_switches_the_gene_and_metagene_bars_to_converted_reads() {
+fn c_cycles_the_bars_from_read_coverage_to_converted_reads_and_sites() {
     let t = with_genes(table(M6A, 1500));
     let mut p = picker(&t, None, SiteFilterArgs::default_values());
     p.set_meta(Meta::ready(vec![Some(meta_layout(t.len()))], Vec::new()));
     let g = p.gene().unwrap();
     let rows = p.view().genes.as_ref().unwrap().rows[g].clone();
-    let sites = p.gene_profile(40).unwrap();
-    assert_eq!(sites.all.iter().sum::<usize>(), rows.len());
-    let metagene_sites: usize = p.meta_counts().unwrap().all.iter().sum();
+    let placed = |i: &usize| i % 10 != 9;
+    // Each measure, per gene and on the metagene: the gene's total, its kept
+    // total, and the metagene's total over the placed sites.
+    let check = |p: &SitePicker, unit: &str, w: &dyn Fn(usize) -> u64| {
+        let profile = p.gene_profile(40).unwrap();
+        assert_eq!(profile.unit, unit);
+        let want: u64 = rows.iter().map(|&i| w(i as usize)).sum();
+        assert_eq!(profile.all.iter().sum::<usize>() as u64, want, "{unit}");
+        let kept_want: u64 = rows
+            .iter()
+            .filter(|&&i| p.view().fails[i as usize] == 0)
+            .map(|&i| w(i as usize))
+            .sum();
+        assert_eq!(profile.kept.iter().sum::<usize>() as u64, kept_want);
+        let placed_want: u64 = (0..t.len()).filter(placed).map(w).sum();
+        let meta: f64 = p.meta_counts().unwrap().all.iter().sum();
+        assert_eq!(meta, placed_want as f64, "{unit}");
+    };
+    let screen = |p: &mut SitePicker| {
+        let mut term = Terminal::new(TestBackend::new(150, 44)).unwrap();
+        term.draw(|f| p.render(f)).unwrap();
+        term.backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>()
+    };
+
+    check(&p, "read coverage", &|i| t.coverage[i]);
+    let text = screen(&mut p);
+    assert!(text.contains("metagene · y: read coverage per bin"));
+    assert!(text.contains("c: converted reads"));
 
     press(&mut p, KeyCode::Char('c'));
-    let reads = p.gene_profile(40).unwrap();
-    let want: u64 = rows.iter().map(|&i| t.converted[i as usize]).sum();
-    assert_eq!(reads.all.iter().sum::<usize>() as u64, want);
-    let kept_want: u64 = rows
-        .iter()
-        .filter(|&&i| p.view().fails[i as usize] == 0)
-        .map(|&i| t.converted[i as usize])
-        .sum();
-    assert_eq!(reads.kept.iter().sum::<usize>() as u64, kept_want);
-    assert_eq!(reads.unit, "converted reads");
-    let placed_reads: u64 = (0..t.len())
-        .filter(|i| i % 10 != 9)
-        .map(|i| t.converted[i])
-        .sum();
-    assert_eq!(
-        p.meta_counts().unwrap().all.iter().sum::<usize>() as u64,
-        placed_reads
-    );
-
-    let mut term = Terminal::new(TestBackend::new(150, 44)).unwrap();
-    term.draw(|f| p.render(f)).unwrap();
-    let text: String = term
-        .backend()
-        .buffer()
-        .content()
-        .iter()
-        .map(|c| c.symbol())
-        .collect();
+    check(&p, "converted reads", &|i| t.converted[i]);
+    let text = screen(&mut p);
     assert!(text.contains("metagene · y: converted reads per bin"));
     assert!(text.contains("█ kept converted reads"));
     assert!(text.contains("c: sites"));
 
     press(&mut p, KeyCode::Char('c'));
-    assert_eq!(
-        p.meta_counts().unwrap().all.iter().sum::<usize>(),
-        metagene_sites
-    );
+    check(&p, "sites", &|_| 1);
+
+    press(&mut p, KeyCode::Char('c'));
+    check(&p, "read coverage", &|i| t.coverage[i]);
 }
 
 #[test]
@@ -864,10 +926,16 @@ fn confirming_writes_in_the_view_and_shows_progress() {
         })),
     };
 
-    // `G` stands in for Shift+Enter where the terminal cannot report it.
-    press(&mut p, KeyCode::Char('G'));
+    // Only Shift+Enter applies: `A`, `y` and plain Enter do not.
+    press(&mut p, KeyCode::Char('A'));
+    assert!(matches!(p.mode, Mode::Browse));
+    shift_enter(&mut p);
     assert!(matches!(p.mode, Mode::Confirm));
-    press(&mut p, KeyCode::Char('y'));
+    for code in [KeyCode::Char('y'), KeyCode::Char('A'), KeyCode::Enter] {
+        press(&mut p, code);
+        assert!(matches!(p.mode, Mode::Confirm));
+    }
+    shift_enter(&mut p);
     assert!(matches!(p.mode, Mode::Writing) && !p.done());
     // The figures are drawn, and the writer started, on the next tick.
     assert!(started.borrow().is_none());
@@ -921,11 +989,7 @@ fn figures_cover_every_modality_and_leave_the_view_as_it_was() {
     press(&mut p, KeyCode::Char('m'));
     press(&mut p, KeyCode::Down);
     // A filter on the view, matching one gene of the modality on screen.
-    press(&mut p, KeyCode::Char('/'));
-    for ch in "ne3".chars() {
-        press(&mut p, KeyCode::Char(ch));
-    }
-    press(&mut p, KeyCode::Enter);
+    p.set_find(|f| f.push_str("ne3"));
     assert_eq!(p.gene_list().len(), 1);
     let (modality, focus, gene) = (p.modality, p.focus, p.gene());
 
@@ -941,4 +1005,86 @@ fn figures_cover_every_modality_and_leave_the_view_as_it_was() {
         assert!(figures.iter().any(|f| f.stem.starts_with(&format!("{m}_"))));
     }
     assert_eq!((p.modality, p.focus, p.gene()), (modality, focus, gene));
+}
+
+#[test]
+fn g_browses_for_an_annotation_and_reads_the_one_picked() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_path_buf();
+    std::fs::create_dir_all(root.join("ref")).unwrap();
+    for f in ["ref/genes.gtf.gz", "ref/notes.txt"] {
+        std::fs::write(root.join(f), b"").unwrap();
+    }
+    let t = table(M6A, 50);
+    let mut p = picker(&t, None, SiteFilterArgs::default_values());
+    // A run record names an annotation that is not on this machine.
+    p.annotation = AnnotationSource {
+        gff: Some("/elsewhere/gencode.gtf.gz".into()),
+        dir: root.clone(),
+        ..Default::default()
+    };
+    p.set_meta(Meta::start(&p.annotation));
+    assert_eq!(p.meta_status(), "/elsewhere/gencode.gtf.gz: not found");
+    let mut term = Terminal::new(TestBackend::new(150, 44)).unwrap();
+    term.draw(|f| p.render(f)).unwrap();
+    let text: String = term
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+    assert!(text.contains("choose an annotation (GTF/GFF)"));
+
+    // The browser opens where the sites are, since the named one is absent,
+    // and lists directories and annotations only.
+    press(&mut p, KeyCode::Char('g'));
+    let Mode::Gff(b) = &p.mode else {
+        panic!("no browser")
+    };
+    assert_eq!(b.cwd, root);
+    let at = b.entries.iter().position(|e| e.name == "ref").unwrap();
+    term.draw(|f| p.render(f)).unwrap();
+    let Mode::Gff(b) = &mut p.mode else {
+        unreachable!()
+    };
+    b.at = at;
+    press(&mut p, KeyCode::Enter);
+    let Mode::Gff(b) = &p.mode else {
+        panic!("left the browser")
+    };
+    let names: Vec<&str> = b.entries.iter().map(|e| e.name.as_str()).collect();
+    assert_eq!(names, ["..", "genes.gtf.gz"]);
+
+    // Picking the file reads it, and the view reports it for the record.
+    press(&mut p, KeyCode::Down);
+    press(&mut p, KeyCode::Enter);
+    assert!(matches!(p.mode, Mode::Browse));
+    let picked = root.join("ref/genes.gtf.gz");
+    assert_eq!(p.gff(), Some(picked.to_str().unwrap()));
+    assert!(!p.meta_status().ends_with("not found"));
+
+    // Esc leaves the browser without reading anything.
+    press(&mut p, KeyCode::Char('g'));
+    press(&mut p, KeyCode::Esc);
+    assert!(matches!(p.mode, Mode::Browse));
+    assert_eq!(p.gff(), Some(picked.to_str().unwrap()));
+}
+
+#[test]
+fn a_pick_that_fails_to_read_keeps_the_annotation_given_for_the_record() {
+    let t = table(M6A, 50);
+    let mut p = picker(&t, None, SiteFilterArgs::default_values());
+    let tmp = tempfile::tempdir().unwrap();
+    let given = tmp.path().join("given.gtf");
+    std::fs::write(&given, b"").unwrap();
+    let given: Box<str> = given.to_str().unwrap().into();
+    p.annotation = AnnotationSource {
+        gff: Some(given.clone()),
+        given: Some(given.clone()),
+        ..Default::default()
+    };
+    p.load_gff("/nowhere/picked.gtf".into());
+    assert_eq!(p.meta_status(), "/nowhere/picked.gtf: not found");
+    assert_eq!(p.gff(), Some(&*given));
 }

@@ -8,11 +8,11 @@ use ratatui::Terminal;
 fn hist(non_coding: bool) -> GeneFeatureHistogram {
     GeneFeatureHistogram {
         counts: [
-            vec![1, 2, 3, 4],
-            (0..10).map(|i| 10 + i).collect(),
-            vec![30, 20, 10, 5, 2, 1],
+            vec![1.0, 2.0, 3.0, 4.0],
+            (0..10).map(|i| 10.0 + i as f64).collect(),
+            vec![30.0, 20.0, 10.0, 5.0, 2.0, 1.0],
             if non_coding {
-                vec![7, 0, 3, 0, 1]
+                vec![7.0, 0.0, 3.0, 0.0, 1.0]
             } else {
                 Vec::new()
             },
@@ -44,9 +44,9 @@ fn merging_keeps_regions_and_totals() {
     let h = hist(false);
     for merge in 1..12 {
         let b = bars(&h, Track::Coding, merge);
-        let total: usize = h.counts[..3].iter().flatten().sum();
+        let total: f64 = h.counts[..3].iter().flatten().sum();
         assert_eq!(
-            b.iter().map(|b| b.count).sum::<usize>(),
+            b.iter().map(|b| b.count).sum::<f64>(),
             total,
             "merge {merge}"
         );

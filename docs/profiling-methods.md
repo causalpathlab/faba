@@ -104,21 +104,23 @@ resolution it does not have.
 
 ### 1.2 The metagene is per-transcript; the rest of `faba` is not
 
-`metagene` (§7) is the one exception to everything above. It elects **one transcript per gene** —
-the longest spliced — and places each site on that transcript's own 5′UTR / CDS / 3′UTR, which are
-disjoint by construction. It does so because its job is to be held against a *published* profile:
-scDART-seq's metagene was made with MetaPlotR [19], and a shape difference is only informative if
-the procedure is the same one. **Fidelity to that procedure beats improving on it.**
+`metagene` (§7) is the one exception to everything above. It places each site on **every coding
+transcript** that contains it, on that transcript's own 5′UTR / CDS / 3′UTR, which are disjoint by
+construction. A site inside k transcripts adds 1/k to each (Guitar's procedure), so every placed
+site adds 1 in all. Its coordinates, rescaled axis and per-site table follow MetaPlotR [19], so a
+profile can be held against a published one; where MetaPlotR's procedure distorts single-nucleotide
+data, we depart from it and say so below.
 
 Nothing else moved. APA still measures 3′-end usage on the merged model, `rel_pos` is still the
 offset along merged exons, and the methylation mixture still shares that axis. Their estimands are
 about *any-isoform* exonic evidence, where merging is the right answer rather than the wrong one.
 
-**The cost is not small.** Electing one transcript leaves more sites unassigned than the merged
-model does, and the 5′UTR track collapses: almost all of the merged model's 5′UTR sites lie in
-regions that are 5′UTR only in non-canonical isoforms (alternative first exons and TSS). CDS and
-3′UTR are robust. **Neither 5′UTR count should carry weight**, and a swing of that size on a small
-track is the reason to state which model produced a figure.
+**Why not one transcript per gene.** MetaPlotR keeps the longest isoform. That leaves more sites
+unassigned than the merged model does, and the 5′UTR track collapses: almost all of the merged
+model's 5′UTR sites lie in regions that are 5′UTR only in non-canonical isoforms (alternative first
+exons and TSS). It also puts a site near a proximal poly(A) site mid-3′UTR on the distal isoform.
+Splitting each site over its isoforms keeps them all, on the isoforms that carry them, without
+counting a site more than once.
 
 The effect on the profile is not subtle: under the merged model the 3′UTR's terminal bin dominates
 the plot while the stop-codon bin barely registers; per transcript it is the other way round. The
@@ -127,17 +129,19 @@ two models support opposite readings of the same sites.
 **Deviations from MetaPlotR**, all deliberate, all documented where they are implemented
 (`genomic-data/src/transcript.rs`, `faba/src/site_analysis/metagene.rs`):
 
-1. *Isoform election.* Its `visualize_metagenes.R` writes `dist[duplicated(gene_name), ]`, which
-   keeps rows two through N — dropping every single-isoform gene outright and keeping all but the
-   shortest of the rest. Its README variant de-duplicates an *unsorted* table and so elects by file
-   order. Neither matches what either document says it does; we implement the stated intent, and
-   break ties on `transcript_id` because `read_gff_record_vec` collects through `par_bridge` and
-   record order is not reproducible. Running their script on our own `--dist-measures` output shows
-   the gap directly in the scale factors.
-2. *Site-weighted medians.* Bin widths come from median region sizes over the **assigned sites**,
-   not the transcript set — `visualize_metagenes.R` computes them from `dist`, one row per site. The
-   two readings differ materially in the 3′UTR, and the transcript-weighted one would draw it too
-   narrow while still looking entirely plausible.
+1. *No isoform election.* MetaPlotR states it keeps the longest isoform per gene (its
+   `visualize_metagenes.R` in fact writes `dist[duplicated(gene_name), ]`, which keeps rows two
+   through N and drops every single-isoform gene). We keep every coding isoform: `--isoforms
+   weighted` (the default) splits a site 1/k over its k isoforms, `--isoforms all` counts it on
+   each, as MetaPlotR's raw distance table does. Under `all`, `visualize_metagenes.R` reads our
+   `--dist-measures` output and applies its own election.
+2. *Per-transcript medians.* Bin widths come from median region sizes over the transcripts that
+   carry at least one site, **each counted once**. `visualize_metagenes.R` computes them from
+   `dist`, one row per site, which suits the few peaks per gene MetaPlotR was written for. With
+   single-nucleotide sites, genes with long 3′UTRs collect the most sites and set the medians
+   alone. On one DART-seq run (246,458 sites, GENCODE v46) the per-site reading split 48 bins about
+   3/14/31 between 5′UTR, CDS and 3′UTR, and the stop-codon peak read as mid-CDS; per transcript
+   (medians 136/867/626 nt) the split is 4/26/18 and the peak sits on the stop codon.
 3. *`--include-non-coding`* has no MetaPlotR counterpart. That track sits on its own [0,1] axis and
    its density is normalised within itself.
 
@@ -615,21 +619,21 @@ None of these fit a model or produce a p-value.
   histogram, or (with `--gtf`, `--bam`, `--format`, `--svg` or `--png`) a faceted Miami plot:
   sites above, gene model in the middle, read depth below, one panel per cell type.
 - **`metagene`** follows MetaPlotR [19], so its output can be held against published m6A profiles.
-  Each site is placed on **one elected transcript** — the longest spliced per gene, or every coding
-  isoform under `--isoforms all` — and given that transcript's coordinate: 5′UTR in [0,1), CDS in
+  Each site is placed on **every coding transcript** containing it — 1/k of the site on each of k
+  under `--isoforms weighted` (the default, as in `qc`'s metagene panel), the whole site on each
+  under `all` — and given that transcript's coordinate: 5′UTR in [0,1), CDS in
   [1,2), 3′UTR in [2,3). Within a transcript the three regions are disjoint, so nothing needs a
   priority order and no union span can claim a neighbour's sites. Position runs along the
-  **spliced** region. §1.2 has the model, its measured cost, and the three places we follow
-  MetaPlotR's stated procedure rather than its published code.
+  **spliced** region. §1.2 has the model and the three places we depart from MetaPlotR.
   Bins split between the regions in proportion to each region's **median** spliced length over the
-  assigned sites, so they depend on the sites as well as the annotation — compare profile *shapes*
+  transcripts carrying a site, each once, so they depend on the sites as well as the annotation — compare profile *shapes*
   between runs, not bar widths. A maximum would be one gene's: titin's merged CDS is 114,586 nt
   against a median of 1,347.
   The TSV keeps `#feature`, `genomic_bin` and `count`, then appends `bin_start`, `bin_end`, `frac`
   and `density` on MetaPlotR's rescaled axis, where the CDS keeps width 1 and each UTR is drawn at
   its median size relative to the CDS.
   `--dist-measures` writes MetaPlotR's own per-site table — its fourteen columns in its order, then
-  `strand` and `rescaled_location` — so `visualize_metagenes.R` runs on faba output with only its
+  `strand`, `rescaled_location` and `weight` (the row's share of its site) — so `visualize_metagenes.R` runs on faba output with only its
   input path changed. Note `coord` there is **1-based**, matching the `end` field of the 0-based BED
   MetaPlotR reads, whereas the site parquet stores 0-based. Its `utr3_st` column is the signed
   spliced distance from the stop codon, which is what its feature-distance plot is drawn on.
@@ -682,8 +686,9 @@ than the sites removed. On the right, stacked, are three plots:
 - a metagene of the kept sites (§7), with region widths fixed from all putative sites so the axis
   does not move with the thresholds; the line above it gives kept / all per region.
 
-The histogram counts sites. The gene and metagene bars count sites too, or with `c` the sites'
-converted reads, which shows where the signal is rather than where the calls are.
+The histogram counts sites. The gene and metagene bars add up the read coverage at the kept sites
+by default, which shows where the reads are; `c` switches to the sites' converted reads (where the
+signal is), then to a count of sites (where the calls are), then back.
 
 A gene list at the bottom left shows each gene's kept and putative sites. Genes named by
 `--genes` come first, then the rest by kept sites, re-sorted as the thresholds move (the selection
@@ -694,13 +699,16 @@ thread once (`--gff`, or the one in the input directory's run record); without o
 spans the gene's own sites and the metagene is left out. Every count is decided by the same rule `qc`
 applies, so the view cannot disagree with the written fileset. Shift+Enter opens a confirmation that
 recaps the output directory, the thresholds changed from the start, and the sites every modality
-keeps; a second Shift+Enter (or `y`) applies them, Esc (or `n`) goes back. Plain Enter does
-nothing, so a stray key cannot start a write; on a terminal that cannot tell Shift+Enter from
-Enter (no kitty keyboard protocol), `G` stands in for it. Once applied, the fileset is written
+keeps; a second Shift+Enter applies them, Esc (or `n`) goes back. Shift+Enter is the only key
+that writes: plain Enter does nothing, so a stray key cannot start a write. A terminal without the
+kitty keyboard protocol (macOS Terminal.app, for one) reports Shift+Enter as Enter and cannot
+apply; there, `p` gives the command to run instead. Once applied, the fileset is written
 with the view still up, under a pop-up showing each file as it goes. The view's figure for every
-modality and every knob, as set when the cut was applied (scales, selected gene, sites or reads),
+modality and every knob, as set when the cut was applied (scales, selected gene, bar measure),
 is saved beside it in `qc_plots/{modality}_{knob}.pdf` and `.png`. `p` prints the matching
 `faba qc --batch-process` command, with every cell, feature and site option, and writes nothing; `s` saves the view as a PDF and PNG under a name it asks for.
+`q` leaves without writing. With any threshold changed, `q` and `p` first ask, and only the same
+key again leaves; Esc closes pop-ups and never leaves the view.
 Nothing is written until the thresholds are applied.
 
 Run as plain `faba qc`, with no input or `-o`, it first asks for them in a pop-up: browse to a
