@@ -26,8 +26,12 @@ fn m6a_needs_a_bg_bam() {
     // Without bg, m6A is simply not run: the pipeline skips it, no flag needed.
     assert!(s.problems().is_empty() && s.argv(false).is_empty());
     s.at = Step::ALL.iter().position(|x| *x == Step::M6a).unwrap();
-    s.toggle(false); // turns it off
+    // Space does nothing and says so, every time.
     assert_eq!(s.toggle(false), Some("m6A needs a bg BAM"));
+    assert_eq!(s.toggle(false), Some("m6A needs a bg BAM"));
+    assert!(s.is_on(Step::M6a));
+    // A bg BAM added later finds m6A as it was: no skip flag.
+    assert!(!s.argv(true).contains(&"--skip-m6a".to_string()));
 }
 
 #[test]

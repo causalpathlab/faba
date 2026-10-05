@@ -301,6 +301,37 @@ fn flags_on_the_command_line_prefill_the_view() {
     assert!(argv.contains(&"--skip-apa".to_string()));
 }
 
+#[test]
+fn one_bam_under_two_spellings_is_one_pick() {
+    use clap::FromArgMatches;
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("sample_A.bam"), b"").unwrap();
+    std::fs::create_dir(tmp.path().join("sub")).unwrap();
+    let spelled = format!("{}/sub/../sample_A.bam", tmp.path().display());
+    let cmd = run_cmd();
+    let m = cmd.clone().try_get_matches_from(["run", &spelled]).unwrap();
+    let args = crate::pipeline::args::PipelineArgs::from_arg_matches(&m).unwrap();
+    let mut a = App::new(cmd, tmp.path().to_path_buf());
+    a.prefill(&m, &args);
+    assert_eq!(a.inputs.picked.len(), 1);
+    let at = a
+        .inputs
+        .bams
+        .entries
+        .iter()
+        .position(|e| e.name == "sample_A.bam")
+        .unwrap();
+    a.inputs.bams.at = at;
+    let shown = a.inputs.bams.cwd.join("sample_A.bam");
+    assert_eq!(a.inputs.role_of(&shown), Some(Role::Fg));
+    press(&mut a, KeyCode::Char(' '));
+    assert!(a.inputs.picked.is_empty(), "Space removes it");
+    press(&mut a, KeyCode::Char(' '));
+    press(&mut a, KeyCode::Char(' '));
+    press(&mut a, KeyCode::Char(' '));
+    assert_eq!(a.inputs.picked.len(), 1);
+}
+
 /// The screen as text, drawn at `w` x `h`.
 fn screen(a: &mut App, w: u16, h: u16) -> String {
     let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();

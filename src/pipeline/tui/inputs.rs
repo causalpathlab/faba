@@ -3,6 +3,26 @@
 
 use std::path::{Path, PathBuf};
 
+/// One spelling for a path: canonical when the file exists, else the
+/// absolute path with `.` and `..` resolved by name.
+pub fn normalize(path: &Path) -> PathBuf {
+    if let Ok(c) = path.canonicalize() {
+        return c;
+    }
+    let abs = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut out = PathBuf::new();
+    for c in abs.components() {
+        match c {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Role {
     Fg,
@@ -149,7 +169,7 @@ impl Inputs {
 
     fn highlighted_bam(&self) -> Option<PathBuf> {
         let e = self.bams.entries.get(self.bams.at)?;
-        (!e.dir).then(|| self.bams.cwd.join(&e.name))
+        (!e.dir).then(|| normalize(&self.bams.cwd.join(&e.name)))
     }
 
     /// Space: the highlighted BAM in or out of the run; new picks are fg.
@@ -183,6 +203,7 @@ impl Inputs {
     }
 
     pub fn role_of(&self, path: &Path) -> Option<Role> {
+        let path = normalize(path);
         self.picked.iter().find(|x| x.path == path).map(|x| x.role)
     }
 

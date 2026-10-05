@@ -5,7 +5,7 @@ pub mod child;
 mod draw;
 pub mod form;
 pub mod inputs;
-mod keys;
+pub(crate) mod keys;
 pub mod script;
 pub mod steps;
 
@@ -140,7 +140,7 @@ impl App {
         self.steps.prefill(args);
         // `faba`'s own flag, present when the command is built inside `faba`.
         self.verbose = matches!(m.try_get_one::<bool>("verbose"), Ok(Some(true)));
-        let abs = |s: &str| std::path::absolute(s).unwrap_or_else(|_| PathBuf::from(s));
+        let abs = |s: &str| inputs::normalize(std::path::Path::new(s));
         let controls: Vec<PathBuf> = args.control_bam_files.iter().map(|s| abs(s)).collect();
         for b in &args.bam_files {
             let path = abs(b);

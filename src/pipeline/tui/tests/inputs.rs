@@ -103,3 +103,17 @@ fn batch_names_are_the_pipelines_own() {
         assert_eq!(name.as_str(), &**w);
     }
 }
+
+#[test]
+fn the_browser_lists_what_known_snps_accepts() {
+    let tmp = dir_with(&["a.vcf", "b.vcf.gz", "c.bcf", "d.parquet", "e.txt"]);
+    let b = Browser::new(
+        tmp.path().to_path_buf(),
+        crate::pipeline::tui::keys::VCF_EXT,
+    );
+    let names: Vec<&str> = b.entries.iter().map(|e| e.name.as_str()).collect();
+    assert_eq!(
+        names,
+        ["..", "sub", "a.vcf", "b.vcf.gz", "c.bcf", "d.parquet"]
+    );
+}

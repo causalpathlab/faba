@@ -8,37 +8,55 @@
 use std::process::{Command, Stdio};
 
 /// Stops a run of child commands: the first stop interrupts the one
-/// running, the second kills it, and none after it starts.
+/// running, the second kills it, and none after it starts. A stop asked
+/// for before a child is registered is replayed on registration.
 #[derive(Default)]
 pub struct Stopper {
-    stopped: std::sync::atomic::AtomicBool,
-    interrupted: std::sync::atomic::AtomicBool,
+    /// Stops asked for so far (saturating); changed only under `child`'s lock.
+    asked: std::sync::atomic::AtomicU8,
     child: std::sync::Mutex<Option<std::process::Child>>,
+}
+
+/// Do what the `n`th stop asks of `child`: interrupt it the first time,
+/// kill it after.
+fn deliver(child: &mut std::process::Child, n: u8) {
+    #[cfg(unix)]
+    if n == 1 {
+        let pid = i32::try_from(child.id())
+            .ok()
+            .and_then(rustix::process::Pid::from_raw);
+        if let Some(pid) = pid {
+            let _ = rustix::process::kill_process(pid, rustix::process::Signal::INT);
+            return;
+        }
+    }
+    let _ = child.kill();
 }
 
 impl Stopper {
     pub fn stop(&self) {
         use std::sync::atomic::Ordering;
-        self.stopped.store(true, Ordering::SeqCst);
         let Ok(mut c) = self.child.lock() else { return };
-        let Some(child) = c.as_mut() else { return };
-        if !self.interrupted.swap(true, Ordering::SeqCst) {
-            #[cfg(unix)]
-            {
-                let pid = i32::try_from(child.id())
-                    .ok()
-                    .and_then(rustix::process::Pid::from_raw);
-                if let Some(pid) = pid {
-                    let _ = rustix::process::kill_process(pid, rustix::process::Signal::INT);
-                    return;
-                }
-            }
+        let n = self.asked.load(Ordering::SeqCst).saturating_add(1);
+        self.asked.store(n, Ordering::SeqCst);
+        if let Some(child) = c.as_mut() {
+            deliver(child, n);
         }
-        let _ = child.kill();
+    }
+
+    /// Make `child` the one `stop` reaches, and replay what was asked
+    /// before it was here: one request interrupts it, more kill it.
+    fn register(&self, child: std::process::Child) {
+        let Ok(mut c) = self.child.lock() else { return };
+        let child = c.insert(child);
+        let n = self.asked.load(std::sync::atomic::Ordering::SeqCst);
+        if n > 0 {
+            deliver(child, n.min(2));
+        }
     }
 
     pub fn is_stopped(&self) -> bool {
-        self.stopped.load(std::sync::atomic::Ordering::SeqCst)
+        self.asked.load(std::sync::atomic::Ordering::SeqCst) > 0
     }
 }
 
@@ -142,14 +160,8 @@ pub fn run_one(
             .take()
             .map(|e| Box::new(e) as Box<dyn std::io::Read + Send>),
     };
-    // Where `stop` can reach it; stopped meanwhile, it goes at once.
-    if let Ok(mut c) = stopper.child.lock() {
-        *c = Some(child);
-    }
-    if stopper.is_stopped() {
-        stopper.stop();
-        stopper.stop();
-    }
+    // Where `stop` can reach it, with any stop asked for meanwhile.
+    stopper.register(child);
     let last = follow(log, each);
     let status = stopper
         .child
@@ -157,11 +169,10 @@ pub fn run_one(
         .ok()
         .and_then(|mut c| c.take())
         .map(|mut c| c.wait());
-    if stopper.is_stopped() {
-        return Err(Failed::Stopped);
-    }
     match status {
+        // A stop that came after a good end changes nothing.
         Some(Ok(s)) if s.success() => Ok(()),
+        _ if stopper.is_stopped() => Err(Failed::Stopped),
         Some(Err(e)) => Err(Failed::Exit(e.to_string())),
         _ => Err(Failed::Exit(
             last.strip_prefix("Error: ").unwrap_or(&last).to_string(),

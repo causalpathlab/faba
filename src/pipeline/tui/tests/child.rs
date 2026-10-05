@@ -57,3 +57,73 @@ fn stop_twice_is_harmless_after_the_end() {
     stopper.stop();
     stopper.stop();
 }
+
+/// A child that ignores interrupts, and the file it makes once it does.
+fn deaf(dir: &std::path::Path) -> (Command, std::path::PathBuf) {
+    let ready = dir.join("ready");
+    let c = sh(&format!(
+        "trap '' INT; : > '{}'; exec sleep 30",
+        ready.display()
+    ));
+    (c, ready)
+}
+
+fn wait_for(f: impl Fn() -> bool) {
+    let t = std::time::Instant::now();
+    while !f() {
+        assert!(t.elapsed().as_secs() < 20, "timed out");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn one_early_stop_interrupts_and_two_kill() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut c, ready) = deaf(tmp.path());
+    let child = c.stdin(Stdio::null()).spawn().unwrap();
+    wait_for(|| ready.exists());
+    let stopper = Stopper::default();
+    stopper.stop(); // before the child is registered
+    stopper.register(child);
+    // The interrupt is ignored: still running a while after.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let running = |s: &Stopper| {
+        let mut c = s.child.lock().unwrap();
+        c.as_mut().unwrap().try_wait().unwrap().is_none()
+    };
+    assert!(running(&stopper), "one stop must only interrupt");
+    stopper.stop();
+    wait_for(|| !running(&stopper));
+}
+
+#[test]
+fn two_early_stops_kill_on_registration() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut c, ready) = deaf(tmp.path());
+    let child = c.stdin(Stdio::null()).spawn().unwrap();
+    wait_for(|| ready.exists());
+    let stopper = Stopper::default();
+    stopper.stop();
+    stopper.stop();
+    stopper.register(child);
+    wait_for(|| {
+        let mut c = stopper.child.lock().unwrap();
+        c.as_mut().unwrap().try_wait().unwrap().is_some()
+    });
+}
+
+#[test]
+fn a_good_exit_with_a_stop_pending_is_ok() {
+    let stopper = Stopper::default();
+    let r = run_one(
+        sh("trap '' INT; echo ready >&2; sleep 0.3; exit 0"),
+        &stopper,
+        |s| {
+            if s == Said::Line("ready".into()) {
+                stopper.stop();
+            }
+        },
+    );
+    assert!(stopper.is_stopped());
+    assert_eq!(r, Ok(()));
+}

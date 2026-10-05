@@ -82,7 +82,9 @@ impl Steps {
     /// Space on the highlighted step; a note when it cannot be turned on.
     pub fn toggle(&mut self, has_bg: bool) -> Option<&'static str> {
         let s = Step::ALL[self.at];
-        if s == Step::M6a && !self.is_on(s) && !has_bg {
+        // Without a bg BAM m6A is drawn off and cannot be changed, so a
+        // bg BAM added later finds it as it was.
+        if s == Step::M6a && !has_bg {
             return Some("m6A needs a bg BAM");
         }
         self.on[s as usize] ^= true;

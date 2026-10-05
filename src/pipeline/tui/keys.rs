@@ -13,7 +13,7 @@ use crate::tui::is_go;
 
 const GFF_EXT: &[&str] = &[".gff", ".gtf", ".gff3", ".gff.gz", ".gtf.gz", ".gff3.gz"];
 const GENOME_EXT: &[&str] = &[".fa", ".fasta", ".fa.gz", ".fasta.gz"];
-const VCF_EXT: &[&str] = &[".vcf", ".vcf.gz"];
+pub(super) const VCF_EXT: &[&str] = &[".vcf", ".vcf.gz", ".bcf", ".parquet"];
 
 /// Longest text a line input takes.
 const MAX_TYPED: usize = 4096;
@@ -123,6 +123,7 @@ impl App {
             KeyCode::Left | KeyCode::Char('h') => browser.up(),
             KeyCode::Enter | KeyCode::Right => {
                 if let Some(file) = browser.enter() {
+                    let file = super::inputs::normalize(&file);
                     match row {
                         0 => self.inputs.gff = Some(file),
                         1 => self.inputs.genome = Some(file),
