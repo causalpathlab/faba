@@ -13,6 +13,7 @@ keywords = ["genomics", "rna", "bam", "single-cell", "epitranscriptomics"]
 categories = ["science", "command-line-utilities"]
 exclude = [
     "**/.claude/**",
+    "docs/superpowers/**",
     "**/.DS_Store",
     "reference/**",
     "*.bam",
