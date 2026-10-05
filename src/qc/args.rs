@@ -177,10 +177,10 @@ pub struct QcArgs {
         long_help = "Cut with the --site-* values as given, without the full-screen view.\n\
                      By default `faba qc` opens a view that starts from the --site-* values,\n\
                      shows each knob's column as a histogram with live kept and dropped counts,\n\
-                     and a metagene of all and kept sites below it. Tab moves between panels;\n\
+                     and a metagene of the kept sites below it. Tab moves between panels;\n\
                      Shift+Enter asks to confirm (a recap of the output, the changed thresholds\n\
                      and what each modality keeps) and the fileset is then written with its\n\
-                     progress shown. The view needs stdin and stdout on a terminal; pass this\n\
+                     progress shown, with the view's figures under qc_plots/. The view needs stdin and stdout on a terminal; pass this\n\
                      flag for scripts and scheduled jobs."
     )]
     pub batch_process: bool,

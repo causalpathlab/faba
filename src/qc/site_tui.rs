@@ -200,7 +200,16 @@ pub struct Writer<'a> {
     /// The output directory, for the confirmation and the progress.
     pub output: &'a str,
     pub progress: &'a Progress,
-    pub start: Option<Box<dyn FnOnce(SiteFilterArgs) + 'a>>,
+    pub start: Option<StartWrite<'a>>,
+}
+
+/// Starts the write with the applied thresholds and the view's figures.
+pub type StartWrite<'a> = Box<dyn FnOnce(SiteFilterArgs, Vec<Figure>) + 'a>;
+
+/// A figure of the view to save with the fileset: a file stem and its SVG.
+pub struct Figure {
+    pub stem: String,
+    pub svg: String,
 }
 
 /// Progress that is already over, for a writer with nothing to write.
@@ -427,9 +436,40 @@ impl<'a> SitePicker<'a> {
     /// then follows to the end.
     fn apply(&mut self) {
         if let Some(start) = self.writer.start.take() {
-            start(self.filter.clone());
+            let figures = self.figures();
+            start(self.filter.clone(), figures);
         }
         self.mode = Mode::Writing;
+    }
+
+    /// The view's figure for every modality and every knob, under the
+    /// applied thresholds and the scales chosen per knob. The modality on
+    /// screen keeps its selected gene; the others show their top gene.
+    fn figures(&mut self) -> Vec<Figure> {
+        let (modality, focus, at) = (self.modality, self.focus, self.list.at);
+        let mut out = Vec::new();
+        for m in 0..self.views.len() {
+            self.modality = m;
+            self.refresh_genes(true);
+            if m == modality {
+                self.list.at = at;
+            }
+            for f in 0..self.views[m].criteria.len() {
+                self.focus = f;
+                self.rebuild_column();
+                let knob = self.criterion().flag().trim_start_matches("--site-");
+                out.push(Figure {
+                    stem: format!("{}_{knob}", self.view().table.modality),
+                    svg: self.figure(),
+                });
+            }
+        }
+        self.modality = modality;
+        self.refresh_genes(true);
+        self.list.at = at;
+        self.focus = focus;
+        self.rebuild_column();
+        out
     }
 
     /// The histogram bin holding the focused threshold, `None` when off.

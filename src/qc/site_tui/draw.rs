@@ -35,19 +35,16 @@ fn key_line(items: &[(Style, String)]) -> Line<'static> {
 /// The key of the gene and metagene plots, with the key that switches
 /// what they add up.
 fn kept_key(weight: Weight) -> Line<'static> {
-    let mut line = key_line(&[
-        (DIM, format!("all {}", weight.unit())),
-        (PLAIN, "kept".into()),
-    ]);
+    let mut line = key_line(&[(PLAIN, format!("kept {}", weight.unit()))]);
     line.push_span(Span::styled(format!("c: {}", weight.other().unit()), DIM));
     line
 }
 
-/// Bars of `all` sites behind the `kept` ones, in the box `(x, y, w, h)`.
+/// Bars of the `kept` sites, in the box `(x, y, w, h)`.
 #[allow(clippy::too_many_arguments)]
 fn kept_bars(
     canvas: &mut Canvas,
-    (all, kept): (&[usize], &[usize]),
+    kept: &[usize],
     (x, y, w, h): (f64, f64, f64, f64),
     ticks: Vec<(usize, String)>,
     marks: Vec<usize>,
@@ -55,11 +52,10 @@ fn kept_bars(
     x_title: &str,
     y_title: &str,
 ) {
-    let f = |v: &[usize]| v.iter().map(|&n| n as f64).collect::<Vec<_>>();
-    let (all, kept) = (f(all), f(kept));
+    let kept: Vec<f64> = kept.iter().map(|&n| n as f64).collect();
     Bars {
-        values: &all,
-        front: Some(&kept),
+        values: &kept,
+        front: None,
         accent: &|_| false,
         y_scale: Scale::Linear,
         y_max: None,
@@ -76,10 +72,9 @@ fn kept_bars(
 /// A gene's profile in the box `(x, y, w, h)`, with its gene model in the
 /// space Bars keeps for x labels (52 left, 12 right, 38 below).
 fn draw_gene(canvas: &mut Canvas, p: &GeneProfile, (x, y, w, h): (f64, f64, f64, f64)) {
-    let bars = (&p.all[..], &p.kept[..]);
     kept_bars(
         canvas,
-        bars,
+        &p.kept,
         (x, y, w, h),
         Vec::new(),
         Vec::new(),
@@ -196,9 +191,9 @@ impl<'a> SitePicker<'a> {
         HistPlot {
             bins: Binning::with_width(Scale::Linear, 1.0),
             kmin: 0,
-            counts: &p.all,
+            counts: &p.kept,
             style: &|_| PLAIN,
-            subset: Some(&p.kept),
+            subset: None,
             y_scale: Scale::Linear,
             y_max: None,
             pointer: None,
@@ -231,7 +226,7 @@ impl<'a> SitePicker<'a> {
         format!("metagene · y: {} per bin", self.weight.unit())
     }
 
-    /// The metagene in the box `bbox`: all sites behind, the kept in front.
+    /// The metagene of the kept sites in the box `bbox`.
     fn draw_meta(
         &self,
         canvas: &mut Canvas,
@@ -243,7 +238,7 @@ impl<'a> SitePicker<'a> {
         let x_title = "metagene position (MetaPlotR scale)";
         kept_bars(
             canvas,
-            (m.all, m.kept),
+            m.kept,
             bbox,
             ticks,
             marks,
@@ -310,11 +305,11 @@ impl<'a> SitePicker<'a> {
         // Stretch the bins over the whole chart, one column each: HistPlot
         // gives a bin a whole number of columns, which leaves the rest of a
         // panel empty.
-        let n = m.all.len().max(1);
+        let n = m.kept.len().max(1);
         let cols = (plot.width.saturating_sub(GUTTER) as usize).max(n);
         let bin_of = |x: usize| x * n / cols;
         let stretch = |v: &[usize]| (0..cols).map(|x| v[bin_of(x)]).collect::<Vec<_>>();
-        let (all, kept) = (stretch(m.all), stretch(m.kept));
+        let kept = stretch(m.kept);
         let ticks: Vec<(usize, String)> = meta_ticks(m.regions)
             .into_iter()
             .map(|(b, t)| ((2 * b + 1) * cols / (2 * n), t))
@@ -328,9 +323,9 @@ impl<'a> SitePicker<'a> {
         HistPlot {
             bins: Binning::with_width(Scale::Linear, 1.0),
             kmin: 0,
-            counts: &all,
+            counts: &kept,
             style: &|_| PLAIN,
-            subset: Some(&kept),
+            subset: None,
             y_scale: Scale::Linear,
             y_max: None,
             pointer: None,

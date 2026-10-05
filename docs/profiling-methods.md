@@ -673,20 +673,21 @@ its full-screen view puts the data behind the decision before anything is writte
 
 **The view.** `qc` opens a full-screen view of the site thresholds *combined*. Each knob is a row with its threshold and the number of
 sites it filters out; a site failing several knobs counts in each row, so the rows add up to more
-than the sites removed. On the right, stacked, are three plots of the same sites, all drawn behind
-and the ones kept in front:
+than the sites removed. On the right, stacked, are three plots:
 
-- a histogram of the column the focused knob cuts, over the sites that pass every other knob, with
-  the bars it drops in the accent colour and their count, the sites filtered out only by this knob;
-- the selected gene's sites along its span, over its exons;
-- a metagene of every site (§7), with region widths fixed from all putative sites so the axis does
-  not move with the thresholds.
+- a histogram of the column the focused knob cuts, all sites behind and those that pass every other
+  knob in front, with the bars it drops in the accent colour and their count, the sites filtered
+  out only by this knob;
+- the selected gene's kept sites along its span, over its exons;
+- a metagene of the kept sites (§7), with region widths fixed from all putative sites so the axis
+  does not move with the thresholds; the line above it gives kept / all per region.
 
 The histogram counts sites. The gene and metagene bars count sites too, or with `c` the sites'
 converted reads, which shows where the signal is rather than where the calls are.
 
 A gene list at the bottom left shows each gene's kept and putative sites. Genes named by
-`--genes` come first, then the rest by number of putative sites; `[` and `]` move through it and
+`--genes` come first, then the rest by kept sites, re-sorted as the thresholds move (the selection
+stays on its gene); `[` and `]` move through it and
 `/` filters it by symbol. Tab moves between the thresholds panel and the gene list, and the arrow
 keys drive the one in focus; `m` switches the editing modality. The gene models and the metagene come from the annotation, read on a
 thread once (`--gff`, or the one in the input directory's run record); without one, the gene plot
@@ -696,7 +697,9 @@ recaps the output directory, the thresholds changed from the start, and the site
 keeps; a second Shift+Enter (or `y`) applies them, Esc (or `n`) goes back. Plain Enter does
 nothing, so a stray key cannot start a write; on a terminal that cannot tell Shift+Enter from
 Enter (no kitty keyboard protocol), `A` stands in for it. Once applied, the fileset is written
-with the view still up, under a pop-up showing each file as it goes. `p` prints the matching
+with the view still up, under a pop-up showing each file as it goes. The view's figure for every
+modality and every knob, as set when the cut was applied (scales, selected gene, sites or reads),
+is saved beside it in `qc_plots/{modality}_{knob}.pdf` and `.png`. `p` prints the matching
 `faba qc --batch-process` command, with every cell, feature and site option, and writes nothing; `s` saves the view as a PDF and PNG under a name it asks for.
 Nothing is written until the thresholds are applied.
 

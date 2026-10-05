@@ -553,16 +553,28 @@ fn with_genes(mut t: SiteTable) -> SiteTable {
 }
 
 #[test]
-fn genes_list_pinned_first_then_by_sites_and_filter_by_symbol() {
+fn genes_list_pinned_first_then_by_kept_sites_and_filter_by_symbol() {
     let t = with_genes(table(M6A, 100));
     let p = picker(&t, None, SiteFilterArgs::default_values());
-    let genes = p.view().genes.as_ref().unwrap();
-    let sizes: Vec<usize> = p
-        .gene_list()
-        .iter()
-        .map(|&g| genes.rows[g as usize].len())
-        .collect();
-    assert!(sizes.windows(2).all(|w| w[0] >= w[1]), "{sizes:?}");
+    let kept = |p: &SitePicker| -> Vec<usize> {
+        p.gene_list()
+            .iter()
+            .map(|&g| p.gene_kept(g as usize).0)
+            .collect()
+    };
+    let sorted = |v: &[usize]| v.windows(2).all(|w| w[0] >= w[1]);
+    assert!(sorted(&kept(&p)), "{:?}", kept(&p));
+
+    // The order follows the thresholds, and the selection stays on its gene.
+    let mut p = p;
+    press(&mut p, KeyCode::Char(']'));
+    let selected = p.gene();
+    focus_on(&mut p, Criterion::MinCoverage);
+    for _ in 0..5 {
+        press(&mut p, KeyCode::Right);
+    }
+    assert!(sorted(&kept(&p)), "{:?}", kept(&p));
+    assert_eq!(p.gene(), selected);
 
     let mut p = p.pin_genes(&["gene5".into(), "ENSG2_GENE2".into()]);
     let first: Vec<&str> = {
@@ -639,10 +651,12 @@ fn the_gene_panel_draws_its_model_once_the_annotation_arrives() {
         .iter()
         .map(|c| c.symbol())
         .collect();
-    assert!(text.contains("chr1:900-3100 (+) · y: sites per "));
+    let sum = |v: &[usize]| v.iter().sum::<usize>();
+    let kept = format!("kept {} of {}", sum(&profile.kept), sum(&profile.all));
+    assert!(text.contains(&format!("chr1:900-3100 (+) · {kept} · y: sites per ")));
     assert!(text.contains("genes: kept / all sites"));
     assert!(text.contains("[ ] move  / find"));
-    assert!(text.contains("█ all sites   █ kept"));
+    assert!(text.contains("█ kept sites   c: converted reads"));
     assert!(text.contains("▬"));
     assert!(p.figure().contains("chr1:900-3100 (+)"));
 }
@@ -688,7 +702,7 @@ fn c_switches_the_gene_and_metagene_bars_to_converted_reads() {
         .map(|c| c.symbol())
         .collect();
     assert!(text.contains("metagene · y: converted reads per bin"));
-    assert!(text.contains("█ all converted reads"));
+    assert!(text.contains("█ kept converted reads"));
     assert!(text.contains("c: sites"));
 
     press(&mut p, KeyCode::Char('c'));
@@ -845,7 +859,9 @@ fn confirming_writes_in_the_view_and_shows_progress() {
     p.writer = Writer {
         output: "out_qc",
         progress: &progress,
-        start: Some(Box::new(|f| *started.borrow_mut() = Some(f))),
+        start: Some(Box::new(|f, figures| {
+            *started.borrow_mut() = Some((f, figures))
+        })),
     };
 
     // `A` stands in for Shift+Enter where the terminal cannot report it.
@@ -853,8 +869,13 @@ fn confirming_writes_in_the_view_and_shows_progress() {
     assert!(matches!(p.mode, Mode::Confirm));
     press(&mut p, KeyCode::Char('y'));
     assert!(matches!(p.mode, Mode::Writing) && !p.done());
-    let f = started.borrow().clone().expect("the writer starts");
+    let (f, figures) = started.borrow_mut().take().expect("the writer starts");
     assert_eq!(qc_flags(&f), qc_flags(&start));
+    // A figure per knob, named after its flag, and the view left as it was.
+    assert_eq!(figures.len(), p.view().criteria.len());
+    assert!(figures.iter().any(|f| f.stem == format!("{M6A}_max-pv")));
+    assert!(figures.iter().all(|f| f.svg.starts_with("<svg")));
+    assert_eq!((p.modality, p.focus), (0, 0));
 
     // Keys and Ctrl-C wait while the fileset is written.
     press(&mut p, KeyCode::Char('q'));
@@ -882,4 +903,29 @@ fn confirming_writes_in_the_view_and_shows_progress() {
     p.tick();
     assert!(p.done());
     assert!(matches!(p.decision, Some(Picked::Apply(_))));
+}
+
+#[test]
+fn figures_cover_every_modality_and_leave_the_view_as_it_was() {
+    let m6a = with_genes(table(M6A, 400));
+    let atoi = with_genes(table(ATOI, 300));
+    let start = SiteFilterArgs::default_values();
+    let views = vec![
+        SiteView::new(&m6a, None, &start),
+        SiteView::new(&atoi, None, &start),
+    ];
+    let mut p = SitePicker::new("x", views, start, Meta::Unavailable("none".into()));
+    press(&mut p, KeyCode::Char('m'));
+    press(&mut p, KeyCode::Char(']'));
+    press(&mut p, KeyCode::Down);
+    let (modality, focus, gene) = (p.modality, p.focus, p.gene());
+
+    let figures = p.figures();
+    let n: usize = p.views.iter().map(|v| v.criteria.len()).sum();
+    assert_eq!(figures.len(), n);
+    for v in &p.views {
+        let m = &*v.table.modality;
+        assert!(figures.iter().any(|f| f.stem.starts_with(&format!("{m}_"))));
+    }
+    assert_eq!((p.modality, p.focus, p.gene()), (modality, focus, gene));
 }

@@ -10,7 +10,9 @@
 //! 4. gene-level `{batch}_m6a` / `{batch}_atoi` are RE-POOLED from the filtered
 //!    site matrix, so they cannot disagree with the site cut;
 //! 5. every other matrix takes the cell keep set and `--row-nnz-cutoff`;
-//! 6. every other file is copied through.
+//! 6. every other file is copied through;
+//! 7. with the view, its figure for every modality and knob goes to
+//!    `qc_plots/` as PDF and PNG.
 
 use std::sync::Arc;
 
@@ -29,7 +31,7 @@ use super::matrix::{
 use super::path_tui::ask_paths;
 use super::progress::{FinishOnDrop, Progress};
 use super::repool::repool_gene_level;
-use super::site_tui::{qc_flags, run_site_picker, Picked, Writer};
+use super::site_tui::{qc_flags, run_site_picker, Figure, Picked, Writer};
 use super::sites::{
     accumulate_site_cells, read_site_table, site_matrix_rows, write_site_tables, SiteTable,
 };
@@ -284,7 +286,7 @@ fn filter_fileset(
                 "no editing site table to pick thresholds on; cutting cells and features only"
             );
         }
-        write_fileset(&prep, args, out_dir, &args.site, &Progress::default())?;
+        write_fileset(&prep, args, out_dir, &args.site, &[], &Progress::default())?;
         return Ok(Some(args.site.clone()));
     }
     let progress = Progress::default();
@@ -300,11 +302,11 @@ fn filter_fileset(
             Writer {
                 output: out_dir,
                 progress: &progress,
-                start: Some(Box::new(|site: SiteFilterArgs| {
+                start: Some(Box::new(|site: SiteFilterArgs, figures: Vec<Figure>| {
                     let (prep, progress) = (&prep, &progress);
                     writer = Some(s.spawn(move || {
                         let _finish = FinishOnDrop(progress);
-                        write_fileset(prep, args, out_dir, &site, progress)
+                        write_fileset(prep, args, out_dir, &site, &figures, progress)
                     }));
                 })),
             },
@@ -440,6 +442,7 @@ fn write_fileset(
     args: &QcArgs,
     out_dir: &str,
     site_args: &SiteFilterArgs,
+    figures: &[Figure],
     progress: &Progress,
 ) -> anyhow::Result<()> {
     let Prepared {
@@ -466,8 +469,12 @@ fn write_fileset(
         .filter(|m| tables.contains_key(**m))
         .count();
     // One step per file group below, in order.
-    let n_steps =
-        decisions.len() + n_site_tables + 2 * site_matrices.len() + other_matrices.len() + 2;
+    let n_steps = decisions.len()
+        + n_site_tables
+        + 2 * site_matrices.len()
+        + other_matrices.len()
+        + figures.len()
+        + 2;
     progress.plan(n_steps);
     let mut summary: Vec<SummaryRow> = Vec::new();
 
@@ -582,6 +589,16 @@ fn write_fileset(
             continue;
         }
         std::fs::copy(f.as_ref(), format!("{out_dir}/{name}"))?;
+    }
+
+    // 7. the view's figures, as it showed them when the cut was applied.
+    if !figures.is_empty() {
+        let dir = format!("{out_dir}/qc_plots");
+        std::fs::create_dir_all(&dir)?;
+        for f in figures {
+            progress.next(format!("qc_plots/{}", f.stem));
+            crate::figure::save(&f.svg, &format!("{dir}/{}", f.stem))?;
+        }
     }
 
     progress.next("qc_summary.tsv");

@@ -8,9 +8,12 @@ use crate::site_analysis::pileup::{gene_matches, query_symbol};
 /// the selection, and each gene's kept sites under the current thresholds.
 #[derive(Default)]
 pub(super) struct GeneList {
-    /// Per view, gene ids in list order: pinned first, then by site count.
+    /// Per view, gene ids in list order: pinned first, then by kept sites.
     order: Vec<Vec<u32>>,
-    /// Per view, each gene's symbol in lowercase, for the filter.
+    /// Per view, each gene's place among the pinned genes, `usize::MAX` for
+    /// the others.
+    pin: Vec<Vec<usize>>,
+    /// Per view, each gene's symbol in lowercase, for the filter and ties.
     lower: Vec<Vec<Box<str>>>,
     /// The filter, matched against symbols, case-insensitive.
     pub(super) find: String,
@@ -23,8 +26,8 @@ pub(super) struct GeneList {
 }
 
 impl GeneList {
-    /// Order every view's genes: `pinned` (as `faba pileup --genes` matches
-    /// them) first, in the order given, then by number of putative sites.
+    /// Every view's genes, with `pinned` (as `faba pileup --genes` matches
+    /// them) to be listed first, in the order given.
     fn new(views: &[SiteView], pinned: &[Box<str>]) -> Self {
         let pinned: Vec<(&str, Box<str>)> =
             pinned.iter().map(|q| (&**q, query_symbol(q))).collect();
@@ -33,31 +36,27 @@ impl GeneList {
         for v in views {
             let Some(g) = &v.genes else {
                 list.order.push(Vec::new());
+                list.pin.push(Vec::new());
                 list.lower.push(Vec::new());
                 continue;
             };
-            let mut order: Vec<u32> = (0..g.keys.len() as u32).collect();
-            order.sort_by_cached_key(|&i| {
-                let i = i as usize;
-                let pin = rank(&g.keys[i]).unwrap_or(usize::MAX);
-                (
-                    pin,
-                    std::cmp::Reverse(g.rows[i].len()),
-                    g.symbol(i).to_string(),
-                )
-            });
-            list.order.push(order);
-            list.lower.push(
-                (0..g.keys.len())
-                    .map(|i| g.symbol(i).to_lowercase().into())
+            let n = g.keys.len();
+            list.order.push((0..n as u32).collect());
+            list.pin.push(
+                g.keys
+                    .iter()
+                    .map(|k| rank(k).unwrap_or(usize::MAX))
                     .collect(),
             );
+            list.lower
+                .push((0..n).map(|i| g.symbol(i).to_lowercase().into()).collect());
         }
         list
     }
 
-    /// Rebuild `shown` for `view` after the filter or the view changed.
-    fn refilter(&mut self, view: usize) {
+    /// Rebuild `shown` for `view` after the filter, the order or the view
+    /// changed, keeping the selection on gene `keep` while it is shown.
+    fn refilter(&mut self, view: usize, keep: Option<u32>) {
         let find = self.find.to_lowercase();
         let lower = &self.lower[view];
         self.shown = self.order[view]
@@ -65,13 +64,18 @@ impl GeneList {
             .copied()
             .filter(|&i| lower[i as usize].contains(&*find))
             .collect();
-        self.at = self.at.min(self.shown.len().saturating_sub(1));
+        self.at = keep
+            .and_then(|g| self.shown.iter().position(|&s| s == g))
+            .unwrap_or(self.at)
+            .min(self.shown.len().saturating_sub(1));
     }
 
-    /// Recount each gene's kept sites in `view`.
-    fn recount(&mut self, view: &SiteView) {
+    /// Recount each gene's kept sites in view `v`, and order its genes by
+    /// them: pinned first, then most kept, most putative, then by symbol.
+    fn recount(&mut self, v: usize, view: &SiteView) {
         let Some(g) = &view.genes else {
             self.kept.clear();
+            self.shown.clear();
             return;
         };
         self.kept = g
@@ -83,6 +87,22 @@ impl GeneList {
                     .count() as u32
             })
             .collect();
+        let (pin, lower, kept) = (&self.pin[v], &self.lower[v], &self.kept);
+        self.order[v].sort_by(|&a, &b| {
+            let key = |i: u32| {
+                let i = i as usize;
+                (
+                    pin[i],
+                    std::cmp::Reverse(kept[i]),
+                    std::cmp::Reverse(g.rows[i].len()),
+                )
+            };
+            key(a)
+                .cmp(&key(b))
+                .then_with(|| lower[a as usize].cmp(&lower[b as usize]))
+        });
+        let keep = self.selected().map(|g| g as u32);
+        self.refilter(v, keep);
     }
 
     pub(super) fn shown(&self) -> &[u32] {
@@ -122,9 +142,12 @@ impl GeneProfile {
             ),
             None => format!("{lo}-{hi}"),
         };
+        let sum = |v: &[usize]| v.iter().sum::<usize>();
         format!(
-            "{}  {place} · y: {} per {} bp",
+            "{}  {place} · kept {} of {} · y: {} per {} bp",
             self.symbol,
+            sum(&self.kept),
+            sum(&self.all),
             self.unit,
             self.bin_bp()
         )
@@ -142,8 +165,7 @@ impl<'a> SitePicker<'a> {
     /// List `pinned` genes first; see [`GeneList::new`].
     pub(super) fn pin_genes(mut self, pinned: &[Box<str>]) -> Self {
         self.list = GeneList::new(&self.views, pinned);
-        self.list.refilter(self.modality);
-        self.list.recount(&self.views[self.modality]);
+        self.list.recount(self.modality, &self.views[self.modality]);
         self
     }
 
@@ -168,16 +190,16 @@ impl<'a> SitePicker<'a> {
     pub(super) fn set_find(&mut self, edit: impl FnOnce(&mut String)) {
         edit(&mut self.list.find);
         self.list.at = 0;
-        self.list.refilter(self.modality);
+        self.list.refilter(self.modality, None);
     }
 
     /// The gene list for a new focused view, or new thresholds.
     pub(super) fn refresh_genes(&mut self, view_changed: bool) {
         if view_changed {
             self.list.at = 0;
-            self.list.refilter(self.modality);
+            self.list.shown.clear();
         }
-        self.list.recount(&self.views[self.modality]);
+        self.list.recount(self.modality, &self.views[self.modality]);
     }
 
     /// Kept and all sites of gene `g` in the focused view.
