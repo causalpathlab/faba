@@ -189,7 +189,7 @@ impl GeneCountArgs {
 /// rows in the same feature axis.
 ///
 /// This is [`crate::quant::run_gene_count_qc`] with the standalone command's
-/// knobs — the same call `faba all` and the modality QC make, so all three
+/// knobs — the same call `faba run` and the modality QC make, so all three
 /// agree on which cells and genes survive and on what a gene-count matrix
 /// looks like. It used to be a second copy of that loop with its own writers,
 /// emitting a `{batch}` (total), `{batch}_spliced` and `{batch}_unspliced`

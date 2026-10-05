@@ -455,7 +455,7 @@ pub struct CountApaArgs {
         long_help = "The per-cell `{batch}_apa` matrix —\n\
                      two count channels per 2-site gene (`{gene}/apa/proximal`, `{gene}/apa/distal`);\n\
                      PDUI = distal/(distal+proximal) is derived downstream —\n\
-                     is written BY DEFAULT (matching `faba all`).\n\
+                     is written BY DEFAULT (matching `faba run`).\n\
                      Pass `--no-pdui` to skip it (the poly-A EM still runs if `--mixture` needs it)."
     )]
     pub(crate) compute_pdui: bool,
@@ -619,7 +619,7 @@ pub fn run_apa(args: &mut CountApaArgs) -> anyhow::Result<()> {
     // Gene expression QC: reuse a passed cell/gene set from `faba count`, or
     // recompute it (per-batch cell calling). Only mixture mode consumes these
     // fields; running QC for simple mode would pay the scan cost and discard it.
-    // `valid_cell_barcodes` is pre-populated in `faba all` pipeline mode, which
+    // `valid_cell_barcodes` is pre-populated in `faba run` pipeline mode, which
     // skips this block.
     if args.valid_cell_barcodes.is_none() && matches!(args.method, ApaMethod::Mixture) {
         let qc = resolve_gene_qc(&GeneQcRequest {

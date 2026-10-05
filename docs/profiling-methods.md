@@ -715,7 +715,7 @@ and features are cut as given.
 
 ---
 
-## 9. `all` — the full pipeline
+## 9. `run` — the full pipeline
 
 The steps run in this order, and each one's output constrains the next:
 

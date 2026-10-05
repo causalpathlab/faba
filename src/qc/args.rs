@@ -92,7 +92,7 @@ pub struct SiteFilterArgs {
 #[derive(Args, Debug, serde::Serialize)]
 pub struct QcArgs {
     #[arg(
-        help = "A faba output directory (from `faba all` or the standalone producers); asked for in a pop-up when left out"
+        help = "A faba output directory (from `faba run` or the standalone producers); asked for in a pop-up when left out"
     )]
     pub input_dir: Option<Box<str>>,
 

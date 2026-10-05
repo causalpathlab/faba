@@ -98,10 +98,10 @@ pub const DEFAULT_EDIT_ERROR_RATE: f64 = 0.01;
 pub const DEFAULT_EDIT_OVERDISPERSION: f64 = 0.1;
 
 /// Defaults for the m6A candidacy floors, shared by `faba dartseq`'s
-/// `--min-coverage` / `--min-conversion` and `faba all`'s `--m6a-min-coverage` /
+/// `--min-coverage` / `--min-conversion` and `faba run`'s `--m6a-min-coverage` /
 /// `--m6a-min-conversion`.
 ///
-/// Defined once because the two MUST agree: they drifted before, and `faba all`
+/// Defined once because the two MUST agree: they drifted before, and `faba run`
 /// called m6A sites a hand-run `faba dartseq` rejected. A shared const makes
 /// agreement a compile-time fact.
 ///
@@ -116,7 +116,7 @@ pub const DEFAULT_M6A_MIN_COVERAGE: usize = 1;
 pub const DEFAULT_M6A_MIN_CONVERSION: usize = 1;
 
 /// Defaults for the A-to-I candidacy floors, shared by `faba atoi` and
-/// `faba all --atoi-*`. A-to-I has no motif anchor, so at 1 / 1 every reference
+/// `faba run --atoi-*`. A-to-I has no motif anchor, so at 1 / 1 every reference
 /// A with a single mismatching read would be a site; these floors bound the
 /// candidate set. `faba dartseq --detect-atoi` used to carry its own copy at
 /// 10 / 5, so the same BAM produced a different A-to-I site list depending on

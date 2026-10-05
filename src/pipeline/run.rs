@@ -37,8 +37,8 @@ pub fn run_pipeline(args: &PipelineArgs) -> anyhow::Result<()> {
     ThreadPoolBuilder::new()
         .num_threads(args.max_threads)
         .build_global()?;
-    std::fs::create_dir_all(&*args.output)?;
-    let summary = step_record(args, "all");
+    std::fs::create_dir_all(args.out())?;
+    let summary = step_record(args, "run");
 
     // Validate inputs
     check_all_bam_indices(&args.bam_files)?;
@@ -130,7 +130,7 @@ pub fn run_pipeline(args: &PipelineArgs) -> anyhow::Result<()> {
     }
 
     summary.finish(&Ok(()));
-    info!("Pipeline complete! Results in: {}", args.output);
+    info!("Pipeline complete! Results in: {}", args.out());
     Ok(())
 }
 
@@ -147,10 +147,10 @@ pub fn run_pipeline(args: &PipelineArgs) -> anyhow::Result<()> {
 /// version history that is not monotonic. A new option appears here the moment
 /// it is added to `PipelineArgs`, with no second list to keep in sync.
 fn step_record(args: &PipelineArgs, job: &str) -> RunRecord {
-    let record = RunRecord::start(job, &args.output).options(args);
-    let (gff, genome) = (Some(&*args.gff_file), Some(&*args.genome_file));
+    let record = RunRecord::start(job, args.out()).options(args);
+    let (gff, genome) = (Some(args.gff()), Some(args.genome()));
     match job {
-        "all" => record
+        "run" => record
             .file_name("pipeline_summary.json")
             .inputs("bam", &args.bam_files)
             .inputs("control_bam", &args.control_bam_files)
@@ -187,3 +187,18 @@ fn step_record(args: &PipelineArgs, job: &str) -> RunRecord {
 
 #[cfg(test)]
 mod tests;
+
+/// `faba run`: straight through under `--batch-process`, else the setup view.
+pub fn run_or_view(args: &PipelineArgs, cli: clap::Command) -> anyhow::Result<()> {
+    if args.batch_process {
+        args.check_batch()?;
+        return run_pipeline(args);
+    }
+    anyhow::ensure!(
+        data_beans::interactive::tui_available(),
+        "`faba run` sets up the run in a full-screen view, which needs stdin and stdout \
+         on a terminal; pass --batch-process with the BAMs, -g, -f and -o to run without it"
+    );
+    let _ = cli;
+    anyhow::bail!("the setup view is not built yet")
+}

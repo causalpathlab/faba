@@ -59,7 +59,7 @@ fn every_subcommand_has_a_section() {
     let (_, _, text) = DOCS[0];
     let all = sections(text);
     for cmd in [
-        "dartseq", "atoi", "apa", "count", "snp", "depth", "pileup", "qc", "all",
+        "dartseq", "atoi", "apa", "count", "snp", "depth", "pileup", "qc", "run",
     ] {
         assert!(!select(&all, cmd).is_empty(), "no section for {cmd}");
     }

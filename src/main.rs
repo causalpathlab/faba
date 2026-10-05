@@ -21,6 +21,7 @@ use crate::common::*;
 use crate::qc::{run_qc, QcArgs};
 use apa::run::*;
 use atoi::run::*;
+use clap::CommandFactory;
 use docs::*;
 use gene_count::run::*;
 use m6a::run::*;
@@ -376,12 +377,16 @@ Example:\n  \
     Docs(DocsArgs),
 
     #[command(
-        name = "all",
-        aliases = ["pipeline", "full", "magic"],
-        about = "Run all RNA-seq analyses: SNP → count → ATOI → m6A → APA",
-        long_about = "Run all RNA-seq analyses in a unified pipeline\n\
+        name = "run",
+        about = "Set up and run the pipeline: SNP → count → ATOI → m6A → APA",
+        long_about = "Set up and run the pipeline: SNP → count → ATOI → m6A → APA\n\
                       \n\
-                      Orchestrates the complete analysis workflow:\n\
+                      Opens a view to pick the BAMs (fg = signal, bg = control), the steps and the flags,\n\
+                      previews the exact command, saves it as `faba_run.cmd.sh` in the output,\n\
+                      and runs it with its log on screen.\n\
+                      `--batch-process` runs straight through with the flags given.\n\
+                      \n\
+                      The steps:\n\
                       0. SNP genotyping (de novo + optional --known-snps; skip --skip-snp)\n\
                       1. Gene expression filtering (identify expressed genes)\n\
                       2. Per-cell read depth (only with --depth-resolution-kb)\n\
@@ -413,11 +418,11 @@ Example:\n  \
                       run `faba qc` on the output directory for that.",
         after_long_help = "\
 	Example:\n\
-	faba all sample.bam -g genes.gff -f genome.fa -o out/\n\
-	faba all wt.bam -g genes.gff -f genome.fa -o out/ --control-bam ctrl.bam\n\
-  faba all s1.bam,s2.bam -g genes.gff -f genome.fa -o out/ --skip-apa"
+	faba run\n\
+	faba run sample.bam -g genes.gff\n\
+	faba run --batch-process sample.bam -g genes.gff -f genome.fa -o out/"
     )]
-    All(PipelineArgs),
+    Run(PipelineArgs),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -452,7 +457,7 @@ fn main() -> anyhow::Result<()> {
         Commands::Snp(ref args) => recorded(args.run_record(), || run_snp(args))?,
         Commands::Qc(ref args) => run_qc(args)?,
         Commands::Docs(ref args) => run_docs(args)?,
-        Commands::All(ref args) => run_pipeline(args)?,
+        Commands::Run(ref args) => run_or_view(args, Cli::command())?,
     }
 
     Ok(())
