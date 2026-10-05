@@ -95,3 +95,29 @@ fn prefill_takes_what_the_command_line_gave() {
     assert!(form.argv().contains(&"--no-zip".to_string()));
     assert_eq!(form.changed(), 2);
 }
+
+#[test]
+fn headings_follow_the_pipeline_order() {
+    let cmd = run();
+    let form = Form::new(&cmd, OWN);
+    let headings = form.headings();
+    let steps = ["Common", "SNP", "count", "ATOI", "m6A", "APA"];
+    assert_eq!(headings[..steps.len()], steps, "{headings:?}");
+    assert!(
+        !headings.iter().any(|h| h.is_empty()),
+        "every flag has a heading"
+    );
+    // Arguments after a flattened group must not inherit its heading.
+    for a in cmd.get_arguments() {
+        let Some(l) = a.get_long() else { continue };
+        if l.starts_with("skip-") || l == "known-snps" || l == "depth-resolution-kb" {
+            assert_ne!(a.get_help_heading(), Some("m6A"), "--{l}");
+        }
+    }
+    assert_eq!(
+        cmd.get_arguments()
+            .find(|a| a.get_long() == Some("known-snps"))
+            .and_then(|a| a.get_help_heading()),
+        Some("SNP")
+    );
+}

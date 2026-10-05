@@ -114,6 +114,104 @@ pub struct PipelineArgs {
     )]
     pub max_threads: usize,
 
+    ////////////////////////////////////////////////////
+    // Shared read-quality filters (ATOI / m6A / SNP) //
+    ////////////////////////////////////////////////////
+    #[arg(
+        help_heading = "Common",
+        long,
+        default_value_t = 20,
+        help = "Minimum base quality for editing/SNP base calls (ATOI/m6A/SNP)"
+    )]
+    pub min_base_quality: u8,
+
+    #[arg(
+        help_heading = "Common",
+        long,
+        default_value_t = 20,
+        help = "Minimum mapping quality (MAPQ) for every read the pipeline admits",
+        long_help = "Minimum mapping quality (MAPQ) for every read the pipeline admits.\n\
+                     Applies to the gene counts that freeze the cell set,\n\
+                     and to the editing/SNP pileups (ATOI/m6A/SNP).\n\
+                     One knob on purpose: cells are then called on the same\n\
+                     alignments the site tests later count."
+    )]
+    pub min_mapping_quality: u8,
+
+    //////////////////////////////////////////////
+    // UMI deduplication (applies to all steps) //
+    //////////////////////////////////////////////
+    #[arg(
+        help_heading = "Common",
+        long = "umi-tag",
+        default_value = "UB",
+        help = "UMI barcode BAM tag for deduplication (all steps)"
+    )]
+    pub umi_tag: Box<str>,
+
+    #[arg(
+        help_heading = "Common",
+        long = "no-umi-dedup",
+        default_value_t = false,
+        help = "Disable UMI deduplication (for bulk data without UMIs)"
+    )]
+    pub no_umi_dedup: bool,
+
+    ////////////////////
+    // SNP parameters //
+    ////////////////////
+    #[arg(
+        help_heading = "SNP",
+        long = "known-snps",
+        help = "Known SNP sites VCF/BCF/Parquet to force-call",
+        long_help = "Path to known SNP sites. Accepts:\n\
+                     - VCF/BCF (.vcf, .vcf.gz, .bcf): standard variant calls\n\
+                     - Parquet (.parquet): output from a previous `faba snp` run\n\
+                     When provided,\n\
+                     force-calls genotypes at these positions in addition to de novo discovery."
+    )]
+    pub known_snps: Option<Box<str>>,
+
+    #[arg(
+        help_heading = "SNP",
+        long,
+        default_value_t = 5,
+        help = "Minimum depth for SNP calling"
+    )]
+    pub snp_min_depth: usize,
+
+    #[arg(
+        help_heading = "SNP",
+        long,
+        default_value_t = 20.0,
+        help = "Minimum genotype quality (Phred) to emit a call"
+    )]
+    pub snp_min_gq: f32,
+
+    #[arg(
+        help_heading = "SNP",
+        long,
+        default_value_t = 10,
+        help = "Minimum coverage for de novo SNP discovery"
+    )]
+    pub snp_min_coverage: usize,
+
+    #[arg(
+        help_heading = "SNP",
+        long,
+        default_value_t = 3,
+        help = "Minimum alt allele reads for SNP discovery"
+    )]
+    pub snp_min_alt_count: usize,
+
+    #[arg(
+        help_heading = "SNP",
+        long,
+        default_value_t = 0.1,
+        help = "Minimum alt allele frequency for SNP discovery"
+    )]
+    pub snp_min_alt_freq: f64,
+
     ///////////////////////////////
     // Gene expression filtering //
     ///////////////////////////////
@@ -180,38 +278,6 @@ pub struct PipelineArgs {
     #[command(flatten, next_help_heading = "count")]
     pub mito_qc: crate::quant::MitoQcArgs,
 
-    ////////////////////////////////////////////////////
-    // Shared read-quality filters (ATOI / m6A / SNP) //
-    ////////////////////////////////////////////////////
-    #[arg(
-        help_heading = "Common",
-        long,
-        default_value_t = 20,
-        help = "Minimum base quality for editing/SNP base calls (ATOI/m6A/SNP)"
-    )]
-    pub min_base_quality: u8,
-
-    #[arg(
-        help_heading = "Common",
-        long,
-        default_value_t = 20,
-        help = "Minimum mapping quality (MAPQ) for every read the pipeline admits",
-        long_help = "Minimum mapping quality (MAPQ) for every read the pipeline admits.\n\
-                     Applies to the gene counts that freeze the cell set,\n\
-                     and to the editing/SNP pileups (ATOI/m6A/SNP).\n\
-                     One knob on purpose: cells are then called on the same\n\
-                     alignments the site tests later count."
-    )]
-    pub min_mapping_quality: u8,
-
-    #[arg(
-        help_heading = "APA",
-        long = "no-apa-pdui",
-        default_value_t = false,
-        help = "Skip the APA PDUI (proximal/distal count) matrix output ({batch}_apa)"
-    )]
-    pub no_apa_pdui: bool,
-
     /////////////////////
     // ATOI parameters //
     /////////////////////
@@ -257,9 +323,43 @@ pub struct PipelineArgs {
     )]
     pub edit_overdispersion: f64,
 
+    /////////////////////
+    // DART parameters //
+    /////////////////////
+    // Shared with `faba dartseq` by const, not by convention — see
+    // `DEFAULT_M6A_MIN_COVERAGE` for why these two must not be allowed to drift,
+    // and the long_help on `faba dartseq --min-coverage` for the measured cost of
+    // the current values.
+    #[arg(
+        help_heading = "m6A",
+        long,
+        default_value_t = crate::editing::pipeline::DEFAULT_M6A_MIN_COVERAGE,
+        help = "Minimum total reads (signal + control) for an m6A site to be written (matches `faba dartseq`)"
+    )]
+    pub m6a_min_coverage: usize,
+
+    #[arg(
+        help_heading = "m6A",
+        long,
+        default_value_t = crate::editing::pipeline::DEFAULT_M6A_MIN_CONVERSION,
+        help = "Minimum converted (C->T) signal reads for an m6A site to be written (matches `faba dartseq`)"
+    )]
+    pub m6a_min_conversion: usize,
+
+    #[command(flatten, next_help_heading = "m6A")]
+    pub cell_scan: crate::editing::cell_activity::CellScanArgs,
+
     ////////////////////
     // APA parameters //
     ////////////////////
+    #[arg(
+        help_heading = "APA",
+        long = "no-apa-pdui",
+        default_value_t = false,
+        help = "Skip the APA PDUI (proximal/distal count) matrix output ({batch}_apa)"
+    )]
+    pub no_apa_pdui: bool,
+
     #[arg(
         help_heading = "APA",
         long,
@@ -298,37 +398,11 @@ pub struct PipelineArgs {
     )]
     pub polya_min_tail_length: usize,
 
-    /////////////////////
-    // DART parameters //
-    /////////////////////
-    // Shared with `faba dartseq` by const, not by convention — see
-    // `DEFAULT_M6A_MIN_COVERAGE` for why these two must not be allowed to drift,
-    // and the long_help on `faba dartseq --min-coverage` for the measured cost of
-    // the current values.
-    #[arg(
-        help_heading = "m6A",
-        long,
-        default_value_t = crate::editing::pipeline::DEFAULT_M6A_MIN_COVERAGE,
-        help = "Minimum total reads (signal + control) for an m6A site to be written (matches `faba dartseq`)"
-    )]
-    pub m6a_min_coverage: usize,
-
-    #[arg(
-        help_heading = "m6A",
-        long,
-        default_value_t = crate::editing::pipeline::DEFAULT_M6A_MIN_CONVERSION,
-        help = "Minimum converted (C->T) signal reads for an m6A site to be written (matches `faba dartseq`)"
-    )]
-    pub m6a_min_conversion: usize,
-
-    #[command(flatten, next_help_heading = "m6A")]
-    pub cell_scan: crate::editing::cell_activity::CellScanArgs,
-
     ////////////////////////////////////////////////////////
-    // Mixture model weighting (shared by m6A and A-to-I) //
+    // Mixture model weighting (m6A, A-to-I and APA)      //
     ////////////////////////////////////////////////////////
     #[arg(
-        help_heading = "m6A",
+        help_heading = "mixture",
         long = "mixture-weight",
         value_enum,
         default_value_t = crate::editing::pipeline::MixtureWeightMode::Posterior,
@@ -342,7 +416,7 @@ pub struct PipelineArgs {
     // The help string already said "(default: 1.0)" while the code said 1e-4,
     // so the restated default is dropped here: clap prints the real one.
     #[arg(
-        help_heading = "m6A",
+        help_heading = "mixture",
         long = "mixture-prior-alpha",
         default_value_t = 1.0,
         help = "Beta prior α for posterior-rate weighting"
@@ -350,7 +424,7 @@ pub struct PipelineArgs {
     pub mixture_prior_alpha: f32,
 
     #[arg(
-        help_heading = "m6A",
+        help_heading = "mixture",
         long = "mixture-prior-beta",
         default_value_t = 1.0,
         help = "Beta prior β for posterior-rate weighting"
@@ -358,7 +432,7 @@ pub struct PipelineArgs {
     pub mixture_prior_beta: f32,
 
     #[arg(
-        help_heading = "m6A",
+        help_heading = "mixture",
         long = "drop-single-component",
         default_value_t = false,
         help = "Drop genes with a single mixture component across m6A/ATOI/APA"
@@ -366,7 +440,7 @@ pub struct PipelineArgs {
     pub drop_single_component: bool,
 
     #[arg(
-        help_heading = "m6A",
+        help_heading = "mixture",
         long = "mixture",
         default_value_t = false,
         help = "Also produce the per-gene component-mixture matrices",
@@ -383,86 +457,19 @@ pub struct PipelineArgs {
     )]
     pub mixture: bool,
 
-    ////////////////////
-    // SNP parameters //
-    ////////////////////
-    #[arg(
-        long = "known-snps",
-        help = "Known SNP sites VCF/BCF/Parquet to force-call",
-        long_help = "Path to known SNP sites. Accepts:\n\
-                     - VCF/BCF (.vcf, .vcf.gz, .bcf): standard variant calls\n\
-                     - Parquet (.parquet): output from a previous `faba snp` run\n\
-                     When provided,\n\
-                     force-calls genotypes at these positions in addition to de novo discovery."
-    )]
-    pub known_snps: Option<Box<str>>,
-
-    #[arg(
-        help_heading = "SNP",
-        long,
-        default_value_t = 5,
-        help = "Minimum depth for SNP calling"
-    )]
-    pub snp_min_depth: usize,
-
-    #[arg(
-        help_heading = "SNP",
-        long,
-        default_value_t = 20.0,
-        help = "Minimum genotype quality (Phred) to emit a call"
-    )]
-    pub snp_min_gq: f32,
-
-    #[arg(
-        help_heading = "SNP",
-        long,
-        default_value_t = 10,
-        help = "Minimum coverage for de novo SNP discovery"
-    )]
-    pub snp_min_coverage: usize,
-
-    #[arg(
-        help_heading = "SNP",
-        long,
-        default_value_t = 3,
-        help = "Minimum alt allele reads for SNP discovery"
-    )]
-    pub snp_min_alt_count: usize,
-
-    #[arg(
-        help_heading = "SNP",
-        long,
-        default_value_t = 0.1,
-        help = "Minimum alt allele frequency for SNP discovery"
-    )]
-    pub snp_min_alt_freq: f64,
-
-    //////////////////////////////////////////////
-    // UMI deduplication (applies to all steps) //
-    //////////////////////////////////////////////
-    #[arg(
-        help_heading = "Common",
-        long = "umi-tag",
-        default_value = "UB",
-        help = "UMI barcode BAM tag for deduplication (all steps)"
-    )]
-    pub umi_tag: Box<str>,
-
-    #[arg(
-        help_heading = "Common",
-        long = "no-umi-dedup",
-        default_value_t = false,
-        help = "Disable UMI deduplication (for bulk data without UMIs)"
-    )]
-    pub no_umi_dedup: bool,
-
     //////////////////
     // Step control //
     //////////////////
-    #[arg(long, default_value_t = false, help = "Skip SNP genotyping step")]
+    #[arg(
+        help_heading = "Steps",
+        long,
+        default_value_t = false,
+        help = "Skip SNP genotyping step"
+    )]
     pub skip_snp: bool,
 
     #[arg(
+        help_heading = "Steps",
         long = "skip-count",
         alias = "skip-genes",
         default_value_t = false,
@@ -470,16 +477,32 @@ pub struct PipelineArgs {
     )]
     pub skip_count: bool,
 
-    #[arg(long, default_value_t = false, help = "Skip ATOI detection step")]
+    #[arg(
+        help_heading = "Steps",
+        long,
+        default_value_t = false,
+        help = "Skip ATOI detection step"
+    )]
     pub skip_atoi: bool,
 
-    #[arg(long, default_value_t = false, help = "Skip APA quantification step")]
-    pub skip_apa: bool,
-
-    #[arg(long, default_value_t = false, help = "Skip m6A detection step")]
+    #[arg(
+        help_heading = "Steps",
+        long,
+        default_value_t = false,
+        help = "Skip m6A detection step"
+    )]
     pub skip_m6a: bool,
 
     #[arg(
+        help_heading = "Steps",
+        long,
+        default_value_t = false,
+        help = "Skip APA quantification step"
+    )]
+    pub skip_apa: bool,
+
+    #[arg(
+        help_heading = "Steps",
         long = "depth-resolution-kb",
         help = "Also bin per-cell read depth at this resolution, in KILOBASES",
         long_help = "Bin per-cell read depth genome-wide at this resolution, in kilobases.\n\
