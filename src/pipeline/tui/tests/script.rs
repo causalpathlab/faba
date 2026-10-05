@@ -85,7 +85,7 @@ fn never_overwrites_and_runs_as_bash() {
 
 #[test]
 fn several_bams_one_per_line() {
-    let lines = command_lines(&vec![
+    let lines = command_lines(&[
         "run".to_string(),
         "--batch-process".to_string(),
         "/d/sample_A.bam".to_string(),
@@ -106,7 +106,7 @@ fn several_bams_one_per_line() {
 
 #[test]
 fn flag_values_on_same_line() {
-    let lines = command_lines(&vec![
+    let lines = command_lines(&[
         "run".to_string(),
         "--batch-process".to_string(),
         "/d/sample.bam".to_string(),
@@ -125,7 +125,7 @@ fn flag_values_on_same_line() {
 
 #[test]
 fn negative_number_value_stays_with_flag() {
-    let lines = command_lines(&vec![
+    let lines = command_lines(&[
         "run".to_string(),
         "--batch-process".to_string(),
         "/d/sample.bam".to_string(),
@@ -141,7 +141,7 @@ fn negative_number_value_stays_with_flag() {
 
 #[test]
 fn flag_and_next_flag_separate_lines() {
-    let lines = command_lines(&vec![
+    let lines = command_lines(&[
         "run".to_string(),
         "--batch-process".to_string(),
         "/d/sample.bam".to_string(),

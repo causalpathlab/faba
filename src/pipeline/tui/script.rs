@@ -38,8 +38,7 @@ pub fn command_lines(argv: &[String]) -> Vec<String> {
         let in_head = k < 2; // `run` and `--batch-process` stay on the program line
 
         // Add to last line if in head or if this is a value for a flag at index >= 2
-        let add_to_last =
-            in_head || (!is_flag_token && last_flag_idx.map_or(false, |idx| idx >= 2));
+        let add_to_last = in_head || (!is_flag_token && last_flag_idx.is_some_and(|idx| idx >= 2));
 
         match lines.last_mut() {
             Some(last) if add_to_last => {
