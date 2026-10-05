@@ -2,3 +2,6 @@
 
 #[allow(dead_code)] // consumed by the later views of this command
 pub mod form;
+
+#[allow(dead_code)] // consumed by the later views of this command
+pub mod script;
