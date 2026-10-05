@@ -5,15 +5,11 @@ use std::path::PathBuf;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
 use super::form::Kind;
-use super::inputs::{Browser, InputsFocus};
+use super::inputs::{Browser, InputsFocus, Row};
 use super::steps::Step;
 use super::{script, App, Page, Target};
 use crate::figure::{Edit, LineInput};
 use crate::tui::is_go;
-
-const GFF_EXT: &[&str] = &[".gff", ".gtf", ".gff3", ".gff.gz", ".gtf.gz", ".gff3.gz"];
-const GENOME_EXT: &[&str] = &[".fa", ".fasta", ".fa.gz", ".fasta.gz"];
-pub(super) const VCF_EXT: &[&str] = &[".vcf", ".vcf.gz", ".bcf", ".parquet"];
 
 /// Longest text a line input takes.
 const MAX_TYPED: usize = 4096;
@@ -123,12 +119,7 @@ impl App {
             KeyCode::Left | KeyCode::Char('h') => browser.up(),
             KeyCode::Enter | KeyCode::Right => {
                 if let Some(file) = browser.enter() {
-                    let file = super::inputs::normalize(&file);
-                    match row {
-                        0 => self.inputs.gff = Some(file),
-                        1 => self.inputs.genome = Some(file),
-                        _ => self.inputs.known_snps = Some(file),
-                    }
+                    self.inputs.set(row, Some(&file));
                     self.picking = None;
                 }
             }
@@ -181,7 +172,7 @@ impl App {
                     self.inputs.row = self.inputs.row.saturating_sub(1);
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
-                    self.inputs.row = (self.inputs.row + 1).min(super::inputs::ROWS.len() - 1);
+                    self.inputs.row = (self.inputs.row + 1).min(Row::ALL.len() - 1);
                 }
                 KeyCode::Enter => self.open_row(),
                 KeyCode::Char('h') | KeyCode::Esc => self.inputs.focus = InputsFocus::Bams,
@@ -192,13 +183,20 @@ impl App {
 
     /// Enter on an inputs row: a file pop-up, or a line to type in.
     fn open_row(&mut self) {
-        let row = self.inputs.row;
-        let (current, ext) = match row {
-            0 => (&self.inputs.gff, GFF_EXT),
-            1 => (&self.inputs.genome, GENOME_EXT),
-            2 => (&self.inputs.known_snps, VCF_EXT),
-            3 => return self.edit(Target::Output, &self.inputs.output()),
-            _ => {
+        let Some(&row) = Row::ALL.get(self.inputs.row) else {
+            return;
+        };
+        match row {
+            Row::File(f) => {
+                let start: PathBuf = f
+                    .get(&self.inputs)
+                    .and_then(|p| p.parent())
+                    .filter(|p| p.is_dir())
+                    .map_or_else(|| self.inputs.bams.cwd.clone(), |p| p.to_path_buf());
+                self.picking = Some((f, Browser::new(start, f.ext())));
+            }
+            Row::Output => self.edit(Target::Output, &self.inputs.output()),
+            Row::Threads => {
                 let i = self
                     .form
                     .fields
@@ -208,15 +206,8 @@ impl App {
                     let value = self.form.fields[i].value.clone();
                     self.edit(Target::Flag(i), &value);
                 }
-                return;
             }
-        };
-        let start: PathBuf = current
-            .as_ref()
-            .and_then(|p| p.parent())
-            .filter(|p| p.is_dir())
-            .map_or_else(|| self.inputs.bams.cwd.clone(), |p| p.to_path_buf());
-        self.picking = Some((row, Browser::new(start, ext)));
+        }
     }
 
     fn key_steps(&mut self, key: KeyEvent) {

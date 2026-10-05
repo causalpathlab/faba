@@ -10,7 +10,7 @@ pub mod script;
 pub mod steps;
 
 use std::collections::VecDeque;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -23,7 +23,7 @@ use crate::pipeline::args::PipelineArgs;
 use crate::tui::ShiftEnter;
 use child::{Failed, Progress, Said, Stopper};
 use form::{Form, OWN};
-use inputs::{Browser, Inputs, Picked, Role};
+use inputs::{Browser, FileRow, Inputs, Picked, Role};
 use steps::Steps;
 
 /// Lines of the child's log kept for the Run screen.
@@ -91,7 +91,7 @@ pub struct App {
     pub preview: bool,
     pub editing: Option<(Target, LineInput)>,
     /// A file row's pop-up browser: the row and the browser.
-    pub picking: Option<(usize, Browser)>,
+    pub picking: Option<(FileRow, Browser)>,
     /// The highlighted row among the visible flags.
     pub flags_at: usize,
     pub advanced: bool,
@@ -140,28 +140,30 @@ impl App {
         self.steps.prefill(args);
         // `faba`'s own flag, present when the command is built inside `faba`.
         self.verbose = matches!(m.try_get_one::<bool>("verbose"), Ok(Some(true)));
-        let abs = |s: &str| inputs::normalize(std::path::Path::new(s));
-        let controls: Vec<PathBuf> = args.control_bam_files.iter().map(|s| abs(s)).collect();
+        let controls: Vec<Picked> = args
+            .control_bam_files
+            .iter()
+            .map(|b| Picked::new(Path::new(&**b), Role::Bg))
+            .collect();
         for b in &args.bam_files {
-            let path = abs(b);
-            if !controls.contains(&path) && self.inputs.role_of(&path).is_none() {
-                self.inputs.picked.push(Picked {
-                    path,
-                    role: Role::Fg,
-                });
+            let p = Picked::new(Path::new(&**b), Role::Fg);
+            let is_control = controls.iter().any(|c| c.path == p.path);
+            if !is_control && self.inputs.role_of(&p.path).is_none() {
+                self.inputs.picked.push(p);
             }
         }
-        for path in controls {
-            if self.inputs.role_of(&path).is_none() {
-                self.inputs.picked.push(Picked {
-                    path,
-                    role: Role::Bg,
-                });
+        for c in controls {
+            if self.inputs.role_of(&c.path).is_none() {
+                self.inputs.picked.push(c);
             }
         }
-        self.inputs.gff = args.gff_file.as_deref().map(abs);
-        self.inputs.genome = args.genome_file.as_deref().map(abs);
-        self.inputs.known_snps = args.known_snps.as_deref().map(abs);
+        for (row, given) in [
+            (FileRow::Gff, &args.gff_file),
+            (FileRow::Genome, &args.genome_file),
+            (FileRow::KnownSnps, &args.known_snps),
+        ] {
+            self.inputs.set(row, given.as_deref().map(Path::new));
+        }
         if let Some(o) = &args.output {
             self.inputs.output = o.to_string();
         }

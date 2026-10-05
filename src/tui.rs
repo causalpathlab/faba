@@ -1,7 +1,14 @@
-//! Pieces the terminal views share: centred pop-ups and the scroll window of
-//! a list that keeps its selection in view.
+//! Pieces the terminal views share: centred pop-ups, the scroll window of a
+//! list that keeps its selection in view, the go keys, and the rules for an
+//! output folder.
+
+use std::path::{Path, PathBuf};
 
 use data_beans::interactive::ui::panel;
+use ratatui::crossterm::event::{
+    KeyCode, KeyEvent, KeyModifiers, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+    PushKeyboardEnhancementFlags,
+};
 use ratatui::layout::Rect;
 use ratatui::text::Line;
 use ratatui::widgets::{Clear, Paragraph};
@@ -49,10 +56,31 @@ pub fn first_visible(at: usize, len: usize, rows: usize) -> usize {
         .min(len.saturating_sub(rows))
 }
 
-use ratatui::crossterm::event::{
-    KeyCode, KeyEvent, KeyModifiers, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
-    PushKeyboardEnhancementFlags,
-};
+/// `base/stem`, or `base/stem2`, `base/stem3`, ... : the first that does
+/// not exist yet.
+pub(crate) fn next_free(base: &Path, stem: &str) -> PathBuf {
+    let mut out = base.join(stem);
+    let mut n = 2;
+    while out.exists() {
+        out = base.join(format!("{stem}{n}"));
+        n += 1;
+    }
+    out
+}
+
+/// Why `out` cannot take a run's outputs, if it cannot: it is unnamed, a
+/// file, or a folder with files in it.
+pub(crate) fn output_problem(out: &str) -> Option<String> {
+    let path = Path::new(out);
+    if out.is_empty() {
+        return Some("name a directory".into());
+    }
+    if path.is_file() {
+        return Some(format!("{out} is a file"));
+    }
+    let non_empty = std::fs::read_dir(path).is_ok_and(|mut d| d.next().is_some());
+    non_empty.then(|| format!("{out} already contains files; choose an empty one"))
+}
 
 /// The go keys, as footers name them.
 pub const GO_KEYS: &str = "⇧Enter/G";

@@ -14,7 +14,7 @@ use ratatui::Frame;
 
 use super::child::Failed;
 use super::form::{self, Kind};
-use super::inputs::{has_index, InputsFocus, Role, ROWS};
+use super::inputs::{InputsFocus, Role, Row};
 use super::steps::Step;
 use super::{script, App, Page, Target};
 use crate::tui::{first_visible, popup, popup_frame, GO_KEYS};
@@ -183,17 +183,16 @@ fn draw_inputs(app: &App, frame: &mut Frame, body: Rect) {
             if e.dir {
                 return Line::from(vec![mark, Span::raw(format!("{}/", e.name))]);
             }
-            let path = bams.cwd.join(&e.name);
-            let tag = match inputs.role_of(&path) {
+            let tag = match inputs.role_of(&e.path) {
                 Some(Role::Fg) => Span::styled("[fg] ", HIGHLIGHT),
                 Some(Role::Bg) => Span::styled("[bg] ", HIGHLIGHT),
                 None => Span::styled("[  ] ", DIM),
             };
             let batch = batches
                 .iter()
-                .find(|(p, _)| *p == path)
+                .find(|(p, _)| *p == e.path)
                 .map_or_else(String::new, |(_, b)| format!("batch {b}"));
-            let index = if has_index(&path) {
+            let index = if e.indexed {
                 Span::styled("indexed", DIM)
             } else {
                 Span::styled("no index", ACCENTED)
@@ -211,19 +210,16 @@ fn draw_inputs(app: &App, frame: &mut Frame, body: Rect) {
     frame.render_widget(Paragraph::new(window(lines, bams.at, rows)), inner);
 
     let inner = framed(frame, right, " inputs ".into(), focus == InputsFocus::Rows);
-    let file = |p: &Option<std::path::PathBuf>| match p {
-        Some(p) => Span::raw(tilde(p)),
-        None => Span::styled("(none)", DIM),
-    };
     let out = inputs.output();
-    let out_note = if inputs.output_problem().is_some() {
-        let what = if Path::new(&out).is_file() {
+    let out_path = Path::new(&out);
+    let out_note = if crate::tui::output_problem(&out).is_some() {
+        let what = if out_path.is_file() {
             "a file"
         } else {
             "not empty"
         };
         Span::styled(format!("  {what}"), HIGHLIGHT)
-    } else if Path::new(&out).exists() {
+    } else if out_path.exists() {
         Span::styled("  empty", DIM)
     } else {
         Span::styled("  new", DIM)
@@ -232,20 +228,21 @@ fn draw_inputs(app: &App, frame: &mut Frame, body: Rect) {
         .form
         .get("max-threads")
         .map_or_else(String::new, |f| f.shown());
-    let mut lines: Vec<Line> = ROWS
+    let mut lines: Vec<Line> = Row::ALL
         .iter()
         .enumerate()
-        .map(|(i, label)| {
+        .map(|(i, row)| {
             let mut spans = vec![
                 marker(i == inputs.row && focus == InputsFocus::Rows),
-                Span::raw(format!("{label:<12}")),
+                Span::raw(format!("{:<12}", row.label())),
             ];
-            match i {
-                0 => spans.push(file(&inputs.gff)),
-                1 => spans.push(file(&inputs.genome)),
-                2 => spans.push(file(&inputs.known_snps)),
-                3 => spans.extend([Span::raw(tilde(Path::new(&out))), out_note.clone()]),
-                _ => spans.push(Span::raw(threads.clone())),
+            match row {
+                Row::File(f) => spans.push(match f.get(inputs) {
+                    Some(p) => Span::raw(tilde(p)),
+                    None => Span::styled("(none)", DIM),
+                }),
+                Row::Output => spans.extend([Span::raw(tilde(out_path)), out_note.clone()]),
+                Row::Threads => spans.push(Span::raw(threads.clone())),
             }
             Line::from(spans)
         })
@@ -465,7 +462,7 @@ fn draw_picking(app: &App, frame: &mut Frame, body: Rect) {
     let Some((row, b)) = &app.picking else {
         return;
     };
-    let label = ROWS.get(*row).copied().unwrap_or("file");
+    let label = row.label();
     let h = u16::try_from(b.entries.len() + 2)
         .unwrap_or(u16::MAX)
         .max(4);
