@@ -234,14 +234,19 @@ pub fn run_qc(args: &QcArgs) -> anyhow::Result<()> {
     }
     // Carry the annotation and genome forward, so tools reading the new
     // fileset find them as they would in the original.
-    let gff = explicit_or_recorded(args.gff.as_deref(), input, "gff", "annotation");
+    let mut gff = explicit_or_recorded(args.gff.as_deref(), input, "gff", "annotation");
     let genome = find_input(input, "genome", "genome");
-    let mut record = RunRecord::start("qc", out_dir)
+    let record = RunRecord::start("qc", out_dir)
         .input("fileset", Some(input))
-        .input("gff", gff.as_deref())
         .input("genome", genome.as_deref())
         .options(args);
-    let outcome = filter_fileset(args, input, out_dir, gff.as_deref());
+    let given = gff.clone();
+    let outcome = filter_fileset(args, input, out_dir, &mut gff);
+    // Recorded after the view, which may have read another annotation.
+    let mut record = record.input("gff", gff.as_deref());
+    if gff != given {
+        record.set_option("gff", &gff);
+    }
     // A run cancelled before writing leaves the directory empty, for a rerun.
     let wrote = std::fs::read_dir(out_dir).is_ok_and(|mut d| d.next().is_some());
     if wrote {
@@ -270,13 +275,13 @@ struct Prepared {
 }
 
 /// [`run_qc`] once the output directory is known to be empty, with `gff` for
-/// the view's metagene. Returns the site thresholds applied, `None` when
-/// nothing was written.
+/// the view's metagene, which the view may replace. Returns the site
+/// thresholds applied, `None` when nothing was written.
 fn filter_fileset(
     args: &QcArgs,
     input: &str,
     out_dir: &str,
-    gff: Option<&str>,
+    gff: &mut Option<Box<str>>,
 ) -> anyhow::Result<Option<SiteFilterArgs>> {
     let prep = prepare(args, input)?;
     let has_sites = prep.tables.values().any(|t| !t.is_empty());
@@ -292,12 +297,12 @@ fn filter_fileset(
     let progress = Progress::default();
     let picked = std::thread::scope(|s| -> anyhow::Result<_> {
         let mut writer = None;
-        let picked = run_site_picker(
+        let (picked, picked_gff) = run_site_picker(
             input,
             &prep.tables,
             &prep.site_cells,
             &args.site,
-            gff,
+            gff.as_deref(),
             &args.genes,
             Writer {
                 output: out_dir,
@@ -311,6 +316,7 @@ fn filter_fileset(
                 })),
             },
         )?;
+        *gff = picked_gff;
         if let Some(w) = writer {
             w.join()
                 .map_err(|_| anyhow::anyhow!("writing the filtered fileset panicked"))??;
@@ -323,7 +329,10 @@ fn filter_fileset(
             Ok(Some(f))
         }
         Picked::PrintOnly(f) => {
-            println!("{}", batch_command(args, input, out_dir, &f));
+            println!(
+                "{}",
+                batch_command(args, input, out_dir, &f, gff.as_deref())
+            );
             Ok(None)
         }
         Picked::Cancelled => anyhow::bail!("cancelled at the site thresholds; nothing written"),
@@ -331,8 +340,15 @@ fn filter_fileset(
 }
 
 /// The `faba qc --batch-process` command that cuts `input` into `out_dir` as
-/// this run would, with the site thresholds `site`.
-fn batch_command(args: &QcArgs, input: &str, out_dir: &str, site: &SiteFilterArgs) -> String {
+/// this run would, with the site thresholds `site` and the annotation `gff`
+/// the view ended on.
+fn batch_command(
+    args: &QcArgs,
+    input: &str,
+    out_dir: &str,
+    site: &SiteFilterArgs,
+    gff: Option<&str>,
+) -> String {
     let mut cmd = format!(
         "faba qc {} -o {} --batch-process -r {} -c {} --qc-mads {} --qc-min-cell-nnz {}",
         input,
@@ -355,7 +371,7 @@ fn batch_command(args: &QcArgs, input: &str, out_dir: &str, site: &SiteFilterArg
     if let Some(b) = args.block_size {
         cmd += &format!(" --block-size {b}");
     }
-    if let Some(gff) = &args.gff {
+    if let Some(gff) = gff {
         cmd += &format!(" --gff {gff}");
     }
     format!("{cmd} {}", qc_flags(site))
@@ -650,7 +666,13 @@ mod tests {
         let mut site = args.site.clone();
         site.site_max_pv = 0.01;
         site.site_min_cells = 4;
-        let again = parse(&batch_command(&args, "in", "out", &site));
+        let again = parse(&batch_command(
+            &args,
+            "in",
+            "out",
+            &site,
+            args.gff.as_deref(),
+        ));
         assert!(again.batch_process);
         assert_eq!(
             (again.input_dir.as_deref(), again.output.as_deref()),

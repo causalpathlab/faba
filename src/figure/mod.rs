@@ -226,17 +226,24 @@ fn unscaled(scale: Scale, t: f64) -> f64 {
 
 /// A bar panel matching a terminal histogram: one bar per value, an optional
 /// front subset over faint full bars, accent bars, x tick labels by bar, a
-/// dashed pointer, and site marks under the axis.
+/// dashed pointer, site marks under the axis, and dashed dividers between
+/// spans of bars.
 pub struct Bars<'a> {
     pub values: &'a [f64],
     pub front: Option<&'a [f64]>,
     pub accent: &'a dyn Fn(usize) -> bool,
+    /// Colour of a bar that is not accented, by bar; [`BAR`] for one tone.
+    pub colour: &'a dyn Fn(usize) -> &'static str,
     pub y_scale: Scale,
     /// Top of the y axis; `None` scales to the tallest bar.
     pub y_max: Option<f64>,
     pub ticks: Vec<(usize, String)>,
     pub pointer: Option<usize>,
     pub marks: Vec<usize>,
+    /// Full-height dashed lines on the left edge of these bars. With any,
+    /// `ticks` name the spans between them and get no tick stub, which
+    /// would read as one more boundary.
+    pub dividers: Vec<usize>,
     pub title: String,
     pub x_title: String,
     pub y_title: String,
@@ -290,7 +297,13 @@ impl Bars<'_> {
                 }
             }
         };
-        let tone = |i: usize| if (self.accent)(i) { ACCENT } else { BAR };
+        let tone = |i: usize| {
+            if (self.accent)(i) {
+                ACCENT
+            } else {
+                (self.colour)(i)
+            }
+        };
         match self.front {
             Some(front) => {
                 bars(self.values, &|_| FAINT);
@@ -309,9 +322,15 @@ impl Bars<'_> {
             let mx = px + (m as f64 + 0.5) * bw;
             c.line(mx, py + ph, mx, py + ph + 3.0, MUTED, 0.5);
         }
+        for &d in &self.dividers {
+            let dx = px + d as f64 * bw;
+            c.dashed(dx, py, dx, py + ph + 4.0, MUTED, 0.8);
+        }
         for (i, label) in &self.ticks {
             let tx = px + (*i as f64 + 0.5) * bw;
-            c.line(tx, py + ph, tx, py + ph + 4.0, INK, 0.6);
+            if self.dividers.is_empty() {
+                c.line(tx, py + ph, tx, py + ph + 4.0, INK, 0.6);
+            }
             c.text(tx, py + ph + 13.0, label, 8.0, Anchor::Middle, INK);
         }
         c.text(

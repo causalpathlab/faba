@@ -13,11 +13,13 @@ fn panel() -> String {
         values: &values,
         front: Some(&front),
         accent: &|i| i < 2,
+        colour: &|i| if i == 3 { "#0072b2" } else { BAR },
         y_scale: Scale::Log,
         y_max: None,
         ticks: vec![(0, "0".into()), (4, "L4 & <x>".into())],
         pointer: Some(2),
         marks: vec![1, 3],
+        dividers: vec![2],
         title: "PANEL1".into(),
         x_title: "value".into(),
         y_title: "n".into(),
@@ -25,6 +27,27 @@ fn panel() -> String {
     .draw(&mut c, 0.0, 0.0, 300.0, 160.0);
     c.glyph(10.0, 10.0, 20.0, 40.0, 'A', ACCENT);
     c.finish()
+}
+
+#[test]
+fn a_divider_sits_on_the_bar_edge_and_drops_tick_stubs() {
+    // Five bars over a 236-wide plot from x = 52: bar 2's left edge is 146.4.
+    let svg = panel();
+    assert!(
+        svg.contains(r#"x1="146.40" y1="20.00" x2="146.40""#),
+        "{svg}"
+    );
+    // With dividers, tick labels name spans: no solid stub under them. The
+    // stub of the tick at bar 4 would sit at its centre, x = 264.4.
+    assert!(!svg.contains(r#"x1="264.40""#));
+}
+
+#[test]
+fn a_bar_takes_its_own_colour_unless_accented() {
+    let svg = panel();
+    // Bar 3 is not accented, so it takes its colour; bars 0 and 1 stay accent.
+    assert!(svg.contains(r##"fill="#0072b2""##), "{svg}");
+    assert!(svg.contains(&format!(r#"fill="{ACCENT}""#)));
 }
 
 #[test]

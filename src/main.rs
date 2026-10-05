@@ -250,12 +250,14 @@ Example:\n  \
         about = "Metagene histogram of site positions across gene features",
         long_about = "Metagene histogram of site positions across gene features\n\n\
             Follows the MetaPlotR convention, so a profile can be held against a published one.\n\
-            Each site is placed on ONE elected transcript per gene, the longest spliced.\n\
-            That transcript's 5'UTR, CDS and 3'UTR are disjoint, so nothing needs a priority order.\n\
+            Each site is placed on every coding isoform containing it, 1/k on each of k\n\
+            (Guitar's procedure; `--isoforms all` counts it in full on each).\n\
+            Within a transcript 5'UTR, CDS and 3'UTR are disjoint, so nothing needs a priority order.\n\
             Position runs along the SPLICED region; introns consume no coordinate.\n\
             Non-coding genes are left out unless --include-non-coding asks for them.\n\n\
             Bins split between the regions by each region's MEDIAN spliced length,\n\
-            taken over the assigned sites, so widths depend on the sites as well as the annotation.\n\
+            taken over the transcripts carrying a site, each once,\n\
+            so widths depend on the sites as well as the annotation.\n\
             Compare the shape of two profiles rather than their bar widths.\n\n\
             Bin heights are RAW counts, never a rate.\n\
             A bin is also taller where more of its positions were deep enough to test,\n\
@@ -263,7 +265,8 @@ Example:\n  \
             A terminal peak is therefore not evidence of enrichment on its own.\n\n\
             Neither --isoforms nor --dist-measures exists in MetaPlotR itself.\n\
             Its pipeline emits every overlapping transcript and leaves the choice to a script,\n\
-            so `--isoforms all` is that raw output and `longest` is what the script intends.\n\
+            so `--isoforms all` is that raw output. Its script then keeps the longest isoform\n\
+            per gene, which we do not: that drops sites on other isoforms' exons.\n\
             --dist-measures is our name for the per-site table that script reads.\n\n\
             See docs/profiling-methods.md sections 1.2 and 7.\n\n\
             Reference:\n\

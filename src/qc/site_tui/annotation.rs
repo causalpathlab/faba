@@ -6,26 +6,31 @@ use super::*;
 /// and at two columns a bin they fill a panel on a 150-column terminal.
 pub(super) const META_BINS: usize = 48;
 
-/// What the gene and metagene bars add up: sites, or their converted reads.
+/// What the gene and metagene bars add up: the read coverage at the sites
+/// (the default), their converted reads, or the sites themselves.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Weight {
-    Sites,
+    Coverage,
     Converted,
+    Sites,
 }
 
 impl Weight {
     /// The y axis, as the titles name it.
     pub(super) fn unit(self) -> &'static str {
         match self {
-            Weight::Sites => "sites",
+            Weight::Coverage => "read coverage",
             Weight::Converted => "converted reads",
+            Weight::Sites => "sites",
         }
     }
 
-    pub(super) fn other(self) -> Self {
+    /// The one `c` switches to.
+    pub(super) fn next(self) -> Self {
         match self {
-            Weight::Sites => Weight::Converted,
+            Weight::Coverage => Weight::Converted,
             Weight::Converted => Weight::Sites,
+            Weight::Sites => Weight::Coverage,
         }
     }
 }
@@ -49,20 +54,45 @@ pub(super) enum Meta {
     Ready(Annotation),
 }
 
+/// What an annotation is read for, kept so another can be read in its place.
+#[derive(Default)]
+pub(super) struct AnnotationSource {
+    /// The annotation the metagene and gene models come from.
+    pub(super) gff: Option<Box<str>>,
+    /// The one the view was started with, to record if a pick fails.
+    pub(super) given: Option<Box<str>>,
+    /// Where the annotation browser opens when `gff` has no directory.
+    pub(super) dir: std::path::PathBuf,
+    /// Every table's sites, in view order.
+    pub(super) batches: Vec<RecordBatch>,
+    /// The genes whose models to keep.
+    pub(super) keys: FxHashSet<Box<str>>,
+}
+
+/// Whether the annotation browser lists `name`: a GTF or GFF, gzipped or not.
+pub(super) fn is_annotation(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    let name = name.strip_suffix(".gz").unwrap_or(&name);
+    [".gtf", ".gff", ".gff3"]
+        .iter()
+        .any(|ext| name.ends_with(ext))
+}
+
 impl Meta {
-    /// Read `gff` once, on a thread: place every table's sites (`batches`,
-    /// in view order) on the metagene, and keep the models of the genes in
-    /// `keys`.
-    pub(super) fn start(
-        gff: Option<&str>,
-        batches: Vec<RecordBatch>,
-        keys: FxHashSet<Box<str>>,
-    ) -> Self {
-        let Some(gff) = gff.map(str::to_string) else {
+    /// Read `source`'s annotation once, on a thread: place every table's
+    /// sites on the metagene, and keep the models of its genes.
+    pub(super) fn start(source: &AnnotationSource) -> Self {
+        let Some(gff) = source.gff.as_deref().map(str::to_string) else {
             return Meta::Unavailable(
                 "no annotation: pass --gff, or keep the run record next to the sites".into(),
             );
         };
+        // A run record names the annotation where the run was, which may be
+        // another machine.
+        if !std::path::Path::new(&gff).exists() {
+            return Meta::Unavailable(format!("{gff}: not found"));
+        }
+        let (batches, keys) = (source.batches.clone(), source.keys.clone());
         Meta::Pending(std::thread::spawn(move || {
             let fail = |e: anyhow::Error| format!("{gff}: {e:#}");
             // Gene models use gene and exon lines; the metagene's transcripts
@@ -124,9 +154,10 @@ impl Meta {
 }
 
 /// A view's metagene: all sites, the kept ones, and the bins per region.
+/// A site on k isoforms adds 1/k to each, so bins are fractional.
 pub(super) struct MetaCounts<'m> {
-    pub(super) all: &'m [usize],
-    pub(super) kept: &'m [usize],
+    pub(super) all: &'m [f64],
+    pub(super) kept: &'m [f64],
     pub(super) regions: [usize; 3],
     pub(super) unassigned: usize,
 }
@@ -152,9 +183,11 @@ impl<'a> SitePicker<'a> {
 
     /// Site `i`'s bar weight in the focused view.
     pub(super) fn site_weight(&self, i: usize) -> usize {
+        let t = &self.view().table;
         match self.weight {
+            Weight::Coverage => t.coverage[i] as usize,
+            Weight::Converted => t.converted[i] as usize,
             Weight::Sites => 1,
-            Weight::Converted => self.view().table.converted[i] as usize,
         }
     }
 
@@ -164,12 +197,12 @@ impl<'a> SitePicker<'a> {
         let bars = self
             .view_meta()
             .map(|m| {
-                let all = m.counts(|i| self.site_weight(i));
+                let all = m.counts(|i| self.site_weight(i) as f64);
                 let kept = m.counts(|i| {
                     if fails[i] == 0 {
-                        self.site_weight(i)
+                        self.site_weight(i) as f64
                     } else {
-                        0
+                        0.0
                     }
                 });
                 (all, kept)
@@ -182,7 +215,7 @@ impl<'a> SitePicker<'a> {
     }
 
     pub(super) fn switch_weight(&mut self) {
-        self.weight = self.weight.other();
+        self.weight = self.weight.next();
         self.refresh_meta();
     }
 
@@ -198,6 +231,56 @@ impl<'a> SitePicker<'a> {
         })
     }
 
+    /// Open the annotation browser where the current annotation is, else
+    /// where the sites are.
+    pub(super) fn open_gff_browser(&mut self) {
+        let dir = self
+            .annotation
+            .gff
+            .as_deref()
+            .and_then(|g| std::path::Path::new(g).parent())
+            .filter(|d| d.is_dir())
+            .map_or_else(|| self.annotation.dir.clone(), |d| d.to_path_buf());
+        let mut browser = Browser::new(dir.clone());
+        with_gff_listing(|l| browser.open(dir, l));
+        self.mode = Mode::Gff(browser);
+    }
+
+    /// A key in the annotation browser: Enter on a file reads it.
+    pub(super) fn gff_key(&mut self, key: KeyEvent) {
+        let Mode::Gff(browser) = &mut self.mode else {
+            return;
+        };
+        match with_gff_listing(|l| browser.key(key, l)) {
+            Nav::Moved => {}
+            Nav::Picked(path) => {
+                self.mode = Mode::Browse;
+                self.load_gff(path.to_string_lossy().into());
+            }
+            Nav::Ignored => {
+                if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
+                    self.mode = Mode::Browse;
+                }
+            }
+        }
+    }
+
+    /// Read `gff` in place of the current annotation.
+    pub(super) fn load_gff(&mut self, gff: Box<str>) {
+        self.annotation.gff = Some(gff);
+        self.meta = Meta::start(&self.annotation);
+        self.refresh_meta();
+    }
+
+    /// The annotation to record: the one picked, unless it failed to read,
+    /// when the one the view was started with.
+    pub(super) fn gff(&self) -> Option<&str> {
+        match self.meta {
+            Meta::Unavailable(_) => self.annotation.given.as_deref(),
+            _ => self.annotation.gff.as_deref(),
+        }
+    }
+
     /// Why there is no metagene to draw.
     pub(super) fn meta_status(&self) -> String {
         match &self.meta {
@@ -209,4 +292,13 @@ impl<'a> SitePicker<'a> {
                 .unwrap_or_else(|| "no site on a coding transcript".into()),
         }
     }
+}
+
+/// `f` with the annotation browser's listing: directories and annotation
+/// files, none tagged.
+fn with_gff_listing<R>(f: impl FnOnce(&mut Listing) -> R) -> R {
+    f(&mut Listing {
+        keep: &is_annotation,
+        tag: &mut |_| false,
+    })
 }
