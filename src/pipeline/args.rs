@@ -476,6 +476,9 @@ pub struct PipelineArgs {
     #[arg(long, default_value_t = false, help = "Skip APA quantification step")]
     pub skip_apa: bool,
 
+    #[arg(long, default_value_t = false, help = "Skip m6A detection step")]
+    pub skip_m6a: bool,
+
     #[arg(
         long = "depth-resolution-kb",
         help = "Also bin per-cell read depth at this resolution, in KILOBASES",

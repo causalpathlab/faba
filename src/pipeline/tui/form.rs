@@ -15,6 +15,7 @@ pub const OWN: &[&str] = &[
     "known-snps",
     "batch-process",
     "skip-snp",
+    "skip-m6a",
     "skip-count",
     "skip-atoi",
     "skip-apa",

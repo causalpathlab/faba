@@ -11,3 +11,6 @@ pub mod child;
 
 #[allow(dead_code)] // consumed by the later views of this command
 pub mod inputs;
+
+#[allow(dead_code)] // consumed by the later views of this command
+pub mod steps;

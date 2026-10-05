@@ -100,11 +100,15 @@ pub fn run_pipeline(args: &PipelineArgs) -> anyhow::Result<()> {
     // positional BAMs minus --control-bam, tested against the pooled control).
     // It runs BEFORE the heavy APA EM so the fast modalities all finish first.
     // Requires a control; skipped (not failed) when none is supplied.
-    if args.control_bam_files.is_empty() {
-        info!(
-            "Step 4/{}: SKIPPED (m6A needs --control-bam for the WT-vs-MUT contrast)",
-            n_steps
-        );
+    if args.skip_m6a || args.control_bam_files.is_empty() {
+        if args.skip_m6a {
+            info!("Step 4/{}: SKIPPED (--skip-m6a)", n_steps);
+        } else {
+            info!(
+                "Step 4/{}: SKIPPED (m6A needs --control-bam for the WT-vs-MUT contrast)",
+                n_steps
+            );
+        }
     } else {
         info!("Step 4/{}: m6A detection", n_steps);
         match recorded(step_record(args, "dartseq"), || {
