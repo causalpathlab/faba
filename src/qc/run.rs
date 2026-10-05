@@ -240,9 +240,13 @@ pub fn run_qc(args: &QcArgs) -> anyhow::Result<()> {
         .input("fileset", Some(input))
         .input("genome", genome.as_deref())
         .options(args);
+    let given = gff.clone();
     let outcome = filter_fileset(args, input, out_dir, &mut gff);
     // Recorded after the view, which may have read another annotation.
     let mut record = record.input("gff", gff.as_deref());
+    if gff != given {
+        record.set_option("gff", &gff);
+    }
     // A run cancelled before writing leaves the directory empty, for a rerun.
     let wrote = std::fs::read_dir(out_dir).is_ok_and(|mut d| d.next().is_some());
     if wrote {

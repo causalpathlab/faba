@@ -56,6 +56,9 @@ impl Browser {
     /// Show `dir`'s visible entries; going up lands on the directory just
     /// left.
     pub fn open(&mut self, dir: PathBuf, listing: &mut Listing) {
+        // Absolute, or going up from a relative `dir` ends at "", which
+        // lists nothing and has no parent to climb out to.
+        let dir = std::path::absolute(&dir).unwrap_or(dir);
         let (mut dirs, mut files): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
         for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
             let name = e.file_name().to_string_lossy().into_owned();

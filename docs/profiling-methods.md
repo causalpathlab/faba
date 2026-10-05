@@ -699,13 +699,16 @@ thread once (`--gff`, or the one in the input directory's run record); without o
 spans the gene's own sites and the metagene is left out. Every count is decided by the same rule `qc`
 applies, so the view cannot disagree with the written fileset. Shift+Enter opens a confirmation that
 recaps the output directory, the thresholds changed from the start, and the sites every modality
-keeps; a second Shift+Enter (or `y`) applies them, Esc (or `n`) goes back. Plain Enter does
-nothing, so a stray key cannot start a write; on a terminal that cannot tell Shift+Enter from
-Enter (no kitty keyboard protocol), `A` stands in for it. Once applied, the fileset is written
+keeps; a second Shift+Enter applies them, Esc (or `n`) goes back. Shift+Enter is the only key
+that writes: plain Enter does nothing, so a stray key cannot start a write. A terminal without the
+kitty keyboard protocol (macOS Terminal.app, for one) reports Shift+Enter as Enter and cannot
+apply; there, `p` gives the command to run instead. Once applied, the fileset is written
 with the view still up, under a pop-up showing each file as it goes. The view's figure for every
-modality and every knob, as set when the cut was applied (scales, selected gene, sites or reads),
+modality and every knob, as set when the cut was applied (scales, selected gene, bar measure),
 is saved beside it in `qc_plots/{modality}_{knob}.pdf` and `.png`. `p` prints the matching
 `faba qc --batch-process` command, with every cell, feature and site option, and writes nothing; `s` saves the view as a PDF and PNG under a name it asks for.
+`q` leaves without writing. With any threshold changed, `q` and `p` first ask, and only the same
+key again leaves; Esc closes pop-ups and never leaves the view.
 Nothing is written until the thresholds are applied.
 
 Run as plain `faba qc`, with no input or `-o`, it first asks for them in a pop-up: browse to a

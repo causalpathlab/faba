@@ -254,13 +254,37 @@ fn keys_type_reset_off_and_decide() {
     };
     assert_eq!(qc_flags(&got), qc_flags(&start));
 
+    // With nothing changed, q and p leave at once.
     let mut q = picker(&t, None, start.clone());
     press(&mut q, KeyCode::Char('q'));
     assert!(matches!(q.decision, Some(Picked::Cancelled)));
 
-    let mut r = picker(&t, None, start);
+    let mut r = picker(&t, None, start.clone());
     press(&mut r, KeyCode::Char('p'));
     assert!(matches!(r.decision, Some(Picked::PrintOnly(_))));
+
+    // Esc never leaves the view: it is how every pop-up is closed.
+    let mut e = picker(&t, None, start);
+    press(&mut e, KeyCode::Esc);
+    press(&mut e, KeyCode::Esc);
+    assert!(!e.done() && matches!(e.mode, Mode::Browse));
+
+    // With a threshold changed, q and p ask; Esc and other keys go back or
+    // wait, and only the same key again leaves.
+    press(&mut e, KeyCode::Char('+'));
+    press(&mut e, KeyCode::Char('q'));
+    assert!(matches!(e.mode, Mode::Leave(Picked::Cancelled)) && !e.done());
+    press(&mut e, KeyCode::Char('p'));
+    assert!(matches!(e.mode, Mode::Leave(_)) && !e.done());
+    press(&mut e, KeyCode::Esc);
+    assert!(matches!(e.mode, Mode::Browse) && !e.done());
+    press(&mut e, KeyCode::Char('p'));
+    assert!(matches!(e.mode, Mode::Leave(Picked::PrintOnly(_))));
+    press(&mut e, KeyCode::Char('n'));
+    assert!(matches!(e.mode, Mode::Browse) && !e.done());
+    press(&mut e, KeyCode::Char('q'));
+    press(&mut e, KeyCode::Char('q'));
+    assert!(matches!(e.decision, Some(Picked::Cancelled)));
 }
 
 #[test]
@@ -902,10 +926,16 @@ fn confirming_writes_in_the_view_and_shows_progress() {
         })),
     };
 
-    // `A` stands in for Shift+Enter where the terminal cannot report it.
+    // Only Shift+Enter applies: `A`, `y` and plain Enter do not.
     press(&mut p, KeyCode::Char('A'));
+    assert!(matches!(p.mode, Mode::Browse));
+    shift_enter(&mut p);
     assert!(matches!(p.mode, Mode::Confirm));
-    press(&mut p, KeyCode::Char('y'));
+    for code in [KeyCode::Char('y'), KeyCode::Char('A'), KeyCode::Enter] {
+        press(&mut p, code);
+        assert!(matches!(p.mode, Mode::Confirm));
+    }
+    shift_enter(&mut p);
     assert!(matches!(p.mode, Mode::Writing) && !p.done());
     // The figures are drawn, and the writer started, on the next tick.
     assert!(started.borrow().is_none());
@@ -1039,4 +1069,22 @@ fn g_browses_for_an_annotation_and_reads_the_one_picked() {
     press(&mut p, KeyCode::Esc);
     assert!(matches!(p.mode, Mode::Browse));
     assert_eq!(p.gff(), Some(picked.to_str().unwrap()));
+}
+
+#[test]
+fn a_pick_that_fails_to_read_keeps_the_annotation_given_for_the_record() {
+    let t = table(M6A, 50);
+    let mut p = picker(&t, None, SiteFilterArgs::default_values());
+    let tmp = tempfile::tempdir().unwrap();
+    let given = tmp.path().join("given.gtf");
+    std::fs::write(&given, b"").unwrap();
+    let given: Box<str> = given.to_str().unwrap().into();
+    p.annotation = AnnotationSource {
+        gff: Some(given.clone()),
+        given: Some(given.clone()),
+        ..Default::default()
+    };
+    p.load_gff("/nowhere/picked.gtf".into());
+    assert_eq!(p.meta_status(), "/nowhere/picked.gtf: not found");
+    assert_eq!(p.gff(), Some(&*given));
 }

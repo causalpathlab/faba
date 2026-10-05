@@ -845,3 +845,35 @@ fn region_colours_reach_the_terminal() {
     assert_eq!(region_style(CDS).fg, Some(Color::Rgb(0x00, 0x72, 0xb2)));
     assert_eq!(region_style(UTR3).fg, Some(Color::Rgb(0x00, 0x9e, 0x73)));
 }
+
+#[test]
+fn a_transcript_without_a_utr_is_left_out_of_that_utr_median() {
+    // Two CDS fragments with no 5'UTR outnumber the one transcript with
+    // one; a zero in the median would leave the 5'UTR no bins.
+    let models = vec![
+        sized_model(0, 1000, 400),
+        sized_model(0, 1000, 600),
+        sized_model(150, 1000, 0),
+    ];
+    let assignments: Vec<SiteAssignment> = (0..3)
+        .map(|m| SiteAssignment {
+            site: 0,
+            model: Some(m),
+            region: CDS,
+            rel: 0,
+            total_len: 1,
+            weight: 1.0,
+        })
+        .collect();
+    let sf = scale_factors(&assignments, &models).expect("coding");
+    assert_eq!(sf.median(), [150.0, 1000.0, 500.0]);
+    assert!(allocate_bins(48, &sf.twice_median)[UTR5] > 0);
+}
+
+#[test]
+fn split_shares_that_sum_to_a_whole_print_as_one() {
+    let n: f64 = [1.0 / 3.0; 3].iter().sum::<f64>() + [0.2; 5].iter().sum::<f64>();
+    assert_eq!(count_text(n, 4), "2");
+    assert_eq!(count_text(0.5, 4), "0.5000");
+    assert_eq!(count_text(3.0, 1), "3");
+}

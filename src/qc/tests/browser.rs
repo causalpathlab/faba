@@ -74,3 +74,22 @@ fn lists_directories_then_the_kept_files_and_picks_a_file() {
         Nav::Ignored
     ));
 }
+
+#[test]
+fn a_relative_start_is_made_absolute_so_up_keeps_working() {
+    let mut no_tag = |_: &Path| false;
+    let mut listing = Listing {
+        keep: &|_| false,
+        tag: &mut no_tag,
+    };
+    let mut b = Browser::new(PathBuf::from("."));
+    b.open(PathBuf::from("."), &mut listing);
+    assert!(b.cwd.is_absolute(), "{}", b.cwd.display());
+    let start = b.cwd.clone();
+    assert!(matches!(
+        b.key(key(KeyCode::Left), &mut listing),
+        Nav::Moved
+    ));
+    assert_eq!(Some(b.cwd.as_path()), start.parent());
+    assert!(!b.entries.is_empty());
+}

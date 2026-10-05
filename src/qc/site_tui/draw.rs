@@ -42,6 +42,28 @@ fn meta_region(regions: [usize; 3], bin: usize) -> usize {
     }
 }
 
+/// Asking before leaving with changed thresholds unwritten, over `area`.
+pub(super) fn render_leave(frame: &mut Frame, area: Rect, picked: &Picked) {
+    let (title, ask, key) = match picked {
+        Picked::PrintOnly(_) => (
+            " print the flags and leave? ",
+            "Print the --batch-process command and leave, writing nothing.",
+            "p",
+        ),
+        _ => (
+            " leave without writing? ",
+            "Leave the view; the changed thresholds are not written.",
+            "q",
+        ),
+    };
+    let lines = vec![
+        Line::from(Span::styled(ask, PLAIN)),
+        Line::from(""),
+        help_line(&[(key, "yes"), ("Esc/n", "back")]),
+    ];
+    popup(frame, area, title, lines);
+}
+
 /// The annotation browser, centred over `area`.
 pub(super) fn render_gff(frame: &mut Frame, area: Rect, browser: &Browser) {
     let w = area.width.saturating_sub(4).clamp(20, 90);
@@ -327,7 +349,7 @@ impl<'a> SitePicker<'a> {
         ])
         .areas(inner);
         frame.render_widget(Paragraph::new(meta_key(self.weight)), key);
-        // Whole sites: split weights add back up to one per site.
+        // Split weights add back up to whole sites, and to whole reads.
         let region_sum = |c: &[f64], r: usize| {
             let start: usize = m.regions[..r].iter().sum();
             c.get(start..start + m.regions[r])
@@ -344,7 +366,7 @@ impl<'a> SitePicker<'a> {
                 region_sum(m.all, r)
             )));
         }
-        line.push(dim(format!("off-transcript {}", m.unassigned)));
+        line.push(dim(format!("off-transcript {} sites", m.unassigned)));
         frame.render_widget(Paragraph::new(Line::from(line)), stats);
 
         let drawn = self.controls.images().is_some_and(|picker| {

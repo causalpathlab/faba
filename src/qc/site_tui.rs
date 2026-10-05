@@ -51,7 +51,7 @@ mod genes;
 
 use annotation::*;
 use column::*;
-use draw::render_gff;
+use draw::{render_gff, render_leave};
 use genes::*;
 
 /// Width of HistPlot's y gutter.
@@ -191,6 +191,17 @@ enum Mode {
     Writing,
     /// Browsing for an annotation to read.
     Gff(Browser),
+    /// Asking before leaving without writing changed thresholds; the key
+    /// that asked ([`leave_key`]) leaves as the [`Picked`] says.
+    Leave(Picked),
+}
+
+/// The key that asks to leave as `picked` says, and confirms it.
+fn leave_key(picked: &Picked) -> char {
+    match picked {
+        Picked::PrintOnly(_) => 'p',
+        _ => 'q',
+    }
 }
 
 /// The panel Tab moves to, which the arrow keys then drive.
@@ -232,17 +243,13 @@ impl Writer<'_> {
     }
 }
 
-/// The apply keys, as the footer names them.
-const APPLY_KEYS: &str = "⇧Enter/A";
+/// The apply key, as the footer names it.
+const APPLY_KEYS: &str = "⇧Enter";
 
-/// Whether `key` asks to apply: Shift+Enter, or `A` where the terminal
-/// cannot tell Shift+Enter from Enter.
+/// Whether `key` asks to apply: Shift+Enter, and nothing else, so a stray
+/// key cannot write the fileset.
 fn is_apply(key: &KeyEvent) -> bool {
-    match key.code {
-        KeyCode::Enter => key.modifiers.contains(KeyModifiers::SHIFT),
-        KeyCode::Char('A') => true,
-        _ => false,
-    }
+    key.code == KeyCode::Enter && key.modifiers.contains(KeyModifiers::SHIFT)
 }
 
 /// State of the picker, independent of the terminal so it can be tested.
@@ -434,6 +441,15 @@ impl<'a> SitePicker<'a> {
     }
 
     /// End the session, handing the terminal's keyboard back as it was.
+    /// Leave as `picked` says; first ask, when the thresholds have changed.
+    fn leave(&mut self, picked: Picked) {
+        if qc_flags(&self.filter) == qc_flags(&self.initial) {
+            self.decide(picked);
+        } else {
+            self.mode = Mode::Leave(picked);
+        }
+    }
+
     fn decide(&mut self, picked: Picked) {
         if std::mem::take(&mut self.shift_enter_on) {
             let _ = ratatui::crossterm::execute!(std::io::stdout(), PopKeyboardEnhancementFlags);
@@ -582,8 +598,15 @@ impl Screen for SitePicker<'_> {
             },
             Mode::Confirm => match key.code {
                 _ if is_apply(&key) => self.apply(),
-                KeyCode::Char('y') => self.apply(),
                 KeyCode::Esc | KeyCode::Char('n' | 'q') => self.mode = Mode::Browse,
+                _ => {}
+            },
+            Mode::Leave(picked) => match key.code {
+                KeyCode::Char(ch) if ch == leave_key(picked) => {
+                    let picked = picked.clone();
+                    self.decide(picked);
+                }
+                KeyCode::Esc | KeyCode::Char('n') => self.mode = Mode::Browse,
                 _ => {}
             },
             Mode::Writing | Mode::Gff(_) => {}
@@ -623,8 +646,9 @@ impl Screen for SitePicker<'_> {
                 KeyCode::Char('y') => self.y_scale = self.y_scale.next(),
                 KeyCode::Char('e') => self.mode = Mode::Edit(String::new()),
                 KeyCode::Char(ch) if ch.is_ascii_digit() => self.mode = Mode::Edit(ch.to_string()),
-                KeyCode::Char('p') => self.decide(Picked::PrintOnly(self.filter.clone())),
-                KeyCode::Char('q') | KeyCode::Esc => self.decide(Picked::Cancelled),
+                // Esc backs out of every pop-up, so it never leaves the view.
+                KeyCode::Char('p') => self.leave(Picked::PrintOnly(self.filter.clone())),
+                KeyCode::Char('q') => self.leave(Picked::Cancelled),
                 _ => {}
             },
         }
@@ -700,12 +724,17 @@ impl Screen for SitePicker<'_> {
                 buf,
                 &[("Enter", "set"), ("Esc", "back")],
             ),
-            (Mode::Confirm, None) => help_line(&[
-                (APPLY_KEYS, "apply and write"),
-                ("y", "apply and write"),
+            (Mode::Confirm, None) => {
+                help_line(&[(APPLY_KEYS, "apply and write"), ("Esc/n", "back")])
+            }
+            (Mode::Writing, None) => help_line(&[("", "writing; the view closes when done")]),
+            (Mode::Leave(picked), None) => help_line(&[
+                match picked {
+                    Picked::PrintOnly(_) => ("p", "print the flags and leave"),
+                    _ => ("q", "leave without writing"),
+                },
                 ("Esc/n", "back"),
             ]),
-            (Mode::Writing, None) => help_line(&[("", "writing; the view closes when done")]),
             (Mode::Gff(_), None) => help_line(&[
                 ("↑/↓", "move"),
                 ("Enter", "open / read"),
@@ -750,6 +779,7 @@ impl Screen for SitePicker<'_> {
             Mode::Confirm => self.render_confirm(frame, body),
             Mode::Writing => self.render_writing(frame, body),
             Mode::Gff(ref browser) => render_gff(frame, body, browser),
+            Mode::Leave(ref picked) => render_leave(frame, body, picked),
             _ => {}
         }
     }
@@ -794,6 +824,7 @@ pub fn run_site_picker(
     );
     let annotation = AnnotationSource {
         gff: gff.map(Box::from),
+        given: gff.map(Box::from),
         dir: std::path::PathBuf::from(input_dir),
         batches: views.iter().map(|v| v.table.batch.clone()).collect(),
         keys: views

@@ -446,9 +446,14 @@ fn scale_factors(
         .filter(|(_, &c)| c)
         .map(|(m, _)| m)
     {
-        per_region[UTR5].push(m.utr5_size);
-        per_region[CDS].push(m.cds_size);
-        per_region[UTR3].push(m.utr3_size);
+        // A transcript without a region (a CDS fragment, say) has no size
+        // for it, as MetaPlotR's NA is dropped by `median(na.rm = T)`; a
+        // zero would pull the median to 0 and the region to no bins.
+        for (r, size) in [(UTR5, m.utr5_size), (CDS, m.cds_size), (UTR3, m.utr3_size)] {
+            if size > 0 {
+                per_region[r].push(size);
+            }
+        }
     }
     let mut m = [0i64; 3];
     for r in 0..3 {
@@ -639,8 +644,9 @@ impl GeneFeatureHistogram {
 /// A bin count as written: a whole count as an integer, a fractional one
 /// (from split weights) to `decimals`.
 fn count_text(n: f64, decimals: usize) -> String {
-    if n.fract() == 0.0 {
-        format!("{n}")
+    // Sums of 1/k shares land a hair off a whole number.
+    if (n - n.round()).abs() < 1e-9 {
+        format!("{}", n.round())
     } else {
         format!("{n:.decimals$}")
     }

@@ -38,6 +38,13 @@ struct PathPicker {
     decision: Option<Option<(String, String)>>,
 }
 
+/// Whether `dir` holds faba matrices or site tables, checked once.
+fn cached_faba(cache: &mut FxHashMap<PathBuf, bool>, dir: &Path) -> bool {
+    *cache
+        .entry(dir.to_path_buf())
+        .or_insert_with(|| looks_like_faba_dir(dir))
+}
+
 /// A directory next to `input` named after it, that does not exist yet.
 fn suggest_output(input: &Path) -> String {
     let base = input.to_string_lossy();
@@ -88,11 +95,7 @@ impl PathPicker {
     /// output directories.
     fn browse<R>(&mut self, f: impl FnOnce(&mut Browser, &mut Listing) -> R) -> R {
         let faba = &mut self.faba;
-        let mut tag = |d: &Path| {
-            *faba
-                .entry(d.to_path_buf())
-                .or_insert_with(|| looks_like_faba_dir(d))
-        };
+        let mut tag = |d: &Path| cached_faba(faba, d);
         let mut listing = Listing {
             keep: &|_| false,
             tag: &mut tag,
@@ -105,10 +108,7 @@ impl PathPicker {
     }
 
     fn is_faba(&mut self, dir: &Path) -> bool {
-        *self
-            .faba
-            .entry(dir.to_path_buf())
-            .or_insert_with(|| looks_like_faba_dir(dir))
+        cached_faba(&mut self.faba, dir)
     }
 
     /// Take `dir` as the input, if it is a faba output directory.

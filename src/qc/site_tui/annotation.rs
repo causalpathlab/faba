@@ -59,6 +59,8 @@ pub(super) enum Meta {
 pub(super) struct AnnotationSource {
     /// The annotation the metagene and gene models come from.
     pub(super) gff: Option<Box<str>>,
+    /// The one the view was started with, to record if a pick fails.
+    pub(super) given: Option<Box<str>>,
     /// Where the annotation browser opens when `gff` has no directory.
     pub(super) dir: std::path::PathBuf,
     /// Every table's sites, in view order.
@@ -87,7 +89,7 @@ impl Meta {
         };
         // A run record names the annotation where the run was, which may be
         // another machine.
-        if !std::path::Path::new(&gff).is_file() {
+        if !std::path::Path::new(&gff).exists() {
             return Meta::Unavailable(format!("{gff}: not found"));
         }
         let (batches, keys) = (source.batches.clone(), source.keys.clone());
@@ -270,9 +272,13 @@ impl<'a> SitePicker<'a> {
         self.refresh_meta();
     }
 
-    /// The annotation the view uses now, for the run record.
+    /// The annotation to record: the one picked, unless it failed to read,
+    /// when the one the view was started with.
     pub(super) fn gff(&self) -> Option<&str> {
-        self.annotation.gff.as_deref()
+        match self.meta {
+            Meta::Unavailable(_) => self.annotation.given.as_deref(),
+            _ => self.annotation.gff.as_deref(),
+        }
     }
 
     /// Why there is no metagene to draw.
