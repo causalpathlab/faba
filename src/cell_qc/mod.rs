@@ -91,7 +91,7 @@ impl Default for CellCallParams {
 }
 
 /// Shared CLI knobs for cell calling, flattened into each subcommand that does
-/// gene-count QC (`count`, `apa`, `atoi`, `dartseq`, `all`).
+/// gene-count QC (`count`, `apa`, `atoi`, `dartseq`, `run`).
 #[derive(clap::Args, Debug, Clone, serde::Serialize)]
 pub struct CellQcArgs {
     /// Cell-calling method (barcode QC)

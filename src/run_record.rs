@@ -1,6 +1,6 @@
 //! `{job}.run.json`: what one run read, what it wrote, and with which options.
 //!
-//! Every producer (and every step of `faba all`) leaves one of these in its
+//! Every producer (and every step of `faba run`) leaves one of these in its
 //! output directory. Inputs are recorded as absolute paths, so the tools that
 //! read an output directory later (`pileup`, `metagene`, `pwm`) can find the
 //! annotation and genome it was made from without being told again; see
@@ -279,7 +279,7 @@ fn choose(v: &Value, record: &Path) -> Option<String> {
     }
 }
 
-/// Whether a file name is a run record: `{job}.run.json`, or `faba all`'s
+/// Whether a file name is a run record: `{job}.run.json`, or `faba run`'s
 /// `pipeline_summary.json`.
 pub fn is_run_record(name: &str) -> bool {
     name.ends_with(".run.json") || name == "pipeline_summary.json"

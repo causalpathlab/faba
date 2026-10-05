@@ -24,7 +24,7 @@ pub fn run_read_depth_pipeline(args: &ReadDepthArgs) -> anyhow::Result<()> {
 }
 
 /// [`run_read_depth_pipeline`] with the cell sets supplied directly, for callers
-/// that already called cells in memory (the `faba all` pipeline) and should not
+/// that already called cells in memory (the `faba run` pipeline) and should not
 /// have to round-trip them through `{batch}_cells.tsv.gz`.
 pub fn run_read_depth_pipeline_with_cells(
     args: &ReadDepthArgs,
@@ -109,7 +109,7 @@ pub fn run_read_depth_pipeline_with_cells(
         );
 
         // `{batch}_depth`, not a bare `{batch}`. Every other modality names its
-        // matrix `{batch}_{modality}`, and inside a shared `faba all` output
+        // matrix `{batch}_{modality}`, and inside a shared `faba run` output
         // directory an unsuffixed file is ambiguous -- it reads like the
         // batch's primary matrix rather than one modality among several.
         let name = format!("{batch_name}_depth");

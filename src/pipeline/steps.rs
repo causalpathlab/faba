@@ -1,4 +1,4 @@
-//! The per-modality steps `faba all` chains, in the order it runs them.
+//! The per-modality steps `faba run` chains, in the order it runs them.
 //!
 //! Each one builds the standalone subcommand's args from [`super::args::PipelineArgs`]
 //! and calls the same entry point the user would — never a private copy of the work.
@@ -33,7 +33,7 @@ pub(super) fn run_snp_step(args: &PipelineArgs) -> anyhow::Result<()> {
         None
     };
 
-    let gff_map = GffRecordMap::from(args.gff_file.as_ref())?;
+    let gff_map = GffRecordMap::from(args.gff())?;
 
     let umi_tag = if args.no_umi_dedup {
         None
@@ -45,7 +45,7 @@ pub(super) fn run_snp_step(args: &PipelineArgs) -> anyhow::Result<()> {
         // Genotype over WT + control: same genome, so pooling deepens coverage
         // and the shared mask, and each control BAM gets its own SNP output.
         bam_files: all_quant_bam_files(args),
-        genome_file: args.genome_file.clone(),
+        genome_file: args.genome().into(),
         cell_barcode_tag: args.cell_barcode_tag.clone(),
         gene_barcode_tag: args.gene_barcode_tag.clone(),
         include_missing_barcode: false,
@@ -61,8 +61,8 @@ pub(super) fn run_snp_step(args: &PipelineArgs) -> anyhow::Result<()> {
         },
         backend: args.backend.clone(),
         zip: args.zip,
-        output: args.output.clone(),
-        // Per-cell, like `faba snp` standalone: `faba all` documents
+        output: args.out().into(),
+        // Per-cell, like `faba snp` standalone: `faba run` documents
         // `{batch}_baf` in its output layout and promises control BAMs a
         // per-cell BAF matrix, and it already hands the pipeline the
         // `Some(&gff_map)` that pass 2 needs.
@@ -103,7 +103,7 @@ pub(super) fn filtered_gff(
 }
 
 /// Step 1 is [`run_gene_count_qc`] with the pipeline's knobs — the same call the
-/// standalone modalities make, so `faba all` and `faba dartseq` cannot disagree
+/// standalone modalities make, so `faba run` and `faba dartseq` cannot disagree
 /// about which cells and genes survive.
 pub(super) fn run_gene_counting_step(args: &PipelineArgs) -> anyhow::Result<Option<GeneCountQc>> {
     // Count genes (and freeze cells) for WT + control samples alike.
@@ -115,7 +115,7 @@ pub(super) fn run_gene_counting_step(args: &PipelineArgs) -> anyhow::Result<Opti
     }
 
     let qc = crate::quant::run_gene_count_qc(
-        args.gff_file.as_ref(),
+        args.gff(),
         &crate::quant::GeneQcRequest {
             bam_files: &all_bam_files,
             count: crate::gene_count::splice::CountReadOpts {
@@ -124,8 +124,8 @@ pub(super) fn run_gene_counting_step(args: &PipelineArgs) -> anyhow::Result<Opti
                 umi_tag: crate::quant::resolve_umi_tag(args.no_umi_dedup, &args.umi_tag),
                 min_mapping_quality: args.min_mapping_quality,
             },
-            gff_file: Some(args.gff_file.as_ref()),
-            output_dir: &args.output,
+            gff_file: Some(args.gff()),
+            output_dir: args.out(),
             gene_type: &args.gene_type,
             gene_min_cells: args.gene_min_cells,
             gene_min_counts: args.gene_min_counts,
@@ -150,12 +150,12 @@ pub(super) fn run_atoi_step(
     gene_count_qc: &Option<GeneCountQc>,
 ) -> anyhow::Result<usize> {
     // Load GFF and filter to expressed genes
-    let (gff_map, spliced) = filtered_gff(args.gff_file.as_ref(), gene_count_qc)?;
+    let (gff_map, spliced) = filtered_gff(args.gff(), gene_count_qc)?;
 
     // Build ConversionParams for ATOI
     let params = ConversionParams {
         mod_type: ModificationType::AtoI,
-        genome_file: args.genome_file.clone(),
+        genome_file: args.genome().into(),
         // ADAR is active in WT and YTHmut alike, so A-to-I is quantified across
         // all samples (signal-only test, no control arm).
         wt_bam_files: all_quant_bam_files(args),
@@ -168,7 +168,7 @@ pub(super) fn run_atoi_step(
         overdispersion: args.edit_overdispersion,
         backend: args.backend.clone(),
         zip: args.zip,
-        output: args.output.clone(),
+        output: args.out().into(),
         cell_membership_file: None,
         membership_barcode_col: 0,
         membership_celltype_col: 1,
@@ -197,7 +197,7 @@ pub(super) fn run_atoi_step(
     info!("Found {} putative ATOI sites", n_sites);
 
     // Save site annotations
-    let sites_output = format!("{}/atoi_sites.parquet", args.output);
+    let sites_output = format!("{}/atoi_sites.parquet", args.out());
     atoi_sites.to_parquet(&gff_map, &spliced, &sites_output)?;
     info!("Saved ATOI sites to {}", sites_output);
 
@@ -254,7 +254,7 @@ pub(super) fn run_apa_step(
     // Build CountApaArgs from PipelineArgs
     let mut apa_args = CountApaArgs {
         bam_files: all_bam_files,
-        gff_file: Some(args.gff_file.clone()),
+        gff_file: Some(args.gff().into()),
         cell_barcode_tag: args.cell_barcode_tag.clone(),
         polya_min_tail_length: args.polya_min_tail_length,
         polya_max_non_a_or_t: 3,
@@ -271,7 +271,7 @@ pub(super) fn run_apa_step(
         // happen to lack APA signal would make APA's cell axis inconsistent with
         // genes/ATOI/m6A (which keep the full set).
         column_nnz_cutoff: 0,
-        output: args.output.clone(),
+        output: args.out().into(),
         backend: args.backend.clone(),
         zip: args.zip,
         method: ApaMethod::Mixture, // Always use mixture mode (more robust)
@@ -322,7 +322,7 @@ pub(super) fn run_dart_step(
     gene_count_qc: &Option<GeneCountQc>,
 ) -> anyhow::Result<()> {
     // Load GFF and filter to expressed genes
-    let (gff_map, spliced) = filtered_gff(args.gff_file.as_ref(), gene_count_qc)?;
+    let (gff_map, spliced) = filtered_gff(args.gff(), gene_count_qc)?;
 
     // m6A is a WT-vs-MUT contrast: the signal (wt) arm is the positional BAMs
     // MINUS the control set; the control (mut) arm is --control-bam. (SNP/genes/
@@ -351,7 +351,7 @@ pub(super) fn run_dart_step(
     // Build ConversionParams for m6A (DART)
     let mut params = ConversionParams {
         mod_type: ModificationType::M6A { check_r_site: true },
-        genome_file: args.genome_file.clone(),
+        genome_file: args.genome().into(),
         wt_bam_files: signal_bam_files,
         gene_barcode_tag: args.gene_barcode_tag.clone(),
         cell_barcode_tag: args.cell_barcode_tag.clone(),
@@ -362,7 +362,7 @@ pub(super) fn run_dart_step(
         overdispersion: args.edit_overdispersion,
         backend: args.backend.clone(),
         zip: args.zip,
-        output: args.output.clone(),
+        output: args.out().into(),
         cell_membership_file: None,
         membership_barcode_col: 0,
         membership_celltype_col: 1,
@@ -393,7 +393,7 @@ pub(super) fn run_dart_step(
         // See the note at the `faba dartseq` call site: competence is only
         // meaningful for a barcode already called as a real cell.
         gene_count_qc.as_ref(),
-        &args.output,
+        args.out(),
         "m6a",
     )?;
 
@@ -403,7 +403,7 @@ pub(super) fn run_dart_step(
     info!("Found {} putative m6A sites", n_sites);
 
     // Save site annotations
-    let sites_output = format!("{}/m6a_sites.parquet", args.output);
+    let sites_output = format!("{}/m6a_sites.parquet", args.out());
     m6a_sites.to_parquet(&gff_map, &spliced, &sites_output)?;
     info!("Saved m6A sites to {}", sites_output);
 
@@ -475,7 +475,7 @@ pub(super) fn run_read_depth_step(
         // The pipeline hands the frozen cell set over directly, so there is no
         // reason to round-trip it through the `--valid-cells` directory.
         valid_cells_file: None,
-        output: args.output.clone(),
+        output: args.out().into(),
     };
 
     crate::read_depth::pipeline::run_read_depth_pipeline_with_cells(

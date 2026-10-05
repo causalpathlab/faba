@@ -13,8 +13,8 @@ use rustc_hash::FxHashMap;
 
 use super::browser::{Browser, Listing, Nav};
 use super::layout::looks_like_faba_dir;
-use super::widgets::popup_frame;
 use crate::figure::{Edit, LineInput};
+use crate::tui::{next_free, output_problem, popup_frame};
 
 enum Step {
     /// Browsing for the input directory.
@@ -48,27 +48,10 @@ fn cached_faba(cache: &mut FxHashMap<PathBuf, bool>, dir: &Path) -> bool {
 /// A directory next to `input` named after it, that does not exist yet.
 fn suggest_output(input: &Path) -> String {
     let base = input.to_string_lossy();
-    let base = base.trim_end_matches('/');
-    let mut out = format!("{base}_qc");
-    let mut n = 2;
-    while Path::new(&out).exists() {
-        out = format!("{base}_qc{n}");
-        n += 1;
-    }
-    out
-}
-
-/// Why `out` cannot take the filtered fileset, if it cannot.
-fn output_problem(out: &str) -> Option<String> {
-    let path = Path::new(out);
-    if out.is_empty() {
-        return Some("name a directory".into());
-    }
-    if path.is_file() {
-        return Some(format!("{out} is a file"));
-    }
-    let non_empty = std::fs::read_dir(path).is_ok_and(|mut d| d.next().is_some());
-    non_empty.then(|| format!("{out} already contains files; choose an empty one"))
+    // Joined onto an empty base, the stem is the path itself.
+    next_free(Path::new(""), &format!("{}_qc", base.trim_end_matches('/')))
+        .to_string_lossy()
+        .into_owned()
 }
 
 impl PathPicker {

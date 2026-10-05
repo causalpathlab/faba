@@ -258,7 +258,7 @@ pub struct DartSeqCountArgs {
                      with components called as modes of the bandwidth-smoothed site pileup
 \
                      (--mixture-bandwidth, capped by --mixture-max-k), and write a sparse (cells x components) matrix\n\
-                     plus m6a_components.parquet. Off by default, matching `faba all`.\n\
+                     plus m6a_components.parquet. Off by default, matching `faba run`.\n\
                      The fit runs over EVERY putative site, posterior-weighted by evidence,\n\
                      since the producer applies no p-value cutoff."
     )]
@@ -485,7 +485,7 @@ pub fn run_m6a(args: &DartSeqCountArgs) -> anyhow::Result<()> {
     // m6A is a WT-vs-MUT contrast, so the signal (wt) arm for SITE DISCOVERY is
     // the positional BAMs MINUS any control listed in --control-bam; otherwise a
     // both-listed control would be pooled into the wt side and dilute its own
-    // contrast (mirrors `faba all`). Controls are still QUANTIFIED in the second
+    // contrast (mirrors `faba run`). Controls are still QUANTIFIED in the second
     // pass via `quant_bam_files` (signal ∪ control) — only discovery drops them.
     let control_set: rustc_hash::FxHashSet<&str> =
         args.control_bam_files.iter().map(|s| s.as_ref()).collect();

@@ -7,7 +7,7 @@ use data_beans::interactive::ui::{DIM, HIGHLIGHT, PLAIN};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::text::{Line, Span};
 
-use super::widgets::first_visible;
+use crate::tui::first_visible;
 
 /// One listed name.
 pub struct Entry {

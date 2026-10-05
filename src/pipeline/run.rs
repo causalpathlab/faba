@@ -37,8 +37,8 @@ pub fn run_pipeline(args: &PipelineArgs) -> anyhow::Result<()> {
     ThreadPoolBuilder::new()
         .num_threads(args.max_threads)
         .build_global()?;
-    std::fs::create_dir_all(&*args.output)?;
-    let summary = step_record(args, "all");
+    std::fs::create_dir_all(args.out())?;
+    let summary = step_record(args, "run");
 
     // Validate inputs
     check_all_bam_indices(&args.bam_files)?;
@@ -100,7 +100,9 @@ pub fn run_pipeline(args: &PipelineArgs) -> anyhow::Result<()> {
     // positional BAMs minus --control-bam, tested against the pooled control).
     // It runs BEFORE the heavy APA EM so the fast modalities all finish first.
     // Requires a control; skipped (not failed) when none is supplied.
-    if args.control_bam_files.is_empty() {
+    if args.skip_m6a {
+        info!("Step 4/{}: SKIPPED (--skip-m6a)", n_steps);
+    } else if args.control_bam_files.is_empty() {
         info!(
             "Step 4/{}: SKIPPED (m6A needs --control-bam for the WT-vs-MUT contrast)",
             n_steps
@@ -130,13 +132,13 @@ pub fn run_pipeline(args: &PipelineArgs) -> anyhow::Result<()> {
     }
 
     summary.finish(&Ok(()));
-    info!("Pipeline complete! Results in: {}", args.output);
+    info!("Pipeline complete! Results in: {}", args.out());
     Ok(())
 }
 
 /// A record for one step of the run, with the inputs that step reads, under
 /// the name the standalone subcommand writes, so a step's outputs can be
-/// traced to it. As `all`, the whole run: every input, written to
+/// traced to it. As `run`, the whole run: every input, written to
 /// `pipeline_summary.json`.
 ///
 /// Every option is recorded, and it is [`PipelineArgs`] itself that is
@@ -147,10 +149,10 @@ pub fn run_pipeline(args: &PipelineArgs) -> anyhow::Result<()> {
 /// version history that is not monotonic. A new option appears here the moment
 /// it is added to `PipelineArgs`, with no second list to keep in sync.
 fn step_record(args: &PipelineArgs, job: &str) -> RunRecord {
-    let record = RunRecord::start(job, &args.output).options(args);
-    let (gff, genome) = (Some(&*args.gff_file), Some(&*args.genome_file));
+    let record = RunRecord::start(job, args.out()).options(args);
+    let (gff, genome) = (Some(args.gff()), Some(args.genome()));
     match job {
-        "all" => record
+        "run" => record
             .file_name("pipeline_summary.json")
             .inputs("bam", &args.bam_files)
             .inputs("control_bam", &args.control_bam_files)
@@ -187,3 +189,23 @@ fn step_record(args: &PipelineArgs, job: &str) -> RunRecord {
 
 #[cfg(test)]
 mod tests;
+
+/// `faba run`: straight through under `--batch-process`, else the setup view.
+/// `run_cmd` is `faba`'s built `run` subcommand, so it carries `faba`'s global
+/// flags (such as `-v`), and `matches` are its matches from the command line.
+pub fn run_or_view(
+    args: &PipelineArgs,
+    run_cmd: clap::Command,
+    matches: &clap::ArgMatches,
+) -> anyhow::Result<()> {
+    if args.batch_process {
+        args.check_batch()?;
+        return run_pipeline(args);
+    }
+    anyhow::ensure!(
+        data_beans::interactive::tui_available(),
+        "`faba run` sets up the run in a full-screen view, which needs stdin and stdout \
+         on a terminal; pass --batch-process with the BAMs, -g, -f and -o to run without it"
+    );
+    super::tui::run_view(run_cmd, Some((matches, args)))
+}

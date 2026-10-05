@@ -386,7 +386,7 @@ pub fn call_competent_cells(
 #[cfg(test)]
 mod tests;
 
-/// Knobs shared by `faba dartseq` and `faba all`. No off switch: the scan no-ops
+/// Knobs shared by `faba dartseq` and `faba run`. No off switch: the scan no-ops
 /// when there is nothing to calibrate against (see [`call_and_report`]).
 #[derive(Args, Debug, Clone, serde::Serialize)]
 pub struct CellScanArgs {

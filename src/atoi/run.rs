@@ -63,7 +63,7 @@ pub struct AtoICountArgs {
         default_value_t = crate::editing::pipeline::DEFAULT_ATOI_MIN_COVERAGE,
         help = "Minimum coverage (ref + alt reads) for an A-to-I site to be written",
         long_help = "Minimum coverage (ref + alt reads) for an A-to-I site to be written.\n\
-                     A candidacy floor, shared with `faba all --atoi-min-coverage`.\n\
+                     A candidacy floor, shared with `faba run --atoi-min-coverage`.\n\
                      A-to-I has no motif anchor, so this bounds the candidate set;\n\
                      no p-value cutoff is applied here (see `faba qc --site-max-pv`)."
     )]

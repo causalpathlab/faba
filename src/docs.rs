@@ -30,7 +30,7 @@ pub struct DocsArgs {
         value_name = "TOPIC|SECTION",
         help = "A write-up, or sections of one by keyword (omit to list what there is)",
         long_help = "A whole write-up by its topic, or sections of one by keyword:\n\
-                     a subcommand named in a heading (`qc`, `pileup`, `all`),\n\
+                     a subcommand named in a heading (`qc`, `pileup`, `run`),\n\
                      a section number (`8`, `1.3`), or any word of a heading (`records`).\n\
                      Several keywords print several sections, in document order.\n\
                      Omit to list the topics and their sections."

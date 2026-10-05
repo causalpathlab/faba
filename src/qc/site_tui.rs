@@ -14,10 +14,7 @@ use data_beans::interactive::ui::{
     HIGHLIGHT, PLAIN,
 };
 use data_beans::qc::pct;
-use ratatui::crossterm::event::{
-    KeyCode, KeyEvent, KeyModifiers, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
-    PushKeyboardEnhancementFlags,
-};
+use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -42,7 +39,7 @@ use super::browser::{Browser, Listing, Nav};
 use super::layout::{file_name, SITE_MODALITIES};
 use super::progress::Progress;
 use super::sites::{genomic_sites, Criterion, GeneSites, SiteTable};
-use super::widgets::{first_visible, popup, popup_frame};
+use crate::tui::{first_visible, is_apply, popup, popup_frame, ShiftEnter, APPLY_KEYS};
 
 mod annotation;
 mod column;
@@ -243,15 +240,6 @@ impl Writer<'_> {
     }
 }
 
-/// The apply key, as the footer names it.
-const APPLY_KEYS: &str = "⇧Enter";
-
-/// Whether `key` asks to apply: Shift+Enter, and nothing else, so a stray
-/// key cannot write the fileset.
-fn is_apply(key: &KeyEvent) -> bool {
-    key.code == KeyCode::Enter && key.modifiers.contains(KeyModifiers::SHIFT)
-}
-
 /// State of the picker, independent of the terminal so it can be tested.
 struct SitePicker<'a> {
     title: String,
@@ -268,11 +256,8 @@ struct SitePicker<'a> {
     tally: Tally,
     mode: Mode,
     panel: Panel,
-    /// Ask the terminal to tell Shift+Enter from Enter at the first draw
-    /// (the kitty keyboard protocol; others ignore the request).
-    want_shift_enter: bool,
-    /// The request is in force, to be withdrawn on the way out.
-    shift_enter_on: bool,
+    /// Shift+Enter reporting, asked for at the first draw.
+    shift_enter: ShiftEnter,
     /// Plain Enter was pressed: say how to apply instead.
     enter_hint: bool,
     /// Steps done the last time the write was drawn.
@@ -312,8 +297,7 @@ impl<'a> SitePicker<'a> {
             tally,
             mode: Mode::Browse,
             panel: Panel::Thresholds,
-            want_shift_enter: false,
-            shift_enter_on: false,
+            shift_enter: ShiftEnter::default(),
             enter_hint: false,
             drawn_steps: 0,
             controls: Controls::new("qc_sites"),
@@ -451,9 +435,7 @@ impl<'a> SitePicker<'a> {
     }
 
     fn decide(&mut self, picked: Picked) {
-        if std::mem::take(&mut self.shift_enter_on) {
-            let _ = ratatui::crossterm::execute!(std::io::stdout(), PopKeyboardEnhancementFlags);
-        }
+        self.shift_enter.release();
         self.decision = Some(picked);
     }
 
@@ -655,16 +637,7 @@ impl Screen for SitePicker<'_> {
     }
 
     fn render(&mut self, frame: &mut Frame) {
-        // Ask for Shift+Enter on the screen the view draws on: terminals keep
-        // the main and alternate screens' keyboard modes apart.
-        if std::mem::take(&mut self.want_shift_enter) {
-            let flags = KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES;
-            self.shift_enter_on = ratatui::crossterm::execute!(
-                std::io::stdout(),
-                PushKeyboardEnhancementFlags(flags)
-            )
-            .is_ok();
-        }
+        self.shift_enter.arm();
         let [top, tabs, body, footer] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Length(1),
@@ -838,7 +811,7 @@ pub fn run_site_picker(
         SitePicker::new(&file_name(input_dir), views, filter.clone(), meta).pin_genes(pinned);
     picker.annotation = annotation;
     picker.writer = writer;
-    picker.want_shift_enter = true;
+    picker.shift_enter = ShiftEnter::wanted();
     picker.controls = Controls::new("qc_sites").detect();
     data_beans::interactive::ui::run_screen(&mut picker)?;
     let gff = picker.gff().map(Box::from);
