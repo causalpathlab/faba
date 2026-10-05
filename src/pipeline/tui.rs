@@ -8,3 +8,6 @@ pub mod script;
 
 #[allow(dead_code)] // consumed by the later views of this command
 pub mod child;
+
+#[allow(dead_code)] // consumed by the later views of this command
+pub mod inputs;
