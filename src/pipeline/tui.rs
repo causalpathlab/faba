@@ -1,13 +1,13 @@
 //! `faba run`'s setup view: pick the inputs, steps and flags, preview the
 //! exact command, save it as a script and run it with its log on screen.
 
-pub mod child;
+mod child;
 mod draw;
-pub mod form;
-pub mod inputs;
-pub(crate) mod keys;
-pub mod script;
-pub mod steps;
+mod form;
+mod inputs;
+mod keys;
+mod script;
+mod steps;
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -82,6 +82,16 @@ impl Job {
     }
 }
 
+/// What keeps the run from starting, worked out after each key rather than
+/// at each draw: clap's check parses the whole command.
+#[derive(Default)]
+pub struct Checked {
+    /// clap's complaint about the command, if any.
+    pub complaint: Option<String>,
+    /// Everything that keeps the run from starting.
+    pub problems: Vec<String>,
+}
+
 pub struct App {
     pub page: Page,
     pub inputs: Inputs,
@@ -106,13 +116,15 @@ pub struct App {
     pub verbose: bool,
     /// The run's end has been drawn.
     end_drawn: bool,
+    /// [`App::check`] as of the last key.
+    pub checked: Checked,
 }
 
 impl App {
     pub fn new(run_cmd: clap::Command, cwd: PathBuf) -> App {
         // The browser's `..` needs an absolute path to climb.
         let cwd = std::path::absolute(&cwd).unwrap_or(cwd);
-        App {
+        let mut app = App {
             page: Page::Inputs,
             inputs: Inputs::new(cwd),
             steps: Steps::default(),
@@ -131,7 +143,10 @@ impl App {
             quit: false,
             verbose: false,
             end_drawn: false,
-        }
+            checked: Checked::default(),
+        };
+        app.refresh();
+        app
     }
 
     /// Take what the command line gave: its flags, steps and inputs.
@@ -167,6 +182,7 @@ impl App {
         if let Some(o) = &args.output {
             self.inputs.output = o.to_string();
         }
+        self.refresh();
     }
 
     /// Indices of the form rows shown: advanced ones only when asked for,
@@ -201,22 +217,32 @@ impl App {
         v
     }
 
-    /// clap's complaint about the command, if any.
-    pub fn clap_complaint(&self) -> Option<String> {
-        form::check(&self.run_cmd, &self.argv()).err()
-    }
-
-    /// Everything that keeps the run from starting.
-    pub fn problems(&self) -> Vec<String> {
-        let mut v = self.inputs.problems();
-        v.extend(self.steps.problems());
-        if let Some(c) = self.clap_complaint() {
-            v.push(match form::blamed(&c, &self.form.fields) {
+    /// clap's complaint and everything that keeps the run from starting,
+    /// as things stand now.
+    pub fn check(&self) -> Checked {
+        let complaint = form::check(&self.run_cmd, &self.argv()).err();
+        let mut problems = self.inputs.problems();
+        problems.extend(self.steps.problems());
+        if let Some(c) = &complaint {
+            problems.push(match form::blamed(c, &self.form.fields) {
                 Some(l) => format!("--{l}: {c}"),
-                None => c,
+                None => c.clone(),
             });
         }
-        v
+        Checked {
+            complaint,
+            problems,
+        }
+    }
+
+    /// Everything that keeps the run from starting, worked out afresh.
+    pub fn problems(&self) -> Vec<String> {
+        self.check().problems
+    }
+
+    /// Bring [`App::checked`] up to date.
+    pub fn refresh(&mut self) {
+        self.checked = self.check();
     }
 
     /// A run is going.
@@ -299,34 +325,12 @@ impl App {
 
     /// Put `text` on the terminal's clipboard (OSC 52).
     fn copy(&mut self, text: &str) {
-        use std::io::Write;
-        let mut out = std::io::stdout();
-        let _ = write!(out, "\x1b]52;c;{}\x07", base64(text.as_bytes()));
-        let _ = out.flush();
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            crossterm::clipboard::CopyToClipboard::to_clipboard_from(text)
+        );
         self.note = Some("copied the command to the clipboard".into());
     }
-}
-
-/// Standard base64, padded.
-fn base64(bytes: &[u8]) -> String {
-    const ABC: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut s = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let b = [
-            chunk[0],
-            chunk.get(1).copied().unwrap_or(0),
-            chunk.get(2).copied().unwrap_or(0),
-        ];
-        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
-        for k in 0..4 {
-            if k <= chunk.len() {
-                s.push(ABC[(n >> (18 - 6 * k) & 63) as usize] as char);
-            } else {
-                s.push('=');
-            }
-        }
-    }
-    s
 }
 
 impl Screen for App {
@@ -362,7 +366,7 @@ impl Screen for App {
 
 /// Open the setup view in `faba run`'s flags, pre-filled from a command
 /// line when one is given.
-pub fn run_view(
+pub(crate) fn run_view(
     run_cmd: clap::Command,
     prefill: Option<(&clap::ArgMatches, &PipelineArgs)>,
 ) -> anyhow::Result<()> {
@@ -383,6 +387,15 @@ pub fn run_view(
         }
     }
     shown
+}
+
+/// `faba`'s built `run` subcommand, as `main` hands it to the view.
+#[cfg(test)]
+pub(crate) fn run_cmd() -> clap::Command {
+    crate::faba_command()
+        .find_subcommand("run")
+        .cloned()
+        .expect("faba has a run command")
 }
 
 #[cfg(test)]

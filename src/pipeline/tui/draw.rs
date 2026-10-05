@@ -259,12 +259,13 @@ fn draw_steps(app: &App, frame: &mut Frame, body: Rect) {
     let inner = framed(frame, body, " steps, in order ".into(), true);
     let steps = &app.steps;
     let bg = app.inputs.bg().len();
+    let effective = steps.effective(bg > 0);
     let lines: Vec<Line> = Step::ALL
         .iter()
         .enumerate()
         .map(|(i, &s)| {
-            let blocked = s == Step::M6a && bg == 0;
-            let on = steps.is_on(s) && !blocked;
+            let blocked = s.available(bg > 0).is_err();
+            let on = effective[i];
             let style = if on { PLAIN } else { DIM };
             let mut spans = vec![
                 marker(i == steps.at),
@@ -282,7 +283,7 @@ fn draw_steps(app: &App, frame: &mut Frame, body: Rect) {
                     }
                 }
                 Step::Depth => Span::styled("   resolution: off (Space asks for kb)", DIM),
-                Step::M6a if blocked => Span::styled("   needs a bg BAM", DIM),
+                _ if blocked => Span::styled("   needs a bg BAM", DIM),
                 Step::M6a => Span::styled(
                     format!("   {bg} bg BAM{}", if bg == 1 { "" } else { "s" }),
                     DIM,
@@ -311,7 +312,7 @@ fn draw_flags(app: &App, frame: &mut Frame, body: Rect) {
 
     let visible = app.visible_flags();
     let sel = app.flag_row();
-    let complaint = app.clap_complaint();
+    let complaint = &app.checked.complaint;
     let blamed = complaint
         .as_deref()
         .and_then(|c| form::blamed(c, &form.fields));
@@ -363,7 +364,7 @@ fn draw_flags(app: &App, frame: &mut Frame, body: Rect) {
                 spans.push(Span::styled(format!("  (default {d})"), DIM));
             }
             if blamed == Some(f.long.as_str()) {
-                let c = complaint.clone().unwrap_or_default();
+                let c = complaint.as_deref().unwrap_or_default();
                 spans.push(Span::styled(format!("  {c}"), ACCENTED));
             }
             lines.push(Line::from(spans));
@@ -494,12 +495,12 @@ fn draw_picking(app: &App, frame: &mut Frame, body: Rect) {
 fn draw_preview(app: &App, frame: &mut Frame, body: Rect) {
     // What blocks the run and where the script goes come first: a long list
     // of BAMs must not push them out of the pop-up.
-    let problems = app.problems();
+    let problems = &app.checked.problems;
     let mut lines: Vec<Line> = if problems.is_empty() {
         vec![Line::styled(" no problems", DIM)]
     } else {
         problems
-            .into_iter()
+            .iter()
             .map(|p| Line::styled(format!(" {p}"), HIGHLIGHT))
             .collect()
     };

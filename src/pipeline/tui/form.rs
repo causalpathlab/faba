@@ -1,29 +1,18 @@
 //! The flags of `faba run` as rows of a form, read from its clap
 //! definition, and the command line the filled form stands for.
 //!
-//! Nothing here names a flag of the pipeline apart from [`OWN`]: every row
-//! comes from the command's `Arg`s, so a flag added later shows up on its own.
+//! Nothing here names a flag of the pipeline apart from [`OWN`] and
+//! [`OWNED_HEADINGS`]: every row comes from the command's `Arg`s, so a flag
+//! added later shows up on its own.
 
 use clap::{Arg, ArgAction, Command};
 
-/// Flags the Inputs and Steps screens own, or that are never passed.
-pub const OWN: &[&str] = &[
-    "gff",
-    "genome",
-    "output",
-    "control-bam",
-    "known-snps",
-    "batch-process",
-    "skip-snp",
-    "skip-m6a",
-    "skip-count",
-    "skip-atoi",
-    "skip-apa",
-    "depth-resolution-kb",
-    "help",
-    "version",
-    "verbose",
-];
+/// Flags with no help heading that are never passed. The Inputs and Steps
+/// screens own every flag under [`OWNED_HEADINGS`].
+pub const OWN: &[&str] = &["batch-process", "help", "version", "verbose"];
+
+/// The help headings whose flags the Inputs and Steps screens own.
+pub const OWNED_HEADINGS: &[&str] = &["Inputs", "Steps"];
 
 /// What a row holds and how it is changed.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -55,8 +44,6 @@ pub struct Field {
     pub id: String,
     /// The long name, without `--`.
     pub long: String,
-    #[allow(dead_code)] // the short help; the view shows the long one
-    pub help: String,
     pub long_help: String,
     /// The help heading the flag is listed under; `""` for none.
     pub heading: String,
@@ -72,7 +59,8 @@ pub struct Field {
 impl Field {
     fn from_arg(a: &Arg, own: &[&str]) -> Option<Self> {
         let long = a.get_long()?.to_string();
-        if own.contains(&long.as_str()) {
+        let heading = a.get_help_heading().unwrap_or("");
+        if own.contains(&long.as_str()) || OWNED_HEADINGS.contains(&heading) {
             return None;
         }
         let kind = match a.get_action() {
@@ -114,13 +102,12 @@ impl Field {
         }
         Some(Field {
             id: a.get_id().to_string(),
-            help: a.get_help().map(ToString::to_string).unwrap_or_default(),
             long_help: a
                 .get_long_help()
                 .or_else(|| a.get_help())
                 .map(ToString::to_string)
                 .unwrap_or_default(),
-            heading: a.get_help_heading().unwrap_or("").to_string(),
+            heading: heading.to_string(),
             value: default.clone(),
             default,
             advanced: a.is_hide_set(),
@@ -246,7 +233,8 @@ fn emit(flag: &str, many: Many, vs: Vec<String>) -> Vec<String> {
     }
 }
 
-/// Every flag of `faba run` but `own`, as rows.
+/// Every flag of `faba run` but `own` and those under [`OWNED_HEADINGS`],
+/// as rows.
 #[derive(Clone, Debug)]
 pub struct Form {
     pub fields: Vec<Field>,

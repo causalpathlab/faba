@@ -22,7 +22,7 @@ use crate::common::*;
 use crate::qc::{run_qc, QcArgs};
 use apa::run::*;
 use atoi::run::*;
-use clap::CommandFactory;
+use clap::{CommandFactory, FromArgMatches};
 use docs::*;
 use gene_count::run::*;
 use m6a::run::*;
@@ -426,12 +426,23 @@ Example:\n  \
     Run(PipelineArgs),
 }
 
+/// `faba`'s command, built, so each subcommand carries `faba`'s global
+/// flags (such as `-v`) and is named as `faba <command>`.
+fn faba_command() -> clap::Command {
+    let mut cmd = Cli::command();
+    cmd.build();
+    cmd
+}
+
 fn main() -> anyhow::Result<()> {
     if std::env::args().any(|arg| arg == "--help" || arg == "-h") {
         print_logo();
     }
 
-    let cli = Cli::parse();
+    // One parse of the command line: `faba run`'s view takes its matches.
+    let mut cmd = faba_command();
+    let matches = cmd.get_matches_mut();
+    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.format(&mut cmd).exit());
 
     data_beans::aux::logging::init_logger(cli.verbose);
 
@@ -458,7 +469,14 @@ fn main() -> anyhow::Result<()> {
         Commands::Snp(ref args) => recorded(args.run_record(), || run_snp(args))?,
         Commands::Qc(ref args) => run_qc(args)?,
         Commands::Docs(ref args) => run_docs(args)?,
-        Commands::Run(ref args) => run_or_view(args, Cli::command())?,
+        Commands::Run(ref args) => {
+            let run_cmd = cmd.find_subcommand("run").cloned();
+            let run_matches = matches.subcommand_matches("run");
+            let (Some(run_cmd), Some(m)) = (run_cmd, run_matches) else {
+                anyhow::bail!("faba has no run command");
+            };
+            run_or_view(args, run_cmd, m)?
+        }
     }
 
     Ok(())
@@ -467,7 +485,6 @@ fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::FromArgMatches;
 
     #[test]
     fn verbose_is_taken_on_either_side_of_run() {
@@ -475,14 +492,19 @@ mod tests {
             ["faba", "-v", "run", "X.bam"],
             ["faba", "run", "-v", "X.bam"],
         ] {
-            let (run_cmd, m) = run_matches(Cli::command(), line.map(String::from)).unwrap();
+            let mut cmd = faba_command();
+            let all = cmd.try_get_matches_from_mut(line).unwrap();
+            let m = all.subcommand_matches("run").unwrap();
             assert!(m.get_flag("verbose"), "{line:?}");
-            let args = PipelineArgs::from_arg_matches(&m).unwrap();
+            let args = PipelineArgs::from_arg_matches(m).unwrap();
             assert_eq!(args.bam_files, vec!["X.bam".into()]);
+            let run_cmd = cmd.find_subcommand("run").unwrap();
             let usage = run_cmd.clone().render_usage().to_string();
             assert!(usage.contains("faba run"), "{usage}");
         }
-        let (_, m) = run_matches(Cli::command(), ["faba", "run"].map(String::from)).unwrap();
-        assert!(!m.get_flag("verbose"));
+        let all = faba_command()
+            .try_get_matches_from(["faba", "run"])
+            .unwrap();
+        assert!(!all.subcommand_matches("run").unwrap().get_flag("verbose"));
     }
 }

@@ -14,10 +14,33 @@ use crate::tui::is_go;
 /// Longest text a line input takes.
 const MAX_TYPED: usize = 4096;
 
+/// A move down a list (up when negative) for the keys every list shares:
+/// ↑/k, ↓/j, PgUp and PgDn.
+fn nav(code: KeyCode) -> Option<isize> {
+    match code {
+        KeyCode::Up | KeyCode::Char('k') => Some(-1),
+        KeyCode::Down | KeyCode::Char('j') => Some(1),
+        KeyCode::PageUp => Some(-10),
+        KeyCode::PageDown => Some(10),
+        _ => None,
+    }
+}
+
+/// `at` moved by `d`, kept within `0..=last`.
+fn moved(at: usize, d: isize, last: usize) -> usize {
+    at.saturating_add_signed(d).min(last)
+}
+
 impl App {
+    /// Take `key`, then check the command it leaves.
+    pub(super) fn key(&mut self, key: KeyEvent) {
+        self.route(key);
+        self.refresh();
+    }
+
     /// Route `key`: an open line input first, then the file pop-up, the
     /// preview, the keys every screen shares, and the screen's own.
-    pub(super) fn key(&mut self, key: KeyEvent) {
+    fn route(&mut self, key: KeyEvent) {
         self.note = None;
         if self.editing.is_some() {
             return self.key_editing(key);
@@ -111,11 +134,10 @@ impl App {
             return;
         };
         let row = *row;
+        if let Some(d) = nav(key.code) {
+            return browser.step(d);
+        }
         match key.code {
-            KeyCode::Up | KeyCode::Char('k') => browser.step(-1),
-            KeyCode::Down | KeyCode::Char('j') => browser.step(1),
-            KeyCode::PageUp => browser.step(-10),
-            KeyCode::PageDown => browser.step(10),
             KeyCode::Left | KeyCode::Char('h') => browser.up(),
             KeyCode::Enter | KeyCode::Right => {
                 if let Some(file) = browser.enter() {
@@ -149,11 +171,10 @@ impl App {
         match self.inputs.focus {
             InputsFocus::Bams => {
                 let bams = &mut self.inputs.bams;
+                if let Some(d) = nav(key.code) {
+                    return bams.step(d);
+                }
                 match key.code {
-                    KeyCode::Up | KeyCode::Char('k') => bams.step(-1),
-                    KeyCode::Down | KeyCode::Char('j') => bams.step(1),
-                    KeyCode::PageUp => bams.step(-10),
-                    KeyCode::PageDown => bams.step(10),
                     KeyCode::Enter | KeyCode::Right => {
                         // Folders open; a BAM is picked with Space.
                         if bams.entries.get(bams.at).is_some_and(|e| e.dir) {
@@ -237,11 +258,11 @@ impl App {
         let last = n.saturating_sub(1);
         let at = self.flags_at.min(last);
         let row = self.flag_row();
+        if let Some(d) = nav(key.code) {
+            self.flags_at = moved(at, d, last);
+            return;
+        }
         match key.code {
-            KeyCode::Up | KeyCode::Char('k') => self.flags_at = at.saturating_sub(1),
-            KeyCode::Down | KeyCode::Char('j') => self.flags_at = (at + 1).min(last),
-            KeyCode::PageUp => self.flags_at = at.saturating_sub(10),
-            KeyCode::PageDown => self.flags_at = (at + 10).min(last),
             KeyCode::Home => self.flags_at = 0,
             KeyCode::End => self.flags_at = last,
             KeyCode::Char('/') => {
@@ -282,11 +303,12 @@ impl App {
         let lines = job.log.lock().map_or(0, |l| l.lines.len());
         let top = lines.saturating_sub(job.rows.get());
         let scroll = job.scroll.min(top);
+        if let Some(d) = nav(key.code) {
+            // Scrolled up is lines from the end: a move up adds to it.
+            job.scroll = moved(scroll, -d, top);
+            return;
+        }
         match key.code {
-            KeyCode::Up | KeyCode::Char('k') => job.scroll = (scroll + 1).min(top),
-            KeyCode::Down | KeyCode::Char('j') => job.scroll = scroll.saturating_sub(1),
-            KeyCode::PageUp => job.scroll = (scroll + 10).min(top),
-            KeyCode::PageDown => job.scroll = scroll.saturating_sub(10),
             KeyCode::End => job.scroll = 0,
             KeyCode::Char('s') if job.running() => {
                 if job.asking || job.stopper.is_stopped() {

@@ -17,10 +17,16 @@ pub struct PipelineArgs {
     )]
     pub bam_files: Vec<Box<str>>,
 
-    #[arg(short = 'g', long = "gff", help = "Gene annotation (GFF) file")]
+    #[arg(
+        help_heading = "Inputs",
+        short = 'g',
+        long = "gff",
+        help = "Gene annotation (GFF) file"
+    )]
     pub gff_file: Option<Box<str>>,
 
     #[arg(
+        help_heading = "Inputs",
         short = 'f',
         long = "genome",
         help = "Reference genome FASTA file (.fa/.fasta, must be indexed)"
@@ -28,6 +34,7 @@ pub struct PipelineArgs {
     pub genome_file: Option<Box<str>>,
 
     #[arg(
+        help_heading = "Inputs",
         short = 'o',
         long = "output",
         help = "Output directory (flat structure)"
@@ -35,6 +42,7 @@ pub struct PipelineArgs {
     pub output: Option<Box<str>>,
 
     #[arg(
+        help_heading = "Inputs",
         long = "control-bam",
         alias = "mut",
         alias = "control",
@@ -161,7 +169,7 @@ pub struct PipelineArgs {
     // SNP parameters //
     ////////////////////
     #[arg(
-        help_heading = "SNP",
+        help_heading = "Inputs",
         long = "known-snps",
         help = "Known SNP sites VCF/BCF/Parquet to force-call",
         long_help = "Path to known SNP sites. Accepts:\n\

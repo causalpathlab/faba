@@ -12,7 +12,7 @@ pub mod run;
 /// The per-modality steps, in run order.
 mod steps;
 /// The `faba run` setup view.
-pub mod tui;
+mod tui;
 
 #[cfg(test)]
 #[path = "tests/args.rs"]

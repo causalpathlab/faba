@@ -1,19 +1,7 @@
 use super::*;
 use crate::pipeline::args::PipelineArgs;
-use clap::{CommandFactory, Parser};
-
-#[derive(Parser)]
-#[command(name = "run")]
-struct Run {
-    #[command(flatten)]
-    args: PipelineArgs,
-}
-
-fn run() -> clap::Command {
-    let mut c = Run::command();
-    c.build();
-    c
-}
+use crate::pipeline::tui::run_cmd as run;
+use clap::FromArgMatches;
 
 #[test]
 fn every_flag_but_the_owned_ones_is_a_row() {
@@ -26,7 +14,10 @@ fn every_flag_but_the_owned_ones_is_a_row() {
             a.get_action(),
             clap::ArgAction::Help | clap::ArgAction::Version | clap::ArgAction::Count
         );
-        assert_eq!(longs.contains(&l), countable && !OWN.contains(&l), "{l}");
+        let owned = OWN.contains(&l)
+            || a.get_help_heading()
+                .is_some_and(|h| OWNED_HEADINGS.contains(&h));
+        assert_eq!(longs.contains(&l), countable && !owned, "{l}");
     }
     assert_eq!(form.headings().first().map(String::as_str), Some("Common"));
 }
@@ -51,8 +42,12 @@ fn changed_values_round_trip_through_clap() {
     let mut argv = vec!["run".to_string()];
     argv.extend(form.argv());
     check(&cmd, &argv).unwrap();
-    let parsed = serde_json::to_value(Run::try_parse_from(&argv).unwrap().args).unwrap();
-    let base = serde_json::to_value(Run::try_parse_from(["run"]).unwrap().args).unwrap();
+    let args = |argv: &[String]| {
+        let m = cmd.clone().try_get_matches_from(argv).unwrap();
+        serde_json::to_value(PipelineArgs::from_arg_matches(&m).unwrap()).unwrap()
+    };
+    let parsed = args(&argv);
+    let base = args(&["run".to_string()]);
     // `max_threads` stands for the numbers, `zip` (`--no-zip`) for the switches.
     assert_eq!(
         parsed["max_threads"],
@@ -114,10 +109,29 @@ fn headings_follow_the_pipeline_order() {
             assert_ne!(a.get_help_heading(), Some("m6A"), "--{l}");
         }
     }
-    assert_eq!(
-        cmd.get_arguments()
-            .find(|a| a.get_long() == Some("known-snps"))
-            .and_then(|a| a.get_help_heading()),
-        Some("SNP")
-    );
+    for l in ["gff", "genome", "output", "control-bam", "known-snps"] {
+        assert_eq!(
+            cmd.get_arguments()
+                .find(|a| a.get_long() == Some(l))
+                .and_then(|a| a.get_help_heading()),
+            Some("Inputs"),
+            "--{l}"
+        );
+    }
+}
+
+#[test]
+fn every_step_that_dims_names_a_heading() {
+    use crate::pipeline::tui::steps::Step;
+    let cmd = run();
+    let headings: Vec<&str> = cmd
+        .get_arguments()
+        .filter_map(|a| a.get_help_heading())
+        .collect();
+    for s in Step::ALL {
+        // Depth's one flag, its resolution, is on the Steps screen.
+        if s != Step::Depth {
+            assert!(headings.contains(&s.label()), "{}", s.label());
+        }
+    }
 }

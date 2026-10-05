@@ -44,6 +44,16 @@ impl Step {
         }
     }
 
+    /// Whether the step can run with the BAMs picked: m6A needs a bg BAM,
+    /// and the pipeline skips it without one.
+    pub fn available(self, has_bg: bool) -> Result<(), &'static str> {
+        if self == Step::M6a && !has_bg {
+            Err("m6A needs a bg BAM")
+        } else {
+            Ok(())
+        }
+    }
+
     /// The flag that turns the step off; depth is off by leaving out its
     /// resolution instead.
     fn skip_flag(self) -> Option<&'static str> {
@@ -79,25 +89,30 @@ impl Steps {
         self.on[s as usize]
     }
 
+    /// Which steps run: on, and available with the BAMs picked.
+    pub fn effective(&self, has_bg: bool) -> [bool; 6] {
+        Step::ALL.map(|s| self.is_on(s) && s.available(has_bg).is_ok())
+    }
+
     /// Space on the highlighted step; a note when it cannot be turned on.
     pub fn toggle(&mut self, has_bg: bool) -> Option<&'static str> {
         let s = Step::ALL[self.at];
-        // Without a bg BAM m6A is drawn off and cannot be changed, so a
-        // bg BAM added later finds it as it was.
-        if s == Step::M6a && !has_bg {
-            return Some("m6A needs a bg BAM");
+        // A step that is not available is drawn off and cannot be changed,
+        // so a bg BAM added later finds m6A as it was.
+        if let Err(why) = s.available(has_bg) {
+            return Some(why);
         }
         self.on[s as usize] ^= true;
         None
     }
 
     /// The `--skip-*` flags of the steps that are off, and depth's
-    /// resolution when it is on. m6A with no bg BAM is skipped by the
-    /// pipeline itself, so it needs no flag.
+    /// resolution when it is on. A step that is not available is skipped by
+    /// the pipeline itself, so it needs no flag.
     pub fn argv(&self, has_bg: bool) -> Vec<String> {
         let mut v: Vec<String> = Step::ALL
             .iter()
-            .filter(|s| !self.is_on(**s) && !(**s == Step::M6a && !has_bg))
+            .filter(|s| !self.is_on(**s) && s.available(has_bg).is_ok())
             .filter_map(|s| s.skip_flag())
             .map(String::from)
             .collect();
@@ -120,14 +135,14 @@ impl Steps {
         }
     }
 
-    /// Whether a flag group's step runs: off when its step is off, and m6A
-    /// also without a bg BAM, since the pipeline then skips it. `Common` and
-    /// headings that name no step always run.
+    /// Whether a flag group's step runs (see [`Steps::effective`]).
+    /// `Common` and headings that name no step always run.
     pub fn heading_on(&self, heading: &str, has_bg: bool) -> bool {
+        let on = self.effective(has_bg);
         Step::ALL
             .iter()
-            .find(|s| s.label() == heading)
-            .is_none_or(|s| self.is_on(*s) && (*s != Step::M6a || has_bg))
+            .position(|s| s.label() == heading)
+            .is_none_or(|i| on[i])
     }
 
     pub fn prefill(&mut self, a: &PipelineArgs) {

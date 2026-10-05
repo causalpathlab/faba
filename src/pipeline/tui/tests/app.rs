@@ -3,19 +3,6 @@ use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Terminal;
 
-fn run_cmd() -> clap::Command {
-    use clap::{CommandFactory, Parser};
-    #[derive(Parser)]
-    #[command(name = "run")]
-    struct Run {
-        #[command(flatten)]
-        a: crate::pipeline::args::PipelineArgs,
-    }
-    let mut c = Run::command();
-    c.build();
-    c
-}
-
 fn press(a: &mut App, code: KeyCode) {
     a.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
 }
@@ -258,15 +245,6 @@ fn q_is_refused_while_a_run_goes() {
 }
 
 #[test]
-fn base64_matches_the_standard() {
-    assert_eq!(base64(b""), "");
-    assert_eq!(base64(b"f"), "Zg==");
-    assert_eq!(base64(b"fo"), "Zm8=");
-    assert_eq!(base64(b"foo"), "Zm9v");
-    assert_eq!(base64(b"foobar"), "Zm9vYmFy");
-}
-
-#[test]
 fn flags_on_the_command_line_prefill_the_view() {
     use clap::FromArgMatches;
     let tmp = tempfile::tempdir().unwrap();
@@ -423,22 +401,37 @@ fn the_preview_shows_problems_above_a_long_command() {
     }
     a.inputs.gff = None;
     a.preview = true;
+    // Problems are checked after each key, not at each draw.
+    a.refresh();
     let s = screen(&mut a, 120, 24);
     assert!(s.contains("GFF") && s.contains("saved as"), "{s}");
     a.inputs.gff = Some(tmp.path().join("genes.gff"));
+    a.refresh();
     let s = screen(&mut a, 120, 24);
     assert!(s.contains("no problems") && s.contains("saved as"), "{s}");
 }
 
 #[test]
+fn the_check_is_cached_until_a_key() {
+    let (_t, mut a) = app_with_bams();
+    a.refresh();
+    assert!(a.checked.problems.is_empty(), "{:?}", a.checked.problems);
+    a.inputs.gff = None;
+    assert!(a.checked.problems.is_empty(), "a draw does not re-check");
+    press(&mut a, KeyCode::Char('3'));
+    assert!(a.checked.problems.iter().any(|p| p.contains("GFF")));
+}
+
+#[test]
 fn verbose_is_passed_on_to_the_run_and_its_script() {
-    use clap::{CommandFactory, FromArgMatches};
+    use clap::FromArgMatches;
     let (tmp, mut a) = app_with_bams();
     let bam = tmp.path().join("sample_A.bam");
-    let line = ["faba", "run", "-v", &bam.to_string_lossy()].map(String::from);
-    let (run_cmd, m) = crate::pipeline::run::run_matches(crate::Cli::command(), line).unwrap();
+    let m = run_cmd()
+        .try_get_matches_from(["run", "-v", &bam.to_string_lossy()])
+        .unwrap();
     let args = crate::pipeline::args::PipelineArgs::from_arg_matches(&m).unwrap();
-    let mut b = App::new(run_cmd, tmp.path().to_path_buf());
+    let mut b = App::new(run_cmd(), tmp.path().to_path_buf());
     b.prefill(&m, &args);
     b.inputs.picked.clone_from(&a.inputs.picked);
     b.inputs.gff = a.inputs.gff.take();
