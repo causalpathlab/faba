@@ -18,7 +18,7 @@ mod site_analysis;
 mod snp;
 
 use crate::common::*;
-use crate::qc::{run_qc, run_qc_report, QcArgs, QcReportArgs};
+use crate::qc::{run_qc, QcArgs};
 use apa::run::*;
 use atoi::run::*;
 use docs::*;
@@ -91,7 +91,7 @@ enum Commands {
             the RAC (forward) / GTY (reverse) motif,\n\
             at least --min-conversion converted signal reads,\n\
             and total coverage (signal + control) of at least --min-coverage.\n\
-            `faba qc` thresholds variants, and `faba qc-report` shows what each keeps.\n\
+            `faba qc` shows what each threshold keeps and cuts variants.\n\
 	    \n\
             The unit is always the site.\n\
             A genomic C/T variant converts equally in both arms, so a control is REQUIRED.\n\n\
@@ -114,7 +114,7 @@ Example:\n  \
   faba dartseq wt.bam --control-bam ctrl.bam -g genes.gff -f genome.fa -o out/\n\
   faba dartseq s1.bam,s2.bam --control-bam c1.bam,c2.bam\n\
     -g genes.gff -f genome.fa -o out/ --mixture\n\
-  faba qc-report out/ -o out/qc && faba qc out/ -o out_qc/")]
+  faba qc out/ -o out_qc/")]
     DartSeq(DartSeqCountArgs),
 
     #[command(name = "apa", aliases = ["polya"],
@@ -354,24 +354,17 @@ Example:\n  \
                       plus the kept cells per site read off the `_site` matrices; dropped sites go to\n\
                       `{modality}_sites_dropped.parquet` with a `reason`. Gene-level `{batch}_m6a` /\n\
                       `{batch}_atoi` are re-pooled from the filtered site matrix, so they agree with the cut.\n\
-                      Run `faba qc-report` first to see what each threshold keeps.",
+                      \n\
+                      Site thresholds are picked in a full-screen view that shows what each one keeps;\n\
+                      Shift+Enter asks to confirm, and the fileset is written with progress shown.\n\
+                      Left out, the input and output directories are asked for in a pop-up first.\n\
+                      --batch-process skips the view and cuts with the --site-* values as given.",
         after_long_help = "\
 	Example:\n\
-	faba qc-report out/ -o out/qc\n\
-	faba qc out/ -o out_qc/ --site-max-pv 0.05 --site-min-cells 10 --auto-cutoff"
+	faba qc out/ -o out_qc/\n\
+	faba qc out/ -o out_qc/ --batch-process --site-max-pv 0.05 --site-min-cells 10 --auto-cutoff"
     )]
     Qc(QcArgs),
-
-    #[command(
-        name = "qc-report",
-        about = "Sweep every `faba qc` threshold and report what survives",
-        long_about = "Sweep every `faba qc` threshold over a grid, one criterion at a time with the\n\
-                      others off, and report the kept sites / genes / cells at each value, after a\n\
-                      -log10(p) histogram of every putative site per editing modality.\n\
-                      Writes {prefix}.qc_report.parquet and draws each panel as ASCII bars on stderr.\n\
-                      No error rate is estimated; calibrating a cutoff is left to you."
-    )]
-    QcReport(QcReportArgs),
 
     #[command(
         name = "docs",
@@ -417,7 +410,7 @@ Example:\n  \
                       so every modality is produced for them too.\n\
                       The gene and cell sets from step 1 apply to every later step.\n\
                       No step masks another and no step applies a p-value or effect-size cutoff:\n\
-                      run `faba qc-report` and `faba qc` on the output directory for that.",
+                      run `faba qc` on the output directory for that.",
         after_long_help = "\
 	Example:\n\
 	faba all sample.bam -g genes.gff -f genome.fa -o out/\n\
@@ -458,7 +451,6 @@ fn main() -> anyhow::Result<()> {
         Commands::Metagene(ref args) => run_metagene(args)?,
         Commands::Snp(ref args) => recorded(args.run_record(), || run_snp(args))?,
         Commands::Qc(ref args) => run_qc(args)?,
-        Commands::QcReport(ref args) => run_qc_report(args)?,
         Commands::Docs(ref args) => run_docs(args)?,
         Commands::All(ref args) => run_pipeline(args)?,
     }

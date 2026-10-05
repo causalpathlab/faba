@@ -80,6 +80,10 @@ fn press(p: &mut SitePicker, code: KeyCode) {
     p.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
 }
 
+fn shift_enter(p: &mut SitePicker) {
+    p.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
+}
+
 fn kept_linear(t: &SiteTable, c: Option<&[usize]>, f: &SiteFilterArgs) -> usize {
     f.reasons(t, c).iter().filter(|r| r.is_none()).count()
 }
@@ -229,16 +233,24 @@ fn keys_type_reset_off_and_decide() {
     press(&mut p, KeyCode::Char('2'));
     press(&mut p, KeyCode::Esc);
     assert_eq!(p.filter.site_min_coverage, start.site_min_coverage);
-    // Enter asks first; Esc goes back, Enter again applies.
+    // Plain Enter does nothing, in the view or the confirmation.
     press(&mut p, KeyCode::Enter);
-    assert!(!p.done());
+    assert!(!p.done() && matches!(p.mode, Mode::Browse));
+    // Shift+Enter asks first; Esc goes back, Shift+Enter twice applies.
+    shift_enter(&mut p);
+    assert!(!p.done() && matches!(p.mode, Mode::Confirm));
+    press(&mut p, KeyCode::Enter);
+    assert!(!p.done() && matches!(p.mode, Mode::Confirm));
     press(&mut p, KeyCode::Esc);
     assert!(!p.done() && matches!(p.mode, Mode::Browse));
-    press(&mut p, KeyCode::Enter);
-    press(&mut p, KeyCode::Enter);
+    shift_enter(&mut p);
+    shift_enter(&mut p);
+    // With nothing to write, the next tick ends the session.
+    assert!(matches!(p.mode, Mode::Writing));
+    p.tick();
     assert!(p.done());
     let Some(Picked::Apply(got)) = p.decision.clone() else {
-        panic!("Enter, Enter applies");
+        panic!("Shift+Enter, Shift+Enter applies");
     };
     assert_eq!(qc_flags(&got), qc_flags(&start));
 
@@ -264,7 +276,7 @@ fn modalities_share_thresholds_but_not_knobs() {
     assert!(p.view().criteria.contains(&Criterion::MinFold));
     assert!(!p.view().criteria.contains(&Criterion::MinCells));
     focus_on(&mut p, Criterion::MinFold);
-    press(&mut p, KeyCode::Tab);
+    press(&mut p, KeyCode::Char('m'));
     assert!(!p.view().criteria.contains(&Criterion::MinFold));
     assert!(!p.view().criteria.contains(&Criterion::MinLogOdds));
     assert_eq!(p.tally.kept, kept_linear(&atoi, None, &p.filter));
@@ -273,7 +285,7 @@ fn modalities_share_thresholds_but_not_knobs() {
     press(&mut p, KeyCode::Right);
     let cov = p.filter.site_min_coverage;
     assert_eq!(p.tally.kept, kept_linear(&atoi, None, &p.filter));
-    press(&mut p, KeyCode::BackTab);
+    press(&mut p, KeyCode::Char('M'));
     assert_eq!(p.criterion(), Criterion::MinCoverage);
     assert_eq!(p.filter.site_min_coverage, cov);
     assert_eq!(p.tally.kept, kept_linear(&m6a, None, &p.filter));
@@ -764,12 +776,12 @@ fn the_confirmation_recaps_output_changes_and_every_modality() {
         SiteView::new(&atoi, None, &start),
     ];
     let mut p = SitePicker::new("x", views, start, Meta::Unavailable("none".into()));
-    p.output = "out_qc".into();
+    p.writer.output = "out_qc";
     focus_on(&mut p, Criterion::MinCoverage);
     for _ in 0..3 {
         press(&mut p, KeyCode::Right);
     }
-    press(&mut p, KeyCode::Enter);
+    shift_enter(&mut p);
     assert!(matches!(p.mode, Mode::Confirm));
     let text: String = p
         .confirm_lines()
@@ -798,4 +810,76 @@ fn the_confirmation_recaps_output_changes_and_every_modality() {
     assert!(screen.contains("apply and write"));
     press(&mut p, KeyCode::Char('n'));
     assert!(matches!(p.mode, Mode::Browse) && !p.done());
+}
+
+#[test]
+fn tab_moves_between_panels_and_the_arrows_follow() {
+    let t = with_genes(table(M6A, 300));
+    let mut p = picker(&t, None, SiteFilterArgs::default_values());
+    assert_eq!(p.panel, Panel::Thresholds);
+    let (focus, gene) = (p.focus, p.list.at);
+    press(&mut p, KeyCode::Down);
+    assert_eq!((p.focus, p.list.at), (focus + 1, gene));
+
+    press(&mut p, KeyCode::Tab);
+    assert_eq!(p.panel, Panel::Genes);
+    press(&mut p, KeyCode::Down);
+    press(&mut p, KeyCode::Down);
+    assert_eq!((p.focus, p.list.at), (focus + 1, gene + 2));
+    press(&mut p, KeyCode::Up);
+    assert_eq!(p.list.at, gene + 1);
+
+    press(&mut p, KeyCode::BackTab);
+    assert_eq!(p.panel, Panel::Thresholds);
+    press(&mut p, KeyCode::Up);
+    assert_eq!((p.focus, p.list.at), (focus, gene + 1));
+}
+
+#[test]
+fn confirming_writes_in_the_view_and_shows_progress() {
+    let progress = Progress::default();
+    let started = std::cell::RefCell::new(None);
+    let t = table(M6A, 300);
+    let start = SiteFilterArgs::default_values();
+    let mut p = picker(&t, None, start.clone());
+    p.writer = Writer {
+        output: "out_qc",
+        progress: &progress,
+        start: Some(Box::new(|f| *started.borrow_mut() = Some(f))),
+    };
+
+    // `A` stands in for Shift+Enter where the terminal cannot report it.
+    press(&mut p, KeyCode::Char('A'));
+    assert!(matches!(p.mode, Mode::Confirm));
+    press(&mut p, KeyCode::Char('y'));
+    assert!(matches!(p.mode, Mode::Writing) && !p.done());
+    let f = started.borrow().clone().expect("the writer starts");
+    assert_eq!(qc_flags(&f), qc_flags(&start));
+
+    // Keys and Ctrl-C wait while the fileset is written.
+    press(&mut p, KeyCode::Char('q'));
+    p.interrupt();
+    assert!(matches!(p.mode, Mode::Writing) && !p.done());
+
+    progress.plan(4);
+    progress.next("first");
+    progress.next("m6a_sites.parquet");
+    assert!(p.tick() && !p.done());
+    let mut term = Terminal::new(TestBackend::new(150, 44)).unwrap();
+    term.draw(|f| p.render(f)).unwrap();
+    let screen: String = term
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+    assert!(screen.contains("writing"));
+    assert!(screen.contains("1 / 4"));
+    assert!(screen.contains("m6a_sites.parquet"));
+
+    progress.finish();
+    p.tick();
+    assert!(p.done());
+    assert!(matches!(p.decision, Some(Picked::Apply(_))));
 }

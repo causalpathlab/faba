@@ -34,7 +34,7 @@ with fewer than `--row-nnz-cutoff` (10) non-zero cells, and standalone `depth` d
 cells with fewer than 10 non-zeros (`--row-nnz-cutoff`, `--column-nnz-cutoff`; `faba all` passes
 0 for both). p-values, odds ratios, edit ratios,
 cells-per-site and nnz cutoffs are `faba qc` flags (§8), applied to stored columns, and
-`faba qc-report` shows what each one keeps before it is applied.
+the `faba qc` view shows what each one keeps before it is applied.
 
 **Output.** Sparse matrices in Zarr (default, zipped) or HDF5, with feature rows keyed
 `{gene}/{modality}/{channel}` — e.g. `{gene}/m6a/methylated`. Site-level rows carry the position:
@@ -184,7 +184,7 @@ link has been repointed since the run, or removed, `resolved` is used instead, b
 the file the outputs were made from, and a repointed link is warned about. `qc` does not copy the input's records, which describe the input directory,
 into the new fileset. Its own record names that directory as `fileset`, carries its `gff` and
 `genome` forward, and replaces the `--site-*` options with the
-thresholds actually applied (after `--interactive`). A `qc` run cancelled before writing leaves
+thresholds actually applied (as picked in the view). A `qc` run cancelled before writing leaves
 no record, so the empty output directory can be reused.
 
 ---
@@ -338,7 +338,7 @@ There is no separate control-fold gate, because the odds-ratio guard *is* one. A
 `p_WT / p_MUT ≥ 1.25` guard is the same family — on rates rather than odds, with the threshold at
 1.25 rather than ~1.0 — and `faba qc --site-min-fold` exposes it, beside `--site-min-edit-ratio` and
 `--site-min-converted`, so a Bullseye-style call set can be reproduced from the same producer
-output. `faba qc-report` shows what any of them keeps on the data at hand.
+output. The `faba qc` view shows what any of them keeps on the data at hand.
 
 **The two arms are not symmetric, and resampling cannot fix it.** The WT arm is de-diluted (restricted
 to editing-competent cells) while the control is not, so the arms rest on different cell counts. That
@@ -383,8 +383,8 @@ no q-values: `m6a_sites.parquet` carries a single `pv` column and nothing beside
 
 A marginal cutoff is **not** scale-free the way an FDR threshold is. "q ≤ 0.05" means the same thing
 at 300 tests and at 300,000; "p ≤ 0.05" admits `0.05 × m` null sites, so its meaning moves with `m`
-and the flag alone cannot tell you what you bought. `faba qc-report` therefore prints, for every
-cutoff on the grid, what it keeps (§8); calibrating the cutoff is the user's call.
+and the flag alone cannot tell you what you bought. The `faba qc` view therefore shows, as the
+cutoff moves, what it keeps (§8); calibrating the cutoff is the user's call.
 
 This is deliberate. BH [4] controls the FDR under independence or *positive regression dependence*,
 and neighbouring candidate C's have neither: they are covered by the **same reads**, so their 2×2s
@@ -639,11 +639,11 @@ None of these fit a model or produce a p-value.
 
 ---
 
-## 8. `qc` and `qc-report` — the one place faba thresholds anything
+## 8. `qc` — the one place faba thresholds anything
 
 `faba qc` reads a faba output directory and writes a **new** fileset to `-o`, never in place. The
 producers are inclusive by design (§1), so this is where every opinionated decision lives, and
-`faba qc-report` puts the data behind the decision.
+its full-screen view puts the data behind the decision before anything is written.
 
 **Order of operations, per batch.**
 
@@ -671,20 +671,7 @@ producers are inclusive by design (§1), so this is where every opinionated deci
 6. Everything else is copied through, and `qc_summary.tsv` lists every written matrix with its
    shape before and after.
 
-**`qc-report`.** Sweeps each `qc` criterion over a grid, one at a time with the others off, and
-writes `{prefix}.qc_report.parquet` (`modality, criterion, unit, threshold, n_kept, n_genes`) plus
-an ASCII chart on stderr — one panel per (modality, criterion), a row per threshold, `*` bars
-scaled to the panel's largest count, in the style of `faba metagene`. The grids are dense at the
-permissive end, because that is where the trade-off is decided. Editing modalities print a
-−log10(p) histogram of every putative site first (rows with criterion `neglog10_pv_hist`, one per
-bin), then sweep `max_pv`, `min_log_odds`, `min_fold`, `min_coverage`, `min_converted`,
-`min_edit_ratio` and `min_cells`; `count` and `apa` sweep `min_cells` and `min_counts` per gene
-unit, and `count` also `min_genes_per_cell`. No error rate is estimated: how a marginal p-value or
-any other column should be calibrated is left to the user, with the table as the evidence. The
-same panels are drawn to `{prefix}.qc_report.pdf` and `.png`.
-
-**`qc -I/--interactive`.** Opens a full-screen view of the site thresholds *combined*, where the
-`qc-report` sweep moves them one at a time. Each knob is a row with its threshold and the number of
+**The view.** `qc` opens a full-screen view of the site thresholds *combined*. Each knob is a row with its threshold and the number of
 sites it filters out; a site failing several knobs counts in each row, so the rows add up to more
 than the sites removed. On the right, stacked, are three plots of the same sites, all drawn behind
 and the ones kept in front:
@@ -700,14 +687,28 @@ converted reads, which shows where the signal is rather than where the calls are
 
 A gene list at the bottom left shows each gene's kept and putative sites. Genes named by
 `--genes` come first, then the rest by number of putative sites; `[` and `]` move through it and
-`/` filters it by symbol. The gene models and the metagene come from the annotation, read on a
+`/` filters it by symbol. Tab moves between the thresholds panel and the gene list, and the arrow
+keys drive the one in focus; `m` switches the editing modality. The gene models and the metagene come from the annotation, read on a
 thread once (`--gff`, or the one in the input directory's run record); without one, the gene plot
 spans the gene's own sites and the metagene is left out. Every count is decided by the same rule `qc`
-applies, so the view cannot disagree with the written fileset. Enter opens a confirmation that
+applies, so the view cannot disagree with the written fileset. Shift+Enter opens a confirmation that
 recaps the output directory, the thresholds changed from the start, and the sites every modality
-keeps; a second Enter (or `y`) applies them, Esc (or `n`) goes back; `p` prints the matching `faba qc` flags and writes nothing; `s` saves the view as a PDF
-and PNG under a name it asks for. Nothing is written until the thresholds are applied. Without a
-terminal on stdin and stdout the view is skipped and the `--site-*` values are used as given.
+keeps; a second Shift+Enter (or `y`) applies them, Esc (or `n`) goes back. Plain Enter does
+nothing, so a stray key cannot start a write; on a terminal that cannot tell Shift+Enter from
+Enter (no kitty keyboard protocol), `A` stands in for it. Once applied, the fileset is written
+with the view still up, under a pop-up showing each file as it goes. `p` prints the matching
+`faba qc --batch-process` command, with every cell, feature and site option, and writes nothing; `s` saves the view as a PDF and PNG under a name it asks for.
+Nothing is written until the thresholds are applied.
+
+Run as plain `faba qc`, with no input or `-o`, it first asks for them in a pop-up: browse to a
+faba output directory (directories holding faba matrices or site tables are marked; Enter opens
+one, ← goes up, Space chooses the highlighted one, `.` the one being shown), then name the
+output, which starts as `{input}_qc` and must be new or empty.
+
+The view needs a terminal on stdin and stdout, and `qc` stops with an error without one.
+`--batch-process` skips the view and cuts with the `--site-*` values as given, for scripts and
+scheduled jobs. With no editing site table in the input there is nothing to pick, and the cells
+and features are cut as given.
 
 ---
 

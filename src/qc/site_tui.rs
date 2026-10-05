@@ -1,4 +1,4 @@
-//! Full-screen site-threshold picker for `faba qc --interactive`.
+//! Full-screen site-threshold picker for `faba qc`.
 //!
 //! One row per [`Criterion`] beside a histogram of the column it cuts, for
 //! one editing modality at a time. The thresholds are shared across
@@ -9,13 +9,15 @@
 //! what the focused threshold decides among sites that would otherwise be
 //! kept.
 
-use data_beans::interactive::tui_available;
 use data_beans::interactive::ui::{
     header, help_line, input_line, panel, Binned, Binning, HistPlot, Scale, Screen, ACCENTED, DIM,
     HIGHLIGHT, PLAIN,
 };
 use data_beans::qc::pct;
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::{
+    KeyCode, KeyEvent, KeyModifiers, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+    PushKeyboardEnhancementFlags,
+};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -35,7 +37,9 @@ use rustc_hash::FxHashSet;
 
 use super::args::SiteFilterArgs;
 use super::layout::{file_name, SITE_MODALITIES};
+use super::progress::Progress;
 use super::sites::{genomic_sites, Criterion, GeneSites, SiteTable};
+use super::widgets::{first_visible, popup};
 
 mod annotation;
 mod column;
@@ -179,6 +183,51 @@ enum Mode {
     Find,
     /// Asking before the thresholds are applied and the fileset written.
     Confirm,
+    /// Writing the fileset; keys wait until it is done.
+    Writing,
+}
+
+/// The panel Tab moves to, which the arrow keys then drive.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Panel {
+    Thresholds,
+    Genes,
+}
+
+/// Writes the fileset once the thresholds are confirmed: `start` spawns the
+/// writer with them, and `progress` is how far it has got.
+pub struct Writer<'a> {
+    /// The output directory, for the confirmation and the progress.
+    pub output: &'a str,
+    pub progress: &'a Progress,
+    pub start: Option<Box<dyn FnOnce(SiteFilterArgs) + 'a>>,
+}
+
+/// Progress that is already over, for a writer with nothing to write.
+static NOTHING_TO_WRITE: Progress = Progress::finished();
+
+impl Writer<'_> {
+    /// A writer that writes nothing: applying only decides.
+    fn idle() -> Self {
+        Writer {
+            output: "",
+            progress: &NOTHING_TO_WRITE,
+            start: None,
+        }
+    }
+}
+
+/// The apply keys, as the footer names them.
+const APPLY_KEYS: &str = "⇧Enter/A";
+
+/// Whether `key` asks to apply: Shift+Enter, or `A` where the terminal
+/// cannot tell Shift+Enter from Enter.
+fn is_apply(key: &KeyEvent) -> bool {
+    match key.code {
+        KeyCode::Enter => key.modifiers.contains(KeyModifiers::SHIFT),
+        KeyCode::Char('A') => true,
+        _ => false,
+    }
 }
 
 /// State of the picker, independent of the terminal so it can be tested.
@@ -196,6 +245,16 @@ struct SitePicker<'a> {
     column: Column,
     tally: Tally,
     mode: Mode,
+    panel: Panel,
+    /// Ask the terminal to tell Shift+Enter from Enter at the first draw
+    /// (the kitty keyboard protocol; others ignore the request).
+    want_shift_enter: bool,
+    /// The request is in force, to be withdrawn on the way out.
+    shift_enter_on: bool,
+    /// Plain Enter was pressed: say how to apply instead.
+    enter_hint: bool,
+    /// Steps done the last time the write was drawn.
+    drawn_steps: usize,
     controls: Controls,
     plot: PlotImage,
     meta: Meta,
@@ -205,8 +264,8 @@ struct SitePicker<'a> {
     meta_bars: (Vec<usize>, Vec<usize>),
     meta_plot: PlotImage,
     list: GeneList,
-    /// Where an applied cut is written, for the confirmation.
-    output: String,
+    /// Writes the fileset in the view once the thresholds are applied.
+    writer: Writer<'a>,
     decision: Option<Picked>,
 }
 
@@ -228,6 +287,11 @@ impl<'a> SitePicker<'a> {
             column,
             tally,
             mode: Mode::Browse,
+            panel: Panel::Thresholds,
+            want_shift_enter: false,
+            shift_enter_on: false,
+            enter_hint: false,
+            drawn_steps: 0,
             controls: Controls::new("qc_sites"),
             plot: PlotImage::default(),
             meta,
@@ -235,7 +299,7 @@ impl<'a> SitePicker<'a> {
             meta_bars: Default::default(),
             meta_plot: PlotImage::default(),
             list: GeneList::default(),
-            output: String::new(),
+            writer: Writer::idle(),
             decision: None,
         }
         .pin_genes(&[])
@@ -351,6 +415,23 @@ impl<'a> SitePicker<'a> {
         self.retally();
     }
 
+    /// End the session, handing the terminal's keyboard back as it was.
+    fn decide(&mut self, picked: Picked) {
+        if std::mem::take(&mut self.shift_enter_on) {
+            let _ = ratatui::crossterm::execute!(std::io::stdout(), PopKeyboardEnhancementFlags);
+        }
+        self.decision = Some(picked);
+    }
+
+    /// Apply the confirmed thresholds: start the write, which [`Screen::tick`]
+    /// then follows to the end.
+    fn apply(&mut self) {
+        if let Some(start) = self.writer.start.take() {
+            start(self.filter.clone());
+        }
+        self.mode = Mode::Writing;
+    }
+
     /// The histogram bin holding the focused threshold, `None` when off.
     fn pointer_key(&self) -> Option<i32> {
         let c = self.criterion();
@@ -364,10 +445,23 @@ impl Screen for SitePicker<'_> {
     }
 
     fn interrupt(&mut self) {
-        self.decision = Some(Picked::Cancelled);
+        // A write under way finishes: stopping it would leave half a fileset.
+        if !matches!(self.mode, Mode::Writing) {
+            self.decide(Picked::Cancelled);
+        }
     }
 
     fn tick(&mut self) -> bool {
+        if matches!(self.mode, Mode::Writing) {
+            let progress = self.writer.progress;
+            if progress.is_finished() {
+                self.decide(Picked::Apply(self.filter.clone()));
+                return false;
+            }
+            // Redraw only when a step finished.
+            let done = progress.done();
+            return std::mem::replace(&mut self.drawn_steps, done) != done;
+        }
         let arrived = self.meta.poll();
         if arrived {
             self.refresh_meta();
@@ -376,6 +470,7 @@ impl Screen for SitePicker<'_> {
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
+        self.enter_hint = false;
         if matches!(self.mode, Mode::Browse) {
             match self.controls.key(key) {
                 Key::Pass => {}
@@ -417,21 +512,37 @@ impl Screen for SitePicker<'_> {
                 _ => {}
             },
             Mode::Confirm => match key.code {
-                KeyCode::Enter | KeyCode::Char('y') => {
-                    self.decision = Some(Picked::Apply(self.filter.clone()))
-                }
+                _ if is_apply(&key) => self.apply(),
+                KeyCode::Char('y') => self.apply(),
                 KeyCode::Esc | KeyCode::Char('n' | 'q') => self.mode = Mode::Browse,
                 _ => {}
             },
+            Mode::Writing => {}
             Mode::Browse => match key.code {
+                _ if is_apply(&key) => self.mode = Mode::Confirm,
+                KeyCode::Enter => self.enter_hint = true,
+                KeyCode::Tab | KeyCode::BackTab => {
+                    self.panel = match self.panel {
+                        Panel::Thresholds => Panel::Genes,
+                        Panel::Genes => Panel::Thresholds,
+                    }
+                }
+                KeyCode::Char('m') => self.switch_modality(1),
+                KeyCode::Char('M') => self.switch_modality(-1),
                 KeyCode::Char('[') => self.step_gene(-1),
                 KeyCode::Char(']') => self.step_gene(1),
                 KeyCode::Char('/') => self.mode = Mode::Find,
                 KeyCode::Char('c') => self.switch_weight(),
+                KeyCode::Up | KeyCode::Char('k') if self.panel == Panel::Genes => {
+                    self.step_gene(-1)
+                }
+                KeyCode::Down | KeyCode::Char('j') if self.panel == Panel::Genes => {
+                    self.step_gene(1)
+                }
+                KeyCode::PageUp if self.panel == Panel::Genes => self.step_gene(-10),
+                KeyCode::PageDown if self.panel == Panel::Genes => self.step_gene(10),
                 KeyCode::Up | KeyCode::Char('k') => self.move_focus(-1),
                 KeyCode::Down | KeyCode::Char('j') => self.move_focus(1),
-                KeyCode::Tab => self.switch_modality(1),
-                KeyCode::BackTab => self.switch_modality(-1),
                 KeyCode::Left | KeyCode::Char('h') => self.step_bin(-1),
                 KeyCode::Right | KeyCode::Char('l') => self.step_bin(1),
                 KeyCode::Char('-' | ',') => self.nudge(-1),
@@ -442,15 +553,24 @@ impl Screen for SitePicker<'_> {
                 KeyCode::Char('y') => self.y_scale = self.y_scale.next(),
                 KeyCode::Char('e') => self.mode = Mode::Edit(String::new()),
                 KeyCode::Char(ch) if ch.is_ascii_digit() => self.mode = Mode::Edit(ch.to_string()),
-                KeyCode::Enter => self.mode = Mode::Confirm,
-                KeyCode::Char('p') => self.decision = Some(Picked::PrintOnly(self.filter.clone())),
-                KeyCode::Char('q') | KeyCode::Esc => self.decision = Some(Picked::Cancelled),
+                KeyCode::Char('p') => self.decide(Picked::PrintOnly(self.filter.clone())),
+                KeyCode::Char('q') | KeyCode::Esc => self.decide(Picked::Cancelled),
                 _ => {}
             },
         }
     }
 
     fn render(&mut self, frame: &mut Frame) {
+        // Ask for Shift+Enter on the screen the view draws on: terminals keep
+        // the main and alternate screens' keyboard modes apart.
+        if std::mem::take(&mut self.want_shift_enter) {
+            let flags = KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES;
+            self.shift_enter_on = ratatui::crossterm::execute!(
+                std::io::stdout(),
+                PushKeyboardEnhancementFlags(flags)
+            )
+            .is_ok();
+        }
         let [top, tabs, body, footer] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Length(1),
@@ -488,7 +608,7 @@ impl Screen for SitePicker<'_> {
             Constraint::Fill(1),
         ])
         .areas(left);
-        let block = panel(" site thresholds ".into(), false);
+        let block = panel(" site thresholds ".into(), self.panel == Panel::Thresholds);
         let inner = block.inner(table_area);
         frame.render_widget(block, table_area);
         frame.render_widget(Paragraph::new(table), inner);
@@ -510,33 +630,49 @@ impl Screen for SitePicker<'_> {
                 buf,
                 &[("Enter", "set"), ("Esc", "back")],
             ),
-            (Mode::Confirm, None) => {
-                help_line(&[("Enter/y", "apply and write"), ("Esc/n", "back")])
-            }
+            (Mode::Confirm, None) => help_line(&[
+                (APPLY_KEYS, "apply and write"),
+                ("y", "apply and write"),
+                ("Esc/n", "back"),
+            ]),
+            (Mode::Writing, None) => help_line(&[("", "writing; the view closes when done")]),
             (Mode::Find, None) => input_line(
                 "gene: ",
                 &self.list.find,
                 &[("Enter", "keep"), ("Esc", "clear")],
             ),
             (Mode::Browse, None) => {
-                let mut keys = vec![
-                    ("↑/↓", "knob"),
-                    ("←/→", "bin"),
+                let apply = (APPLY_KEYS, "apply");
+                if self.enter_hint {
+                    let mut line = help_line(&[apply]);
+                    let hint = Span::styled("Enter does nothing here; ", DIM);
+                    line.spans.insert(1, hint);
+                    return frame.render_widget(line, footer);
+                }
+                let mut keys = vec![("Tab", "panel")];
+                keys.extend(match self.panel {
+                    Panel::Thresholds => [("↑/↓", "knob"), ("←/→", "bin")],
+                    Panel::Genes => [("↑/↓", "gene"), ("/", "find")],
+                });
+                // What matters most first: a narrow footer cuts from the end.
+                keys.extend([apply, ("p", "print flags"), ("q", "cancel")]);
+                self.controls.help_keys(&mut keys);
+                keys.extend([
+                    ("m", "modality"),
                     ("-/+", "±1"),
                     ("0-9", "type"),
                     ("o", "off"),
                     ("r", "reset"),
                     ("x/y", "scale"),
-                    ("Tab", "modality"),
-                ];
-                self.controls.help_keys(&mut keys);
-                keys.extend([("Enter", "apply"), ("p", "print flags"), ("q", "cancel")]);
+                ]);
                 help_line(&keys)
             }
         };
         frame.render_widget(help, footer);
-        if matches!(self.mode, Mode::Confirm) {
-            self.render_confirm(frame, body);
+        match self.mode {
+            Mode::Confirm => self.render_confirm(frame, body),
+            Mode::Writing => self.render_writing(frame, body),
+            _ => {}
         }
     }
 }
@@ -544,10 +680,8 @@ impl Screen for SitePicker<'_> {
 /// How a picker session ended.
 #[derive(Debug, Clone)]
 pub enum Picked {
-    /// No terminal, or no site table: the thresholds stand as given.
-    Skipped,
     Cancelled,
-    /// Cut with these thresholds.
+    /// Cut and written with these thresholds.
     Apply(SiteFilterArgs),
     /// Print the flags for these thresholds; write nothing.
     PrintOnly(SiteFilterArgs),
@@ -555,7 +689,7 @@ pub enum Picked {
 
 /// Open the picker over the non-empty site tables, in [`SITE_MODALITIES`]
 /// order, with each modality's kept cells per site where `_site` matrices
-/// gave them.
+/// gave them. Needs a terminal and at least one non-empty site table.
 pub fn run_site_picker(
     input_dir: &str,
     tables: &FxHashMap<Box<str>, SiteTable>,
@@ -563,12 +697,8 @@ pub fn run_site_picker(
     filter: &SiteFilterArgs,
     gff: Option<&str>,
     pinned: &[Box<str>],
-    output: &str,
+    writer: Writer<'_>,
 ) -> anyhow::Result<Picked> {
-    if !tui_available() {
-        log::warn!("--interactive needs stdin and stdout on a terminal; skipping the view");
-        return Ok(Picked::Skipped);
-    }
     let views: Vec<SiteView> = SITE_MODALITIES
         .iter()
         .filter_map(|m| tables.get(*m))
@@ -578,10 +708,10 @@ pub fn run_site_picker(
             SiteView::new(t, n_cells, filter)
         })
         .collect();
-    if views.is_empty() {
-        log::warn!("--interactive: no editing site table to pick thresholds on");
-        return Ok(Picked::Skipped);
-    }
+    anyhow::ensure!(
+        !views.is_empty(),
+        "no editing site table to pick thresholds on"
+    );
     let batches = views.iter().map(|v| v.table.batch.clone()).collect();
     let keys = views
         .iter()
@@ -591,7 +721,8 @@ pub fn run_site_picker(
     let meta = Meta::start(gff, batches, keys);
     let mut picker =
         SitePicker::new(&file_name(input_dir), views, filter.clone(), meta).pin_genes(pinned);
-    picker.output = output.to_string();
+    picker.writer = writer;
+    picker.want_shift_enter = true;
     picker.controls = Controls::new("qc_sites").detect();
     data_beans::interactive::ui::run_screen(&mut picker)?;
     Ok(picker.decision.unwrap_or(Picked::Cancelled))

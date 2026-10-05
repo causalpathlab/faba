@@ -116,7 +116,10 @@ const TABLE_WIDTHS: [usize; 3] = [17, 10, 14];
 
 impl<'a> SitePicker<'a> {
     pub(super) fn render_gene_list(&self, frame: &mut Frame, area: Rect) {
-        let block = panel(" genes: kept / all sites ".into(), false);
+        let block = panel(
+            " genes: kept / all sites ".into(),
+            self.panel == Panel::Genes,
+        );
         let inner = block.inner(area);
         frame.render_widget(block, area);
         let Some(genes) = &self.view().genes else {
@@ -127,8 +130,7 @@ impl<'a> SitePicker<'a> {
         let list = self.gene_list();
         let at = self.list.at;
         let rows = inner.height.saturating_sub(1) as usize;
-        let first = at.saturating_sub(rows.saturating_sub(1) / 2);
-        let first = first.min(list.len().saturating_sub(rows));
+        let first = first_visible(at, list.len(), rows);
         let width = inner.width as usize;
         let mut lines: Vec<Line> = list
             .iter()
@@ -587,11 +589,7 @@ impl<'a> SitePicker<'a> {
     /// ones marked, with their start), and what every modality keeps.
     pub(super) fn confirm_lines(&self) -> Vec<Line<'static>> {
         let dim = |t: String| Span::styled(t, DIM);
-        let output = if self.output.is_empty() {
-            "the output directory"
-        } else {
-            &self.output
-        };
+        let output = self.writer.output;
         let mut lines = vec![
             Line::from(vec![dim(
                 "Cut every modality and write the filtered fileset to ".into(),
@@ -645,22 +643,30 @@ impl<'a> SitePicker<'a> {
 
     /// The confirmation, centred over `area`.
     pub(super) fn render_confirm(&self, frame: &mut Frame, area: Rect) {
-        let lines = self.confirm_lines();
-        let width = lines.iter().map(Line::width).max().unwrap_or(0) as u16 + 4;
-        let (w, h) = (
-            width.clamp(40, area.width),
-            (lines.len() as u16 + 2).min(area.height),
+        popup(
+            frame,
+            area,
+            " apply these thresholds? ",
+            self.confirm_lines(),
         );
-        let popup = Rect::new(
-            area.x + (area.width - w) / 2,
-            area.y + (area.height - h) / 2,
-            w,
-            h,
-        );
-        frame.render_widget(ratatui::widgets::Clear, popup);
-        let block = panel(" apply these thresholds? ".into(), true);
-        let inner = block.inner(popup);
-        frame.render_widget(block, popup);
-        frame.render_widget(Paragraph::new(lines), inner);
+    }
+
+    /// How far the write has got, centred over `area`.
+    pub(super) fn render_writing(&self, frame: &mut Frame, area: Rect) {
+        let (done, total, step) = self.writer.progress.snapshot();
+        const BAR: usize = 40;
+        let filled = (done * BAR).checked_div(total).unwrap_or(0);
+        let lines = vec![
+            Line::from(Span::styled("Writing the filtered fileset to ", DIM)),
+            Line::from(Span::styled(format!("  {}", self.writer.output), HIGHLIGHT)),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("█".repeat(filled), ACCENTED),
+                Span::styled("░".repeat(BAR - filled), DIM),
+                Span::raw(format!("  {done} / {total}")),
+            ]),
+            Line::from(Span::styled(format!("{step:<BAR$}"), DIM)),
+        ];
+        popup(frame, area, " writing ", lines);
     }
 }

@@ -1,7 +1,7 @@
 //! Read-side statistics and write-side streaming for one sparse backend.
 //!
-//! Everything here goes through data-beans: stats via the streaming
-//! collectors, and the filtered copy via
+//! Everything here goes through data-beans: row counts over the kept cells,
+//! and the filtered copy via
 //! [`data_beans::column_subset::stream_column_selection`], which writes the
 //! survivors slab by slab without materialising them. `qc` never edits a file
 //! in place.
@@ -9,7 +9,6 @@
 use crate::common::*;
 use data_beans::column_subset::stream_column_selection;
 use data_beans::hdf5_io::resolve_backend_file;
-use legume_numeric::matrix::traits::RunningStatOps;
 
 pub type Backend = Box<dyn SparseIo<IndexIter = Vec<usize>>>;
 
@@ -25,17 +24,6 @@ pub fn shape(data: &dyn SparseIo<IndexIter = Vec<usize>>) -> (usize, usize, usiz
         data.num_columns().unwrap_or(0),
         data.num_non_zeros().unwrap_or(0),
     )
-}
-
-/// Per-row `(nnz, sum)` over every column.
-pub fn row_nnz_sum(
-    data: &dyn SparseIo<IndexIter = Vec<usize>>,
-    block_size: Option<usize>,
-) -> anyhow::Result<(Vec<usize>, Vec<f64>)> {
-    let st = collect_row_stat(data, block_size)?;
-    let nnz = st.count_positives().iter().map(|&x| x as usize).collect();
-    let sum = st.sum().iter().map(|&x| x as f64).collect();
-    Ok((nnz, sum))
 }
 
 /// Per-row count of positive entries restricted to `cols` (ascending global
