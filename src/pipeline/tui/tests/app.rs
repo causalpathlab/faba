@@ -61,9 +61,69 @@ fn the_preview_lists_the_command_and_its_problems() {
     assert!(!a.preview);
     a.inputs.gff = None;
     assert!(a.problems().iter().any(|p| p.contains("GFF")));
-    press(&mut a, KeyCode::Char('G'));
-    press(&mut a, KeyCode::Char('y'));
+    a.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
+    a.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
     assert!(a.job.is_none(), "problems block the start");
+}
+
+fn shift_enter(a: &mut App) {
+    a.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
+}
+
+#[test]
+fn only_shift_enter_previews_and_starts() {
+    let (tmp, mut a) = app_with_bams();
+    fake_program(&mut a, tmp.path(), "exit 0");
+    assert!(a.problems().is_empty(), "{:?}", a.problems());
+    // `G` and `y` do nothing on any screen; nor does plain Enter.
+    for page in ['1', '2', '3'] {
+        press(&mut a, KeyCode::Char(page));
+        for code in [KeyCode::Char('G'), KeyCode::Char('y')] {
+            press(&mut a, code);
+            assert!(!a.preview && a.job.is_none(), "{page} {code:?}");
+        }
+    }
+    press(&mut a, KeyCode::Char('2'));
+    press(&mut a, KeyCode::Enter);
+    assert!(!a.preview);
+    let hint = a.note.clone().unwrap_or_default();
+    assert!(
+        hint.contains("c copies") && hint.contains("--batch-process"),
+        "{hint}"
+    );
+    shift_enter(&mut a);
+    assert!(a.preview);
+    for code in [KeyCode::Char('G'), KeyCode::Char('y'), KeyCode::Enter] {
+        press(&mut a, code);
+        assert!(a.preview && a.job.is_none(), "{code:?} does not start");
+    }
+    assert!(a.note.as_deref().is_some_and(|n| n.contains("c copies")));
+    shift_enter(&mut a);
+    assert!(a.job.is_some() && !a.preview, "Shift+Enter starts");
+    a.job
+        .as_mut()
+        .unwrap()
+        .handle
+        .take()
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+#[test]
+fn c_copies_the_command_from_every_screen() {
+    let (_t, mut a) = app_with_bams();
+    for page in ['1', '2', '3'] {
+        press(&mut a, KeyCode::Char(page));
+        press(&mut a, KeyCode::Char('c'));
+        assert!(!a.preview);
+        assert!(a.note.as_deref().is_some_and(|n| n.contains("copied")));
+    }
+    let s = screen(&mut a, 200, 20);
+    assert!(s.contains("copied"), "{s}");
+    press(&mut a, KeyCode::Tab);
+    let s = screen(&mut a, 200, 20);
+    assert!(s.contains("c copy the command") && !s.contains("/G"), "{s}");
 }
 
 #[test]

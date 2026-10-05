@@ -17,7 +17,7 @@ use super::form::{self, Kind};
 use super::inputs::{InputsFocus, Role, Row};
 use super::steps::Step;
 use super::{script, App, Page, Target};
-use crate::tui::{first_visible, popup, popup_frame, GO_KEYS};
+use crate::tui::{first_visible, popup, popup_frame, APPLY_KEYS};
 
 /// Width of the inputs panel on the Inputs screen.
 const INPUTS_WIDTH: u16 = 48;
@@ -401,7 +401,7 @@ fn draw_flags(app: &App, frame: &mut Frame, body: Rect) {
 fn draw_run(app: &App, frame: &mut Frame, body: Rect) {
     let Some(job) = &app.job else {
         let inner = framed(frame, body, " run ".into(), true);
-        let line = Line::styled("no run yet: preview it with ".to_string() + GO_KEYS, DIM);
+        let line = Line::styled("no run yet: preview it with ".to_string() + APPLY_KEYS, DIM);
         frame.render_widget(line, inner);
         return;
     };
@@ -548,7 +548,6 @@ fn footer_line(app: &App) -> Line<'static> {
     if let Some(note) = &app.note {
         return Line::styled(format!(" {note}"), HIGHLIGHT);
     }
-    let go = format!("{GO_KEYS}/y");
     if app.picking.is_some() {
         return help_line(&[
             ("↑/↓", "move"),
@@ -559,12 +558,16 @@ fn footer_line(app: &App) -> Line<'static> {
     }
     if app.preview {
         return help_line(&[
-            (&go, "save the script and start"),
+            (APPLY_KEYS, "save the script and start"),
             ("c", "copy the command"),
             ("Esc", "back"),
         ]);
     }
-    let mut common = vec![("Tab", "screen"), (GO_KEYS, "preview")];
+    let mut common = vec![
+        ("Tab", "screen"),
+        (APPLY_KEYS, "preview"),
+        ("c", "copy the command"),
+    ];
     if !app.running() {
         common.push(("q", "quit"));
     }

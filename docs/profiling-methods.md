@@ -728,9 +728,12 @@ and features are cut as given.
 Plain `faba run` opens a full-screen view, pre-filled from any flags given on the command line:
 an Inputs screen (BAMs picked as foreground, passed positionally, or background, passed as
 `--control-bam`; annotation, genome, known SNPs, output directory, threads), a Steps screen, a
-Flags screen, and, once a run has started, a Run screen. Shift+Enter (or `G`) opens a preview of
-the exact command and of anything that keeps it from starting; Shift+Enter, `G` or `y` there
-starts the run. Starting saves the command as `faba_run.cmd.sh` in the output directory: it is
+Flags screen, and, once a run has started, a Run screen. Shift+Enter opens a preview of the exact
+command and of anything that keeps it from starting; Shift+Enter there starts the run. As in `qc`,
+Shift+Enter is the only key that does either: plain Enter, `G` and `y` do not, so a stray key cannot
+start a run. A terminal without the kitty keyboard protocol reports Shift+Enter as Enter; there,
+`c` (on any screen or in the preview) copies the exact `faba run --batch-process` command to the
+clipboard, to run in a shell instead. Starting saves the command as `faba_run.cmd.sh` in the output directory: it is
 created only if absent (never overwritten), it is executable, and its guard refuses to run when
 `pipeline_summary.json` already exists there. Run it again with `bash faba_run.cmd.sh`. The run is
 a child process whose log the Run screen shows; `s` asks first, `s` again interrupts it, and a

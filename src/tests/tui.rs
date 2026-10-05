@@ -2,12 +2,14 @@ use super::*;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 #[test]
-fn go_is_shift_enter_or_capital_g() {
+fn apply_is_shift_enter_and_nothing_else() {
     let k = |c, m| KeyEvent::new(c, m);
-    assert!(is_go(&k(KeyCode::Enter, KeyModifiers::SHIFT)));
-    assert!(is_go(&k(KeyCode::Char('G'), KeyModifiers::NONE)));
-    assert!(!is_go(&k(KeyCode::Enter, KeyModifiers::NONE)));
-    assert!(!is_go(&k(KeyCode::Char('g'), KeyModifiers::NONE)));
+    assert!(is_apply(&k(KeyCode::Enter, KeyModifiers::SHIFT)));
+    assert!(!is_apply(&k(KeyCode::Enter, KeyModifiers::NONE)));
+    for c in ['G', 'g', 'y', 'A'] {
+        assert!(!is_apply(&k(KeyCode::Char(c), KeyModifiers::NONE)), "{c}");
+        assert!(!is_apply(&k(KeyCode::Char(c), KeyModifiers::SHIFT)), "{c}");
+    }
 }
 
 #[test]

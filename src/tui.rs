@@ -1,5 +1,5 @@
 //! Pieces the terminal views share: centred pop-ups, the scroll window of a
-//! list that keeps its selection in view, the go keys, and the rules for an
+//! list that keeps its selection in view, the apply key, and the rules for an
 //! output folder.
 
 use std::path::{Path, PathBuf};
@@ -89,19 +89,6 @@ pub const APPLY_KEYS: &str = "⇧Enter";
 /// key cannot write anything.
 pub fn is_apply(key: &KeyEvent) -> bool {
     key.code == KeyCode::Enter && key.modifiers.contains(KeyModifiers::SHIFT)
-}
-
-/// The go keys, as footers name them.
-pub const GO_KEYS: &str = "⇧Enter/G";
-
-/// Whether `key` asks to go ahead: Shift+Enter, or `G` where the terminal
-/// cannot tell Shift+Enter from Enter.
-pub fn is_go(key: &KeyEvent) -> bool {
-    match key.code {
-        KeyCode::Enter => key.modifiers.contains(KeyModifiers::SHIFT),
-        KeyCode::Char('G') => true,
-        _ => false,
-    }
 }
 
 /// Asks the terminal to report Shift+Enter (the kitty keyboard protocol;

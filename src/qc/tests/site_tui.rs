@@ -926,12 +926,19 @@ fn confirming_writes_in_the_view_and_shows_progress() {
         })),
     };
 
-    // Only Shift+Enter applies: `A`, `y` and plain Enter do not.
-    press(&mut p, KeyCode::Char('A'));
-    assert!(matches!(p.mode, Mode::Browse));
+    // Only Shift+Enter applies: `A`, `G`, `y` and plain Enter do not.
+    for code in [KeyCode::Char('A'), KeyCode::Char('G')] {
+        press(&mut p, code);
+        assert!(matches!(p.mode, Mode::Browse));
+    }
     shift_enter(&mut p);
     assert!(matches!(p.mode, Mode::Confirm));
-    for code in [KeyCode::Char('y'), KeyCode::Char('A'), KeyCode::Enter] {
+    for code in [
+        KeyCode::Char('y'),
+        KeyCode::Char('A'),
+        KeyCode::Char('G'),
+        KeyCode::Enter,
+    ] {
         press(&mut p, code);
         assert!(matches!(p.mode, Mode::Confirm));
     }

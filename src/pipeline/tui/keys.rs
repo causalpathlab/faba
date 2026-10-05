@@ -9,7 +9,7 @@ use super::inputs::{Browser, InputsFocus, Row};
 use super::steps::Step;
 use super::{script, App, Page, Target};
 use crate::figure::{Edit, LineInput};
-use crate::tui::is_go;
+use crate::tui::{is_apply, APPLY_KEYS};
 
 /// Longest text a line input takes.
 const MAX_TYPED: usize = 4096;
@@ -51,11 +51,12 @@ impl App {
         if self.preview {
             return self.key_preview(key);
         }
-        if is_go(&key) {
+        if is_apply(&key) {
             self.preview = true;
             return;
         }
         match key.code {
+            KeyCode::Char('c') => return self.copy_command(),
             KeyCode::Tab => return self.turn(1),
             KeyCode::BackTab => return self.turn(-1),
             KeyCode::Char(c @ '1'..='4') => {
@@ -150,18 +151,32 @@ impl App {
         }
     }
 
+    /// Plain Enter did nothing: say what Shift+Enter does here, and what
+    /// to do on a terminal that reports Shift+Enter as Enter.
+    fn enter_hint(&mut self, does: &str) {
+        self.note = Some(format!(
+            "Enter does nothing here; {APPLY_KEYS} {does}. Terminal cannot send {APPLY_KEYS}? \
+             c copies the faba run --batch-process command to run yourself"
+        ));
+    }
+
+    /// Copy the exact command the run would start.
+    fn copy_command(&mut self) {
+        let text = script::command_lines(&self.argv()).join(" \\\n  ");
+        self.copy(&text);
+    }
+
     fn key_preview(&mut self, key: KeyEvent) {
-        if is_go(&key) || key.code == KeyCode::Char('y') {
+        // Only Shift+Enter starts: a stray key cannot start a run.
+        if is_apply(&key) {
             if let Err(e) = self.start() {
                 self.note = Some(format!("cannot start: {e}"));
             }
             return;
         }
         match key.code {
-            KeyCode::Char('c') => {
-                let text = script::command_lines(&self.argv()).join(" \\\n  ");
-                self.copy(&text);
-            }
+            KeyCode::Char('c') => self.copy_command(),
+            KeyCode::Enter => self.enter_hint("starts the run"),
             KeyCode::Esc => self.preview = false,
             _ => {}
         }
@@ -179,6 +194,8 @@ impl App {
                         // Folders open; a BAM is picked with Space.
                         if bams.entries.get(bams.at).is_some_and(|e| e.dir) {
                             bams.enter();
+                        } else if key.code == KeyCode::Enter {
+                            self.enter_hint("previews the run");
                         }
                     }
                     KeyCode::Left | KeyCode::Backspace => bams.up(),
@@ -249,6 +266,7 @@ impl App {
                 let kb = self.steps.depth_kb.clone();
                 self.edit(Target::DepthKb, &kb);
             }
+            KeyCode::Enter => self.enter_hint("previews the run"),
             _ => {}
         }
     }
@@ -275,7 +293,12 @@ impl App {
             }
             KeyCode::Char('R') => self.form.fields.iter_mut().for_each(|f| f.reset()),
             _ => {
-                let Some(i) = row else { return };
+                let Some(i) = row else {
+                    if key.code == KeyCode::Enter {
+                        self.enter_hint("previews the run");
+                    }
+                    return;
+                };
                 let Some(f) = self.form.fields.get_mut(i) else {
                     return;
                 };
@@ -319,6 +342,7 @@ impl App {
                 }
             }
             KeyCode::Esc => job.asking = false,
+            KeyCode::Enter => self.enter_hint("previews the run"),
             _ => {}
         }
     }
