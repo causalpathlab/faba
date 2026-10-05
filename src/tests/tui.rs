@@ -23,3 +23,21 @@ fn shift_enter_is_asked_once_and_released() {
     s.arm();
     assert!(!s.on, "not wanted, never asked");
 }
+
+#[test]
+fn output_folders_are_numbered_and_checked() {
+    let tmp = tempfile::tempdir().unwrap();
+    let base = tmp.path();
+    assert_eq!(next_free(base, "out"), base.join("out"));
+    std::fs::create_dir(base.join("out")).unwrap();
+    assert_eq!(next_free(base, "out"), base.join("out2"));
+    let out = base.join("out").to_string_lossy().into_owned();
+    assert_eq!(output_problem(&out), None, "an empty folder is fine");
+    std::fs::write(base.join("out/x"), b"").unwrap();
+    assert!(output_problem(&out)
+        .unwrap()
+        .contains("already contains files"));
+    let file = base.join("out/x").to_string_lossy().into_owned();
+    assert!(output_problem(&file).unwrap().contains("is a file"));
+    assert!(output_problem("").is_some());
+}

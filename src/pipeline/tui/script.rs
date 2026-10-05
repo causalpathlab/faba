@@ -21,25 +21,27 @@ pub fn quote(word: &str) -> String {
     }
 }
 
-/// Test if a word is a flag token: `-[A-Za-z]` or `--[A-Za-z]`.
+/// Whether a word is a flag: `-[A-Za-z]` or `--[A-Za-z]...`.
 fn is_flag(w: &str) -> bool {
-    (w.len() == 2 && w.starts_with('-') && w.chars().nth(1).unwrap().is_ascii_alphabetic())
-        || (w.len() > 2 && w.starts_with("--") && w.chars().nth(2).unwrap().is_ascii_alphabetic())
+    let mut c = w.chars();
+    match (c.next(), c.next(), c.next()) {
+        (Some('-'), Some(x), None) => x.is_ascii_alphabetic(),
+        (Some('-'), Some('-'), Some(x)) => x.is_ascii_alphabetic(),
+        _ => false,
+    }
 }
 
 /// The program and `run --batch-process` on the first line, each BAM on its
 /// own line, then one flag and all its values per line.
 pub fn command_lines(argv: &[String]) -> Vec<String> {
     let mut lines = vec![String::from("\"${FABA:-faba}\"")];
-    let mut last_flag_idx = None;
-
+    // A flag has started a line: the words that follow, up to the next
+    // flag, are its values.
+    let mut in_flag = false;
     for (k, w) in argv.iter().enumerate() {
-        let is_flag_token = is_flag(w);
-        let in_head = k < 2; // `run` and `--batch-process` stay on the program line
-
-        // Add to last line if in head or if this is a value for a flag at index >= 2
-        let add_to_last = in_head || (!is_flag_token && last_flag_idx.is_some_and(|idx| idx >= 2));
-
+        let flag = is_flag(w);
+        // `run` and `--batch-process` stay on the program line.
+        let add_to_last = k < 2 || (!flag && in_flag);
         match lines.last_mut() {
             Some(last) if add_to_last => {
                 last.push(' ');
@@ -47,9 +49,7 @@ pub fn command_lines(argv: &[String]) -> Vec<String> {
             }
             _ => {
                 lines.push(quote(w));
-                if is_flag_token {
-                    last_flag_idx = Some(k);
-                }
+                in_flag |= flag;
             }
         }
     }
@@ -78,26 +78,17 @@ pub fn text(argv: &[String]) -> String {
 /// Write the script into `dir`, never over an existing one.
 pub fn write(dir: &Path, argv: &[String]) -> anyhow::Result<PathBuf> {
     let path = dir.join(SCRIPT);
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o755)
-            .open(&path)
-            .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
-        f.write_all(text(argv).as_bytes())?;
+        opts.mode(0o755);
     }
-    #[cfg(not(unix))]
-    {
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-            .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
-        f.write_all(text(argv).as_bytes())?;
-    }
+    let mut f = opts
+        .open(&path)
+        .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+    f.write_all(text(argv).as_bytes())?;
     Ok(path)
 }
 

@@ -114,3 +114,13 @@ fn the_browser_lists_what_known_snps_accepts() {
         ["..", "sub", "a.vcf", "b.vcf.gz", "c.bcf", "d.parquet"]
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn a_linked_bam_keeps_the_name_it_was_given() {
+    let tmp = dir_with(&["sample_A.bam"]);
+    let link = tmp.path().join("sub").join("linked_A.bam");
+    std::os::unix::fs::symlink(tmp.path().join("sample_A.bam"), &link).unwrap();
+    let spelled = tmp.path().join("sub/./../sub/linked_A.bam");
+    assert_eq!(normalize(&spelled), link);
+}

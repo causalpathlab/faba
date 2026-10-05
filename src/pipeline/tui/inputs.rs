@@ -321,23 +321,20 @@ impl Inputs {
             .iter()
             .map(|p| p.to_string_lossy().into_owned().into_boxed_str())
             .collect();
-        match crate::common::uniq_batch_names(&boxed) {
-            Ok(names) if names.len() == paths.len() => paths
-                .iter()
-                .zip(names)
-                .map(|(p, n)| (p.to_path_buf(), n.to_string()))
-                .collect(),
+        let names: Vec<String> = match crate::common::uniq_batch_names(&boxed) {
+            Ok(names) if names.len() == paths.len() => {
+                names.iter().map(ToString::to_string).collect()
+            }
             _ => paths
                 .iter()
                 .map(|p| {
-                    let stem = p
-                        .file_stem()
+                    p.file_stem()
                         .map(|s| s.to_string_lossy().into_owned())
-                        .unwrap_or_default();
-                    (p.to_path_buf(), stem)
+                        .unwrap_or_default()
                 })
                 .collect(),
-        }
+        };
+        paths.iter().map(|p| p.to_path_buf()).zip(names).collect()
     }
 
     pub fn argv(&self) -> Vec<String> {
