@@ -9,7 +9,9 @@ fn faba() -> Command {
 #[test]
 fn all_is_gone() {
     let out = faba().args(["all", "--help"]).output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
     assert!(!out.status.success());
+    assert!(err.contains("unrecognized subcommand 'all'"), "{err}");
 }
 
 #[test]

@@ -286,12 +286,15 @@ impl App {
         let Some(job) = self.job.as_mut() else {
             return;
         };
+        // As far up as the Run screen can show: the top line in its top row.
         let lines = job.log.lock().map_or(0, |l| l.lines.len());
+        let top = lines.saturating_sub(job.rows.get());
+        let scroll = job.scroll.min(top);
         match key.code {
-            KeyCode::Up | KeyCode::Char('k') => job.scroll = (job.scroll + 1).min(lines),
-            KeyCode::Down | KeyCode::Char('j') => job.scroll = job.scroll.saturating_sub(1),
-            KeyCode::PageUp => job.scroll = (job.scroll + 10).min(lines),
-            KeyCode::PageDown => job.scroll = job.scroll.saturating_sub(10),
+            KeyCode::Up | KeyCode::Char('k') => job.scroll = (scroll + 1).min(top),
+            KeyCode::Down | KeyCode::Char('j') => job.scroll = scroll.saturating_sub(1),
+            KeyCode::PageUp => job.scroll = (scroll + 10).min(top),
+            KeyCode::PageDown => job.scroll = scroll.saturating_sub(10),
             KeyCode::End => job.scroll = 0,
             KeyCode::Char('s') if job.running() => {
                 if job.asking || job.stopper.is_stopped() {

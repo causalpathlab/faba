@@ -272,11 +272,6 @@ impl Form {
         self.fields.iter().find(|f| f.long == long)
     }
 
-    #[allow(dead_code)] // the view edits rows by index
-    pub fn get_mut(&mut self, long: &str) -> Option<&mut Field> {
-        self.fields.iter_mut().find(|f| f.long == long)
-    }
-
     /// Flags changed from their defaults.
     #[must_use]
     pub fn changed(&self) -> usize {

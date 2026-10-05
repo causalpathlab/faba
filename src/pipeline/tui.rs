@@ -71,6 +71,8 @@ pub struct Job {
     pub scroll: usize,
     /// `s` pressed once: asking.
     pub asking: bool,
+    /// Log lines the Run screen showed when last drawn: how far up it scrolls.
+    pub rows: std::cell::Cell<usize>,
 }
 
 impl Job {
@@ -100,6 +102,8 @@ pub struct App {
     /// The program the run starts: this binary, or a stand-in in tests.
     pub program: PathBuf,
     pub quit: bool,
+    /// `faba -v`: passed on to the run.
+    pub verbose: bool,
     /// The run's end has been drawn.
     end_drawn: bool,
 }
@@ -125,6 +129,7 @@ impl App {
             shift_enter: ShiftEnter::default(),
             program: std::env::current_exe().unwrap_or_else(|_| "faba".into()),
             quit: false,
+            verbose: false,
             end_drawn: false,
         }
     }
@@ -133,6 +138,8 @@ impl App {
     pub fn prefill(&mut self, m: &clap::ArgMatches, args: &PipelineArgs) {
         self.form.prefill(m);
         self.steps.prefill(args);
+        // `faba`'s own flag, present when the command is built inside `faba`.
+        self.verbose = matches!(m.try_get_one::<bool>("verbose"), Ok(Some(true)));
         let abs = |s: &str| std::path::absolute(s).unwrap_or_else(|_| PathBuf::from(s));
         let controls: Vec<PathBuf> = args.control_bam_files.iter().map(|s| abs(s)).collect();
         for b in &args.bam_files {
@@ -186,6 +193,9 @@ impl App {
         v.extend(["-o".into(), ".".into()]);
         v.extend(self.steps.argv(has_bg));
         v.extend(self.form.argv());
+        if self.verbose {
+            v.push("-v".into());
+        }
         v
     }
 
@@ -267,6 +277,7 @@ impl App {
             out,
             scroll: 0,
             asking: false,
+            rows: std::cell::Cell::new(0),
         });
         self.end_drawn = false;
         self.page = Page::Run;
@@ -319,7 +330,9 @@ fn base64(bytes: &[u8]) -> String {
 impl Screen for App {
     fn render(&mut self, frame: &mut Frame) {
         self.shift_enter.arm();
-        if self.job.as_ref().is_some_and(|j| !j.running()) {
+        if let Some(job) = self.job.as_mut().filter(|j| !j.running()) {
+            // Nothing is left to stop.
+            job.asking = false;
             self.end_drawn = true;
         }
         draw::draw(self, frame);

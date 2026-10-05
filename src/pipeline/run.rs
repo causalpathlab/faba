@@ -203,13 +203,27 @@ pub fn run_or_view(args: &PipelineArgs, cli: clap::Command) -> anyhow::Result<()
         "`faba run` sets up the run in a full-screen view, which needs stdin and stdout \
          on a terminal; pass --batch-process with the BAMs, -g, -f and -o to run without it"
     );
-    let mut run_cmd = cli
+    let (run_cmd, matches) = run_matches(cli, std::env::args())?;
+    super::tui::run_view(run_cmd, Some((&matches, args)))
+}
+
+/// `faba`'s `run` subcommand, built inside `cli` so it carries `faba`'s
+/// global flags (such as `-v`), and its matches for the whole command line
+/// `argv` (program name first). Parsing the whole line takes a global flag on
+/// either side of `run`.
+pub fn run_matches(
+    mut cli: clap::Command,
+    argv: impl IntoIterator<Item = String>,
+) -> anyhow::Result<(clap::Command, clap::ArgMatches)> {
+    cli.build();
+    let run_cmd = cli
         .find_subcommand("run")
         .cloned()
         .ok_or_else(|| anyhow::anyhow!("faba has no run command"))?;
-    run_cmd.build();
-    let matches = run_cmd
-        .clone()
-        .try_get_matches_from(std::env::args().skip(1).skip_while(|a| a != "run"))?;
-    super::tui::run_view(run_cmd, Some((&matches, args)))
+    let matches = cli.try_get_matches_from(argv)?;
+    let matches = matches
+        .subcommand_matches("run")
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("not a `faba run` command line"))?;
+    Ok((run_cmd, matches))
 }

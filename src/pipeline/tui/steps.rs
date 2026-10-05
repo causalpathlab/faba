@@ -106,7 +106,11 @@ impl Steps {
     }
 
     pub fn problems(&self) -> Vec<String> {
-        let kb_ok = self.depth_kb.trim().parse::<f32>().is_ok_and(|x| x > 0.0);
+        let kb_ok = self
+            .depth_kb
+            .trim()
+            .parse::<f32>()
+            .is_ok_and(|x| x.is_finite() && x > 0.0);
         if self.is_on(Step::Depth) && !kb_ok {
             vec!["depth is on: give its resolution in kb".into()]
         } else {
@@ -114,12 +118,14 @@ impl Steps {
         }
     }
 
-    /// Whether a flag group's step runs; `Common` and other headings always do.
-    pub fn heading_on(&self, heading: &str) -> bool {
+    /// Whether a flag group's step runs: off when its step is off, and m6A
+    /// also without a bg BAM, since the pipeline then skips it. `Common` and
+    /// headings that name no step always run.
+    pub fn heading_on(&self, heading: &str, has_bg: bool) -> bool {
         Step::ALL
             .iter()
             .find(|s| s.label() == heading)
-            .is_none_or(|s| self.is_on(*s))
+            .is_none_or(|s| self.is_on(*s) && (*s != Step::M6a || has_bg))
     }
 
     pub fn prefill(&mut self, a: &PipelineArgs) {

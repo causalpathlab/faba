@@ -318,7 +318,7 @@ fn draw_flags(app: &App, frame: &mut Frame, body: Rect) {
     let blamed = complaint
         .as_deref()
         .and_then(|c| form::blamed(c, &form.fields));
-    let no_bg = app.inputs.bg().is_empty();
+    let has_bg = !app.inputs.bg().is_empty();
 
     let mut lines: Vec<Line> = Vec::new();
     let mut sel_line = 0;
@@ -331,7 +331,7 @@ fn draw_flags(app: &App, frame: &mut Frame, body: Rect) {
         if rows.is_empty() {
             continue;
         }
-        let dim = !app.steps.heading_on(&h) || (h == "m6A" && no_bg);
+        let dim = !app.steps.heading_on(&h, has_bg);
         let name = if h.is_empty() { "other" } else { h.as_str() };
         lines.push(if dim {
             Line::styled(format!("{name} (step off)"), DIM)
@@ -429,6 +429,7 @@ fn draw_run(app: &App, frame: &mut Frame, body: Rect) {
         .then_some(log.progress.as_ref())
         .flatten();
     let rows = (inner.height as usize).saturating_sub(usize::from(bar.is_some()));
+    job.rows.set(rows);
     let len = log.lines.len();
     let scroll = job.scroll.min(len.saturating_sub(rows));
     let end = len.saturating_sub(scroll);
@@ -494,35 +495,37 @@ fn draw_picking(app: &App, frame: &mut Frame, body: Rect) {
 }
 
 fn draw_preview(app: &App, frame: &mut Frame, body: Rect) {
-    let argv = app.argv();
-    let mut lines: Vec<Line> = script::command_lines(&argv)
-        .into_iter()
-        .enumerate()
-        .map(|(k, l)| {
-            let l = if k == 0 {
-                l.replacen("\"${FABA:-faba}\"", "faba", 1)
-            } else {
-                format!("  {l}")
-            };
-            Line::styled(format!(" {l}"), PLAIN)
-        })
-        .collect();
-    lines.push(Line::raw(""));
+    // What blocks the run and where the script goes come first: a long list
+    // of BAMs must not push them out of the pop-up.
     let problems = app.problems();
-    if problems.is_empty() {
-        lines.push(Line::styled(" no problems", DIM));
+    let mut lines: Vec<Line> = if problems.is_empty() {
+        vec![Line::styled(" no problems", DIM)]
     } else {
-        lines.extend(
-            problems
-                .into_iter()
-                .map(|p| Line::styled(format!(" {p}"), HIGHLIGHT)),
-        );
-    }
+        problems
+            .into_iter()
+            .map(|p| Line::styled(format!(" {p}"), HIGHLIGHT))
+            .collect()
+    };
     let out = app.inputs.output();
     lines.push(Line::styled(
         format!(" saved as {}/{}", tilde(Path::new(&out)), script::SCRIPT),
         DIM,
     ));
+    lines.push(Line::raw(""));
+    let argv = app.argv();
+    lines.extend(
+        script::command_lines(&argv)
+            .into_iter()
+            .enumerate()
+            .map(|(k, l)| {
+                let l = if k == 0 {
+                    l.replacen("\"${FABA:-faba}\"", "faba", 1)
+                } else {
+                    format!("  {l}")
+                };
+                Line::styled(format!(" {l}"), PLAIN)
+            }),
+    );
     popup(frame, body, " start this run? ", lines);
 }
 
@@ -563,7 +566,10 @@ fn footer_line(app: &App) -> Line<'static> {
             ("Esc", "back"),
         ]);
     }
-    let common = [("Tab", "screen"), (GO_KEYS, "preview"), ("q", "quit")];
+    let mut common = vec![("Tab", "screen"), (GO_KEYS, "preview")];
+    if !app.running() {
+        common.push(("q", "quit"));
+    }
     let mut keys: Vec<(&str, &str)> = match app.page {
         Page::Inputs if app.inputs.focus == InputsFocus::Bams => vec![
             ("Space", "select"),
@@ -587,10 +593,10 @@ fn footer_line(app: &App) -> Line<'static> {
             let Some(job) = &app.job else {
                 return help_line(&common);
             };
-            if job.asking {
-                return help_line(&[("s", "again stops the run"), ("Esc", "keep it going")]);
-            }
             if job.running() {
+                if job.asking {
+                    return help_line(&[("s", "again stops the run"), ("Esc", "keep it going")]);
+                }
                 return help_line(&[
                     ("↑/↓", "scroll"),
                     ("End", "follow"),

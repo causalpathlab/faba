@@ -463,3 +463,26 @@ fn main() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::FromArgMatches;
+
+    #[test]
+    fn verbose_is_taken_on_either_side_of_run() {
+        for line in [
+            ["faba", "-v", "run", "X.bam"],
+            ["faba", "run", "-v", "X.bam"],
+        ] {
+            let (run_cmd, m) = run_matches(Cli::command(), line.map(String::from)).unwrap();
+            assert!(m.get_flag("verbose"), "{line:?}");
+            let args = PipelineArgs::from_arg_matches(&m).unwrap();
+            assert_eq!(args.bam_files, vec!["X.bam".into()]);
+            let usage = run_cmd.clone().render_usage().to_string();
+            assert!(usage.contains("faba run"), "{usage}");
+        }
+        let (_, m) = run_matches(Cli::command(), ["faba", "run"].map(String::from)).unwrap();
+        assert!(!m.get_flag("verbose"));
+    }
+}

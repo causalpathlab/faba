@@ -300,3 +300,133 @@ fn flags_on_the_command_line_prefill_the_view() {
     assert!(argv.windows(2).any(|w| w == ["--max-threads", "3"]));
     assert!(argv.contains(&"--skip-apa".to_string()));
 }
+
+/// The screen as text, drawn at `w` x `h`.
+fn screen(a: &mut App, w: u16, h: u16) -> String {
+    let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+    term.draw(|f| a.render(f)).unwrap();
+    term.backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|c| c.symbol())
+        .collect()
+}
+
+/// A stand-in for faba running `body`, as the app's program.
+fn fake_program(a: &mut App, dir: &std::path::Path, body: &str) {
+    let fake = dir.join("fake-faba");
+    std::fs::write(&fake, format!("#!/usr/bin/env bash\n{body}\n")).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    a.program = fake;
+}
+
+#[test]
+fn the_footer_offers_q_only_when_it_works() {
+    let (tmp, mut a) = app_with_bams();
+    fake_program(&mut a, tmp.path(), "exec sleep 30");
+    a.start().unwrap();
+    for page in ['4', '1'] {
+        press(&mut a, KeyCode::Char(page));
+        let s = screen(&mut a, 160, 20);
+        assert!(!s.contains("q quit"), "no `q quit` while running");
+    }
+    press(&mut a, KeyCode::Char('4'));
+    assert!(screen(&mut a, 160, 20).contains("refused"));
+    // Asked to stop, then the run ends some other way: the question goes.
+    press(&mut a, KeyCode::Char('s'));
+    assert!(a.job.as_ref().unwrap().asking);
+    let job = a.job.as_mut().unwrap();
+    job.stopper.stop();
+    job.stopper.stop();
+    job.handle.take().unwrap().join().unwrap();
+    let s = screen(&mut a, 160, 20);
+    assert!(!a.job.as_ref().unwrap().asking);
+    assert!(!s.contains("again stops") && s.contains("quit"), "{s}");
+}
+
+#[test]
+fn the_log_scrolls_no_further_than_its_top() {
+    let (tmp, mut a) = app_with_bams();
+    fake_program(
+        &mut a,
+        tmp.path(),
+        "for i in $(seq 1 30); do echo \"line $i\" >&2; done",
+    );
+    a.start().unwrap();
+    a.job
+        .as_mut()
+        .unwrap()
+        .handle
+        .take()
+        .unwrap()
+        .join()
+        .unwrap();
+    let s = screen(&mut a, 80, 12);
+    assert!(s.contains("line 30"));
+    for _ in 0..100 {
+        press(&mut a, KeyCode::Up);
+    }
+    let s = screen(&mut a, 80, 12);
+    assert!(s.contains("line 1 ") && !s.contains("line 30"), "{s}");
+    // One Down moves at once: no presses lost past the top.
+    press(&mut a, KeyCode::Down);
+    let s = screen(&mut a, 80, 12);
+    assert!(!s.contains("line 1 ") && s.contains("line 2 "), "{s}");
+}
+
+#[test]
+fn the_preview_shows_problems_above_a_long_command() {
+    let (tmp, mut a) = app_with_bams();
+    for k in 0..60 {
+        let path = tmp.path().join(format!("extra_{k:02}.bam"));
+        std::fs::write(&path, b"").unwrap();
+        a.inputs.picked.push(Picked {
+            path,
+            role: Role::Fg,
+        });
+    }
+    a.inputs.gff = None;
+    a.preview = true;
+    let s = screen(&mut a, 120, 24);
+    assert!(s.contains("GFF") && s.contains("saved as"), "{s}");
+    a.inputs.gff = Some(tmp.path().join("genes.gff"));
+    let s = screen(&mut a, 120, 24);
+    assert!(s.contains("no problems") && s.contains("saved as"), "{s}");
+}
+
+#[test]
+fn verbose_is_passed_on_to_the_run_and_its_script() {
+    use clap::{CommandFactory, FromArgMatches};
+    let (tmp, mut a) = app_with_bams();
+    let bam = tmp.path().join("sample_A.bam");
+    let line = ["faba", "run", "-v", &bam.to_string_lossy()].map(String::from);
+    let (run_cmd, m) = crate::pipeline::run::run_matches(crate::Cli::command(), line).unwrap();
+    let args = crate::pipeline::args::PipelineArgs::from_arg_matches(&m).unwrap();
+    let mut b = App::new(run_cmd, tmp.path().to_path_buf());
+    b.prefill(&m, &args);
+    b.inputs.picked.clone_from(&a.inputs.picked);
+    b.inputs.gff = a.inputs.gff.take();
+    b.inputs.genome = a.inputs.genome.take();
+    assert_eq!(b.argv().last().map(String::as_str), Some("-v"));
+    assert!(b.problems().is_empty(), "{:?}", b.problems());
+    fake_program(&mut b, tmp.path(), "echo \"$@\" > args.txt");
+    b.start().unwrap();
+    b.job
+        .as_mut()
+        .unwrap()
+        .handle
+        .take()
+        .unwrap()
+        .join()
+        .unwrap();
+    let out = PathBuf::from(b.inputs.output());
+    let script = std::fs::read_to_string(out.join(script::SCRIPT)).unwrap();
+    assert!(script.lines().any(|l| l.trim() == "-v"), "{script}");
+    let given = std::fs::read_to_string(out.join("args.txt")).unwrap();
+    assert!(given.trim_end().ends_with(" -v"), "{given}");
+}
