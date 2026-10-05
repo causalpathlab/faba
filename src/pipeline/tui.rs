@@ -112,6 +112,9 @@ pub struct App {
     /// The program the run starts: this binary, or a stand-in in tests.
     pub program: PathBuf,
     pub quit: bool,
+    /// `p` ended the session: the command to print once the terminal is
+    /// back.
+    pub printed: Option<String>,
     /// `faba -v`: passed on to the run.
     pub verbose: bool,
     /// The run's end has been drawn.
@@ -141,6 +144,7 @@ impl App {
             shift_enter: ShiftEnter::default(),
             program: std::env::current_exe().unwrap_or_else(|_| "faba".into()),
             quit: false,
+            printed: None,
             verbose: false,
             end_drawn: false,
             checked: Checked::default(),
@@ -205,10 +209,15 @@ impl App {
 
     /// The command after the program, run in the output folder.
     pub fn argv(&self) -> Vec<String> {
+        self.argv_into(".")
+    }
+
+    /// The command after the program, writing to `out`.
+    fn argv_into(&self, out: &str) -> Vec<String> {
         let has_bg = !self.inputs.bg().is_empty();
         let mut v: Vec<String> = vec!["run".into(), "--batch-process".into()];
         v.extend(self.inputs.argv());
-        v.extend(["-o".into(), ".".into()]);
+        v.extend(["-o".into(), out.into()]);
         v.extend(self.steps.argv(has_bg));
         v.extend(self.form.argv());
         if self.verbose {
@@ -323,6 +332,28 @@ impl App {
         }
     }
 
+    /// The whole command on one shell-quoted line, to run from anywhere:
+    /// the output folder as an absolute path in place of `.`.
+    pub fn command_line(&self) -> String {
+        let out = PathBuf::from(self.inputs.output());
+        let out = std::path::absolute(&out).unwrap_or(out);
+        let argv = self.argv_into(&out.to_string_lossy());
+        std::iter::once("faba".to_string())
+            .chain(argv.iter().map(|w| script::quote(w)))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// `p`: leave and print the command, writing and starting nothing;
+    /// not while a run is going.
+    fn print_and_leave(&mut self) {
+        if !self.running() {
+            self.printed = Some(self.command_line());
+            self.quit = true;
+            self.shift_enter.release();
+        }
+    }
+
     /// Put `text` on the terminal's clipboard (OSC 52).
     fn copy(&mut self, text: &str) {
         let _ = crossterm::execute!(
@@ -386,7 +417,11 @@ pub(crate) fn run_view(
             let _ = h.join();
         }
     }
-    shown
+    shown?;
+    if let Some(command) = app.printed {
+        println!("{command}");
+    }
+    Ok(())
 }
 
 /// `faba`'s built `run` subcommand, as `main` hands it to the view.

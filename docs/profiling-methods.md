@@ -733,7 +733,9 @@ command and of anything that keeps it from starting; Shift+Enter there starts th
 Shift+Enter is the only key that does either: plain Enter, `G` and `y` do not, so a stray key cannot
 start a run. A terminal without the kitty keyboard protocol reports Shift+Enter as Enter; there,
 `c` (on any screen or in the preview) copies the exact `faba run --batch-process` command to the
-clipboard, to run in a shell instead. Starting saves the command as `faba_run.cmd.sh` in the output directory: it is
+clipboard, and `p` leaves the view and prints that command on one line, with the output folder as
+an absolute path, writing nothing and starting nothing; run it in a shell instead. `p` does
+nothing while a run is going. Starting saves the command as `faba_run.cmd.sh` in the output directory: it is
 created only if absent (never overwritten), it is executable, and its guard refuses to run when
 `pipeline_summary.json` already exists there. Run it again with `bash faba_run.cmd.sh`. The run is
 a child process whose log the Run screen shows; `s` asks first, `s` again interrupts it, and a

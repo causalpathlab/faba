@@ -57,6 +57,7 @@ impl App {
         }
         match key.code {
             KeyCode::Char('c') => return self.copy_command(),
+            KeyCode::Char('p') => return self.print_and_leave(),
             KeyCode::Tab => return self.turn(1),
             KeyCode::BackTab => return self.turn(-1),
             KeyCode::Char(c @ '1'..='4') => {
@@ -156,7 +157,7 @@ impl App {
     fn enter_hint(&mut self, does: &str) {
         self.note = Some(format!(
             "Enter does nothing here; {APPLY_KEYS} {does}. Terminal cannot send {APPLY_KEYS}? \
-             c copies the faba run --batch-process command to run yourself"
+             c copies the faba run --batch-process command, p prints it and leaves"
         ));
     }
 
@@ -176,6 +177,7 @@ impl App {
         }
         match key.code {
             KeyCode::Char('c') => self.copy_command(),
+            KeyCode::Char('p') => self.print_and_leave(),
             KeyCode::Enter => self.enter_hint("starts the run"),
             KeyCode::Esc => self.preview = false,
             _ => {}

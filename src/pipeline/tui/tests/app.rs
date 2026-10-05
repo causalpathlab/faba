@@ -88,7 +88,9 @@ fn only_shift_enter_previews_and_starts() {
     assert!(!a.preview);
     let hint = a.note.clone().unwrap_or_default();
     assert!(
-        hint.contains("c copies") && hint.contains("--batch-process"),
+        hint.contains("c copies")
+            && hint.contains("p prints it and leaves")
+            && hint.contains("--batch-process"),
         "{hint}"
     );
     shift_enter(&mut a);
@@ -513,4 +515,42 @@ fn verbose_is_passed_on_to_the_run_and_its_script() {
     assert!(script.lines().any(|l| l.trim() == "-v"), "{script}");
     let given = std::fs::read_to_string(out.join("args.txt")).unwrap();
     assert!(given.trim_end().ends_with(" -v"), "{given}");
+}
+
+#[test]
+fn p_prints_the_command_and_leaves() {
+    let (tmp, mut a) = app_with_bams();
+    let out = tmp.path().join("my out");
+    a.inputs.output = out.to_string_lossy().into_owned();
+    press(&mut a, KeyCode::Char('3'));
+    press(&mut a, KeyCode::Char('p'));
+    assert!(a.quit && a.job.is_none());
+    assert!(!out.exists(), "nothing is written");
+    let d = tmp.path().display();
+    let want = format!(
+        "faba run --batch-process {d}/sample_A.bam --control-bam {d}/control_A.bam \
+         -g {d}/genes.gff -f {d}/genome.fa -o '{d}/my out'"
+    );
+    assert_eq!(a.printed.as_deref(), Some(want.as_str()));
+}
+
+#[test]
+fn p_is_ignored_while_a_run_goes() {
+    let (tmp, mut a) = app_with_bams();
+    fake_program(&mut a, tmp.path(), "exec sleep 30");
+    a.start().unwrap();
+    for page in ['4', '1'] {
+        press(&mut a, KeyCode::Char(page));
+        press(&mut a, KeyCode::Char('p'));
+        assert!(!a.quit && a.printed.is_none(), "page {page}");
+    }
+    let job = a.job.as_mut().unwrap();
+    job.stopper.stop();
+    job.stopper.stop();
+    job.handle.take().unwrap().join().unwrap();
+    press(&mut a, KeyCode::Char('p'));
+    assert!(
+        a.quit && a.printed.is_some(),
+        "p works once the run is over"
+    );
 }

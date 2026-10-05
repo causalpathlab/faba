@@ -560,6 +560,7 @@ fn footer_line(app: &App) -> Line<'static> {
         return help_line(&[
             (APPLY_KEYS, "save the script and start"),
             ("c", "copy the command"),
+            ("p", "print it and leave"),
             ("Esc", "back"),
         ]);
     }
@@ -569,7 +570,7 @@ fn footer_line(app: &App) -> Line<'static> {
         ("c", "copy the command"),
     ];
     if !app.running() {
-        common.push(("q", "quit"));
+        common.extend([("p", "print the command and leave"), ("q", "quit")]);
     }
     let mut keys: Vec<(&str, &str)> = match app.page {
         Page::Inputs if app.inputs.focus == InputsFocus::Bams => vec![
