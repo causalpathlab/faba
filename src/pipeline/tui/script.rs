@@ -21,21 +21,37 @@ pub fn quote(word: &str) -> String {
     }
 }
 
+/// Test if a word is a flag token: `-[A-Za-z]` or `--[A-Za-z]`.
+fn is_flag(w: &str) -> bool {
+    (w.len() == 2 && w.starts_with('-') && w.chars().nth(1).unwrap().is_ascii_alphabetic())
+        || (w.len() > 2 && w.starts_with("--") && w.chars().nth(2).unwrap().is_ascii_alphabetic())
+}
+
 /// The program and `run --batch-process` on the first line, each BAM on its
-/// own line, then one flag and its values per line.
+/// own line, then one flag and all its values per line.
 pub fn command_lines(argv: &[String]) -> Vec<String> {
     let mut lines = vec![String::from("\"${FABA:-faba}\"")];
+    let mut last_flag_idx = None;
+
     for (k, w) in argv.iter().enumerate() {
-        let starts = w.starts_with('-');
-        let is_batch_process = k > 0 && argv[k - 1] == "--batch-process";
-        let after_flag = k > 0 && argv[k - 1].starts_with('-') && !starts && !is_batch_process;
-        let head = k < 2; // `run` and `--batch-process` stay on the program line
+        let is_flag_token = is_flag(w);
+        let in_head = k < 2; // `run` and `--batch-process` stay on the program line
+
+        // Add to last line if in head or if this is a value for a flag at index >= 2
+        let add_to_last =
+            in_head || (!is_flag_token && last_flag_idx.map_or(false, |idx| idx >= 2));
+
         match lines.last_mut() {
-            Some(last) if head || after_flag => {
+            Some(last) if add_to_last => {
                 last.push(' ');
                 last.push_str(&quote(w));
             }
-            _ => lines.push(quote(w)),
+            _ => {
+                lines.push(quote(w));
+                if is_flag_token {
+                    last_flag_idx = Some(k);
+                }
+            }
         }
     }
     lines
@@ -63,16 +79,25 @@ pub fn text(argv: &[String]) -> String {
 /// Write the script into `dir`, never over an existing one.
 pub fn write(dir: &Path, argv: &[String]) -> anyhow::Result<PathBuf> {
     let path = dir.join(SCRIPT);
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&path)
-        .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
-    f.write_all(text(argv).as_bytes())?;
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))?;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o755)
+            .open(&path)
+            .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+        f.write_all(text(argv).as_bytes())?;
+    }
+    #[cfg(not(unix))]
+    {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+        f.write_all(text(argv).as_bytes())?;
     }
     Ok(path)
 }

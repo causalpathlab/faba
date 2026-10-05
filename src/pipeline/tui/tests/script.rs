@@ -82,3 +82,81 @@ fn never_overwrites_and_runs_as_bash() {
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("pipeline_summary.json exists"));
 }
+
+#[test]
+fn several_bams_one_per_line() {
+    let lines = command_lines(&vec![
+        "run".to_string(),
+        "--batch-process".to_string(),
+        "/d/sample_A.bam".to_string(),
+        "/d/sample_B.bam".to_string(),
+        "/d/sample_C.bam".to_string(),
+        "-g".to_string(),
+        "/r/genes.gff".to_string(),
+    ]);
+    // First line: program and flags
+    assert_eq!(lines[0], "\"${FABA:-faba}\" run --batch-process");
+    // Each BAM on its own line
+    assert_eq!(lines[1], "/d/sample_A.bam");
+    assert_eq!(lines[2], "/d/sample_B.bam");
+    assert_eq!(lines[3], "/d/sample_C.bam");
+    // Flag with value
+    assert_eq!(lines[4], "-g /r/genes.gff");
+}
+
+#[test]
+fn flag_values_on_same_line() {
+    let lines = command_lines(&vec![
+        "run".to_string(),
+        "--batch-process".to_string(),
+        "/d/sample.bam".to_string(),
+        "-x".to_string(),
+        "a".to_string(),
+        "b".to_string(),
+        "c".to_string(),
+        "-y".to_string(),
+        "d".to_string(),
+    ]);
+    // All values for -x should be on the same line
+    assert_eq!(lines[2], "-x a b c");
+    // All values for -y should be on the same line
+    assert_eq!(lines[3], "-y d");
+}
+
+#[test]
+fn negative_number_value_stays_with_flag() {
+    let lines = command_lines(&vec![
+        "run".to_string(),
+        "--batch-process".to_string(),
+        "/d/sample.bam".to_string(),
+        "--min".to_string(),
+        "-1".to_string(),
+        "--max".to_string(),
+        "-0.5".to_string(),
+    ]);
+    // Negative numbers should stay on the same line as their flags
+    assert_eq!(lines[2], "--min -1");
+    assert_eq!(lines[3], "--max -0.5");
+}
+
+#[test]
+fn flag_and_next_flag_separate_lines() {
+    let lines = command_lines(&vec![
+        "run".to_string(),
+        "--batch-process".to_string(),
+        "/d/sample.bam".to_string(),
+        "-o".to_string(),
+        ".".to_string(),
+        "--max-threads".to_string(),
+        "4".to_string(),
+    ]);
+    // -o with value
+    assert!(lines.iter().any(|l| l == "-o ."));
+    // --max-threads with value on separate line
+    assert!(lines.iter().any(|l| l == "--max-threads 4"));
+}
+
+#[test]
+fn empty_string_quotes() {
+    assert_eq!(quote(""), "''");
+}
