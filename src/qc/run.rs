@@ -591,16 +591,6 @@ fn write_fileset(
         std::fs::copy(f.as_ref(), format!("{out_dir}/{name}"))?;
     }
 
-    // 7. the view's figures, as it showed them when the cut was applied.
-    if !figures.is_empty() {
-        let dir = format!("{out_dir}/qc_plots");
-        std::fs::create_dir_all(&dir)?;
-        for f in figures {
-            progress.next(format!("qc_plots/{}", f.stem));
-            crate::figure::save(&f.svg, &format!("{dir}/{}", f.stem))?;
-        }
-    }
-
     progress.next("qc_summary.tsv");
     let mut lines: Vec<Box<str>> = vec![
         "#file\trows_before\tcols_before\tnnz_before\trows_after\tcols_after\tnnz_after".into(),
@@ -615,6 +605,22 @@ fn write_fileset(
         );
     }
     write_lines(&lines, &format!("{out_dir}/qc_summary.tsv"))?;
+    // 7. the view's figures, as it showed them when the cut was applied.
+    //    The fileset is complete without them, so a failed one only warns.
+    if !figures.is_empty() {
+        let dir = format!("{out_dir}/qc_plots");
+        let made = std::fs::create_dir_all(&dir);
+        for f in figures {
+            progress.next(format!("qc_plots/{}", f.stem));
+            let saved = match &made {
+                Ok(()) => crate::figure::save(&f.svg, &format!("{dir}/{}", f.stem)).map(|_| ()),
+                Err(e) => Err(anyhow::anyhow!("{e}")),
+            };
+            if let Err(e) = saved {
+                log::warn!("qc_plots/{}: not saved: {e}", f.stem);
+            }
+        }
+    }
     debug_assert_eq!(
         progress.started(),
         n_steps,

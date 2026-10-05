@@ -648,7 +648,10 @@ impl<'a> SitePicker<'a> {
 
     /// How far the write has got, centred over `area`.
     pub(super) fn render_writing(&self, frame: &mut Frame, area: Rect) {
-        let (done, total, step) = self.writer.progress.snapshot();
+        let (done, total, mut step) = self.writer.progress.snapshot();
+        if self.writer.start.is_some() {
+            step = "drawing the figures".into();
+        }
         const BAR: usize = 40;
         let filled = (done * BAR).checked_div(total).unwrap_or(0);
         let lines = vec![

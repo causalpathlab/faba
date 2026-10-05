@@ -435,22 +435,32 @@ impl<'a> SitePicker<'a> {
     /// Apply the confirmed thresholds: start the write, which [`Screen::tick`]
     /// then follows to the end.
     fn apply(&mut self) {
+        self.mode = Mode::Writing;
+    }
+
+    /// Draw the figures and start the writer, once the writing pop-up is up.
+    fn start_writing(&mut self) {
         if let Some(start) = self.writer.start.take() {
             let figures = self.figures();
             start(self.filter.clone(), figures);
         }
-        self.mode = Mode::Writing;
     }
 
     /// The view's figure for every modality and every knob, under the
     /// applied thresholds and the scales chosen per knob. The modality on
-    /// screen keeps its selected gene; the others show their top gene.
+    /// screen keeps its selected gene; the others show their top gene, the
+    /// gene filter aside.
     fn figures(&mut self) -> Vec<Figure> {
         let (modality, focus, at) = (self.modality, self.focus, self.list.at);
+        let find = std::mem::take(&mut self.list.find);
         let mut out = Vec::new();
         for m in 0..self.views.len() {
             self.modality = m;
+            if m == modality {
+                self.list.find.clone_from(&find);
+            }
             self.refresh_genes(true);
+            self.list.find.clear();
             if m == modality {
                 self.list.at = at;
             }
@@ -465,6 +475,7 @@ impl<'a> SitePicker<'a> {
             }
         }
         self.modality = modality;
+        self.list.find = find;
         self.refresh_genes(true);
         self.list.at = at;
         self.focus = focus;
@@ -493,6 +504,10 @@ impl Screen for SitePicker<'_> {
 
     fn tick(&mut self) -> bool {
         if matches!(self.mode, Mode::Writing) {
+            if self.writer.start.is_some() {
+                self.start_writing();
+                return true;
+            }
             let progress = self.writer.progress;
             if progress.is_finished() {
                 self.decide(Picked::Apply(self.filter.clone()));

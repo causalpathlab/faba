@@ -869,6 +869,9 @@ fn confirming_writes_in_the_view_and_shows_progress() {
     assert!(matches!(p.mode, Mode::Confirm));
     press(&mut p, KeyCode::Char('y'));
     assert!(matches!(p.mode, Mode::Writing) && !p.done());
+    // The figures are drawn, and the writer started, on the next tick.
+    assert!(started.borrow().is_none());
+    assert!(p.tick() && !p.done());
     let (f, figures) = started.borrow_mut().take().expect("the writer starts");
     assert_eq!(qc_flags(&f), qc_flags(&start));
     // A figure per knob, named after its flag, and the view left as it was.
@@ -916,11 +919,21 @@ fn figures_cover_every_modality_and_leave_the_view_as_it_was() {
     ];
     let mut p = SitePicker::new("x", views, start, Meta::Unavailable("none".into()));
     press(&mut p, KeyCode::Char('m'));
-    press(&mut p, KeyCode::Char(']'));
     press(&mut p, KeyCode::Down);
+    // A filter on the view, matching one gene of the modality on screen.
+    press(&mut p, KeyCode::Char('/'));
+    for ch in "ne3".chars() {
+        press(&mut p, KeyCode::Char(ch));
+    }
+    press(&mut p, KeyCode::Enter);
+    assert_eq!(p.gene_list().len(), 1);
     let (modality, focus, gene) = (p.modality, p.focus, p.gene());
 
     let figures = p.figures();
+    // The filter is put back for the view, and kept out of the figures:
+    // every one, of either modality, has its gene panel.
+    assert_eq!(p.list.find, "ne3");
+    assert!(figures.iter().all(|f| f.svg.contains(" bp")));
     let n: usize = p.views.iter().map(|v| v.criteria.len()).sum();
     assert_eq!(figures.len(), n);
     for v in &p.views {
