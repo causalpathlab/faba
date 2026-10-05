@@ -10,3 +10,6 @@ reference/
 
 # Not tracked; resolved fresh on each build
 Cargo.lock
+
+# Design specs and implementation plans stay local
+docs/superpowers/
