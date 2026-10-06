@@ -130,9 +130,18 @@ impl PathPicker {
     }
 }
 
-impl View for PathPicker {}
+impl View for PathPicker {
+    /// The apply key chooses the folder shown.
+    fn takes_apply(&self) -> bool {
+        true
+    }
+}
 
 impl Screen for PathPicker {
+    fn reports_chords(&self) -> bool {
+        true
+    }
+
     fn done(&self) -> bool {
         self.decision.is_some()
     }

@@ -167,7 +167,7 @@ pub struct App {
     end_drawn: bool,
     /// The pop-up telling the run's end is up.
     pub ended_shown: bool,
-    /// What to tell whoever is away, once (see [`View::take_notice`]).
+    /// What to tell whoever is away, once (see [`Screen::take_notice`]).
     notice: Option<String>,
     /// [`App::check`] as of the last key.
     pub checked: Checked,
@@ -494,12 +494,8 @@ impl App {
 }
 
 impl View for App {
-    fn mouse(&mut self, event: ratatui::crossterm::event::MouseEvent) {
-        self.click(event);
-    }
-
-    fn take_notice(&mut self) -> Option<String> {
-        self.notice.take()
+    fn takes_apply(&self) -> bool {
+        true
     }
 
     fn stray_enter(&mut self) {
@@ -511,6 +507,26 @@ impl View for App {
 }
 
 impl Screen for App {
+    fn takes_mouse(&self) -> bool {
+        true
+    }
+
+    fn mouse(&mut self, event: ratatui::crossterm::event::MouseEvent) -> bool {
+        let acts = crate::tui::is_click_or_wheel(&event);
+        if acts {
+            self.click(event);
+        }
+        acts
+    }
+
+    fn reports_chords(&self) -> bool {
+        true
+    }
+
+    fn take_notice(&mut self) -> Option<String> {
+        self.notice.take()
+    }
+
     fn render(&mut self, frame: &mut Frame) {
         if let Some(job) = self.job.as_mut().filter(|j| !j.running()) {
             // Nothing is left to stop.

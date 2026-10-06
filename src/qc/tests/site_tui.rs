@@ -600,7 +600,6 @@ fn with_genes(mut t: SiteTable) -> SiteTable {
 
 #[test]
 fn clicks_pick_the_panel_its_row_and_the_wheel_moves() {
-    use crate::tui::View;
     use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind as M};
     let t = with_genes(table(M6A, 100));
     let mut p = picker(&t, None, SiteFilterArgs::default_values());

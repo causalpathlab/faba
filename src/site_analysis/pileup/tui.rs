@@ -563,6 +563,8 @@ impl<'a> PileupView<'a> {
     }
 }
 
+impl crate::tui::View for PileupView<'_> {}
+
 impl Screen for PileupView<'_> {
     fn done(&self) -> bool {
         self.exit.is_some()
@@ -841,7 +843,7 @@ pub fn show_pileup(view: View, tracks: Vec<Track>, status: Option<String>) -> an
         loading.then(|| LOADING.to_string())
     });
     browser.controls = Controls::new(&format!("pileup_{}", view.title)).detect();
-    data_beans::interactive::ui::run_screen(&mut browser)?;
+    crate::tui::run_view(&mut browser)?;
     Ok(browser.exit.unwrap_or(Exit::Quit))
 }
 

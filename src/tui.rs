@@ -8,10 +8,7 @@ pub mod browser;
 use std::path::{Path, PathBuf};
 
 use data_beans::interactive::ui::{panel, Screen, HIGHLIGHT};
-use ratatui::crossterm::event::{
-    KeyCode, KeyEvent, KeyModifiers, KeyboardEnhancementFlags, MouseEvent,
-    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
-};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph};
@@ -225,19 +222,17 @@ pub fn enter_hint(does: &str) -> String {
     format!("Enter does nothing here; {APPLY_KEYS} {does}")
 }
 
-/// A full-screen view fed by the shared key rules (see [`feed`]).
+/// A full-screen view fed by the shared key rules (see [`feed`]); the mouse,
+/// notices and which keys the terminal reports are data_beans' `Screen`'s.
 pub trait View: Screen {
     /// Enter held with Shift, Alt or Ctrl came, which must not act as
     /// Enter: say what the apply key does here.
     fn stray_enter(&mut self) {}
 
-    /// A left click or a turn of the wheel, at a cell of the screen.
-    fn mouse(&mut self, _event: MouseEvent) {}
-
-    /// Something to tell whoever is away, once: [`run_view`] rings the
-    /// terminal's bell and asks it for a desktop notification saying it.
-    fn take_notice(&mut self) -> Option<String> {
-        None
+    /// Whether the view has something for the apply key to do; elsewhere it
+    /// is dropped, so it never acts as a letter key.
+    fn takes_apply(&self) -> bool {
+        false
     }
 }
 
@@ -310,129 +305,36 @@ impl<T: Clone> Hits<T> {
 }
 
 /// Hand `key` to `view` by the rules every view shares: Enter held with
-/// Shift, Alt or Ctrl goes to [`View::stray_enter`], and Ctrl and Alt chords
-/// other than the apply key are dropped, so Ctrl+S is never `s`.
+/// Shift, Alt or Ctrl goes to [`View::stray_enter`], other Ctrl and Alt
+/// chords are dropped, so Ctrl+S is never `s`, and so is the apply key in a
+/// view with nothing for it to do. Views and the widgets in them can take
+/// what comes as meant.
 pub fn feed(view: &mut impl View, key: KeyEvent) {
-    if !is_stray(&key) {
+    if is_stray(&key) {
+        if key.code == KeyCode::Enter {
+            view.stray_enter();
+        }
+    } else if !is_apply(&key) || view.takes_apply() {
         view.handle_key(key);
-    } else if key.code == KeyCode::Enter {
-        view.stray_enter();
     }
 }
 
-/// Run `view` full screen until it is done, fed by [`feed`], with the
-/// terminal asked to report held Enter keys and the mouse while it shows.
-/// As data_beans' `run_screen`: the terminal is restored on return and on
-/// panic, log records raised meanwhile are held back and written once the
-/// normal screen is back, and blocking work runs on the normal screen.
-pub fn run_view(view: &mut impl View) -> anyhow::Result<()> {
-    use data_beans::aux::logging::hold_logs;
-    use data_beans::interactive::ui::TICK;
-    use ratatui::crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event};
-    use ratatui::crossterm::event::{KeyEventKind, MouseButton, MouseEventKind};
-    use std::time::Duration;
+/// Run `view` full screen until it is done (data_beans' `run_screen`), its
+/// keys fed by [`feed`].
+pub fn run_view<V: View>(view: &mut V) -> anyhow::Result<()> {
+    data_beans::interactive::ui::run_screen_with(view, |v, key| feed(v, key))
+}
 
-    /// Holds log records back while alive.
-    struct Held;
-    impl Drop for Held {
-        fn drop(&mut self) {
-            hold_logs(false);
-        }
-    }
-    let mouse = |on: bool| {
-        let _ = if on {
-            ratatui::crossterm::execute!(std::io::stdout(), EnableMouseCapture)
-        } else {
-            ratatui::crossterm::execute!(std::io::stdout(), DisableMouseCapture)
-        };
-    };
-
-    ratatui::run(|terminal| -> anyhow::Result<()> {
-        hold_logs(true);
-        let held = Held;
-        let mut chords = Chords::default();
-        mouse(true);
-        let mut redraw = true;
-        while !view.done() {
-            if redraw {
-                terminal.draw(|f| {
-                    chords.arm();
-                    view.render(f);
-                })?;
-            }
-            if let Some(notice) = view.take_notice() {
-                // A bell, and a desktop notification where the terminal
-                // shows one (OSC 9); terminals without either ignore them.
-                let mut out = std::io::stdout();
-                let _ = std::io::Write::write_all(
-                    &mut out,
-                    format!("\x07\x1b]9;{notice}\x07").as_bytes(),
-                );
-                let _ = std::io::Write::flush(&mut out);
-            }
-            if !event::poll(TICK)? {
-                redraw = view.tick();
-                continue;
-            }
-            // Take every event already queued (a turn of the wheel is
-            // several), then draw once.
-            redraw = false;
-            loop {
-                redraw |= match event::read()? {
-                    Event::Key(k) if k.kind != KeyEventKind::Press => false,
-                    Event::Key(k)
-                        if k.modifiers.contains(KeyModifiers::CONTROL)
-                            && k.code == KeyCode::Char('c') =>
-                    {
-                        view.interrupt();
-                        true
-                    }
-                    Event::Key(k) => {
-                        feed(view, k);
-                        true
-                    }
-                    Event::Mouse(m)
-                        if matches!(
-                            m.kind,
-                            MouseEventKind::Down(MouseButton::Left)
-                                | MouseEventKind::ScrollUp
-                                | MouseEventKind::ScrollDown
-                        ) =>
-                    {
-                        view.mouse(m);
-                        true
-                    }
-                    Event::Resize(..) => true,
-                    _ => false,
-                };
-                if view.done() || view.pending_work().is_some() || !event::poll(Duration::ZERO)? {
-                    break;
-                }
-            }
-            if let Some(message) = view.pending_work() {
-                mouse(false);
-                ratatui::restore();
-                hold_logs(false);
-                eprintln!("{message}");
-                view.do_work();
-                hold_logs(true);
-                *terminal = ratatui::try_init()?;
-                mouse(true);
-            }
-            // Take the requests back while the view's screen is still up:
-            // terminals keep each screen's modes apart.
-            if view.done() {
-                chords.release();
-                mouse(false);
-            }
-        }
-        chords.release();
-        mouse(false);
-        // Restore before writing what was held, not after.
-        ratatui::restore();
-        drop(held);
-        Ok(())
-    })
+/// Whether a mouse event is one the views act on: a left click or a turn of
+/// the wheel.
+pub fn is_click_or_wheel(m: &MouseEvent) -> bool {
+    use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+    matches!(
+        m.kind,
+        MouseEventKind::Down(MouseButton::Left)
+            | MouseEventKind::ScrollUp
+            | MouseEventKind::ScrollDown
+    )
 }
 
 /// Whether `key` is the apply key: Ctrl+R (with Shift or not, which
@@ -451,7 +353,7 @@ pub fn apply_key() -> KeyEvent {
 /// makes it another key (Ctrl, Alt, or Shift on Enter) and is not the apply
 /// key. Views never see such keys, so Shift+Enter, Alt+Enter or Ctrl+Enter
 /// never acts as a plain Enter, nor Ctrl+S as `s`.
-pub fn is_stray(key: &KeyEvent) -> bool {
+fn is_stray(key: &KeyEvent) -> bool {
     let chord = KeyModifiers::CONTROL
         | KeyModifiers::ALT
         | KeyModifiers::SUPER
@@ -474,7 +376,7 @@ impl Find {
     /// panes keep for choosing), or Backspace and Esc while there is text.
     pub fn key(&mut self, key: &KeyEvent) -> bool {
         match key.code {
-            KeyCode::Char(c) if c != ' ' && !is_stray(key) && !is_apply(key) => self.text.push(c),
+            KeyCode::Char(c) if c != ' ' && !is_apply(key) => self.text.push(c),
             KeyCode::Backspace if !self.text.is_empty() => {
                 self.text.pop();
             }
@@ -492,9 +394,6 @@ impl Find {
         let KeyCode::Char(c @ ('/' | '~')) = key.code else {
             return None;
         };
-        if is_stray(key) {
-            return None;
-        }
         match (c, self.text.as_str()) {
             ('/', "") => cwd.ancestors().last().map(Path::to_path_buf),
             ('~', "") => home(),
@@ -620,40 +519,6 @@ impl<T: AsRef<str>> FindList<T> {
             empty
         } else {
             NOTHING_MATCHES
-        }
-    }
-}
-
-/// Asks the terminal to report keys held with Shift, Alt or Ctrl apart
-/// (the kitty keyboard protocol; others ignore the request), so Shift+Enter
-/// and the like reach [`View::stray_enter`] rather than looking like Enter.
-/// Asked on the screen the view draws on, and taken back when it ends.
-#[derive(Default)]
-struct Chords {
-    /// The request is in force.
-    on: bool,
-    /// It has been made.
-    asked: bool,
-}
-
-impl Chords {
-    /// Call at the top of `render`: terminals keep the main and alternate
-    /// screens' keyboard modes apart, so ask once the view's screen is up.
-    fn arm(&mut self) {
-        if !std::mem::replace(&mut self.asked, true) {
-            let flags = KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES;
-            self.on = ratatui::crossterm::execute!(
-                std::io::stdout(),
-                PushKeyboardEnhancementFlags(flags)
-            )
-            .is_ok();
-        }
-    }
-
-    /// Call when the view ends.
-    fn release(&mut self) {
-        if std::mem::take(&mut self.on) {
-            let _ = ratatui::crossterm::execute!(std::io::stdout(), PopKeyboardEnhancementFlags);
         }
     }
 }

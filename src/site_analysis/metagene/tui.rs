@@ -311,6 +311,8 @@ impl<'a> MetageneView<'a> {
     }
 }
 
+impl crate::tui::View for MetageneView<'_> {}
+
 impl Screen for MetageneView<'_> {
     fn done(&self) -> bool {
         self.done
@@ -437,7 +439,7 @@ impl Screen for MetageneView<'_> {
 pub fn show_metagene(title: &str, hist: &GeneFeatureHistogram) -> anyhow::Result<()> {
     let mut view = MetageneView::new(title, hist);
     view.controls = Controls::new("metagene").detect();
-    data_beans::interactive::ui::run_screen(&mut view)
+    crate::tui::run_view(&mut view)
 }
 
 #[cfg(test)]

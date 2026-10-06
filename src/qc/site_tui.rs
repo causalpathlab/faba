@@ -514,14 +514,10 @@ enum Hit {
     Back,
 }
 
-impl View for SitePicker<'_> {
-    fn stray_enter(&mut self) {
-        self.enter_hint = matches!(self.mode, Mode::Browse);
-    }
-
+impl SitePicker<'_> {
     /// A click focuses and selects what is under it; the wheel then moves
     /// as ↑/↓ would. Only while browsing, with no prompt open.
-    fn mouse(&mut self, m: MouseEvent) {
+    fn click(&mut self, m: MouseEvent) {
         let Some(hit) = self.hits.at(m.column, m.row) else {
             return;
         };
@@ -572,7 +568,33 @@ impl View for SitePicker<'_> {
     }
 }
 
+impl View for SitePicker<'_> {
+    fn takes_apply(&self) -> bool {
+        true
+    }
+
+    fn stray_enter(&mut self) {
+        self.enter_hint = matches!(self.mode, Mode::Browse);
+    }
+}
+
 impl Screen for SitePicker<'_> {
+    fn takes_mouse(&self) -> bool {
+        true
+    }
+
+    fn mouse(&mut self, m: MouseEvent) -> bool {
+        let acts = crate::tui::is_click_or_wheel(&m);
+        if acts {
+            self.click(m);
+        }
+        acts
+    }
+
+    fn reports_chords(&self) -> bool {
+        true
+    }
+
     fn done(&self) -> bool {
         self.decision.is_some()
     }

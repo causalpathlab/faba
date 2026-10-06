@@ -405,6 +405,8 @@ impl PwmView {
     }
 }
 
+impl crate::tui::View for PwmView {}
+
 impl Screen for PwmView {
     fn done(&self) -> bool {
         self.done
@@ -489,7 +491,7 @@ impl Screen for PwmView {
 pub fn show_pwm(title: &str, pwm: &[DnaBaseCount], window: i64) -> anyhow::Result<()> {
     let mut view = PwmView::new(title, pwm, window);
     view.controls = Controls::new("pwm_logo").detect();
-    data_beans::interactive::ui::run_screen(&mut view)
+    crate::tui::run_view(&mut view)
 }
 
 #[cfg(test)]
