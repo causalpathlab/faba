@@ -11,7 +11,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
-use super::{filled, popup_frame, run_view, View, SPINNER};
+use super::{bar_spans, popup_frame, run_view, View, SPINNER};
 
 /// How long the work may take before the spinner shows, so quick work
 /// never flickers the screen.
@@ -24,7 +24,7 @@ struct Busy<'a, T> {
     start: Instant,
     rx: &'a Receiver<T>,
     out: Option<T>,
-    /// Files (or other units) done, of `total`; no bar when `total` is 0.
+    /// Files done, of `total`; no bar when `total` is 0.
     done: &'a AtomicUsize,
     total: usize,
 }
@@ -49,13 +49,8 @@ impl<T> Screen for Busy<'_, T> {
             let done = self.done.load(Ordering::Relaxed).min(self.total);
             let count = format!(" {done}/{} files  {secs}", self.total);
             let bar_w = (inner.width as usize).saturating_sub(count.len() + 4);
-            let on = filled(done as u64, self.total as u64, bar_w);
-            Line::from(vec![
-                Span::raw("   "),
-                Span::styled("█".repeat(on), HIGHLIGHT),
-                Span::styled("░".repeat(bar_w - on), DIM),
-                Span::styled(count, DIM),
-            ])
+            let [on, off] = bar_spans(done as u64, self.total as u64, bar_w, HIGHLIGHT);
+            Line::from(vec![Span::raw("   "), on, off, Span::styled(count, DIM)])
         };
         let lines = vec![
             Line::from(vec![
@@ -111,8 +106,8 @@ pub fn busy_counting<T: Send>(
         return work(&done);
     }
     let (tx, rx) = channel();
+    let counter = &done;
     std::thread::scope(|s| {
-        let counter = &done;
         s.spawn(move || {
             // The receiver outlives the scope, so the send cannot fail.
             let _ = tx.send(work(counter));

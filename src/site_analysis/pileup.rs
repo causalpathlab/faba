@@ -476,6 +476,16 @@ struct Loaded {
     cursor: Option<i64>,
 }
 
+impl Loaded {
+    /// This view, its cursor starting `at`.
+    fn at(self, at: i64) -> Self {
+        Self {
+            cursor: Some(at),
+            ..self
+        }
+    }
+}
+
 /// Load `selector` for drawing. With `totals`, each matrix track also sums
 /// both channels, for the converted-over-total bars (not for `nnz`, where
 /// adding cells across channels would count cells twice). A `locus` fixes
@@ -646,13 +656,13 @@ enum Found {
 }
 
 /// The inputs' genes, read from their row names the first time asked.
-struct Catalog<'a> {
-    files: &'a [Box<str>],
+struct Catalog {
+    files: Vec<Box<str>>,
     genes: std::cell::OnceCell<Vec<picker::GeneEntry>>,
 }
 
-impl<'a> Catalog<'a> {
-    fn new(files: &'a [Box<str>]) -> Self {
+impl Catalog {
+    fn new(files: Vec<Box<str>>) -> Self {
         Self {
             files,
             genes: std::cell::OnceCell::new(),
@@ -664,7 +674,8 @@ impl<'a> Catalog<'a> {
             return Ok(genes);
         }
         let what = format!("reading genes from {} file(s)", self.files.len());
-        let list = crate::tui::busy(true, "pileup", &what, || picker::gene_catalog(self.files))?;
+        let files = &self.files;
+        let list = crate::tui::busy(true, "pileup", &what, || picker::gene_catalog(files))?;
         anyhow::ensure!(!list.is_empty(), "no site rows in the input files");
         Ok(self.genes.get_or_init(|| list))
     }
@@ -745,101 +756,93 @@ fn start_gene_models(gtf: Option<&str>) -> Option<SharedModels> {
     Some(models)
 }
 
-/// `M` in the browser: the view it was pressed in, and its cursor.
-struct Switch {
-    loaded: Loaded,
-    at: i64,
+/// One modality's inputs, resolved, with their gene list read when first
+/// asked for.
+struct Source {
+    args: PileupArgs,
+    groups: Vec<TrackFiles>,
+    catalog: Catalog,
+    /// The sites' modality, once known.
+    modality: Option<Box<str>>,
 }
 
-/// Browse `args` (resolved from `given`), switching between the m6A and
-/// A-to-I sites of the output folders among `given` on `M`.
-fn browse_switching(
-    base: &PileupArgs,
-    given: &[Box<str>],
-    separate: bool,
-    resolved: (PileupArgs, Vec<TrackFiles>),
-    first: Option<Loaded>,
-) -> anyhow::Result<()> {
-    let (mut args, mut groups) = resolved;
-    let genes = start_gene_models(args.annotation().as_deref());
-    let switchable = given
-        .iter()
-        .any(|g| crate::run_record::output_dir_of(g).is_some());
-    let mut first = first;
-    let mut status = None;
-    loop {
-        let Some(Switch { loaded, at }) = interactive(
-            &args,
-            &groups,
-            first.take(),
-            genes.as_ref(),
-            switchable,
-            status.take(),
-        )?
-        else {
-            return Ok(());
-        };
-        let to = crate::qc::layout::SITE_MODALITIES
-            .iter()
-            .find(|m| !m.eq_ignore_ascii_case(&loaded.modality))
-            .copied()
-            .unwrap_or_default();
-        let other = PileupArgs {
-            modality: Some(to.into()),
-            ..base.clone()
-        };
-        let (a, g) = match other.resolved(given, separate) {
-            Ok(r) => r,
-            Err(e) => {
-                status = Some(e.to_string());
-                first = Some(loaded);
-                continue;
-            }
-        };
-        // The same gene, else the same span, in the other sites.
-        let reopened = match loaded.keys.as_deref() {
-            Some([key]) => {
-                loading(true, &a, &g, &Selector::exact(key), None, key).map_err(|e| e.to_string())
-            }
-            _ => {
-                let (lo, hi) = loaded.extent;
-                load_locus(&a, &g, &loaded.chr, lo, hi)
-            }
-        };
-        match reopened {
-            Ok(l) => {
-                (args, groups) = (a, g);
-                first = Some(Loaded {
-                    cursor: Some(at),
-                    ..l
-                });
-            }
-            Err(_) => {
-                status = Some(format!("no {to} sites here"));
-                first = Some(Loaded {
-                    cursor: Some(at),
-                    ..loaded
-                });
-            }
-        }
+impl Source {
+    fn new(base: &PileupArgs) -> anyhow::Result<Self> {
+        let (args, groups) = base.resolved()?;
+        let catalog = Catalog::new(args.data_files.clone());
+        Ok(Self {
+            args,
+            groups,
+            catalog,
+            modality: base.modality.clone(),
+        })
     }
 }
 
-/// Browse interactively, starting from `first` (a selection given on the
-/// command line) or from the gene list.
-fn interactive(
-    args: &PileupArgs,
-    groups: &[TrackFiles],
-    first: Option<Loaded>,
-    genes: Option<&SharedModels>,
-    switchable: bool,
-    status: Option<String>,
-) -> anyhow::Result<Option<Switch>> {
-    let catalog = Catalog::new(&args.data_files);
+/// `M`: the other modality's sources (resolved the first time), and `here`
+/// reopened in them: the same gene, else the same span. The index of the
+/// sources and the view, or why not, for the footer.
+fn switch_modality(
+    base: &PileupArgs,
+    sources: &mut Vec<Source>,
+    shown: usize,
+    here: &Loaded,
+) -> Result<(usize, Loaded), String> {
+    sources[shown]
+        .modality
+        .get_or_insert_with(|| here.modality.clone());
+    let to = crate::qc::layout::other_site_modality(&here.modality)
+        .ok_or_else(|| format!("no other sites to switch {} to", here.modality))?;
+    let i = match sources
+        .iter()
+        .position(|s| s.modality.as_deref() == Some(to))
+    {
+        Some(i) => i,
+        None => {
+            let other = PileupArgs {
+                modality: Some(to.into()),
+                ..base.clone()
+            };
+            sources.push(Source::new(&other).map_err(|e| e.to_string())?);
+            sources.len() - 1
+        }
+    };
+    let Source { args, groups, .. } = &sources[i];
+    let reopened = match here.keys.as_deref() {
+        Some([key]) => {
+            loading(true, args, groups, &Selector::exact(key), None, key).map_err(|e| e.to_string())
+        }
+        _ => {
+            let (lo, hi) = here.extent;
+            load_locus(args, groups, &here.chr, lo, hi)
+        }
+    };
+    let l = reopened.map_err(|_| format!("no {to} sites here"))?;
+    Ok((i, l))
+}
+
+/// Browse `source` (resolved from `base`) interactively, starting from
+/// `first` (a selection given on the command line) or from the gene list;
+/// `M` switches between the m6A and A-to-I sites of the output folders
+/// among `base`'s inputs.
+fn interactive(base: &PileupArgs, source: Source, first: Option<Loaded>) -> anyhow::Result<()> {
+    let genes = start_gene_models(source.args.annotation().as_deref());
+    let switchable = base
+        .data_files
+        .iter()
+        .any(|g| crate::run_record::output_dir_of(g).is_some());
+    let mut sources = vec![source];
+    let mut shown = 0;
     let mut filter = String::new();
     let mut current = first;
-    let mut status = status;
+    let mut status: Option<String> = None;
     loop {
+        let Source {
+            args,
+            groups,
+            catalog,
+            ..
+        } = &sources[shown];
         let loaded = match current.take() {
             Some(l) => l,
             None => {
@@ -850,22 +853,16 @@ fn interactive(
                 let choice = list.pick()?;
                 filter = list.filter().to_string();
                 let query = match choice {
-                    picker::Choice::Quit => return Ok(None),
+                    picker::Choice::Quit => return Ok(()),
                     picker::Choice::Gene(i) => {
                         let gene = &genes[i].gene;
-                        current = Some(loading(
-                            true,
-                            args,
-                            groups,
-                            &Selector::exact(gene),
-                            None,
-                            gene,
-                        )?);
+                        let selector = Selector::exact(gene);
+                        current = Some(loading(true, args, groups, &selector, None, gene)?);
                         continue;
                     }
                     picker::Choice::Locus(q) => q,
                 };
-                match search(args, groups, &catalog, &query) {
+                match search(args, groups, catalog, &query) {
                     Ok(Found::View(l)) => l,
                     Ok(Found::List) => continue,
                     Err(msg) => {
@@ -875,18 +872,16 @@ fn interactive(
                 }
             }
         };
-        match browse(args, &loaded, genes, status.take(), switchable)? {
-            tui::Exit::Quit => return Ok(None),
+        match browse(args, &loaded, genes.as_ref(), status.take(), switchable)? {
+            tui::Exit::Quit => return Ok(()),
             tui::Exit::Genes => {}
-            tui::Exit::Modality { at } => return Ok(Some(Switch { loaded, at })),
             tui::Exit::Locus { lo, hi, at } => {
                 match load_locus(args, groups, &loaded.chr, lo, hi) {
                     // Wider, but where it was: the same title and cursor.
                     Ok(l) => {
                         current = Some(Loaded {
                             gene: loaded.gene.clone(),
-                            cursor: Some(at),
-                            ..l
+                            ..l.at(at)
                         })
                     }
                     Err(msg) => {
@@ -895,7 +890,20 @@ fn interactive(
                     }
                 }
             }
-            tui::Exit::Search(q) => match search(args, groups, &catalog, &q) {
+            tui::Exit::Modality { at } => {
+                let here = loaded.at(at);
+                match switch_modality(base, &mut sources, shown, &here) {
+                    Ok((i, l)) => {
+                        shown = i;
+                        current = Some(l.at(at));
+                    }
+                    Err(msg) => {
+                        status = Some(msg);
+                        current = Some(here);
+                    }
+                }
+            }
+            tui::Exit::Search(q) => match search(args, groups, catalog, &q) {
                 Ok(Found::View(l)) => current = Some(l),
                 Ok(Found::List) => filter = q,
                 Err(msg) => {
@@ -908,21 +916,17 @@ fn interactive(
 }
 
 impl PileupArgs {
-    /// These arguments with `given` as the inputs, each output directory
-    /// (or run record) among them replaced by its site matrices of
-    /// `--modality` and its site table as `-s` when none was given; and the
-    /// tracks: `--track`'s, else with a directory one per batch and one per
-    /// file named beside it, else one of them all.
-    fn resolved(
-        &self,
-        given: &[Box<str>],
-        separate: bool,
-    ) -> anyhow::Result<(PileupArgs, Vec<TrackFiles>)> {
+    /// These arguments with each output directory (or run record) among
+    /// the inputs replaced by its site matrices of `--modality` and its
+    /// site table as `-s` when none was given; and the tracks: `--track`'s,
+    /// else with a directory or `--separate` one per batch and one per file
+    /// named, else one of them all.
+    fn resolved(&self) -> anyhow::Result<(PileupArgs, Vec<TrackFiles>)> {
         let mut out = self.clone();
         let mut files = Vec::new();
         let mut own: Vec<TrackFiles> = Vec::new();
         let mut from_dir = false;
-        for f in given {
+        for f in &self.data_files {
             let Some(dir) = crate::run_record::output_dir_of(f) else {
                 files.push(f.clone());
                 own.push(TrackFiles {
@@ -958,7 +962,7 @@ impl PileupArgs {
             }
         }
         out.data_files = files;
-        let groups = if (from_dir || separate) && self.tracks.is_empty() {
+        let groups = if (from_dir || self.separate) && self.tracks.is_empty() {
             own
         } else {
             track_files(&out.data_files, &self.tracks)?
@@ -975,7 +979,8 @@ impl PileupArgs {
 }
 
 pub fn run_pileup(args: &PileupArgs) -> anyhow::Result<()> {
-    let (given, separate) = if args.data_files.is_empty() {
+    let mut base = args.clone();
+    if base.data_files.is_empty() {
         let ask = crate::site_analysis::input_picker::ask_inputs(
             "pileup",
             args.batch_process,
@@ -984,13 +989,12 @@ pub fn run_pileup(args: &PileupArgs) -> anyhow::Result<()> {
             true,
         );
         let Some(chosen) = ask? else { return Ok(()) };
-        chosen
-    } else {
-        (args.data_files.clone(), args.separate)
-    };
-    let base = args;
-    let resolved = base.resolved(&given, separate)?;
-    let (args, groups) = (&resolved.0, &resolved.1);
+        base.data_files = chosen.paths;
+        base.separate = chosen.separate;
+    }
+    let base = &base;
+    let source = Source::new(base)?;
+    let (args, groups) = (&source.args, &source.groups);
     // A figure flag makes the Miami figure; otherwise the browser, unless
     // asked to print (or there is no terminal to browse in), when `--gtf`
     // makes the figure too. In the browser `--gtf` draws the genes in view.
@@ -1003,7 +1007,7 @@ pub fn run_pileup(args: &PileupArgs) -> anyhow::Result<()> {
     let interactive = browse_it && terminal;
     let figure_mode = !interactive && (args.gtf.is_some() || figure_flags);
     if interactive && args.genes.is_empty() && args.regions.is_empty() {
-        return browse_switching(base, &given, separate, resolved, None);
+        return self::interactive(base, source, None);
     }
     let selector = Selector::build(&args.genes, &args.regions)?;
     if figure_mode {
@@ -1018,7 +1022,7 @@ pub fn run_pileup(args: &PileupArgs) -> anyhow::Result<()> {
     if interactive {
         // Straight to the browser; -o still writes the binned table.
         write_pileup(args, &loaded, false)?;
-        return browse_switching(base, &given, separate, resolved, Some(loaded));
+        return self::interactive(base, source, Some(loaded));
     }
     write_pileup(args, &loaded, true)
 }

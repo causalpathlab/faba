@@ -124,6 +124,15 @@ pub fn matrix_batch(name: &str) -> Option<Box<str>> {
     (!kind.is_empty()).then_some(batch)
 }
 
+/// The site modality after `modality` (m6A and A-to-I swap); `None` for
+/// one that is not a site modality.
+pub fn other_site_modality(modality: &str) -> Option<&'static str> {
+    let i = SITE_MODALITIES
+        .iter()
+        .position(|m| m.eq_ignore_ascii_case(modality))?;
+    Some(SITE_MODALITIES[(i + 1) % SITE_MODALITIES.len()])
+}
+
 /// The modality of a `{modality}_sites.parquet` site table's file name.
 pub fn site_table_modality(name: &str) -> Option<&str> {
     name.strip_suffix("_sites.parquet")

@@ -941,10 +941,10 @@ impl MetageneArgs {
                 |n| crate::qc::layout::site_table_modality(n).is_some(),
                 false,
             );
-            let Some((chosen, _)) = ask? else {
+            let Some(chosen) = ask? else {
                 return Ok(None);
             };
-            given = chosen;
+            given = chosen.paths;
         }
         given
             .iter()

@@ -1,6 +1,7 @@
 //! The pop-up `pileup` and `metagene` open when the command line names no
 //! input: browse, mark the files to read together, or choose a whole faba
-//! output folder. It opens where the last choice was made.
+//! output folder. It opens where the last choice was made from the same
+//! working folder.
 
 use std::path::{Path, PathBuf};
 
@@ -18,7 +19,7 @@ use crate::tui::{is_apply, popup_frame, run_view, tilde, View, APPLY_KEYS};
 /// What was chosen: the marked files, or one folder.
 #[derive(Debug, PartialEq)]
 pub struct Chosen {
-    pub paths: Vec<PathBuf>,
+    pub paths: Vec<Box<str>>,
     /// Marked files are to be one track each rather than one together.
     pub separate: bool,
 }
@@ -41,17 +42,24 @@ pub struct InputPicker {
 }
 
 impl InputPicker {
-    /// Listing `cwd`'s folders and the files `keep` accepts by name, with
-    /// Tab to read marked files apart when `separable`.
+    /// Listing the folders and the files `keep` accepts by name, at
+    /// `last`'s folder with it highlighted when that is still there, else
+    /// at `cwd`; with Tab to read marked files apart when `separable`.
     pub fn new(
         cwd: PathBuf,
+        last: Option<&Path>,
         command: &'static str,
         what: &'static str,
         keep: fn(&str) -> bool,
         separable: bool,
     ) -> Self {
-        let mut browser = faba_browser(cwd.clone(), keep).marking();
-        browser.open(cwd);
+        let at = last.and_then(|l| Some((l.parent().filter(|d| d.is_dir())?, l.file_name()?)));
+        let start = at.map_or(cwd, |(dir, _)| dir.to_path_buf());
+        let mut browser = faba_browser(start.clone(), keep).marking();
+        browser.open(start);
+        if let Some((_, name)) = at {
+            browser.list.select(&name.to_string_lossy());
+        }
         Self {
             browser,
             command,
@@ -62,20 +70,22 @@ impl InputPicker {
         }
     }
 
-    /// Open at `last`'s folder with `last` highlighted.
-    fn start_at(&mut self, last: &Path) {
-        let (Some(dir), Some(name)) = (last.parent(), last.file_name()) else {
-            return;
-        };
-        if dir.is_dir() {
-            self.browser.open(dir.to_path_buf());
-            self.browser.list.select(&name.to_string_lossy());
-        }
-    }
-
     fn finish(&mut self, paths: Vec<PathBuf>) {
+        let paths = paths
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned().into_boxed_str())
+            .collect();
         let separate = self.separate.unwrap_or(false);
         self.decision = Some(Some(Chosen { paths, separate }));
+    }
+
+    /// The marked count and, when Tab applies, how they read now and what
+    /// Tab makes of them.
+    fn track_mode(&self) -> Option<(&'static str, &'static str)> {
+        self.separate.map(|apart| match apart {
+            true => ("a track each", "one track"),
+            false => ("one track", "a track each"),
+        })
     }
 
     /// Take the whole of `dir`, if it is a faba output folder.
@@ -151,10 +161,9 @@ impl Screen for InputPicker {
         let w = area.width.saturating_sub(4).clamp(20, 90);
         let rows = area.height.saturating_sub(8).clamp(3, 24);
         let n_marked = self.browser.marked.as_ref().map_or(0, Vec::len);
-        let marked = match (n_marked, self.separate) {
+        let marked = match (n_marked, self.track_mode()) {
             (0, _) => String::new(),
-            (n, Some(true)) => format!("· {n} marked, a track each "),
-            (n, Some(false)) => format!("· {n} marked, one track "),
+            (n, Some((now, _))) => format!("· {n} marked, {now} "),
             (n, None) => format!("· {n} marked "),
         };
         let title = format!(
@@ -186,10 +195,8 @@ impl Screen for InputPicker {
             ("←", "up"),
             ("Space", "mark file / choose folder"),
         ];
-        match self.separate {
-            Some(true) => keys.push(("Tab", "one track")),
-            Some(false) => keys.push(("Tab", "a track each")),
-            None => {}
+        if let Some((_, tab)) = self.track_mode() {
+            keys.push(("Tab", tab));
         }
         keys.extend([(APPLY_KEYS, apply), ("Esc", "clear find / cancel")]);
         lines.push(help_line(&keys));
@@ -197,10 +204,46 @@ impl Screen for InputPicker {
     }
 }
 
-/// Where the last choice is kept, so the picker opens there next time.
-fn last_choice_file() -> Option<PathBuf> {
-    Some(crate::tui::home()?.join(".cache/faba/last_input"))
+/// Where the last choices are kept, one line per working folder
+/// (`folder<TAB>choice`), so the picker opens there next time.
+fn memo_file() -> Option<PathBuf> {
+    let cache = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| Some(crate::tui::home()?.join(".cache")))?;
+    Some(cache.join("faba/last_input"))
 }
+
+/// The last choice made from `cwd`.
+fn recall(memo: &Path, cwd: &Path) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(memo).ok()?;
+    let cwd = cwd.to_string_lossy();
+    text.lines()
+        .find_map(|l| l.split_once('\t').filter(|(from, _)| *from == cwd))
+        .map(|(_, last)| PathBuf::from(last))
+}
+
+/// Keep `choice` as the last made from `cwd`, the most recent folders
+/// first and at most [`MEMO_LINES`] of them. A convenience: a failure to
+/// write is no failure.
+fn remember(memo: &Path, cwd: &Path, choice: &str) {
+    let cwd = cwd.to_string_lossy();
+    let old = std::fs::read_to_string(memo).unwrap_or_default();
+    let others = old
+        .lines()
+        .filter(|l| l.split_once('\t').is_some_and(|(from, _)| from != cwd));
+    let lines: Vec<String> = std::iter::once(format!("{cwd}\t{choice}"))
+        .chain(others.map(String::from))
+        .take(MEMO_LINES)
+        .collect();
+    if let Some(dir) = memo.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(memo, lines.join("\n") + "\n");
+}
+
+/// Working folders whose last choice is kept.
+const MEMO_LINES: usize = 64;
 
 /// The input when the command line named none: the files marked in a
 /// browser (those `keep` accepts by name), or one faba output folder.
@@ -212,33 +255,21 @@ pub fn ask_inputs(
     what: &'static str,
     keep: fn(&str) -> bool,
     separable: bool,
-) -> anyhow::Result<Option<(Vec<Box<str>>, bool)>> {
+) -> anyhow::Result<Option<Chosen>> {
     anyhow::ensure!(
         !batch && data_beans::interactive::tui_available(),
         "name {what}, or a faba output directory"
     );
-    let mut picker = InputPicker::new(std::env::current_dir()?, command, what, keep, separable);
-    let memo = last_choice_file();
-    if let Some(last) = memo.as_ref().and_then(|m| std::fs::read_to_string(m).ok()) {
-        picker.start_at(Path::new(last.trim()));
-    }
+    let cwd = std::env::current_dir()?;
+    let memo = memo_file();
+    let last = memo.as_deref().and_then(|m| recall(m, &cwd));
+    let mut picker = InputPicker::new(cwd.clone(), last.as_deref(), command, what, keep, separable);
     run_view(&mut picker)?;
-    let Some(chosen) = picker.decision.flatten() else {
-        return Ok(None);
-    };
-    // Remembering is a convenience: a failure to write is no failure.
-    if let (Some(memo), Some(first)) = (memo, chosen.paths.first()) {
-        if let Some(dir) = memo.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        let _ = std::fs::write(memo, first.to_string_lossy().as_bytes());
+    let chosen = picker.decision.flatten();
+    if let (Some(memo), Some(first)) = (&memo, chosen.as_ref().and_then(|c| c.paths.first())) {
+        remember(memo, &cwd, first);
     }
-    let paths = chosen
-        .paths
-        .iter()
-        .map(|p| p.to_string_lossy().into_owned().into_boxed_str())
-        .collect();
-    Ok(Some((paths, chosen.separate)))
+    Ok(chosen)
 }
 
 #[cfg(test)]

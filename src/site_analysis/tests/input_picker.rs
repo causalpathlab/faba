@@ -25,11 +25,20 @@ fn site_matrix(name: &str) -> bool {
     crate::qc::layout::is_site_matrix_name(name)
 }
 
+/// A pileup picker at `cwd`, opening at `last` when given.
+fn picker(cwd: PathBuf, last: Option<&Path>) -> InputPicker {
+    InputPicker::new(cwd, last, "pileup", "site matrices", site_matrix, true)
+}
+
+fn text(p: &Path) -> Box<str> {
+    p.to_string_lossy().into_owned().into_boxed_str()
+}
+
 #[test]
 fn mark_files_from_a_folder_or_choose_the_folder() {
     let tmp = tree();
     let root = tmp.path().to_path_buf();
-    let mut p = InputPicker::new(root.clone(), "pileup", "site matrices", site_matrix, true);
+    let mut p = picker(root.clone(), None);
     assert!(p.browser.list.select("plain"));
     press(&mut p, KeyCode::Char(' '));
     assert!(
@@ -41,19 +50,13 @@ fn mark_files_from_a_folder_or_choose_the_folder() {
     assert!(p.browser.list.select("out"));
     press(&mut p, KeyCode::Char(' '));
     let folder = Chosen {
-        paths: vec![root.join("out")],
+        paths: vec![text(&root.join("out"))],
         separate: false,
     };
     assert_eq!(p.decision, Some(Some(folder)));
 
     // Or opened, and only its site matrices listed and marked.
-    let mut p = InputPicker::new(
-        root.join("out"),
-        "pileup",
-        "site matrices",
-        site_matrix,
-        true,
-    );
+    let mut p = picker(root.join("out"), None);
     let names: Vec<&str> = p.browser.list.shown().map(|e| e.name.as_str()).collect();
     assert_eq!(names, ["..", "a_m6a_site.zarr.zip", "b_m6a_site.zarr.zip"]);
     for (name, key) in [
@@ -79,7 +82,7 @@ fn mark_files_from_a_folder_or_choose_the_folder() {
     press(&mut p, KeyCode::Tab);
     crate::tui::feed(&mut p, crate::tui::apply_key());
     let chosen = Chosen {
-        paths: marked,
+        paths: marked.iter().map(|m| text(m)).collect(),
         separate: true,
     };
     assert_eq!(
@@ -94,6 +97,7 @@ fn draws_at_any_terminal_size() {
     let tmp = tree();
     let mut p = InputPicker::new(
         tmp.path().join("out"),
+        None,
         "metagene",
         "site tables",
         |n| n.ends_with("_sites.parquet"),
@@ -111,15 +115,36 @@ fn draws_at_any_terminal_size() {
 fn opens_at_the_last_choice() {
     let tmp = tree();
     let root = tmp.path().to_path_buf();
-    let mut p = InputPicker::new(root.clone(), "pileup", "site matrices", site_matrix, true);
-    p.start_at(&root.join("out/b_m6a_site.zarr.zip"));
+    let p = picker(root.clone(), Some(&root.join("out/b_m6a_site.zarr.zip")));
     assert_eq!(p.browser.cwd, root.join("out"));
     assert_eq!(
         p.browser.highlighted().map(|e| e.name.as_str()),
         Some("b_m6a_site.zarr.zip")
     );
-    // Gone since: where it was.
-    let mut p = InputPicker::new(root.clone(), "pileup", "site matrices", site_matrix, true);
-    p.start_at(&root.join("gone/x_m6a_site.zarr.zip"));
+    // Gone since: where it was asked from.
+    let p = picker(root.clone(), Some(&root.join("gone/x_m6a_site.zarr.zip")));
     assert_eq!(p.browser.cwd, root);
+}
+
+#[test]
+fn the_last_choice_is_kept_per_working_folder() {
+    let tmp = tempfile::tempdir().unwrap();
+    let memo = tmp.path().join("cache/faba/last_input");
+    let (a, b) = (Path::new("/work/a"), Path::new("/work/b"));
+    assert_eq!(recall(&memo, a), None, "nothing kept yet");
+    remember(&memo, a, "/work/a/out");
+    remember(&memo, b, "/work/b/x_m6a_site.zarr.zip");
+    remember(&memo, a, "/work/a/out2");
+    assert_eq!(
+        recall(&memo, a),
+        Some(PathBuf::from("/work/a/out2")),
+        "the latest"
+    );
+    assert_eq!(
+        recall(&memo, b),
+        Some(PathBuf::from("/work/b/x_m6a_site.zarr.zip")),
+        "each folder its own"
+    );
+    let kept = std::fs::read_to_string(&memo).unwrap();
+    assert_eq!(kept.lines().count(), 2, "one line per folder");
 }

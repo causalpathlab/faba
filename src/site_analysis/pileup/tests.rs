@@ -374,7 +374,7 @@ fn an_output_directory_gives_a_track_per_batch_and_its_site_table() {
 /// `faba pileup` with `args`, resolved: the inputs and the tracks.
 fn resolve(args: &[&str]) -> (PileupArgs, Vec<TrackFiles>) {
     let args = pileup_args(args);
-    args.resolved(&args.data_files, args.separate).unwrap()
+    args.resolved().unwrap()
 }
 
 fn labels(groups: &[TrackFiles]) -> Vec<&str> {

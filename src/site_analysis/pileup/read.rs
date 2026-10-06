@@ -1,7 +1,9 @@
 //! Reading the selected rows: sparse matrices, site parquets, read depth.
 
 use super::*;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
+#[derive(Default)]
 struct PosAgg {
     pub(super) sum: f64,
     pub(super) nnz: usize,
@@ -217,12 +219,44 @@ struct FileRead {
     unconverted_rows: usize,
 }
 
+impl FileRead {
+    /// Add `other`, a later file's share: per group and position the sums
+    /// add, and the first file's modality stays.
+    fn merge(&mut self, other: FileRead) {
+        if self.matched == 0 && self.unconverted_rows == 0 && self.by_group.is_empty() {
+            // Nothing yet: take it whole rather than copy it over.
+            *self = other;
+            return;
+        }
+        for (grp, aggs) in other.by_group {
+            let into = self.by_group.entry(grp).or_default();
+            for (pos, agg) in aggs {
+                let a = into.entry(pos).or_default();
+                a.sum += agg.sum;
+                a.nnz += agg.nnz;
+            }
+        }
+        for (gene, n) in other.distinct_genes {
+            *self.distinct_genes.entry(gene).or_insert(0) += n;
+        }
+        self.matched_chrs.extend(other.matched_chrs);
+        self.matched += other.matched;
+        if self.first_modality.is_none() {
+            self.first_modality = other.first_modality;
+        }
+        for (pos, v) in other.totals {
+            *self.totals.entry(pos).or_insert(0.0) += v;
+        }
+        self.unconverted_rows += other.unconverted_rows;
+    }
+}
+
 /// Read the rows `selector` picks from `data_file`.
 fn read_one_file(
     data_file: &str,
     selector: &Selector,
     membership: Option<&CellMembership>,
-    modality_filter: Option<&[String]>,
+    modality_filter: Option<&[Box<str>]>,
     with_total: bool,
 ) -> anyhow::Result<FileRead> {
     let mut part = FileRead::default();
@@ -240,7 +274,7 @@ fn read_one_file(
                 continue;
             }
             if let Some(mf) = modality_filter {
-                if !mf.contains(&modality.to_ascii_lowercase()) {
+                if !mf.iter().any(|m| m.eq_ignore_ascii_case(modality)) {
                     continue;
                 }
             }
@@ -287,7 +321,7 @@ fn read_one_file(
         let g = part.by_group.entry("".into()).or_default();
         for &(pos, is_converted) in &local_to_pos {
             if is_converted {
-                g.entry(pos).or_insert(PosAgg { sum: 0.0, nnz: 0 });
+                g.entry(pos).or_default();
             }
         }
     }
@@ -316,7 +350,7 @@ fn read_one_file(
             .entry(group)
             .or_default()
             .entry(pos)
-            .or_insert(PosAgg { sum: 0.0, nnz: 0 });
+            .or_default();
         agg.sum += *val as f64;
         agg.nnz += 1;
     }
@@ -330,73 +364,40 @@ pub(super) fn read_matrix_positions_grouped(
     membership: Option<&CellMembership>,
     top_modality: &[Box<str>],
     with_total: bool,
-    done: Option<&std::sync::atomic::AtomicUsize>,
+    done: Option<&AtomicUsize>,
 ) -> anyhow::Result<GroupedMatrix> {
-    // Per group: pos -> aggregate. Multiple input files (e.g. replicates)
-    // merge per genomic position; gene/chr labels reflect the union.
-    let mut by_group: FxHashMap<Box<str>, FxHashMap<i64, PosAgg>> = FxHashMap::default();
-    let mut distinct_genes: FxHashMap<Box<str>, usize> = FxHashMap::default();
-    let mut matched_chrs: Vec<Box<str>> = Vec::new();
-    let mut total_matched = 0usize;
-    let mut first_modality: Option<Box<str>> = None;
-    // Both channels summed per position, with `with_total`.
-    let mut totals: FxHashMap<i64, f64> = FxHashMap::default();
-    let mut unconverted_rows = 0usize;
+    // Only the rows of these modalities, when some are named.
+    let modality_filter = (!top_modality.is_empty()).then_some(top_modality);
 
-    let modality_filter: Option<Vec<String>> = if top_modality.is_empty() {
-        None
-    } else {
-        Some(
-            top_modality
-                .iter()
-                .map(|m| m.to_ascii_lowercase())
-                .collect(),
-        )
-    };
-
-    // The files are independent: read them together, then merge in order.
+    // The files are independent: read them together, then merge in file
+    // order. Multiple input files (e.g. replicates) merge per genomic
+    // position; gene/chr labels reflect the union.
     let parts: Vec<anyhow::Result<FileRead>> = {
         use rayon::prelude::*;
         data_files
             .par_iter()
             .map(|f| {
-                let part = read_one_file(
-                    f,
-                    selector,
-                    membership,
-                    modality_filter.as_deref(),
-                    with_total,
-                );
+                let part = read_one_file(f, selector, membership, modality_filter, with_total);
                 if let Some(done) = done {
-                    done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    done.fetch_add(1, Ordering::Relaxed);
                 }
                 part
             })
             .collect()
     };
+    let mut all = FileRead::default();
     for part in parts {
-        let part = part?;
-        for (grp, aggs) in part.by_group {
-            let into = by_group.entry(grp).or_default();
-            for (pos, agg) in aggs {
-                let a = into.entry(pos).or_insert(PosAgg { sum: 0.0, nnz: 0 });
-                a.sum += agg.sum;
-                a.nnz += agg.nnz;
-            }
-        }
-        for (gene, n) in part.distinct_genes {
-            *distinct_genes.entry(gene).or_insert(0) += n;
-        }
-        matched_chrs.extend(part.matched_chrs);
-        total_matched += part.matched;
-        if first_modality.is_none() {
-            first_modality = part.first_modality;
-        }
-        for (pos, v) in part.totals {
-            *totals.entry(pos).or_insert(0.0) += v;
-        }
-        unconverted_rows += part.unconverted_rows;
+        all.merge(part?);
     }
+    let FileRead {
+        by_group,
+        distinct_genes,
+        matched_chrs,
+        matched: total_matched,
+        first_modality,
+        totals,
+        unconverted_rows,
+    } = all;
 
     // The selection can span several genes (and chromosomes); rather than
     // erroring on ambiguity we pile them together and label the aggregate.
@@ -456,7 +457,7 @@ pub(super) fn read_matrix_positions(
     selector: &Selector,
     signal: &PileupSignal,
     with_total: bool,
-    done: Option<&std::sync::atomic::AtomicUsize>,
+    done: Option<&AtomicUsize>,
 ) -> anyhow::Result<Option<MatrixGeneData>> {
     let grouped =
         read_matrix_positions_grouped(data_files, selector, signal, None, &[], with_total, done)?;
