@@ -697,14 +697,14 @@ stays on its gene); `[` and `]` move through it and
 keys drive the one in focus; `m` switches the editing modality. The gene models and the metagene come from the annotation, read on a
 thread once (`--gff`, or the one in the input directory's run record); without one, the gene plot
 spans the gene's own sites and the metagene is left out. Every count is decided by the same rule `qc`
-applies, so the view cannot disagree with the written fileset. Ctrl+Enter opens a confirmation that
-recaps the output directory, the thresholds changed from the start, and the sites every modality
-keeps; a second Ctrl+Enter applies them, Esc (or `n`) goes back. Ctrl+Enter is the only key
-that writes: plain Enter does nothing, and nor do Shift+Enter or Alt+Enter, so a stray key cannot
-start a write. Ctrl+J does the same as Ctrl+Enter and works on any terminal, including one
-without the kitty keyboard protocol, which reports Ctrl+Enter as plain Enter; Enter there shows a
-hint naming both. Ctrl or Alt with a letter is never taken as the letter. `p` gives the command to
-run instead. Once applied, the fileset is written
+applies, so the view cannot disagree with the written fileset. Ctrl+R, or a click on the
+`[ ✓ apply ]` button beside the modality names, opens a confirmation that recaps the output
+directory, the thresholds changed from the start, and the sites every modality keeps; a second
+Ctrl+R (or `[ ✓ apply and write ]`) applies them, Esc, `n` or `[ back ]` goes back. Ctrl+R is a
+control byte every terminal sends as it is (Shift held or not), so it is never taken for Enter.
+It is the only key that writes: plain Enter does nothing, and nor do Shift+Enter, Alt+Enter or
+Ctrl+Enter, so a stray key cannot start a write; Enter there shows a hint naming Ctrl+R. Ctrl or Alt with any other letter is never taken as the letter. `p`
+gives the command to run instead. Once applied, the fileset is written
 with the view still up, under a pop-up showing each file as it goes. The view's figure for every
 modality and every knob, as set when the cut was applied (scales, selected gene, bar measure),
 is saved beside it in `qc_plots/{modality}_{knob}.pdf` and `.png`. `p` prints the matching
@@ -715,8 +715,22 @@ Nothing is written until the thresholds are applied.
 
 Run as plain `faba qc`, with no input or `-o`, it first asks for them in a pop-up: browse to a
 faba output directory (directories holding faba matrices or site tables are marked; Enter opens
-one, ← goes up, Space chooses the highlighted one, `.` the one being shown), then name the
+one, ← goes up, Space chooses the highlighted one, Ctrl+R the one being shown), then name the
 output, which starts as `{input}_qc` and must be new or empty.
+
+Every file list (this one, the annotation browser `g` opens, and those of `faba run`) narrows as
+you type: the names holding the typed text, in any case, with the cursor on the first that starts
+with it. Typing a path walks it: `/` with nothing typed goes to the root, `~` home, and `/` after a
+name into that folder (the name as typed, else the highlighted folder), so `/data/runs/` lands in
+`/data/runs`; `../` goes up. Backspace takes back a character, or goes up with nothing typed; Esc
+clears the text before it does anything else. Arrow keys move, since letters type.
+
+Both views take the mouse. In `qc` a click on a modality's name switches to it, and a click in the
+thresholds or the gene list focuses that panel and selects the knob or gene clicked; in `run` a
+click on a screen's name switches to it, and a click in the BAM list, the inputs rows, the steps or
+the flags focuses it and selects the row clicked. The wheel moves the cursor of the panel under the
+pointer, as ↑/↓ would. Pop-ups take no clicks. While a view has the mouse, most terminals select
+text with Shift held.
 
 The view needs a terminal on stdin and stdout, and `qc` stops with an error without one.
 `--batch-process` skips the view and cuts with the `--site-*` values as given, for scripts and
@@ -730,13 +744,31 @@ and features are cut as given.
 Plain `faba run` opens a full-screen view, pre-filled from any flags given on the command line:
 an Inputs screen (BAMs picked as foreground, passed positionally, or background, passed as
 `--control-bam`; annotation, genome, known SNPs, output directory, threads), a Steps screen, a
-Flags screen, and, once a run has started, a Run screen. The output directory is never assumed:
-until one is named on the output row, Ctrl+Enter, `c` and `p` first open that row's line, holding
+Flags screen, and, once a run has started, a Run screen. In the BAM list, Space takes the
+highlighted BAM from out of the run to fg, to bg, and back out, and typing finds and walks paths as
+in `qc`'s file lists; since letters type there, the screen keys (`c`, `p`, `q`, `1`-`4`) work
+everywhere else, and Ctrl-C leaves. Tab goes from the BAM list to the inputs rows and on through
+the screens; Shift+Tab goes back.
+
+Without an annotation or genome at hand, `d` on the inputs rows downloads a matching pair instead
+of picking local files (with local files picked, nothing is offered). It lists what the FTP sites
+hold: GENCODE's releases for human or mouse, newest first, or Ensembl's current species, narrowed by
+typing. GENCODE names chromosomes `chr1` and Ensembl `1`; the pop-up reads the first BAM's header
+and points to the source that names them as the BAMs do. The chosen release's primary-assembly GTF
+and genome are found in its listing and downloaded into a folder named in a line (suggested under
+`~/faba_refs/`): the GTF kept gzipped, the genome unpacked and indexed. Files already in the
+folder are kept, so a stopped download resumes, and the GFF and genome rows are set once both are
+ready. A pop-up shows the download: the step, a bar with the megabytes fetched (or unpacked) of the
+file's size, and the folder; Esc hides it while the download goes on, `d` shows it again, and `s`
+stops it, keeping what came. Setup goes on meanwhile; only starting the run waits for it. The output directory is never assumed:
+until one is named on the output row, Ctrl+R, `c` and `p` first open that row's line, holding
 `faba_out` beside the first BAM picked (numbered when it exists) as a suggestion, and go on once a
-folder is named; it must be new or empty. Ctrl+Enter opens a preview of the exact
-command and of anything that keeps it from starting; Ctrl+Enter there starts the run. As in `qc`,
-Ctrl+Enter is the only key that does either: plain Enter, Shift+Enter, Alt+Enter, `G` and `y` do
-not, so a stray key cannot start a run; Ctrl+J does the same as Ctrl+Enter on any terminal. Or,
+folder is named; it must be new or empty. Ctrl+R, or the `[ ▶ preview ]` button beside the screen
+names, opens a preview of the exact command, with the output folder as named, and of anything that
+keeps it from starting; Ctrl+R or `[ ▶ start ]` there starts the run, Esc or `[ cancel ]` goes
+back, and while a run goes the button reads `[ ■ stop ]`, as `s`. As in `qc`, Ctrl+R is the only
+key that does either: plain Enter, Shift+Enter, Alt+Enter, `G` and `y` do not, so a stray key
+cannot start a run. Or,
 `c` (on any screen or in the preview) copies the exact `faba run --batch-process` command to the
 clipboard, and `p` leaves the view and prints that command on one line, with the output folder as
 an absolute path, writing nothing and starting nothing; run it in a shell instead. `p` does
@@ -744,7 +776,10 @@ nothing while a run is going. Starting saves the command as `faba_run.cmd.sh` in
 created only if absent (never overwritten), it is executable, and its guard refuses to run when
 `pipeline_summary.json` already exists there. Run it again with `bash faba_run.cmd.sh`. The run is
 a child process whose log the Run screen shows; `s` asks first, `s` again interrupts it, and a
-further `s` kills it. `q` is refused while a run is going; before any run, with BAMs picked, `q` asks
+further `s` kills it. When the run ends, a pop-up says so: finished, stopped or failed (with the
+reason it gave), how long it took and where its output is; the terminal also rings its bell and is
+asked for a desktop notification (OSC 9), for whoever is away. Enter, Esc or `[ ok ]` closes it,
+onto the log. `q` is refused while a run is going; before any run, with BAMs picked, `q` asks
 first and only a second `q` leaves, since the setup is not kept. `--batch-process` skips the view and
 runs straight through from the flags given; it needs the BAMs, `-g`, `-f` and `-o`.
 

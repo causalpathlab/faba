@@ -3,7 +3,7 @@ use data_beans::aux::feature_rows::M6A;
 use ratatui::crossterm::event::KeyModifiers;
 
 fn press(p: &mut PathPicker, code: KeyCode) {
-    p.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+    crate::tui::feed(p, KeyEvent::new(code, KeyModifiers::NONE));
 }
 
 fn type_text(p: &mut PathPicker, text: &str) {
@@ -23,12 +23,7 @@ fn tree() -> tempfile::TempDir {
 }
 
 fn select(p: &mut PathPicker, name: &str) {
-    p.browser.at = p
-        .browser
-        .entries
-        .iter()
-        .position(|e| e.name == name)
-        .unwrap();
+    assert!(p.browser.list.select(name));
 }
 
 #[test]
@@ -36,9 +31,12 @@ fn browse_choose_an_input_and_name_the_output() {
     let tmp = tree();
     let root = tmp.path().to_path_buf();
     let mut p = PathPicker::new(root.clone(), None, None);
-    let names: Vec<&str> = p.browser.entries.iter().map(|e| e.name.as_str()).collect();
+    let names: Vec<&str> = p.browser.list.shown().map(|e| e.name.as_str()).collect();
     assert_eq!(names, ["..", "plain", "prof"]);
-    assert!(p.browser.entries[2].tagged && !p.browser.entries[1].tagged);
+    assert!(
+        p.browser.list.shown().nth(2).unwrap().tagged
+            && !p.browser.list.shown().nth(1).unwrap().tagged
+    );
 
     // Not a faba directory: refused, still browsing.
     select(&mut p, "plain");
@@ -51,7 +49,7 @@ fn browse_choose_an_input_and_name_the_output() {
     assert_eq!(p.browser.cwd, root.join("prof"));
     press(&mut p, KeyCode::Left);
     assert_eq!(p.browser.cwd, root);
-    assert_eq!(p.browser.entries[p.browser.at].name, "prof");
+    assert_eq!(p.browser.highlighted().unwrap().name, "prof");
 
     press(&mut p, KeyCode::Char(' '));
     let suggested = format!("{}_qc", root.join("prof").display());
@@ -94,7 +92,7 @@ fn only_what_is_missing_is_asked() {
 
     // The input given: straight to the output, and nothing listed.
     let p = PathPicker::new(root.clone(), Some(input.clone()), None);
-    assert!(matches!(p.step, Step::Output { .. }) && p.browser.entries.is_empty());
+    assert!(matches!(p.step, Step::Output { .. }) && p.browser.list.is_empty());
 
     // An output given but not empty: asked again, with why.
     let p = PathPicker::new(
@@ -107,6 +105,16 @@ fn only_what_is_missing_is_asked() {
     // The output given: browse, and choosing finishes.
     let mut p = PathPicker::new(input.clone(), None, Some(out.clone()));
     press(&mut p, KeyCode::Char('.'));
+    assert!(
+        p.decision.is_none() && p.browser.list.find.text == ".",
+        "letters find"
+    );
+    press(&mut p, KeyCode::Esc);
+    assert!(p.decision.is_none(), "Esc clears the find first");
+    crate::tui::feed(
+        &mut p,
+        KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
+    );
     assert_eq!(
         p.decision,
         Some(Some((input.to_string_lossy().into_owned(), out)))

@@ -2,14 +2,16 @@
 
 use std::path::PathBuf;
 
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 
+use super::fetch::{bam_chr_named, Catalogue, Fetch};
 use super::form::Kind;
-use super::inputs::{Browser, InputsFocus, Row};
+use super::inputs::{InputsFocus, Row};
 use super::steps::Step;
-use super::{script, App, Page, Target};
+use super::{script, App, Hit, Page, Target};
 use crate::figure::{Edit, LineInput};
-use crate::tui::{as_apply, is_apply, is_stray, APPLY_FALLBACK, APPLY_KEYS};
+use crate::tui::browser::Nav;
+use crate::tui::{apply_key, enter_hint, is_apply, moved, output_problem, typed_path, wheel_key};
 
 /// Longest text a line input takes.
 const MAX_TYPED: usize = 4096;
@@ -26,11 +28,6 @@ fn nav(code: KeyCode) -> Option<isize> {
     }
 }
 
-/// `at` moved by `d`, kept within `0..=last`.
-fn moved(at: usize, d: isize, last: usize) -> usize {
-    at.saturating_add_signed(d).min(last)
-}
-
 impl App {
     /// Take `key`, then check the command it leaves.
     pub(super) fn key(&mut self, key: KeyEvent) {
@@ -41,27 +38,26 @@ impl App {
     /// Route `key`: an open line input first, then the file pop-up, the
     /// preview, the keys every screen shares, and the screen's own.
     fn route(&mut self, key: KeyEvent) {
-        let key = as_apply(key);
         self.note = None;
         let leaving = std::mem::take(&mut self.leaving);
         if self.editing.is_some() {
             return self.key_editing(key);
         }
-        if is_stray(&key) {
-            // Shift+Enter or Alt+Enter is a terminal's stand-in for the apply
-            // key, not a plain Enter: it must not toggle or open anything.
-            if key.code == KeyCode::Enter && self.picking.is_none() {
-                let does = if self.preview {
-                    "starts the run"
-                } else {
-                    "previews the run"
-                };
-                self.enter_hint(does);
+        if self.ended_shown {
+            // The run's end, told: Enter or Esc closes it, onto the log.
+            if matches!(key.code, KeyCode::Enter | KeyCode::Esc) {
+                self.ended_shown = false;
             }
             return;
         }
         if self.picking.is_some() {
             return self.key_picking(key);
+        }
+        if self.catalogue.is_some() {
+            return self.key_catalogue(key);
+        }
+        if self.fetch_shown && self.fetch.is_some() {
+            return self.key_fetch(key);
         }
         if self.preview {
             return self.key_preview(key);
@@ -71,6 +67,15 @@ impl App {
                 self.preview = true;
             }
             return;
+        }
+        // The BAM list takes its keys first: letters type there, so they
+        // are no commands. Enter on a BAM picks nothing; Space does.
+        if self.page == Page::Inputs && self.inputs.focus == InputsFocus::Bams {
+            match self.inputs.bams.key(key) {
+                Nav::Moved => return,
+                Nav::Picked(_) => return self.enter_hint(),
+                Nav::Ignored => {}
+            }
         }
         match key.code {
             KeyCode::Char('c' | 'p') if self.ask_output(key) => return,
@@ -104,6 +109,59 @@ impl App {
         }
     }
 
+    /// A click or a turn of the wheel: focus and select what is under it;
+    /// the wheel then moves as ↑/↓ would. Nothing while a pop-up is up.
+    pub(super) fn click(&mut self, m: MouseEvent) {
+        let Some(hit) = self.hits.at(m.column, m.row) else {
+            return;
+        };
+        let clicked = matches!(m.kind, MouseEventKind::Down(_));
+        let popped = self.popped();
+        // A button does what its key does, the same way.
+        let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        let button = match hit {
+            _ if !clicked => None,
+            Hit::Preview if !popped => Some(apply_key()),
+            Hit::Start if self.preview => Some(apply_key()),
+            Hit::Cancel if self.preview => Some(esc),
+            Hit::Ok if self.ended_shown => Some(esc),
+            Hit::Stop if !popped => {
+                self.page = Page::Run;
+                Some(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE))
+            }
+            _ => None,
+        };
+        if let Some(key) = button {
+            return self.key(key);
+        }
+        if popped {
+            return;
+        }
+        // Focus and selection only: nothing the command depends on changes.
+        self.note = None;
+        match hit {
+            Hit::Tab(p) if clicked && self.pages().contains(&p) => self.page = p,
+            Hit::Bams(i) => {
+                self.inputs.focus = InputsFocus::Bams;
+                if let Some(i) = i.filter(|_| clicked) {
+                    self.inputs.bams.list.at = i;
+                }
+            }
+            Hit::Rows(i) => {
+                self.inputs.focus = InputsFocus::Rows;
+                if let Some(i) = i.filter(|_| clicked) {
+                    self.inputs.row = i;
+                }
+            }
+            Hit::Step(i) if clicked => self.steps.at = i,
+            Hit::Flag(k) if clicked => self.flags_at = k,
+            _ => {}
+        }
+        if let Some(key) = wheel_key(&m) {
+            self.key(key);
+        }
+    }
+
     /// The screens a tab reaches: Run once there is a run.
     fn pages(&self) -> Vec<Page> {
         let mut v = vec![Page::Inputs, Page::Steps, Page::Flags];
@@ -113,12 +171,32 @@ impl App {
         v
     }
 
+    /// Tab: the BAM list, then the inputs rows, then the next screen;
+    /// Shift+Tab back.
     fn turn(&mut self, d: isize) {
+        if self.page == Page::Inputs {
+            let to = match (self.inputs.focus, d > 0) {
+                (InputsFocus::Bams, true) => Some(InputsFocus::Rows),
+                (InputsFocus::Rows, false) => Some(InputsFocus::Bams),
+                _ => None,
+            };
+            if let Some(focus) = to {
+                self.inputs.focus = focus;
+                return;
+            }
+        }
         let pages = self.pages();
         let n = pages.len() as isize;
         let at = pages.iter().position(|p| *p == self.page).unwrap_or(0) as isize;
         if let Some(p) = pages.get((at + d).rem_euclid(n) as usize) {
             self.page = *p;
+        }
+        if self.page == Page::Inputs {
+            self.inputs.focus = if d > 0 {
+                InputsFocus::Bams
+            } else {
+                InputsFocus::Rows
+            };
         }
     }
 
@@ -144,11 +222,21 @@ impl App {
                     return;
                 };
                 match target {
-                    Target::Output => {
-                        let named = !t.is_empty();
+                    Target::Output if t.is_empty() => {
                         self.inputs.output = t;
+                        self.asked_output = None;
+                    }
+                    Target::Output => {
+                        let out = typed_path(&t).to_string_lossy().into_owned();
+                        // A folder with files in it is refused at once.
+                        if let Some(why) = output_problem(&out) {
+                            self.edit(Target::Output, &t);
+                            self.note = Some(why);
+                            return;
+                        }
+                        self.inputs.output = out;
                         // Asked for by a key: now go on with what it asked.
-                        if let Some(asked) = self.asked_output.take().filter(|_| named) {
+                        if let Some(asked) = self.asked_output.take() {
                             self.route(asked);
                         }
                     }
@@ -156,6 +244,12 @@ impl App {
                     Target::Flag(i) => {
                         if let Some(f) = self.form.fields.get_mut(i) {
                             f.set_text(&t);
+                        }
+                    }
+                    Target::RefDir => {
+                        if let Some(pick) = self.ref_pick.take().filter(|_| !t.is_empty()) {
+                            self.fetch = Some(Fetch::start(pick, typed_path(&t)));
+                            self.fetch_shown = true;
                         }
                     }
                     Target::Find => {
@@ -172,30 +266,76 @@ impl App {
             return;
         };
         let row = *row;
-        if let Some(d) = nav(key.code) {
-            return browser.step(d);
-        }
-        match key.code {
-            KeyCode::Left | KeyCode::Backspace | KeyCode::Char('h') => browser.up(),
-            KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
-                if let Some(file) = browser.enter() {
-                    self.inputs.set(row, Some(&file));
-                    self.picking = None;
-                }
+        match browser.key(key) {
+            Nav::Moved => {}
+            Nav::Picked(file) => {
+                self.inputs.set(row, Some(&file));
+                self.picking = None;
             }
-            KeyCode::Esc | KeyCode::Char('q') => self.picking = None,
-            _ => {}
+            Nav::Ignored if key.code == KeyCode::Esc => self.picking = None,
+            Nav::Ignored => {}
         }
     }
 
     /// Enter did nothing: say what the apply key does here, and what to do
     /// on a terminal that cannot send it.
-    fn enter_hint(&mut self, does: &str) {
+    pub(super) fn enter_hint(&mut self) {
+        let does = if self.preview {
+            "starts the run"
+        } else {
+            "previews the run"
+        };
         self.note = Some(format!(
-            "Enter does nothing here; {APPLY_KEYS} {does}. Terminal cannot send {APPLY_KEYS}? \
-             {APPLY_FALLBACK} does the same; or c copies the faba run --batch-process command, \
-             p prints it and leaves"
+            "{}; or c copies the faba run --batch-process command, p prints it and leaves",
+            enter_hint(does)
         ));
+    }
+
+    /// `d` on the inputs rows: the references the FTP sites offer, unless
+    /// one is coming already.
+    fn offer_references(&mut self) {
+        if self.fetch.is_some() {
+            self.fetch_shown = true;
+            return;
+        }
+        let bam_chr = self.inputs.fg().first().and_then(|b| bam_chr_named(b));
+        self.catalogue = Some(Catalogue::new(bam_chr));
+    }
+
+    /// The download's pop-up: Esc hides it, the download going on; `s`
+    /// stops it, keeping what came for the next try.
+    fn key_fetch(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => self.fetch_shown = false,
+            KeyCode::Char('s') => {
+                if let Some(f) = &self.fetch {
+                    f.stop();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn key_catalogue(&mut self, key: KeyEvent) {
+        let Some(c) = self.catalogue.as_mut() else {
+            return;
+        };
+        if c.key(&key) {
+            return;
+        }
+        match key.code {
+            KeyCode::Enter | KeyCode::Right => {
+                if let Some(pick) = c.enter() {
+                    self.catalogue = None;
+                    let base = crate::tui::home().unwrap_or_else(|| self.inputs.bams.cwd.clone());
+                    let dir = base.join("faba_refs").join(pick.dir_name());
+                    self.ref_pick = Some(pick);
+                    self.edit(Target::RefDir, &dir.to_string_lossy());
+                }
+            }
+            KeyCode::Esc | KeyCode::Left if !c.back() => self.catalogue = None,
+            _ => {}
+        }
     }
 
     /// No output folder named yet: open the output row's line, holding a
@@ -216,7 +356,7 @@ impl App {
 
     /// Copy the exact command the run would start.
     fn copy_command(&mut self) {
-        let text = script::command_lines(&self.argv()).join(" \\\n  ");
+        let text = script::command_lines(&self.argv_out()).join(" \\\n  ");
         self.copy(&text);
     }
 
@@ -231,7 +371,7 @@ impl App {
         match key.code {
             KeyCode::Char('c') => self.copy_command(),
             KeyCode::Char('p') => self.print_and_leave(),
-            KeyCode::Enter => self.enter_hint("starts the run"),
+            KeyCode::Enter => self.enter_hint(),
             KeyCode::Esc => self.preview = false,
             _ => {}
         }
@@ -239,25 +379,10 @@ impl App {
 
     fn key_inputs(&mut self, key: KeyEvent) {
         match self.inputs.focus {
+            // The rest of the list's keys went to the browser in `route`.
             InputsFocus::Bams => {
-                let bams = &mut self.inputs.bams;
-                if let Some(d) = nav(key.code) {
-                    return bams.step(d);
-                }
-                match key.code {
-                    KeyCode::Enter | KeyCode::Right => {
-                        // Folders open; a BAM is picked with Space.
-                        if bams.entries.get(bams.at).is_some_and(|e| e.dir) {
-                            bams.enter();
-                        } else if key.code == KeyCode::Enter {
-                            self.enter_hint("previews the run");
-                        }
-                    }
-                    KeyCode::Left | KeyCode::Backspace => bams.up(),
-                    KeyCode::Char(' ') => self.inputs.toggle(),
-                    KeyCode::Char('b') => self.inputs.flip(),
-                    KeyCode::Char('l') => self.inputs.focus = InputsFocus::Rows,
-                    _ => {}
+                if key.code == KeyCode::Char(' ') {
+                    self.inputs.toggle();
                 }
             }
             InputsFocus::Rows => match key.code {
@@ -268,6 +393,7 @@ impl App {
                     self.inputs.row = (self.inputs.row + 1).min(Row::ALL.len() - 1);
                 }
                 KeyCode::Enter => self.open_row(),
+                KeyCode::Char('d') => self.offer_references(),
                 KeyCode::Char('h') | KeyCode::Esc => self.inputs.focus = InputsFocus::Bams,
                 _ => {}
             },
@@ -286,7 +412,7 @@ impl App {
                     .and_then(|p| p.parent())
                     .filter(|p| p.is_dir())
                     .map_or_else(|| self.inputs.bams.cwd.clone(), |p| p.to_path_buf());
-                self.picking = Some((f, Browser::new(start, f.ext())));
+                self.picking = Some((f, f.browser(start)));
             }
             Row::Output => self.edit(Target::Output, &self.inputs.output()),
             Row::Threads => {
@@ -321,7 +447,7 @@ impl App {
                 let kb = self.steps.depth_kb.clone();
                 self.edit(Target::DepthKb, &kb);
             }
-            KeyCode::Enter => self.enter_hint("previews the run"),
+            KeyCode::Enter => self.enter_hint(),
             _ => {}
         }
     }
@@ -350,7 +476,7 @@ impl App {
             _ => {
                 let Some(i) = row else {
                     if key.code == KeyCode::Enter {
-                        self.enter_hint("previews the run");
+                        self.enter_hint();
                     }
                     return;
                 };
@@ -397,7 +523,7 @@ impl App {
                 }
             }
             KeyCode::Esc => job.asking = false,
-            KeyCode::Enter => self.enter_hint("previews the run"),
+            KeyCode::Enter => self.enter_hint(),
             _ => {}
         }
     }

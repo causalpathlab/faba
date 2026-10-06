@@ -77,11 +77,11 @@ fn picker<'a>(
 }
 
 fn press(p: &mut SitePicker, code: KeyCode) {
-    p.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+    crate::tui::feed(p, KeyEvent::new(code, KeyModifiers::NONE));
 }
 
 fn apply_key(p: &mut SitePicker) {
-    p.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL));
+    crate::tui::feed(p, KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
 }
 
 fn kept_linear(t: &SiteTable, c: Option<&[usize]>, f: &SiteFilterArgs) -> usize {
@@ -238,17 +238,24 @@ fn keys_type_reset_off_and_decide() {
     assert!(!p.done() && matches!(p.mode, Mode::Browse));
     // Shift+Enter and Alt+Enter are not the apply key, nor plain Enter.
     for m in [KeyModifiers::SHIFT, KeyModifiers::ALT] {
-        p.handle_key(KeyEvent::new(KeyCode::Enter, m));
+        crate::tui::feed(&mut p, KeyEvent::new(KeyCode::Enter, m));
         assert!(!p.done() && matches!(p.mode, Mode::Browse) && p.enter_hint);
     }
-    // Ctrl+J is Ctrl+Enter, never a `j` typed into the gene find.
+    // Ctrl+J is no key: nothing is typed into the gene find.
     press(&mut p, KeyCode::Char('/'));
-    p.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL));
-    assert!(matches!(p.mode, Mode::Browse) && p.list.find.is_empty());
+    crate::tui::feed(
+        &mut p,
+        KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL),
+    );
+    assert!(matches!(p.mode, Mode::Find) && p.list.find.is_empty());
+    press(&mut p, KeyCode::Esc);
     // Ctrl+S is not `s`: no save prompt opens.
-    p.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+    crate::tui::feed(
+        &mut p,
+        KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+    );
     assert!(p.controls.footer().is_none());
-    // Ctrl+Enter asks first; Esc goes back, Ctrl+Enter twice applies.
+    // Ctrl+R asks first; Esc goes back, Ctrl+R twice applies.
     apply_key(&mut p);
     assert!(!p.done() && matches!(p.mode, Mode::Confirm));
     press(&mut p, KeyCode::Enter);
@@ -262,7 +269,7 @@ fn keys_type_reset_off_and_decide() {
     p.tick();
     assert!(p.done());
     let Some(Picked::Apply(got)) = p.decision.clone() else {
-        panic!("Ctrl+Enter, Ctrl+Enter applies");
+        panic!("Ctrl+R, Ctrl+R applies");
     };
     assert_eq!(qc_flags(&got), qc_flags(&start));
 
@@ -589,6 +596,42 @@ fn with_genes(mut t: SiteTable) -> SiteTable {
     ];
     t.batch = RecordBatch::try_new(Arc::new(schema), columns).unwrap();
     t
+}
+
+#[test]
+fn clicks_pick_the_panel_its_row_and_the_wheel_moves() {
+    use crate::tui::View;
+    use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind as M};
+    let t = with_genes(table(M6A, 100));
+    let mut p = picker(&t, None, SiteFilterArgs::default_values());
+    let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    let mut at = |p: &mut SitePicker, kind, hit: Hit| {
+        term.draw(|f| p.render(f)).unwrap();
+        let (column, row) = p
+            .hits
+            .spot(&hit)
+            .unwrap_or_else(|| panic!("{hit:?} not drawn"));
+        p.mouse(MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        });
+    };
+    let click = M::Down(MouseButton::Left);
+    at(&mut p, click, Hit::Genes(Some(2)));
+    assert_eq!((p.panel, p.list.at), (Panel::Genes, 2));
+    at(&mut p, M::ScrollDown, Hit::Genes(None));
+    assert_eq!(p.list.at, 3);
+    at(&mut p, click, Hit::Thresholds(Some(1)));
+    assert_eq!((p.panel, p.focus), (Panel::Thresholds, 1));
+    at(&mut p, click, Hit::Modality(0));
+    assert_eq!(p.modality, 0);
+    // The apply button asks first, as Ctrl+R; back goes back.
+    at(&mut p, click, Hit::Apply);
+    assert!(matches!(p.mode, Mode::Confirm));
+    at(&mut p, click, Hit::Back);
+    assert!(matches!(p.mode, Mode::Browse));
 }
 
 #[test]
@@ -938,7 +981,7 @@ fn confirming_writes_in_the_view_and_shows_progress() {
         })),
     };
 
-    // Only Ctrl+Enter applies: `A`, `G`, `y` and plain Enter do not.
+    // Only Ctrl+R applies: `A`, `G`, `y` and plain Enter do not.
     for code in [KeyCode::Char('A'), KeyCode::Char('G')] {
         press(&mut p, code);
         assert!(matches!(p.mode, Mode::Browse));
@@ -1062,17 +1105,17 @@ fn g_browses_for_an_annotation_and_reads_the_one_picked() {
         panic!("no browser")
     };
     assert_eq!(b.cwd, root);
-    let at = b.entries.iter().position(|e| e.name == "ref").unwrap();
+    let _ = b;
     term.draw(|f| p.render(f)).unwrap();
     let Mode::Gff(b) = &mut p.mode else {
         unreachable!()
     };
-    b.at = at;
+    assert!(b.list.select("ref"));
     press(&mut p, KeyCode::Enter);
     let Mode::Gff(b) = &p.mode else {
         panic!("left the browser")
     };
-    let names: Vec<&str> = b.entries.iter().map(|e| e.name.as_str()).collect();
+    let names: Vec<&str> = b.list.shown().map(|e| e.name.as_str()).collect();
     assert_eq!(names, ["..", "genes.gtf.gz"]);
 
     // Picking the file reads it, and the view reports it for the record.
