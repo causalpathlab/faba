@@ -22,6 +22,80 @@ pub fn parse_strand(s: &str) -> Strand {
     }
 }
 
+/// Each of `sites`' reads in `site_file`, as `(converted, unconverted)`:
+/// from the site table's `converted` and `coverage` columns, summed over its
+/// rows at the site. `None` when the table has no such columns (an APA
+/// table, or one written before them).
+pub fn read_site_reads(
+    site_file: &str,
+    sites: &[GenomicSite],
+) -> anyhow::Result<Option<Vec<(f64, f64)>>> {
+    let field_names = legume_numeric::matrix::parquet::peek_parquet_field_names(site_file)?;
+    let idx = |name: &str| field_names.iter().position(|f| f.as_ref() == name);
+    let pos = ["m6a_pos", "genomic_alpha", "primary_pos"]
+        .iter()
+        .find_map(|n| idx(n));
+    let (Some(chr), Some(pos), Some(coverage), Some(converted)) =
+        (idx("chr"), pos, idx("coverage"), idx("converted"))
+    else {
+        return Ok(None);
+    };
+    let reader = SerializedFileReader::new(File::open(site_file)?)?;
+    // Only the four columns, in the file's order, so no other is decoded.
+    let wanted = [chr, pos, coverage, converted];
+    let schema = reader.metadata().file_metadata().schema();
+    let fields: Vec<_> = schema
+        .get_fields()
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| wanted.contains(i))
+        .map(|(_, f)| f.clone())
+        .collect();
+    let at = |i: usize| wanted.iter().filter(|&&w| w < i).count();
+    let (chr, pos, coverage, converted) = (at(chr), at(pos), at(coverage), at(converted));
+    let projection = parquet::schema::types::Type::group_type_builder(schema.name())
+        .with_fields(fields)
+        .build()?;
+    let count = |row: &parquet::record::Row, i: usize| -> anyhow::Result<f64> {
+        Ok(match row.get_ulong(i) {
+            Ok(v) => v as f64,
+            Err(_) => row.get_long(i)? as f64,
+        })
+    };
+    // By chromosome, then position: a row allocates only for a new
+    // chromosome, and a site looks itself up by borrowing its name.
+    type Sums = rustc_hash::FxHashMap<i64, (f64, f64)>;
+    let mut reads: rustc_hash::FxHashMap<Box<str>, Sums> = Default::default();
+    for record in reader.get_row_iter(Some(projection))? {
+        let row = record?;
+        let name = row.get_string(chr)?.as_str();
+        let (c, n) = (count(&row, converted)?, count(&row, coverage)?);
+        if !reads.contains_key(name) {
+            reads.insert(name.into(), Sums::default());
+        }
+        let e = reads
+            .get_mut(name)
+            .and_then(|by_pos| Some(by_pos.entry(row.get_long(pos).ok()?).or_default()));
+        if let Some(e) = e {
+            e.0 += c;
+            e.1 += n;
+        }
+    }
+    Ok(Some(
+        sites
+            .iter()
+            .map(|s| {
+                let (c, n) = reads
+                    .get(s.chr.as_ref())
+                    .and_then(|by_pos| by_pos.get(&s.position))
+                    .copied()
+                    .unwrap_or_default();
+                (c, (n - c).max(0.0))
+            })
+            .collect(),
+    ))
+}
+
 /// Read sites from a parquet file, auto-detecting dart vs apa vs atoi format.
 pub fn read_sites(site_file: &str) -> anyhow::Result<Vec<GenomicSite>> {
     let field_names = legume_numeric::matrix::parquet::peek_parquet_field_names(site_file)?;
@@ -115,3 +189,7 @@ pub fn read_sites(site_file: &str) -> anyhow::Result<Vec<GenomicSite>> {
     info!("loaded {} unique sites from {}", sites.len(), site_file);
     Ok(sites)
 }
+
+#[cfg(test)]
+#[path = "tests/site_io.rs"]
+mod tests;

@@ -641,6 +641,18 @@ None of these fit a model or produce a p-value.
   which on a 3′-biased library means the last bins of the 3′UTR; a terminal peak is not evidence of
   enrichment on its own.
 
+The `--interactive` views of `pileup` and `metagene` draw the converted reads by default, where a
+track carries both channels (in `metagene`, where the site table has `converted` and `coverage`
+columns). `c` cycles what the bars count: converted reads, unconverted reads (the total less the
+converted), both (the converted in front of the total), and the sites themselves. In `pileup`, `d`
+switches the contrast row between the fraction difference and the log2 fold, and once the gene
+models have loaded, zooming out reaches the gene's TSS and TES even where its sites stop short of
+them. `metagene` draws as `qc`'s metagene panel does: each region in its colour, with a key of the
+colours and the dividers at the start and stop codons; the regions are named under their middles
+with no tick, since a tick would read as a position. `s`, in every view, asks for a name in a pop-up
+that lists the figures already saved where faba runs, newest first, with a thumbnail of each where
+the terminal draws images; the list is kept in `.faba-view/` there, so it lasts between sessions.
+
 ---
 
 ## 8. `qc` — the one place faba thresholds anything
@@ -708,7 +720,7 @@ gives the command to run instead. Once applied, the fileset is written
 with the view still up, under a pop-up showing each file as it goes. The view's figure for every
 modality and every knob, as set when the cut was applied (scales, selected gene, bar measure),
 is saved beside it in `qc_plots/{modality}_{knob}.pdf` and `.png`. `p` prints the matching
-`faba qc --batch-process` command, with every cell, feature and site option, and writes nothing; `s` saves the view as a PDF and PNG under a name it asks for.
+`faba qc --batch-process` command, with every cell, feature and site option, and writes nothing; `s` saves the view as a PDF and PNG under a name it asks for, in a pop-up listing the figures saved before (§7).
 `q` leaves without writing. With any threshold changed, `q` and `p` first ask, and only the same
 key again leaves; Esc closes pop-ups and never leaves the view.
 Nothing is written until the thresholds are applied.

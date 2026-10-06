@@ -13,3 +13,4 @@ Cargo.lock
 
 # Design specs and implementation plans stay local
 docs/superpowers/
+.faba-view/

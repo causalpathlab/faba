@@ -134,6 +134,20 @@ pub fn filled(done: u64, total: u64, width: usize) -> usize {
     }
 }
 
+/// The x axis of a text plot in `area` without its tick marks: the axis
+/// line runs through where the plot put a `┴` under each label. For labels
+/// that name a span (a metagene's regions), where a tick would read as a
+/// position.
+pub fn plain_axis(buf: &mut ratatui::buffer::Buffer, area: Rect) {
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            if buf[(x, y)].symbol() == "┴" {
+                buf[(x, y)].set_symbol("─");
+            }
+        }
+    }
+}
+
 /// The marker of a list's highlighted row.
 pub fn marker(on: bool) -> Span<'static> {
     Span::styled(if on { "▸ " } else { "  " }, HIGHLIGHT)

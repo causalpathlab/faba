@@ -5,12 +5,15 @@
 //! <https://doi.org/10.1093/bioinformatics/btx002>).
 
 use super::site_io::*;
+use crate::site_analysis::show::Show;
 use clap::{Args, ValueEnum};
 use genomic_data::gff::*;
 use genomic_data::sam::Strand;
 use genomic_data::transcript::{build_transcript_models, merge_intervals, TranscriptModel};
 use log::info;
+use ratatui::text::{Line, Span};
 use rustc_hash::FxHashMap;
+use std::borrow::Cow;
 use std::io::Write;
 
 /// How a site in several coding isoforms is counted. Every isoform carries
@@ -147,6 +150,83 @@ pub(crate) const REGION_COLOURS: [&str; 4] = ["#56b4e9", "#0072b2", "#009e73", c
 pub(crate) fn region_style(region: usize) -> ratatui::style::Style {
     let colour = REGION_COLOURS[region].parse().unwrap_or_default();
     ratatui::style::Style::new().fg(colour)
+}
+
+/// The colour key under a metagene: what the bars count (`unit`), each of
+/// `regions` in its colour, and what `c` switches to, when anything.
+pub(crate) fn region_key(unit: &str, regions: &[usize], next: Option<&str>) -> Line<'static> {
+    use data_beans::interactive::ui::DIM;
+    let mut spans = vec![Span::styled(format!(" {unit}:  "), DIM)];
+    for &r in regions {
+        spans.push(Span::styled("█ ", region_style(r)));
+        spans.push(Span::styled(format!("{}   ", REGION_NAMES[r]), DIM));
+    }
+    if let Some(next) = next {
+        spans.push(Span::styled(format!("c: {next}"), DIM));
+    }
+    Line::from(spans)
+}
+
+/// A metagene as a text plot: bars stretched over the whole chart (a text
+/// histogram gives each bar whole columns, which leaves a panel part empty),
+/// each in its region's colour, and the regions named under their middles
+/// with no tick, since a tick would read as one position.
+pub(crate) struct RegionGlyphs<'a> {
+    /// Per bar, its height; whole reads or sites, so split weights round.
+    pub values: &'a [f64],
+    /// Per bar, the part drawn in front (converted reads, when both show).
+    pub front: Option<&'a [f64]>,
+    pub region: &'a dyn Fn(usize) -> usize,
+    /// Region names, by the bar at their middle.
+    pub names: Vec<(usize, String)>,
+    pub pointer: Option<usize>,
+    pub y_scale: data_beans::interactive::ui::Scale,
+}
+
+impl RegionGlyphs<'_> {
+    pub(crate) fn render(&self, buf: &mut ratatui::buffer::Buffer, area: ratatui::layout::Rect) {
+        use data_beans::interactive::ui::{Binning, HistPlot, Scale};
+        let n = self.values.len();
+        if n == 0 {
+            return;
+        }
+        let cols = (area.width.saturating_sub(crate::figure::GUTTER) as usize).max(n);
+        let bar_of = |x: usize| (x * n / cols).min(n - 1);
+        let middle = |i: usize| (2 * i + 1) * cols / (2 * n);
+        let stretch = |v: &[f64]| {
+            (0..cols)
+                .map(|x| v[bar_of(x)].round() as usize)
+                .collect::<Vec<_>>()
+        };
+        let counts = stretch(self.values);
+        let front = self.front.map(stretch);
+        let names: Vec<(i32, &str)> = self
+            .names
+            .iter()
+            .map(|(i, t)| (middle(*i) as i32, t.as_str()))
+            .collect();
+        let label = |k: i32| {
+            names
+                .iter()
+                .find(|(x, _)| *x == k)
+                .map(|(_, t)| t.to_string())
+        };
+        HistPlot {
+            bins: Binning::with_width(Scale::Linear, 1.0),
+            kmin: 0,
+            counts: &counts,
+            style: &|k| region_style((self.region)(bar_of(k.max(0) as usize))),
+            subset: front.as_deref(),
+            y_scale: self.y_scale,
+            y_max: None,
+            pointer: self.pointer.map(|i| middle(i) as i32),
+            marks: Vec::new(),
+            x_label: Some(&label),
+            tick_every: Some(1),
+        }
+        .render(buf, area);
+        crate::tui::plain_axis(buf, area);
+    }
 }
 
 /// Region indices into [`FEATURE_LABELS`], and the base of each region's
@@ -551,14 +631,53 @@ pub struct GeneFeatureHistogram {
     /// One row of bins per track; each row's length is its bin count.
     /// Whole numbers unless placements split a site's weight.
     counts: [Vec<f64>; 4],
+    /// The sites' converted and unconverted reads, tallied the same way,
+    /// when the site table gives them.
+    reads: Option<[[Vec<f64>; 4]; 2]>,
     scale: ScaleFactors,
 }
 
 impl GeneFeatureHistogram {
-    /// Tally every placement, once the grid has fixed the bin widths.
-    fn accumulate(grid: &BinGrid, scale: ScaleFactors, assignments: &[SiteAssignment]) -> Self {
+    /// Tally every placement, once the grid has fixed the bin widths; with
+    /// each site's `(converted, unconverted)` reads, tally those too.
+    fn accumulate(
+        grid: &BinGrid,
+        scale: ScaleFactors,
+        assignments: &[SiteAssignment],
+        reads: Option<&[(f64, f64)]>,
+    ) -> Self {
         let counts = grid.tally(assignments.iter().map(|a| (a, 1.0)));
-        GeneFeatureHistogram { counts, scale }
+        let reads = reads.map(|r| {
+            let of = |pick: fn(&(f64, f64)) -> f64| {
+                grid.tally(assignments.iter().map(|a| (a, pick(&r[a.site as usize]))))
+            };
+            [of(|r| r.0), of(|r| r.1)]
+        });
+        GeneFeatureHistogram {
+            counts,
+            reads,
+            scale,
+        }
+    }
+
+    /// Whether the sites' reads were tallied, for [`Show`] to draw them.
+    pub fn has_reads(&self) -> bool {
+        self.reads.is_some()
+    }
+
+    /// Region `region`'s bins as `show` draws them: the bars, and the
+    /// converted reads in front of them when both show. Without reads,
+    /// the sites.
+    pub(crate) fn shown(&self, show: Show, region: usize) -> (Cow<'_, [f64]>, Option<&[f64]>) {
+        match (&self.reads, show) {
+            (None, _) | (_, Show::Sites) => (Cow::Borrowed(&self.counts[region]), None),
+            (Some([c, _]), Show::Converted) => (Cow::Borrowed(&c[region]), None),
+            (Some([_, u]), Show::Unconverted) => (Cow::Borrowed(&u[region]), None),
+            (Some([c, u]), Show::Both) => {
+                let total = c[region].iter().zip(&u[region]).map(|(a, b)| a + b);
+                (Cow::Owned(total.collect()), Some(&c[region]))
+            }
+        }
     }
 
     /// Rescaled coordinate spanned by one bin, as MetaPlotR's plot draws it.
@@ -867,7 +986,13 @@ pub fn run_metagene(args: &MetageneArgs) -> anyhow::Result<()> {
         info!("wrote per-site distance table to {}", path);
     }
 
-    let histogram = GeneFeatureHistogram::accumulate(&grid, scale, &assignments);
+    // The reads only add views of the same sites: unreadable, the sites remain.
+    let reads = crate::site_analysis::site_io::read_site_reads(&args.site_file, &sites)
+        .unwrap_or_else(|e| {
+            log::warn!("the sites' reads could not be read ({e}); profiling the sites only");
+            None
+        });
+    let histogram = GeneFeatureHistogram::accumulate(&grid, scale, &assignments, reads.as_deref());
     histogram.to_tsv(&args.output)?;
     info!("wrote metagene histogram to {}", args.output);
 

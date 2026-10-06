@@ -552,6 +552,7 @@ fn browse(
         chr: &loaded.chr,
         extent: loaded.extent,
         on,
+        off,
         keys: loaded.keys.as_deref(),
         genes: genes.cloned(),
     };

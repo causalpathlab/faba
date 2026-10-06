@@ -48,6 +48,8 @@ pub struct View<'a> {
     pub extent: (i64, i64),
     /// The converted channel's name, e.g. `methylated`.
     pub on: &'static str,
+    /// The other channel's name, e.g. `unmethylated`.
+    pub off: &'static str,
     /// The genes whose models to draw; `None` (searched locus) draws every gene in view.
     pub keys: Option<&'a [Box<str>]>,
     /// The annotation's gene models, possibly still loading.
@@ -99,6 +101,10 @@ pub struct PileupView<'a> {
     contrast: Option<Contrast>,
     /// The converted channel's name, e.g. `methylated`.
     on: &'static str,
+    /// The other channel's name, e.g. `unmethylated`.
+    off: &'static str,
+    /// What the read tracks with a total draw (`c` cycles it).
+    show: Show,
     /// The genes whose models to draw; `None` (searched locus) draws every gene in view.
     keys: Option<Vec<Box<str>>>,
     /// The first two tracks share one mirrored row (`m` splits them).
@@ -145,6 +151,8 @@ impl<'a> PileupView<'a> {
                 measure: Measure::Difference,
             }),
             on: "methylated",
+            off: "unmethylated",
+            show: Show::default(),
             keys: Some(vec![title.into()]),
             mirror: true,
             genes: Vec::new(),
@@ -158,13 +166,24 @@ impl<'a> PileupView<'a> {
         let Some(read) = self.pending_genes.as_ref().and_then(|m| m.get()) else {
             return;
         };
-        let (lo, hi) = self.extent;
         match read {
             Ok(models) => {
                 if self.status.as_deref() == Some(LOADING) {
                     self.status = None;
                 }
-                self.genes = genes_to_draw(models, self.keys.as_deref())
+                let drawn = genes_to_draw(models, self.keys.as_deref());
+                // The view's own genes widen it to their TSS and TES, so
+                // zooming out reaches the whole gene; a searched locus
+                // (no keys) keeps its bounds.
+                if self.keys.is_some() {
+                    let (lo, hi) = self.extent;
+                    let here = drawn.iter().filter(|g| chr_eq(&g.chr, &self.chr));
+                    self.extent = here
+                        .filter(|g| g.hi > lo && g.lo <= hi)
+                        .fold((lo, hi), |(a, b), g| (a.min(g.lo), b.max(g.hi - 1)));
+                }
+                let (lo, hi) = self.extent;
+                self.genes = drawn
                     .into_iter()
                     .filter(|g| chr_eq(&g.chr, &self.chr) && g.hi > lo && g.lo <= hi)
                     .cloned()
@@ -210,15 +229,16 @@ impl<'a> PileupView<'a> {
         match row {
             Row::Track(i) => {
                 let t = &self.tracks[i];
-                format!("{} · {}", t.label, t.name)
+                format!("{} · {}", t.label, self.y_title(i))
             }
             Row::Contrast(c) => {
                 let (a, b) = (self.tracks[c.a].label, self.tracks[c.b].label);
                 format!("{a} vs {b} · {}", c.measure.name(self.on))
             }
             Row::Mirror(a, b) => {
+                let y = self.y_title(a);
                 let (a, b) = (&self.tracks[a], &self.tracks[b]);
-                format!("{} above, {} below · {}", a.label, b.label, a.name)
+                format!("{} above, {} below · {y}", a.label, b.label)
             }
             Row::Genes => "genes".into(),
         }
@@ -262,27 +282,68 @@ impl<'a> PileupView<'a> {
         lanes.unwrap_or(1)
     }
 
-    /// Every track binned over the window.
+    /// Every track binned over the window, and as drawn.
     fn bins(&self) -> Bins {
         let edges = self.edges();
         let tracks: Vec<Binned> = self.tracks.iter().map(|t| t.bin(&edges)).collect();
+        let shown: Vec<Shown> = (0..self.tracks.len())
+            .map(|k| self.shown(k, &edges, &tracks[k]))
+            .collect();
         let tallest = self
             .tracks
             .iter()
-            .zip(&tracks)
+            .zip(&shown)
             .filter(|(t, _)| t.is_reads())
-            .map(|(_, (front, behind))| {
-                behind
-                    .as_ref()
-                    .unwrap_or(front)
-                    .iter()
-                    .fold(0.0, |m: f64, &v| m.max(v))
-            })
+            .map(|(_, s)| s.values.iter().fold(0.0, |m: f64, &v| m.max(v)))
             .fold(0.0, f64::max);
         Bins {
             edges,
             tracks,
+            shown,
             shared: (tallest > 0.0).then_some(tallest),
+        }
+    }
+
+    /// Track `k` as [`Show`] asks, from its binned reads. A track with no
+    /// total (or a depth track) draws as it is, but for its sites; what a
+    /// mode needs beyond the binned reads is binned only in that mode.
+    fn shown(&self, k: usize, edges: &BinEdges, (front, behind): &Binned) -> Shown {
+        let t = &self.tracks[k];
+        let shown = |values: Vec<f64>, front: Option<Vec<f64>>, accent: bool| Shown {
+            values,
+            front,
+            accent,
+        };
+        match (self.show, behind) {
+            (Show::Sites, _) if t.is_reads() => {
+                let ones: Vec<(i64, f64)> = distinct_positions(t.front())
+                    .into_iter()
+                    .map(|p| (p, 1.0))
+                    .collect();
+                shown(edges.bin(&ones, false), None, false)
+            }
+            (Show::Converted, Some(_)) => shown(front.clone(), None, true),
+            (Show::Unconverted, Some(_)) => {
+                let total = t.behind().unwrap_or_default();
+                shown(
+                    edges.bin(&unconverted(t.front(), total), t.log),
+                    None,
+                    false,
+                )
+            }
+            (Show::Both, Some(total)) => shown(total.clone(), Some(front.clone()), true),
+            _ => shown(front.clone(), None, false),
+        }
+    }
+
+    /// What track `k`'s bars count, for its title and y axis.
+    fn y_title(&self, k: usize) -> String {
+        let t = &self.tracks[k];
+        let sites = self.show == Show::Sites && t.is_reads();
+        if sites || t.behind().is_some() {
+            self.show.label(self.on, self.off)
+        } else {
+            t.name.to_string()
         }
     }
 
@@ -451,13 +512,12 @@ impl<'a> PileupView<'a> {
             Row::Track(i) => {
                 let t = &self.tracks[i];
                 let (lo, hi) = self.window;
-                let (front, behind) = &bins.tracks[i];
+                let shown = &bins.shown[i];
                 let marks = t.sites_in(lo, hi).into_iter();
-                let stacked = behind.is_some();
                 Bars {
-                    values: behind.as_ref().unwrap_or(front),
-                    front: stacked.then_some(front.as_slice()),
-                    accent: &|_| stacked,
+                    values: &shown.values,
+                    front: shown.front.as_deref(),
+                    accent: &|_| shown.accent,
                     colour: &|_| figure::BAR,
                     y_scale: self.y_scale,
                     y_max: bins.shared,
@@ -467,7 +527,7 @@ impl<'a> PileupView<'a> {
                     dividers: Vec::new(),
                     title,
                     x_title,
-                    y_title: t.name.into(),
+                    y_title: self.y_title(i),
                 }
                 .draw(c, x, y, w, h);
             }
@@ -487,10 +547,16 @@ impl<'a> PileupView<'a> {
             }
             Row::Mirror(a, b) => {
                 let half = |k: usize| {
-                    let (front, behind) = &bins.tracks[k];
+                    let shown = &bins.shown[k];
+                    // Converted alone draws all in the converted colour.
+                    let front = match (&shown.front, shown.accent) {
+                        (Some(f), _) => Some(f.as_slice()),
+                        (None, true) => Some(shown.values.as_slice()),
+                        (None, false) => None,
+                    };
                     figure::Half {
-                        values: behind.as_ref().unwrap_or(front),
-                        front: behind.is_some().then_some(front.as_slice()),
+                        values: &shown.values,
+                        front,
                         colour: figure::BAR,
                         name: self.tracks[k].label.to_string(),
                     }
@@ -505,7 +571,7 @@ impl<'a> PileupView<'a> {
                     pointer,
                     title,
                     x_title,
-                    y_title: self.tracks[a].name.into(),
+                    y_title: self.y_title(a),
                 }
                 .draw(c, x, y, w, h);
             }
@@ -546,12 +612,15 @@ impl<'a> PileupView<'a> {
                 HIGHLIGHT,
             ));
         }
-        for (t, (front, behind)) in self.tracks.iter().zip(&bins.tracks) {
+        for (t, shown) in self.tracks.iter().zip(&bins.shown) {
             spans.push(dim(format!("   {} ", t.label)));
-            spans.push(Span::raw(match behind {
-                Some(behind) => format!("{:.0}/{:.0}", front[col], behind[col]),
-                None => compact(front[col]),
-            }));
+            let v = shown.values.get(col).copied().unwrap_or(0.0);
+            spans.push(Span::raw(
+                match shown.front.as_ref().and_then(|f| f.get(col)) {
+                    Some(f) => format!("{f:.0}/{v:.0}"),
+                    None => compact(v),
+                },
+            ));
         }
         let here = self
             .sites
@@ -597,7 +666,8 @@ impl Screen for PileupView<'_> {
         }
         match key.code {
             KeyCode::Char('/') => self.search.open(""),
-            KeyCode::Char('c') => {
+            KeyCode::Char('c') => self.show = self.show.next(),
+            KeyCode::Char('d') => {
                 self.contrast = self.contrast.map(|c| Contrast {
                     measure: c.measure.next(),
                     ..c
@@ -639,11 +709,12 @@ impl Screen for PileupView<'_> {
         self.clamp_window();
         let (lo, hi) = self.window;
         let extra = format!(
-            "{}:{}-{}  {} bp/bar · y {}{}",
+            "{}:{}-{}  {} bp/bar · {} · y {}{}",
             self.chr,
             fmt_thousands(lo),
             fmt_thousands(hi),
             self.bin_width(),
+            self.show.label(self.on, self.off),
             self.y_scale.name(),
             self.controls.tag()
         );
@@ -681,14 +752,13 @@ impl Screen for PileupView<'_> {
             match row {
                 Row::Track(i) => {
                     let marks = self.tracks[i].sites_in(lo, hi).into_iter();
-                    let (front, behind) = &bins.tracks[i];
-                    let stacked = behind.is_some();
+                    let shown = &bins.shown[i];
                     HistPlot {
                         bins: Binning::with_width(Scale::Linear, 1.0),
                         kmin: 0,
-                        counts: behind.as_ref().unwrap_or(front),
-                        style: &|_| if stacked { ACCENTED } else { PLAIN },
-                        subset: stacked.then_some(front.as_slice()),
+                        counts: &shown.values,
+                        style: &|_| if shown.accent { ACCENTED } else { PLAIN },
+                        subset: shown.front.as_deref(),
                         y_scale: self.y_scale,
                         y_max: bins.shared,
                         pointer: Some(pointer as i32),
@@ -724,11 +794,11 @@ impl Screen for PileupView<'_> {
                 }
                 Row::Mirror(a, b) => {
                     let side = |k: usize| {
-                        let (front, behind) = &bins.tracks[k];
+                        let shown = &bins.shown[k];
                         MirrorSide {
-                            counts: behind.as_ref().unwrap_or(front),
-                            subset: behind.is_some().then_some(front.as_slice()),
-                            style: ACCENTED,
+                            counts: &shown.values,
+                            subset: shown.front.as_deref(),
+                            style: if shown.accent { ACCENTED } else { PLAIN },
                             name: self.tracks[k].label,
                         }
                     };
@@ -761,6 +831,7 @@ impl Screen for PileupView<'_> {
             self.controls.footer().unwrap_or_else(|| self.help())
         };
         frame.render_widget(help, footer);
+        self.controls.render_save(frame, frame.area());
     }
 }
 
@@ -818,8 +889,11 @@ impl PileupView<'_> {
             ("y", "scale"),
             ("g", "genes"),
         ];
+        if self.tracks.iter().any(|t| t.is_reads()) {
+            keys.push(("c", self.show.next().short()));
+        }
         if self.contrast.is_some() {
-            keys.push(("c", "difference/fold"));
+            keys.push(("d", "difference/fold"));
         }
         if self.mirrorable() {
             keys.push(("m", if self.mirror { "split" } else { "mirror" }));
@@ -835,6 +909,7 @@ impl PileupView<'_> {
 pub fn show_pileup(view: View, tracks: Vec<Track>, status: Option<String>) -> anyhow::Result<Exit> {
     let mut browser = PileupView::new(view.title, view.chr, tracks, view.extent);
     browser.on = view.on;
+    browser.off = view.off;
     browser.keys = view.keys.map(<[_]>::to_vec);
     browser.pending_genes = view.genes;
     browser.take_genes();

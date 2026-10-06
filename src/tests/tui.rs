@@ -118,3 +118,15 @@ fn feed_hands_on_only_what_a_view_takes() {
         assert_eq!(v.stray, 1);
     }
 }
+
+#[test]
+fn a_plain_axis_keeps_its_line_and_labels_but_not_its_ticks() {
+    let area = Rect::new(0, 0, 8, 2);
+    let mut buf = ratatui::buffer::Buffer::empty(area);
+    buf.set_string(0, 0, "──┴──┴──", ratatui::style::Style::new());
+    buf.set_string(0, 1, "  CDS   ", ratatui::style::Style::new());
+    plain_axis(&mut buf, area);
+    let row = |y| (0..8).map(|x| buf[(x, y)].symbol()).collect::<String>();
+    assert_eq!(row(0), "────────");
+    assert_eq!(row(1), "  CDS   ");
+}

@@ -160,10 +160,10 @@ fn draws_through_the_image_path() {
     let (m, s) = (positions(), sites());
     let mut v = view(&m, &s);
     v.controls = Controls::new("x").with_picker(ratatui_image::picker::Picker::halfblocks());
-    screen(&mut v, 100, 24);
+    screen(&mut v, 160, 24);
     assert_eq!(v.plots.len(), 2, "one image per track");
     press(&mut v, KeyCode::Char('+'));
-    let text = screen(&mut v, 100, 24);
+    let text = screen(&mut v, 160, 24);
     assert!(text.contains("image/text"));
 }
 
@@ -216,22 +216,36 @@ fn stacked_tracks_draw_front_over_total() {
     let matrix =
         Track::single("wt", "methylated / unmethylated (sum)", &m, false).with_total(&total);
     let mut v = PileupView::new("GENE1", "chr1", vec![matrix], EXTENT);
+    // Converted reads first, in the accent.
     let text = screen(&mut v, 110, 26);
-    assert!(
-        text.contains("wt · methylated / unmethylated (sum)"),
-        "{text}"
-    );
+    assert!(text.contains("wt · methylated reads"), "{text}");
     let (front, behind) = v.tracks[0].bin(&v.edges());
     let behind = behind.expect("stacked");
     assert!(front.iter().zip(&behind).all(|(f, b)| f <= b));
-    assert!(
-        v.figure().contains(crate::figure::ACCENT),
-        "front drawn in the accent"
+    assert_eq!(v.bins().shown[0].values, front);
+    assert!(v.figure().contains(crate::figure::ACCENT));
+    // `c`: the unconverted reads, total less converted.
+    press(&mut v, KeyCode::Char('c'));
+    let shown = &v.bins().shown[0];
+    let less: Vec<f64> = behind.iter().zip(&front).map(|(b, f)| b - f).collect();
+    assert_eq!(shown.values, less);
+    assert!(!shown.accent && shown.front.is_none());
+    assert!(screen(&mut v, 110, 26).contains("wt · unmethylated reads"));
+    // Both: converted in front of the total; the readout gives front/total.
+    press(&mut v, KeyCode::Char('c'));
+    let shown = &v.bins().shown[0];
+    assert_eq!(
+        (shown.values.clone(), shown.front.clone()),
+        (behind.clone(), Some(front.clone()))
     );
-    assert!(
-        v.readout(&v.bins()).to_string().contains('/'),
-        "readout gives front/total"
-    );
+    assert!(v.readout(&v.bins()).to_string().contains('/'));
+    // Sites: one per distinct position, in the bar that holds it.
+    press(&mut v, KeyCode::Char('c'));
+    let sites: f64 = v.bins().shown[0].values.iter().sum();
+    assert_eq!(sites as usize, distinct_positions(&m).len());
+    assert!(screen(&mut v, 110, 26).contains("wt · sites"));
+    press(&mut v, KeyCode::Char('c'));
+    assert_eq!(v.show, Show::Converted, "and round again");
 }
 
 #[test]
@@ -270,11 +284,11 @@ fn contrast_row_compares_the_first_two_tracks() {
         text.contains("wt vs mut · methylated fraction difference"),
         "{text}"
     );
-    assert!(text.contains("c difference/fold"), "{text}");
+    assert!(text.contains("d difference/fold"), "{text}");
     // 1/2 vs 1/4 methylated wherever there are reads: +25 pp.
     let values = v.contrast_values(DIFFERENCE, &v.bins());
     assert!(values.iter().flatten().all(|&x| (x - 25.0).abs() < 1e-9));
-    press(&mut v, KeyCode::Char('c'));
+    press(&mut v, KeyCode::Char('d'));
     assert_eq!(v.contrast.map(|c| c.measure), Some(Measure::Log2Fold));
     assert!(screen(&mut v, 110, 30).contains("log2 fold"));
     assert!(v.figure().contains("wt vs mut"));
@@ -404,6 +418,27 @@ fn genes_arriving_late_show_without_a_key() {
 }
 
 #[test]
+fn the_genes_model_widens_the_view_to_its_tss_and_tes() {
+    let m = positions();
+    let models = crate::site_analysis::pileup::SharedModels::default();
+    let mut v = PileupView::new(
+        "ENSG1_GENE1",
+        "chr1",
+        vec![Track::single("m", "sum", &m, false)],
+        EXTENT,
+    );
+    v.pending_genes = Some(models.clone());
+    let _ = models.set(Ok(vec![
+        gene("GENE1", 950_000, 1_150_000, true),
+        gene("GENE2", 1_050_000, 1_300_000, true),
+    ]));
+    v.tick();
+    assert_eq!(v.extent, (950_000, 1_149_999), "GENE1 only, TSS to TES");
+    press(&mut v, KeyCode::Char('0'));
+    assert_eq!(v.window, v.extent, "zooming all the way out shows it");
+}
+
+#[test]
 fn read_tracks_share_one_scale() {
     let m = positions();
     let big: Vec<(i64, f64)> = m.iter().map(|&(p, v)| (p, v * 10.0)).collect();
@@ -438,8 +473,11 @@ fn like_tracks_share_a_mirrored_row_until_split() {
     let a = Track::single("wt", "sum", &m, false).with_total(&half);
     let b = Track::single("mut", "sum", &half, false).with_total(&half);
     let mut v = PileupView::new("GENE1", "chr1", vec![a, b], EXTENT);
-    let text = screen(&mut v, 110, 30);
-    assert!(text.contains("wt above, mut below · sum"), "{text}");
+    let text = screen(&mut v, 160, 30);
+    assert!(
+        text.contains("wt above, mut below · methylated reads"),
+        "{text}"
+    );
     assert!(text.contains("m split"), "{text}");
     assert!(v.figure().contains("wt above, mut below"));
     // Bars grow both ways from the zero line.
@@ -450,7 +488,7 @@ fn like_tracks_share_a_mirrored_row_until_split() {
         v.rows(),
         vec![Row::Contrast(DIFFERENCE), Row::Track(0), Row::Track(1)]
     );
-    assert!(screen(&mut v, 110, 30).contains("m mirror"));
+    assert!(screen(&mut v, 160, 30).contains("m mirror"));
 }
 
 #[test]

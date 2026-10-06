@@ -8,13 +8,19 @@ use std::sync::{Arc, OnceLock};
 /// Width of `HistPlot`'s y-axis gutter, in terminal columns.
 pub const GUTTER: u16 = 6;
 
+pub mod gallery;
 pub mod logo;
 pub mod term;
 
-use data_beans::interactive::ui::{compact, input_line, Scale, DIM, HIGHLIGHT};
+use data_beans::interactive::ui::{compact, help_line, input_line, Scale, DIM, HIGHLIGHT, PLAIN};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
+use ratatui::widgets::Paragraph;
+use ratatui::Frame;
 use ratatui_image::picker::Picker;
+use ratatui_image::protocol::Protocol;
+use ratatui_image::Image;
 
 /// Text and axes.
 pub const INK: &str = "#1a1a1a";
@@ -538,6 +544,11 @@ fn options() -> usvg::Options<'static> {
 /// Write `svg` as `{prefix}.pdf` (vector) and `{prefix}.png`; returns the
 /// paths written.
 pub fn save(svg: &str, prefix: &str) -> anyhow::Result<Vec<String>> {
+    save_picture(svg, prefix).map(|(paths, _)| paths)
+}
+
+/// [`save`], and the picture the PNG holds.
+fn save_picture(svg: &str, prefix: &str) -> anyhow::Result<(Vec<String>, image::RgbaImage)> {
     let prefix = strip_extension(prefix);
     let tree = usvg::Tree::from_str(svg, &options())?;
     let pdf = svg2pdf::to_pdf(&tree, Default::default(), Default::default())
@@ -545,8 +556,12 @@ pub fn save(svg: &str, prefix: &str) -> anyhow::Result<Vec<String>> {
     let pdf_path = format!("{prefix}.pdf");
     std::fs::write(&pdf_path, pdf)?;
     let png_path = format!("{prefix}.png");
-    term::pixmap(&tree, PNG_SCALE)?.save_png(&png_path)?;
-    Ok(vec![pdf_path, png_path])
+    let pixmap = term::pixmap(&tree, PNG_SCALE)?;
+    pixmap.save_png(&png_path)?;
+    let (w, h) = (pixmap.width(), pixmap.height());
+    let picture = image::RgbaImage::from_raw(w, h, pixmap.take())
+        .ok_or_else(|| anyhow::anyhow!("pixel buffer size mismatch"))?;
+    Ok((vec![pdf_path, png_path], picture))
 }
 
 /// What a key did to a [`LineInput`].
@@ -660,6 +675,11 @@ impl SavePrompt {
         self.status = None;
     }
 
+    /// The name being typed, while the prompt is open.
+    pub fn text(&self) -> Option<&str> {
+        self.input.text()
+    }
+
     /// The footer while the prompt or an outcome is showing.
     pub fn footer(&self) -> Option<Line<'static>> {
         if let Some(buf) = self.input.text() {
@@ -693,13 +713,25 @@ pub enum Key {
     Save(String),
 }
 
-/// What every view's figure needs: the save prompt (`s`), and drawing plots
-/// as images where the terminal can (`i` switches to text and back).
+/// What every view's figure needs: the save prompt (`s`), which shows the
+/// figures saved here beside the name, and drawing plots as images where the
+/// terminal can (`i` switches to text and back).
 pub struct Controls {
     save: SavePrompt,
     picker: Option<Picker>,
     images: bool,
+    /// Which view saves, for the gallery: the default name's first word.
+    what: String,
+    /// The saves here, read when the prompt first opens.
+    gallery: Option<gallery::Gallery>,
+    /// Thumbnails ready to draw, by thumbnail file; `None` where one failed.
+    thumbs: std::collections::HashMap<std::path::PathBuf, Option<Protocol>>,
+    /// Where a save goes, as the prompt says, taken when it opens.
+    here: String,
 }
+
+/// Rows a thumbnail takes in the save pop-up.
+const THUMB_ROWS: u16 = 5;
 
 impl Controls {
     /// Text plots only; [`Controls::detect`] asks the terminal for images.
@@ -708,6 +740,13 @@ impl Controls {
             save: SavePrompt::new(default_name),
             picker: None,
             images: false,
+            what: default_name
+                .split_once('_')
+                .map_or(default_name, |(view, _)| view)
+                .into(),
+            gallery: None,
+            thumbs: Default::default(),
+            here: String::new(),
         }
     }
 
@@ -735,16 +774,102 @@ impl Controls {
         }
         self.save.dismiss();
         match key.code {
-            KeyCode::Char('s') => self.save.open(),
+            KeyCode::Char('s') => {
+                self.save.open();
+                self.gallery.get_or_insert_with(gallery::Gallery::here);
+                self.here = std::env::current_dir()
+                    .map(|d| crate::tui::tilde(&d))
+                    .unwrap_or_default();
+            }
             KeyCode::Char('i') if self.picker.is_some() => self.images ^= true,
             _ => return Key::Pass,
         }
         Key::Used
     }
 
-    /// Save `svg` under the confirmed `prefix` and show how it went.
+    /// Save `svg` under the confirmed `prefix`, list it with its thumbnail,
+    /// and show how it went.
     pub fn save(&mut self, svg: &str, prefix: &str) {
-        self.save.report(save(svg, prefix));
+        let saved = save_picture(svg, prefix).map(|(paths, picture)| {
+            let gallery = self.gallery.get_or_insert_with(gallery::Gallery::here);
+            if let Err(e) = gallery.add(std::path::Path::new(&paths[0]), &self.what, &picture) {
+                log::debug!("not listed in the gallery: {e}");
+            }
+            paths
+        });
+        self.save.report(saved);
+    }
+
+    /// While the save prompt is open, a pop-up over `area`: the figures
+    /// saved here on the left, newest first, each with its thumbnail where
+    /// the terminal draws images; the name being typed on the right. Call
+    /// it last in a view's `render`.
+    pub fn render_save(&mut self, frame: &mut Frame, area: Rect) {
+        let Some(name) = self.save.text() else {
+            return;
+        };
+        let w = area.width.saturating_sub(4).clamp(40, 100);
+        let h = area.height.saturating_sub(2).clamp(8, 28);
+        let inner = crate::tui::popup_frame(frame, area, w, h, " save the figure ".into());
+        let entries = self.gallery.as_ref().map_or(&[][..], |g| g.entries());
+        let strip = if entries.is_empty() {
+            0
+        } else {
+            (inner.width / 2).min(36)
+        };
+        let [left, right] =
+            Layout::horizontal([Constraint::Length(strip), Constraint::Fill(1)]).areas(inner);
+        let lines = vec![
+            Line::from(Span::styled(" save as (.pdf + .png)", DIM)),
+            Line::from(""),
+            Line::from(Span::styled(format!(" {name}▏"), HIGHLIGHT)),
+            Line::from(""),
+            Line::from(Span::styled(format!(" in {}", self.here), DIM)),
+            Line::from(""),
+            help_line(&[("Enter", "save"), ("Esc", "back")]),
+        ];
+        frame.render_widget(Paragraph::new(lines), right);
+        let Some(gallery) = self.gallery.as_ref().filter(|_| strip > 0) else {
+            return;
+        };
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let rows = if self.picker.is_some() { THUMB_ROWS } else { 0 };
+        let each = rows + 3;
+        let title = format!(" saved here ({})", entries.len());
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(title, DIM))),
+            Rect::new(left.x, left.y, left.width, 1),
+        );
+        let fits = usize::from(left.height.saturating_sub(1) / each);
+        for (k, e) in entries.iter().take(fits).enumerate() {
+            let y = left.y + 1 + k as u16 * each;
+            if let (Some(picker), true) = (&self.picker, rows > 0) {
+                let pic = Rect::new(left.x + 1, y, left.width.saturating_sub(2), rows);
+                let made = self
+                    .thumbs
+                    .entry(gallery.thumb(e))
+                    .or_insert_with_key(|path| {
+                        term::protocol(picker, image::open(path).ok()?, pic)
+                    });
+                if let Some(p) = made {
+                    frame.render_widget(Image::new(p), pic);
+                }
+            }
+            let text = vec![
+                Line::from(Span::styled(format!(" {}", e.name()), PLAIN)),
+                Line::from(Span::styled(
+                    format!(" {} · {}", gallery::ago(e.when, now), e.what),
+                    DIM,
+                )),
+            ];
+            frame.render_widget(
+                Paragraph::new(text),
+                Rect::new(left.x, y + rows, left.width, 2),
+            );
+        }
     }
 
     /// The picker to draw images with, when images are on.

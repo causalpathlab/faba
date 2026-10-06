@@ -85,6 +85,13 @@ fn raster(svg: &str, scale: f32) -> anyhow::Result<DynamicImage> {
     Ok(DynamicImage::ImageRgba8(rgba))
 }
 
+/// `img` as a terminal image fitting `area`.
+pub(super) fn protocol(picker: &Picker, img: DynamicImage, area: Rect) -> Option<Protocol> {
+    picker
+        .new_protocol(img, Size::new(area.width, area.height), Resize::Fit(None))
+        .ok()
+}
+
 /// Run a view when stdin and stdout are a terminal; otherwise say why not
 /// and carry on without it.
 pub fn when_terminal(view: impl FnOnce() -> anyhow::Result<()>) -> anyhow::Result<()> {
@@ -133,11 +140,9 @@ impl PlotImage {
                 area.height as f32 * font.height as f32,
             );
             let svg = draw((px / scale) as f64, (py / scale) as f64);
-            self.protocol = raster(&svg, scale).ok().and_then(|img| {
-                picker
-                    .new_protocol(img, Size::new(area.width, area.height), Resize::Fit(None))
-                    .ok()
-            });
+            self.protocol = raster(&svg, scale)
+                .ok()
+                .and_then(|img| protocol(picker, img, area));
             self.size = Some(size);
             self.stale = false;
         }

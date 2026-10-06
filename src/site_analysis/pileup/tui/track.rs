@@ -102,7 +102,9 @@ impl<'a> Track<'a> {
 pub(super) struct Bins {
     pub(super) edges: BinEdges,
     pub(super) tracks: Vec<Binned>,
-    /// Shared y-axis top over read tracks (not depth): the tallest bar, total included.
+    /// Each track as drawn, by what [`Show`] asks for.
+    pub(super) shown: Vec<Shown>,
+    /// Shared y-axis top over read tracks (not depth): the tallest bar drawn.
     pub(super) shared: Option<f64>,
 }
 
@@ -114,6 +116,36 @@ pub(super) fn ranges_per_column(ranges: &[(i64, i64, f64)], edges: &BinEdges) ->
             let mid = (start + stop) / 2;
             let i = ranges.partition_point(|r| r.1 <= mid);
             ranges.get(i).filter(|r| r.0 <= mid).map_or(0.0, |r| r.2)
+        })
+        .collect()
+}
+
+pub use crate::site_analysis::show::Show;
+
+/// A track as drawn: its bars, and the converted part in front of them when
+/// both show; `accent` draws in the converted colour.
+pub(super) struct Shown {
+    pub(super) values: Vec<f64>,
+    pub(super) front: Option<Vec<f64>>,
+    pub(super) accent: bool,
+}
+
+/// Per position, the total less the converted reads (both sorted by
+/// position; a position with no converted reads keeps its whole total).
+pub(super) fn unconverted(front: &[(i64, f64)], total: &[(i64, f64)]) -> Vec<(i64, f64)> {
+    let mut i = 0;
+    total
+        .iter()
+        .map(|&(pos, n)| {
+            let mut converted = 0.0;
+            while i < front.len() && front[i].0 < pos {
+                i += 1;
+            }
+            while i < front.len() && front[i].0 == pos {
+                converted += front[i].1;
+                i += 1;
+            }
+            (pos, (n - converted).max(0.0))
         })
         .collect()
 }
