@@ -27,7 +27,7 @@ pub const MATRIX_KINDS: &[&str] = &[
 ];
 
 /// Editing modalities with a shared `{modality}_sites.parquet` and per-batch
-/// `_site` matrices.
+/// `_site` matrices, in the order one is taken when none is asked for.
 pub const SITE_MODALITIES: &[&str] = &[M6A, ATOI];
 
 #[derive(Debug, Clone)]
@@ -100,11 +100,26 @@ pub fn looks_like_faba_dir(dir: &Path) -> bool {
         } else {
             classify_matrix_name(name, false).is_some()
         };
-        matrix
-            || name
-                .strip_suffix("_sites.parquet")
+        matrix || site_table_modality(name).is_some()
+    })
+}
+
+/// Whether `name` is a `{batch}_{modality}_site` matrix's file name (a
+/// `.zarr` store counts as a file).
+pub fn is_site_matrix_name(name: &str) -> bool {
+    classify_matrix_name(name, true).is_some_and(|(stem, ..)| {
+        let (batch, kind) = split_stem(stem);
+        !batch.is_empty()
+            && kind
+                .strip_suffix("_site")
                 .is_some_and(|m| SITE_MODALITIES.contains(&m))
     })
+}
+
+/// The modality of a `{modality}_sites.parquet` site table's file name.
+pub fn site_table_modality(name: &str) -> Option<&str> {
+    name.strip_suffix("_sites.parquet")
+        .filter(|m| SITE_MODALITIES.contains(m))
 }
 
 /// Split a matrix file name into `(stem, backend, zipped)`; `None` when it is
@@ -166,11 +181,9 @@ pub fn scan_input_dir(dir: &str) -> anyhow::Result<InputLayout> {
         if is_dir {
             continue;
         }
-        if let Some(modality) = name.strip_suffix("_sites.parquet") {
-            if SITE_MODALITIES.contains(&modality) {
-                layout.site_tables.insert(modality.into(), path_str);
-                continue;
-            }
+        if let Some(modality) = site_table_modality(name) {
+            layout.site_tables.insert(modality.into(), path_str);
+            continue;
         }
         // A run record describes the directory it sits in; `qc` writes its
         // own for the new fileset rather than carrying stale ones over.

@@ -32,12 +32,32 @@ pub enum IsoformPolicy {
 #[derive(Args, Debug)]
 pub struct MetageneArgs {
     #[arg(
+        num_args = 1..,
+        value_name = "SITES|DIR",
+        help = "Site parquets (from dartseq, atoi or apa), or faba output directories (or run records in them), profiled together",
+        long_help = "Site-level parquet file (from dartseq, atoi or apa output).\n\
+                     Or a faba output directory (from `faba run`, a producer, or `faba qc`),\n\
+                     or a run record in it (`*.run.json`, `pipeline_summary.json`): its\n\
+                     `{modality}_sites.parquet` of --modality is profiled, against its\n\
+                     recorded GFF. Several are profiled together, as one set of sites,\n\
+                     against the first one's GFF. Left out (with -s), a browser asks:\n\
+                     mark site tables, or choose an output directory."
+    )]
+    input: Vec<Box<str>>,
+
+    #[arg(
         short = 's',
         long = "sites",
-        required = true,
-        help = "Site-level parquet file (from dartseq, atoi or apa output)"
+        help = "Site-level parquet file, as the positional SITES"
     )]
-    site_file: Box<str>,
+    sites: Option<Box<str>>,
+
+    #[arg(
+        long = "modality",
+        value_name = "m6a|atoi",
+        help = "Which site table to take from an output directory (default: m6a, else atoi)"
+    )]
+    modality: Option<Box<str>>,
 
     #[arg(
         short = 'g',
@@ -101,8 +121,15 @@ pub struct MetageneArgs {
     )]
     include_non_coding: bool,
 
-    #[arg(short, long, required = true, help = "Output TSV file path")]
-    output: Box<str>,
+    #[arg(
+        short,
+        long,
+        help = "Output TSV file path (default with --batch-process: `{sites}.metagene.tsv` here)",
+        long_help = "Output TSV file path. In the view, written only when given; with\n\
+                     --batch-process, without it, `{sites}.metagene.tsv` in the current\n\
+                     directory, after the site table's name."
+    )]
+    output: Option<Box<str>>,
 
     #[arg(
         long = "dist-measures",
@@ -120,10 +147,22 @@ pub struct MetageneArgs {
     print_histogram: bool,
 
     #[arg(
+        long = "batch-process",
+        visible_alias = "batch-mode",
+        default_value_t = false,
+        help = "Write the histogram and stop, without browsing the profile full screen",
+        long_help = "Write the histogram and stop, without browsing the profile full screen.\n\
+                     By default `faba metagene` writes it and then opens the profile in a\n\
+                     view (when there is a terminal)."
+    )]
+    batch_process: bool,
+
+    /// The view is the default now; kept so older command lines still run.
+    #[arg(
         short = 'I',
         long = "interactive",
-        default_value_t = false,
-        help = "After writing, browse the profile full screen (needs a terminal)"
+        hide = true,
+        default_value_t = false
     )]
     interactive: bool,
 
@@ -888,18 +927,125 @@ fn non_coding_bodies(records: &[GffRecord]) -> Vec<NonCodingBody> {
         .collect()
 }
 
+impl MetageneArgs {
+    /// The site tables: `-s`, then the positional inputs, each of which may
+    /// name an output directory (or a run record in it) holding one; with
+    /// neither, those chosen in a browser. `None` when that is cancelled.
+    fn site_files(&self) -> anyhow::Result<Option<Vec<Box<str>>>> {
+        let mut given: Vec<Box<str>> = self.sites.iter().chain(&self.input).cloned().collect();
+        if given.is_empty() {
+            let ask = crate::site_analysis::input_picker::ask_inputs(
+                "metagene",
+                self.batch_process,
+                "site tables",
+                |n| crate::qc::layout::site_table_modality(n).is_some(),
+            );
+            let Some(chosen) = ask? else { return Ok(None) };
+            given = chosen;
+        }
+        given
+            .iter()
+            .map(|g| self.site_file(g))
+            .collect::<anyhow::Result<_>>()
+            .map(Some)
+    }
+
+    /// `given`, or the site table of the output directory it names.
+    fn site_file(&self, given: &str) -> anyhow::Result<Box<str>> {
+        let Some(dir) = crate::run_record::output_dir_of(given) else {
+            return Ok(given.into());
+        };
+        let sites = crate::site_analysis::output_dir::output_sites(&dir, self.modality.as_deref())?;
+        let table = sites.site_table.ok_or_else(|| {
+            anyhow::anyhow!("{} has no {}_sites.parquet", dir.display(), sites.modality)
+        })?;
+        info!("{}: profiling {table}", dir.display());
+        Ok(table)
+    }
+}
+
 pub fn run_metagene(args: &MetageneArgs) -> anyhow::Result<()> {
-    let sites = read_sites(&args.site_file)?;
+    let Some(site_files) = args.site_files()? else {
+        return Ok(());
+    };
+    // In the view a spinner shows while the sites are placed.
+    let what = format!("profiling {} site table(s)", site_files.len());
+    let histogram = crate::tui::busy(!args.batch_process, "metagene", &what, || {
+        profile(args, &site_files)
+    })?;
+    let site_file = site_files[0].as_ref();
+    let default = || {
+        let name = crate::qc::layout::file_name(site_file);
+        let stem = name.strip_suffix(".parquet").unwrap_or(&name);
+        let together = if site_files.len() > 1 {
+            "_combined"
+        } else {
+            ""
+        };
+        format!("{stem}{together}.metagene.tsv").into_boxed_str()
+    };
+    let output = args
+        .output
+        .clone()
+        .or_else(|| args.batch_process.then(default));
+    if let Some(output) = &output {
+        histogram.to_tsv(output)?;
+        info!("wrote metagene histogram to {output}");
+    }
+
+    if args.print_histogram {
+        histogram.print(args.max_width as usize);
+    }
+    if !args.batch_process {
+        let names: Vec<String> = site_files
+            .iter()
+            .map(|f| crate::qc::layout::file_name(f).to_string())
+            .collect();
+        let title = names.join(" + ");
+        crate::figure::term::when_terminal(|| tui::show_metagene(&title, &histogram))?;
+    }
+
+    Ok(())
+}
+
+/// Place the sites of `site_files`, as one set, on the transcripts of the
+/// first one's GFF and bin them.
+fn profile(args: &MetageneArgs, site_files: &[Box<str>]) -> anyhow::Result<GeneFeatureHistogram> {
+    let site_file = site_files[0].as_ref();
+    // Several tables are one set of sites; their reads count only if each
+    // has them.
+    let mut sites = Vec::new();
+    let mut reads = Some(Vec::new());
+    for f in site_files {
+        let these = read_sites(f)?;
+        let these_reads =
+            crate::site_analysis::site_io::read_site_reads(f, &these).unwrap_or_else(|e| {
+                log::warn!("the reads of {f} could not be read ({e}); profiling the sites only");
+                None
+            });
+        match (&mut reads, these_reads) {
+            (Some(all), Some(r)) => all.extend(r),
+            _ => reads = None,
+        }
+        sites.extend(these);
+    }
+    if site_files.len() > 1 {
+        info!(
+            "{} sites from {} tables, together",
+            sites.len(),
+            site_files.len()
+        );
+    }
     let gff_file = crate::run_record::explicit_or_recorded(
         args.gff_file.as_deref(),
-        &args.site_file,
+        site_file,
         "gff",
         "annotation",
     )
     .ok_or_else(|| {
         anyhow::anyhow!(
             "-g/--gff is required: no run record next to {} names a GFF",
-            args.site_file
+            site_file
         )
     })?;
     let records = read_gff_record_vec(&gff_file)?;
@@ -986,25 +1132,12 @@ pub fn run_metagene(args: &MetageneArgs) -> anyhow::Result<()> {
         info!("wrote per-site distance table to {}", path);
     }
 
-    // The reads only add views of the same sites: unreadable, the sites remain.
-    let reads = crate::site_analysis::site_io::read_site_reads(&args.site_file, &sites)
-        .unwrap_or_else(|e| {
-            log::warn!("the sites' reads could not be read ({e}); profiling the sites only");
-            None
-        });
-    let histogram = GeneFeatureHistogram::accumulate(&grid, scale, &assignments, reads.as_deref());
-    histogram.to_tsv(&args.output)?;
-    info!("wrote metagene histogram to {}", args.output);
-
-    if args.print_histogram {
-        histogram.print(args.max_width as usize);
-    }
-    if args.interactive {
-        let title = crate::qc::layout::file_name(&args.site_file);
-        crate::figure::term::when_terminal(|| tui::show_metagene(&title, &histogram))?;
-    }
-
-    Ok(())
+    Ok(GeneFeatureHistogram::accumulate(
+        &grid,
+        scale,
+        &assignments,
+        reads.as_deref(),
+    ))
 }
 
 /// Every coding transcript, indexed for placing sites with split weights

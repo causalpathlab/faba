@@ -202,15 +202,7 @@ fn find_recorded(near: &str, key: &str) -> Option<(String, PathBuf)> {
     let dir = if p.is_dir() && !is_matrix_dir(p) {
         p.to_path_buf()
     } else {
-        p.parent()
-            .map(|d| {
-                if d.as_os_str().is_empty() {
-                    Path::new(".")
-                } else {
-                    d
-                }
-            })?
-            .to_path_buf()
+        folder_of(p)?
     };
     let mut records: Vec<(SystemTime, PathBuf)> = std::fs::read_dir(&dir)
         .ok()?
@@ -303,6 +295,31 @@ pub fn explicit_or_recorded(
     explicit
         .map(Box::from)
         .or_else(|| find_input(near, key, what))
+}
+
+/// The output directory `p` names, when it names one: `p` itself when it is
+/// a directory (but not a zarr store, which is one matrix), or the folder of
+/// a run record (`*.run.json`, `pipeline_summary.json`).
+pub fn output_dir_of(p: &str) -> Option<PathBuf> {
+    let path = Path::new(p);
+    if path.is_dir() && !is_matrix_dir(path) {
+        return Some(path.to_path_buf());
+    }
+    let name = path.file_name()?.to_string_lossy();
+    if !is_run_record(&name) || !path.is_file() {
+        return None;
+    }
+    folder_of(path)
+}
+
+/// The folder a file sits in, `.` for a bare name.
+fn folder_of(p: &Path) -> Option<PathBuf> {
+    let dir = p.parent()?;
+    Some(if dir.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        dir.to_path_buf()
+    })
 }
 
 /// A zarr store is a directory, but it is one output, not an output directory.

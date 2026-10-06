@@ -878,3 +878,53 @@ fn split_shares_that_sum_to_a_whole_print_as_one() {
     assert_eq!(count_text(0.5, 4), "0.5000");
     assert_eq!(count_text(3.0, 1), "3");
 }
+
+#[test]
+fn an_output_directory_or_its_run_record_gives_its_site_table() {
+    use clap::FromArgMatches;
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    for f in ["atoi_sites.parquet", "atoi.run.json"] {
+        std::fs::write(dir.join(f), b"").unwrap();
+    }
+    let parse = |args: &[&str]| {
+        let cmd = crate::faba_command()
+            .find_subcommand("metagene")
+            .unwrap()
+            .clone();
+        let m = cmd
+            .try_get_matches_from(std::iter::once("metagene").chain(args.iter().copied()))
+            .unwrap();
+        MetageneArgs::from_arg_matches(&m).unwrap()
+    };
+    let table = dir
+        .join("atoi_sites.parquet")
+        .to_string_lossy()
+        .into_owned();
+    let record = dir.join("atoi.run.json").to_string_lossy().into_owned();
+    for given in [dir.to_string_lossy().into_owned(), record] {
+        let args = parse(&[&given]);
+        assert_eq!(
+            args.site_files().unwrap().unwrap(),
+            [Box::from(table.as_str())],
+            "A-to-I, the one there"
+        );
+        assert!(!args.batch_process, "the view by default");
+    }
+    assert!(parse(&[&dir.to_string_lossy(), "--modality", "m6a"])
+        .site_files()
+        .is_err());
+    let args = parse(&["-s", "x.parquet", "--batch-process"]);
+    assert_eq!(
+        args.site_files().unwrap().unwrap(),
+        [Box::from("x.parquet")]
+    );
+    assert!(args.batch_process);
+    // Several, together, `-s` first.
+    let dir_arg = dir.to_string_lossy().into_owned();
+    let args = parse(&["-s", "x.parquet", "y.parquet", &dir_arg]);
+    let together: Vec<Box<str>> = ["x.parquet", "y.parquet", table.as_str()]
+        .map(Box::from)
+        .into();
+    assert_eq!(args.site_files().unwrap().unwrap(), together);
+}

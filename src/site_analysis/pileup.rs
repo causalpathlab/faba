@@ -82,17 +82,32 @@ pub enum FigFormat {
     Pdf,
 }
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Clone)]
 pub struct PileupArgs {
     #[arg(
-        required = true,
         num_args = 1..,
-        help = "Sparse matrix file(s) (zarr or h5) from faba output",
-        long_help = "Sparse matrix file(s) (zarr or h5) from faba output. Multiple files,\n\
-                     e.g. replicates via a shell glob,\n\
-                     are aggregated per genomic position into a single track."
+        value_name = "MATRIX|DIR",
+        help = "Site matrices (zarr or h5) from faba output, or the output directory (or a run record in it); browse for one when left out",
+        long_help = "Site matrices (zarr or h5) from faba output: `{batch}_m6a_site` or\n\
+                     `{batch}_atoi_site`. Multiple files, e.g. replicates via a shell glob,\n\
+                     are aggregated per genomic position into a single track.\n\
+                     \n\
+                     Or a faba output directory (from `faba run`, a producer, or `faba qc`),\n\
+                     or a run record in it (`*.run.json`, `pipeline_summary.json`): its site\n\
+                     matrices of --modality are taken, one track per batch, with its\n\
+                     `{modality}_sites.parquet` for -s and its recorded GFF for the genes.\n\
+                     \n\
+                     Left out, a browser asks: mark site matrices to pile up together,\n\
+                     in one track, or choose an output directory."
     )]
     pub data_files: Vec<Box<str>>,
+
+    #[arg(
+        long = "modality",
+        value_name = "m6a|atoi",
+        help = "Which sites to take from an output directory (default: m6a, else atoi)"
+    )]
+    modality: Option<Box<str>>,
 
     #[arg(
         short = 'q',
@@ -114,8 +129,8 @@ pub struct PileupArgs {
         long_help = "Genomic regions to pile up:\n\
                      comma-separated `chr:lb-ub` (`chr17:1000-2000,chr1:50-99`).\n\
                      Selects rows by position, with or without `--genes`.\n\
-                     At least one of `--genes`/`--regions` is required, except with\n\
-                     `--interactive`, which then opens a gene list to pick from."
+                     Without either, the browser opens a gene list to pick from;\n\
+                     with --batch-process, at least one is required."
     )]
     regions: Vec<Box<str>>,
 
@@ -167,7 +182,7 @@ pub struct PileupArgs {
         long = "depth",
         value_name = "FILE",
         num_args = 1..,
-        help = "`_depth` matrices for a read-depth row in the browser (--interactive): each bin's reads summed over cells and files"
+        help = "`_depth` matrices for a read-depth row in the browser: each bin's reads summed over cells and files"
     )]
     depth_files: Vec<Box<str>>,
 
@@ -185,10 +200,23 @@ pub struct PileupArgs {
     tracks: Vec<Box<str>>,
 
     #[arg(
+        long = "batch-process",
+        visible_alias = "batch-mode",
+        default_value_t = false,
+        help = "Print the ASCII pileup (and write -o) instead of browsing it full screen",
+        long_help = "Print the ASCII pileup (and write -o) instead of browsing it full screen.\n\
+                     By default `faba pileup` opens a browser: pan, zoom and jump between\n\
+                     sites, with a gene list to pick from when no --genes/--regions are given.\n\
+                     Without a terminal it prints, as this flag does."
+    )]
+    batch_process: bool,
+
+    /// The browser is the default now; kept so older command lines still run.
+    #[arg(
         short = 'I',
         long = "interactive",
-        default_value_t = false,
-        help = "Browse the pileup full screen: pan, zoom and jump between sites (needs a terminal; ASCII mode only)"
+        hide = true,
+        default_value_t = false
     )]
     interactive: bool,
 
@@ -203,7 +231,7 @@ pub struct PileupArgs {
         long = "gtf",
         help = "Gene annotation GTF/GFF for the middle gene-model track (exons, introns)",
         long_help = "Gene annotation GTF/GFF for the middle gene-model track (exons, introns, strand).\n\
-                     Enables figure mode; with --interactive, draws the genes in view instead.\n\
+                     Enables figure mode with --batch-process; in the browser, draws the genes in view.\n\
                      Without it, the browser and the figure use the GFF recorded in the\n\
                      `*.run.json` next to the first matrix, when there is one."
     )]
@@ -499,6 +527,22 @@ fn load(
     })
 }
 
+/// [`load`], for the browser (`browser`, with the totals) under a spinner
+/// saying `what` is read.
+fn loading(
+    browser: bool,
+    args: &PileupArgs,
+    groups: &[TrackFiles],
+    selector: &Selector,
+    locus: Option<(i64, i64)>,
+    what: &str,
+) -> anyhow::Result<Loaded> {
+    let text = format!("reading {what} from {} file(s)", args.data_files.len());
+    crate::tui::busy(browser, "pileup", &text, || {
+        load(args, groups, selector, browser, locus)
+    })
+}
+
 /// The gene models to draw: those of the matched gene `keys`, by key or
 /// failing that by symbol (a GTF may version its gene ids differently), or
 /// every model for a searched locus (`None`).
@@ -587,11 +631,26 @@ impl<'a> Catalog<'a> {
         if let Some(genes) = self.genes.get() {
             return Ok(genes);
         }
-        eprintln!("reading genes from {} file(s) ...", self.files.len());
-        let list = picker::gene_catalog(self.files)?;
+        let what = format!("reading genes from {} file(s)", self.files.len());
+        let list = crate::tui::busy(true, "pileup", &what, || picker::gene_catalog(self.files))?;
         anyhow::ensure!(!list.is_empty(), "no site rows in the input files");
         Ok(self.genes.get_or_init(|| list))
     }
+}
+
+/// Load `chr:lo-hi` for the browser, every gene in it drawn. `Err` carries
+/// a message for the footer.
+fn load_locus(
+    args: &PileupArgs,
+    groups: &[TrackFiles],
+    chr: &str,
+    lo: i64,
+    hi: i64,
+) -> Result<Loaded, String> {
+    let locus = format!("{chr}:{lo}-{hi}");
+    let selector = Selector::build(&[], &[locus.as_str().into()]).map_err(|e| e.to_string())?;
+    loading(true, args, groups, &selector, Some((lo, hi)), &locus)
+        .map_err(|_| format!("no sites in {locus}"))
 }
 
 /// Open what `query` names: a locus anywhere, or a gene of the catalog.
@@ -609,11 +668,7 @@ fn search(
             } else {
                 (r.lb, r.ub)
             };
-            let spec: Box<str> = format!("{}:{lo}-{hi}", r.chr).into();
-            let selector = Selector::build(&[], &[spec]).map_err(|e| e.to_string())?;
-            let loaded = load(args, groups, &selector, true, Some((lo, hi)))
-                .map_err(|_| format!("no sites in {query}"))?;
-            Ok(Found::View(loaded))
+            load_locus(args, groups, &r.chr, lo, hi).map(Found::View)
         }
         Some(Query::Gene(g)) => {
             let genes = catalog.get().map_err(|e| e.to_string())?;
@@ -624,9 +679,16 @@ fn search(
                 .collect();
             match hits.as_slice() {
                 [] => Err(format!("no gene matches {g}")),
-                [one] => load(args, groups, &Selector::exact(&one.gene), true, None)
-                    .map(Found::View)
-                    .map_err(|e| e.to_string()),
+                [one] => loading(
+                    true,
+                    args,
+                    groups,
+                    &Selector::exact(&one.gene),
+                    None,
+                    &one.gene,
+                )
+                .map(Found::View)
+                .map_err(|e| e.to_string()),
                 _ => Ok(Found::List),
             }
         }
@@ -676,12 +738,14 @@ fn interactive(
                 let query = match choice {
                     picker::Choice::Quit => return Ok(()),
                     picker::Choice::Gene(i) => {
-                        current = Some(load(
+                        let gene = &genes[i].gene;
+                        current = Some(loading(
+                            true,
                             args,
                             groups,
-                            &Selector::exact(&genes[i].gene),
-                            true,
+                            &Selector::exact(gene),
                             None,
+                            gene,
                         )?);
                         continue;
                     }
@@ -700,6 +764,13 @@ fn interactive(
         match browse(args, &loaded, genes.as_ref(), status.take())? {
             tui::Exit::Quit => return Ok(()),
             tui::Exit::Genes => {}
+            tui::Exit::Locus(lo, hi) => match load_locus(args, groups, &loaded.chr, lo, hi) {
+                Ok(l) => current = Some(l),
+                Err(msg) => {
+                    status = Some(msg);
+                    current = Some(loaded);
+                }
+            },
             tui::Exit::Search(q) => match search(args, groups, &catalog, &q) {
                 Ok(Found::View(l)) => current = Some(l),
                 Ok(Found::List) => filter = q,
@@ -713,6 +784,60 @@ fn interactive(
 }
 
 impl PileupArgs {
+    /// These arguments with `given` as the inputs, each output directory
+    /// (or run record) among them replaced by its site matrices of
+    /// `--modality` and its site table as `-s` when none was given; and the
+    /// tracks: `--track`'s, else with a directory one per batch and one per
+    /// file named beside it, else one of them all.
+    fn resolved(&self, given: &[Box<str>]) -> anyhow::Result<(PileupArgs, Vec<TrackFiles>)> {
+        let mut out = self.clone();
+        let mut files = Vec::new();
+        let mut own: Vec<TrackFiles> = Vec::new();
+        let mut from_dir = false;
+        for f in given {
+            let Some(dir) = crate::run_record::output_dir_of(f) else {
+                files.push(f.clone());
+                own.push(TrackFiles {
+                    label: crate::qc::layout::file_name(f),
+                    files: vec![f.clone()],
+                });
+                continue;
+            };
+            from_dir = true;
+            let sites =
+                crate::site_analysis::output_dir::output_sites(&dir, self.modality.as_deref())?;
+            anyhow::ensure!(
+                !sites.matrices.is_empty(),
+                "{} has no {}_site matrices to pile up",
+                dir.display(),
+                sites.modality
+            );
+            info!(
+                "{}: {} {}_site matrices",
+                dir.display(),
+                sites.matrices.len(),
+                sites.modality
+            );
+            for (batch, path) in sites.matrices {
+                files.push(path.clone());
+                own.push(TrackFiles {
+                    label: batch,
+                    files: vec![path],
+                });
+            }
+            if out.site_file.is_none() {
+                out.site_file = sites.site_table;
+            }
+        }
+        out.data_files = files;
+        let groups = if from_dir && self.tracks.is_empty() {
+            own
+        } else {
+            track_files(&out.data_files, &self.tracks)?
+        };
+        Ok((out, groups))
+    }
+
     /// `--gtf`, or else the GFF the first matrix was made from, found in its
     /// run record.
     fn annotation(&self) -> Option<Box<str>> {
@@ -722,21 +847,32 @@ impl PileupArgs {
 }
 
 pub fn run_pileup(args: &PileupArgs) -> anyhow::Result<()> {
-    // Figure mode is triggered by any figure-only input/output flag.
-    // Otherwise fall through to the ASCII / TSV path.
-    // With `--interactive`, `--gtf` feeds the browser's gene row instead.
-    let figure_flags = !args.bam_files.is_empty() || args.format.is_some() || args.svg || args.png;
-    let figure_mode = !args.interactive && (args.gtf.is_some() || figure_flags);
-    if args.interactive && figure_flags {
-        log::warn!("--bam/--format/--svg/--png make a figure, not the browser; ignoring them");
-    }
-    let groups = track_files(&args.data_files, &args.tracks)?;
-    if args.interactive && !figure_mode && args.genes.is_empty() && args.regions.is_empty() {
-        anyhow::ensure!(
-            data_beans::interactive::tui_available(),
-            "--interactive without --genes/--regions needs stdin and stdout on a terminal"
+    let given = if args.data_files.is_empty() {
+        let ask = crate::site_analysis::input_picker::ask_inputs(
+            "pileup",
+            args.batch_process,
+            "site matrices",
+            crate::qc::layout::is_site_matrix_name,
         );
-        return interactive(args, &groups, None);
+        let Some(files) = ask? else { return Ok(()) };
+        files
+    } else {
+        args.data_files.clone()
+    };
+    let (args, groups) = &args.resolved(&given)?;
+    // A figure flag makes the Miami figure; otherwise the browser, unless
+    // asked to print (or there is no terminal to browse in), when `--gtf`
+    // makes the figure too. In the browser `--gtf` draws the genes in view.
+    let figure_flags = !args.bam_files.is_empty() || args.format.is_some() || args.svg || args.png;
+    let browse_it = !args.batch_process && !figure_flags;
+    let terminal = data_beans::interactive::tui_available();
+    if browse_it && !terminal {
+        log::info!("no terminal to browse in: printing the pileup, as --batch-process does");
+    }
+    let interactive = browse_it && terminal;
+    let figure_mode = !interactive && (args.gtf.is_some() || figure_flags);
+    if interactive && args.genes.is_empty() && args.regions.is_empty() {
+        return self::interactive(args, groups, None);
     }
     let selector = Selector::build(&args.genes, &args.regions)?;
     if figure_mode {
@@ -746,7 +882,19 @@ pub fn run_pileup(args: &PileupArgs) -> anyhow::Result<()> {
         return run_miami_figure(args, &selector);
     }
 
-    let loaded = load(args, &groups, &selector, args.interactive, None)?;
+    let what = selector.describe();
+    let loaded = loading(interactive, args, groups, &selector, None, &what)?;
+    if interactive {
+        // Straight to the browser; -o still writes the binned table.
+        write_pileup(args, &loaded, false)?;
+        return self::interactive(args, groups, Some(loaded));
+    }
+    write_pileup(args, &loaded, true)
+}
+
+/// With `print`, print `loaded` as ASCII histograms (unless `--quiet`); and
+/// write the binned table to `-o`.
+fn write_pileup(args: &PileupArgs, loaded: &Loaded, print: bool) -> anyhow::Result<()> {
     let (min_pos, max_pos) = loaded.extent;
     let max_sites = loaded
         .tracks
@@ -787,7 +935,7 @@ pub fn run_pileup(args: &PileupArgs) -> anyhow::Result<()> {
         });
     }
 
-    if !args.quiet {
+    if print && !args.quiet {
         for p in &pileups {
             print_vertical_histogram(p, args.plot_height);
         }
@@ -797,10 +945,6 @@ pub fn run_pileup(args: &PileupArgs) -> anyhow::Result<()> {
         let tracks: Vec<&BinnedPileup> = pileups.iter().collect();
         write_pileup_tsv(&tracks, output)?;
         info!("wrote pileup TSV to {}", output);
-    }
-
-    if args.interactive {
-        crate::figure::term::when_terminal(|| interactive(args, &groups, Some(loaded)))?;
     }
 
     Ok(())

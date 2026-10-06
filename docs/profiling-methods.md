@@ -641,7 +641,14 @@ None of these fit a model or produce a p-value.
   which on a 3′-biased library means the last bins of the 3′UTR; a terminal peak is not evidence of
   enrichment on its own.
 
-The `--interactive` views of `pileup` and `metagene` draw the converted reads by default, where a
+`pileup` and `metagene` open full screen by default (`--batch-process` prints instead, as they do
+without a terminal), and either takes a faba output directory, or a run record in it, in place of
+its files: `pileup` then takes the directory's site matrices of `--modality` (m6A, else A-to-I),
+one track per batch, with its `{modality}_sites.parquet` and the GFF its run record names, and
+`metagene` profiles that site table against that GFF. Given no input, they open a browser: mark files
+(Space) to read together, `pileup` summing the marked matrices into one track and `metagene`
+profiling the marked site tables as one set of sites against the first one's GFF, or choose a
+whole output folder. The views draw the converted reads by default, where a
 track carries both channels (in `metagene`, where the site table has `converted` and `coverage`
 columns). `c` cycles what the bars count: converted reads, unconverted reads (the total less the
 converted), both (the converted in front of the total), and the sites themselves. In `pileup`, `d`

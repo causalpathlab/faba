@@ -216,29 +216,36 @@ Example:\n  \
     #[command(
         name = "pileup",
         alias = "inspect",
-        about = "ASCII pileup, or a faceted Miami plot (SVG/PDF) for a gene",
-        long_about = "Pileup plot for a gene's (or region's) modification sites.\n\
+        about = "Browse a gene's sites full screen; or an ASCII pileup, or a Miami plot (SVG/PDF)",
+        long_about = "Pileup of a gene's (or region's) modification sites.\n\
                       \n\
-                      Selection is `-q/--genes` (symbols or Ensembl IDs) and/or `--regions chr:lb-ub`;\n\
-                      at least one is required,\n\
-                      and everything matched is aggregated into one pileup.\n\
+                      Give it a faba output directory (or a run record in it) and it takes\n\
+                      the site matrices of --modality (m6a, else atoi), one track per batch,\n\
+                      with the site table and the recorded GFF; or name site matrices\n\
+                      (zarr/h5, `{batch}_m6a_site`) yourself.\n\
                       \n\
-                      ASCII mode (default):\n\
-                      reads one or more sparse matrices (zarr/h5) from faba output,\n\
-                      filters to the selection, bins positions along the gene body,\n\
-                      and renders a vertical ASCII histogram.\n\
+                      Browser (default): pan, zoom and jump between sites full screen,\n\
+                      starting from a gene list unless `-q/--genes` (symbols or Ensembl IDs)\n\
+                      or `--regions chr:lb-ub` picks one.\n\
+                      \n\
+                      ASCII mode (--batch-process, or without a terminal): needs --genes or\n\
+                      --regions, aggregates everything matched into one pileup, bins\n\
+                      positions along the gene body and prints a vertical histogram.\n\
                       Multiple files (e.g. replicates via a shell glob) are aggregated per position.\n\
                       \n\
-                      Miami figure mode: passing --gtf, --bam, --format, --svg,\n\
-                      or --png renders a publication SVG/PDF instead —\n\
+                      Miami figure mode: passing --bam, --format, --svg or --png\n\
+                      (or --gtf with --batch-process) renders a publication SVG/PDF instead —\n\
                       a mirrored Manhattan with epi sites up, a GTF gene model in the middle,\n\
                       and BAM read depth down,\n\
                       faceted into one panel per cell type (--cell-membership).",
         after_long_help = "\
 	Examples:\n\
-	# ASCII histogram (unchanged)\n\
-	faba pileup out/s1_wt_m6a.zarr.zip -q GENE1\n\
-	faba pileup out/s*_wt_m6a.zarr.zip -q GENE1 -s out/m6a_sites.parquet\n\
+	# browse an output directory's m6A sites, from its gene list\n\
+	faba pileup out/\n\
+	faba pileup out/pipeline_summary.json -q GENE1 --modality atoi\n\
+	# ASCII histogram\n\
+	faba pileup out/s1_wt_m6a_site.zarr.zip -q GENE1 --batch-process\n\
+	faba pileup out/s*_wt_m6a_site.zarr.zip -q GENE1 -s out/m6a_sites.parquet --batch-process\n\
 	# Miami figure: epi sites / gene model / read depth, faceted by cell type\n\
 	faba pileup out/s1_wt_m6a.zarr.zip -q GENE1 \n\
 	--gtf gencode.gtf --bam sample.bam --cell-membership cells.tsv \n\
@@ -270,6 +277,9 @@ Example:\n  \
             so `--isoforms all` is that raw output. Its script then keeps the longest isoform\n\
             per gene, which we do not: that drops sites on other isoforms' exons.\n\
             --dist-measures is our name for the per-site table that script reads.\n\n\
+            Give it a faba output directory (or a run record in it) and it profiles that\n\
+            directory's site table of --modality against its recorded GFF. After writing the\n\
+            histogram it opens the profile full screen, unless --batch-process.\n\n\
             See docs/profiling-methods.md sections 1.2 and 7.\n\n\
             Reference:\n\
             Olarerin-George and Jaffrey, \"MetaPlotR: a Perl/R pipeline for plotting metagenes of nucleotide modifications and other transcriptomic sites\",\n\
@@ -277,7 +287,9 @@ Example:\n  \
             https://doi.org/10.1093/bioinformatics/btx002",
         after_long_help = "\
 	Example:\n\
-	faba metagene -s out/m6a_sites.parquet -g genes.gff -o metagene.tsv --print\n\
+	# an output directory's m6A sites against its recorded GFF, then the view\n\
+	faba metagene out/\n\
+	faba metagene -s out/m6a_sites.parquet -g genes.gff -o metagene.tsv --print --batch-process\n\
 	# write the table MetaPlotR's visualize_metagenes.R reads:\n\
 	faba metagene -s out/m6a_sites.parquet -g genes.gff -o metagene.tsv \n\
 	--dist-measures m6a.dist.measures.txt"

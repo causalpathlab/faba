@@ -79,6 +79,9 @@ fn zoom_keeps_the_cursor_and_stops_at_a_base_per_bar() {
         press(&mut v, KeyCode::Char('-'));
     }
     assert_eq!(v.window, EXTENT);
+    // Past the whole extent, `-` asks for twice its span around it.
+    assert_eq!(v.exit, Some(Exit::Locus(950_000, 1_150_000)));
+    v.exit = None;
     press(&mut v, KeyCode::Char('+'));
     press(&mut v, KeyCode::Char('0'));
     assert_eq!(v.window, EXTENT);

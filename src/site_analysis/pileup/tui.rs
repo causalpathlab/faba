@@ -75,7 +75,12 @@ pub enum Exit {
     Genes,
     /// `/`: a gene or locus the view cannot show itself.
     Search(String),
+    /// `-` past the whole view: this chromosome's `lo..=hi`, wider.
+    Locus(i64, i64),
 }
+
+/// The widest span `-` reloads.
+const MAX_SPAN: i64 = 10_000_000;
 
 /// State of the browser, independent of the terminal so it can be tested.
 pub struct PileupView<'a> {
@@ -428,6 +433,22 @@ impl<'a> PileupView<'a> {
         self.clamp_window();
     }
 
+    /// Zoom out twice as wide; with all of the view's own span in view,
+    /// ask the caller for twice that span around it, flanks and their
+    /// genes included, up to [`MAX_SPAN`].
+    fn zoom_out(&mut self) {
+        let (lo, hi) = self.extent;
+        if self.window != self.extent {
+            return self.zoom(2.0);
+        }
+        if hi - lo >= MAX_SPAN {
+            self.status = Some("zoomed out as far as it goes".into());
+            return;
+        }
+        let pad = ((hi - lo) / 2).max(self.columns as i64);
+        self.exit = Some(Exit::Locus((lo - pad).max(1), hi + pad));
+    }
+
     /// A `/` search: a locus in this view moves there; anything else exits to the caller.
     fn submit(&mut self, query: &str) {
         match super::parse_query(query) {
@@ -681,7 +702,7 @@ impl Screen for PileupView<'_> {
             KeyCode::Char('n') => self.jump_site(true),
             KeyCode::Char('p') => self.jump_site(false),
             KeyCode::Char('+' | '=') => self.zoom(0.5),
-            KeyCode::Char('-') => self.zoom(2.0),
+            KeyCode::Char('-') => self.zoom_out(),
             KeyCode::Char('0') => self.window = self.extent,
             KeyCode::Char('y') => self.y_scale = self.y_scale.next(),
             KeyCode::Char('g') => self.exit = Some(Exit::Genes),

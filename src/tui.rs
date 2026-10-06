@@ -4,6 +4,12 @@
 //! folder.
 
 pub mod browser;
+pub mod busy;
+
+pub use busy::busy;
+
+/// Frames of the spinners the workspace draws.
+pub const SPINNER: &str = "⠁⠂⠄⡀⢀⠠⠐⠈";
 
 use std::path::{Path, PathBuf};
 
