@@ -2,14 +2,31 @@ use super::*;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 #[test]
-fn apply_is_shift_enter_and_nothing_else() {
+fn apply_is_ctrl_enter_and_nothing_else() {
     let k = |c, m| KeyEvent::new(c, m);
-    assert!(is_apply(&k(KeyCode::Enter, KeyModifiers::SHIFT)));
-    assert!(!is_apply(&k(KeyCode::Enter, KeyModifiers::NONE)));
-    for c in ['G', 'g', 'y', 'A'] {
+    assert!(is_apply(&k(KeyCode::Enter, KeyModifiers::CONTROL)));
+    assert!(is_apply(&k(KeyCode::Char('j'), KeyModifiers::CONTROL)));
+    for m in [KeyModifiers::NONE, KeyModifiers::SHIFT, KeyModifiers::ALT] {
+        assert!(!is_apply(&k(KeyCode::Enter, m)), "{m:?}");
+    }
+    for c in ['G', 'g', 'y', 'A', 'j'] {
         assert!(!is_apply(&k(KeyCode::Char(c), KeyModifiers::NONE)), "{c}");
         assert!(!is_apply(&k(KeyCode::Char(c), KeyModifiers::SHIFT)), "{c}");
     }
+}
+
+#[test]
+fn modified_keys_are_stray_but_apply_and_capitals_are_not() {
+    let k = |c, m| KeyEvent::new(c, m);
+    for m in [KeyModifiers::SHIFT, KeyModifiers::ALT, KeyModifiers::SUPER] {
+        assert!(is_stray(&k(KeyCode::Enter, m)), "{m:?}+Enter");
+    }
+    assert!(is_stray(&k(KeyCode::Char('s'), KeyModifiers::CONTROL)));
+    assert!(is_stray(&k(KeyCode::Char('q'), KeyModifiers::ALT)));
+    assert!(!is_stray(&k(KeyCode::Enter, KeyModifiers::CONTROL)));
+    assert!(!is_stray(&k(KeyCode::Enter, KeyModifiers::NONE)));
+    assert!(!is_stray(&k(KeyCode::Char('R'), KeyModifiers::SHIFT)));
+    assert!(!is_stray(&k(KeyCode::BackTab, KeyModifiers::SHIFT)));
 }
 
 #[test]
@@ -20,8 +37,8 @@ fn centered_fits_inside_small_areas() {
 }
 
 #[test]
-fn shift_enter_is_asked_once_and_released() {
-    let mut s = ShiftEnter::default();
+fn the_apply_key_is_asked_once_and_released() {
+    let mut s = ApplyKey::default();
     s.arm();
     assert!(!s.on, "not wanted, never asked");
 }

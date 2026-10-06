@@ -9,7 +9,7 @@ use super::inputs::{Browser, InputsFocus, Row};
 use super::steps::Step;
 use super::{script, App, Page, Target};
 use crate::figure::{Edit, LineInput};
-use crate::tui::{is_apply, APPLY_KEYS};
+use crate::tui::{as_apply, is_apply, is_stray, APPLY_FALLBACK, APPLY_KEYS};
 
 /// Longest text a line input takes.
 const MAX_TYPED: usize = 4096;
@@ -41,9 +41,24 @@ impl App {
     /// Route `key`: an open line input first, then the file pop-up, the
     /// preview, the keys every screen shares, and the screen's own.
     fn route(&mut self, key: KeyEvent) {
+        let key = as_apply(key);
         self.note = None;
+        let leaving = std::mem::take(&mut self.leaving);
         if self.editing.is_some() {
             return self.key_editing(key);
+        }
+        if is_stray(&key) {
+            // Shift+Enter or Alt+Enter is a terminal's stand-in for the apply
+            // key, not a plain Enter: it must not toggle or open anything.
+            if key.code == KeyCode::Enter && self.picking.is_none() {
+                let does = if self.preview {
+                    "starts the run"
+                } else {
+                    "previews the run"
+                };
+                self.enter_hint(does);
+            }
+            return;
         }
         if self.picking.is_some() {
             return self.key_picking(key);
@@ -52,10 +67,13 @@ impl App {
             return self.key_preview(key);
         }
         if is_apply(&key) {
-            self.preview = true;
+            if !self.ask_output(key) {
+                self.preview = true;
+            }
             return;
         }
         match key.code {
+            KeyCode::Char('c' | 'p') if self.ask_output(key) => return,
             KeyCode::Char('c') => return self.copy_command(),
             KeyCode::Char('p') => return self.print_and_leave(),
             KeyCode::Tab => return self.turn(1),
@@ -65,6 +83,14 @@ impl App {
                 if let Some(p) = page {
                     self.page = p;
                 }
+                return;
+            }
+            // A set-up run is lost on leaving: the first `q` only asks.
+            KeyCode::Char('q')
+                if !leaving && self.job.is_none() && !self.inputs.picked.is_empty() =>
+            {
+                self.leaving = true;
+                self.note = Some("q again leaves, losing this setup; p prints its command".into());
                 return;
             }
             KeyCode::Char('q') => return self.leave(),
@@ -109,13 +135,23 @@ impl App {
         };
         match line.handle(key) {
             Edit::Typing => {}
-            Edit::Cancelled => self.editing = None,
+            Edit::Cancelled => {
+                self.editing = None;
+                self.asked_output = None;
+            }
             Edit::Submitted(t) => {
                 let Some((target, _)) = self.editing.take() else {
                     return;
                 };
                 match target {
-                    Target::Output => self.inputs.output = t,
+                    Target::Output => {
+                        let named = !t.is_empty();
+                        self.inputs.output = t;
+                        // Asked for by a key: now go on with what it asked.
+                        if let Some(asked) = self.asked_output.take().filter(|_| named) {
+                            self.route(asked);
+                        }
+                    }
                     Target::DepthKb => self.steps.depth_kb = t,
                     Target::Flag(i) => {
                         if let Some(f) = self.form.fields.get_mut(i) {
@@ -140,25 +176,42 @@ impl App {
             return browser.step(d);
         }
         match key.code {
-            KeyCode::Left | KeyCode::Char('h') => browser.up(),
-            KeyCode::Enter | KeyCode::Right => {
+            KeyCode::Left | KeyCode::Backspace | KeyCode::Char('h') => browser.up(),
+            KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
                 if let Some(file) = browser.enter() {
                     self.inputs.set(row, Some(&file));
                     self.picking = None;
                 }
             }
-            KeyCode::Esc => self.picking = None,
+            KeyCode::Esc | KeyCode::Char('q') => self.picking = None,
             _ => {}
         }
     }
 
-    /// Plain Enter did nothing: say what Shift+Enter does here, and what
-    /// to do on a terminal that reports Shift+Enter as Enter.
+    /// Enter did nothing: say what the apply key does here, and what to do
+    /// on a terminal that cannot send it.
     fn enter_hint(&mut self, does: &str) {
         self.note = Some(format!(
             "Enter does nothing here; {APPLY_KEYS} {does}. Terminal cannot send {APPLY_KEYS}? \
-             c copies the faba run --batch-process command, p prints it and leaves"
+             {APPLY_FALLBACK} does the same; or c copies the faba run --batch-process command, \
+             p prints it and leaves"
         ));
+    }
+
+    /// No output folder named yet: open the output row's line, holding a
+    /// suggestion, and take `key` again once one is named. The run never
+    /// picks a folder by itself.
+    fn ask_output(&mut self, key: KeyEvent) -> bool {
+        if !self.inputs.output().is_empty() {
+            return false;
+        }
+        self.page = Page::Inputs;
+        self.inputs.focus = InputsFocus::Rows;
+        self.inputs.row = Row::ALL.iter().position(|r| *r == Row::Output).unwrap_or(0);
+        self.asked_output = Some(key);
+        let suggested = self.inputs.suggested_output();
+        self.edit(Target::Output, &suggested);
+        true
     }
 
     /// Copy the exact command the run would start.
@@ -168,7 +221,7 @@ impl App {
     }
 
     fn key_preview(&mut self, key: KeyEvent) {
-        // Only Shift+Enter starts: a stray key cannot start a run.
+        // Only the apply key starts: a stray key cannot start a run.
         if is_apply(&key) {
             if let Err(e) = self.start() {
                 self.note = Some(format!("cannot start: {e}"));

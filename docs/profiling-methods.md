@@ -697,12 +697,14 @@ stays on its gene); `[` and `]` move through it and
 keys drive the one in focus; `m` switches the editing modality. The gene models and the metagene come from the annotation, read on a
 thread once (`--gff`, or the one in the input directory's run record); without one, the gene plot
 spans the gene's own sites and the metagene is left out. Every count is decided by the same rule `qc`
-applies, so the view cannot disagree with the written fileset. Shift+Enter opens a confirmation that
+applies, so the view cannot disagree with the written fileset. Ctrl+Enter opens a confirmation that
 recaps the output directory, the thresholds changed from the start, and the sites every modality
-keeps; a second Shift+Enter applies them, Esc (or `n`) goes back. Shift+Enter is the only key
-that writes: plain Enter does nothing, so a stray key cannot start a write. A terminal without the
-kitty keyboard protocol (macOS Terminal.app, for one) reports Shift+Enter as Enter and cannot
-apply; there, `p` gives the command to run instead. Once applied, the fileset is written
+keeps; a second Ctrl+Enter applies them, Esc (or `n`) goes back. Ctrl+Enter is the only key
+that writes: plain Enter does nothing, and nor do Shift+Enter or Alt+Enter, so a stray key cannot
+start a write. Ctrl+J does the same as Ctrl+Enter and works on any terminal, including one
+without the kitty keyboard protocol, which reports Ctrl+Enter as plain Enter; Enter there shows a
+hint naming both. Ctrl or Alt with a letter is never taken as the letter. `p` gives the command to
+run instead. Once applied, the fileset is written
 with the view still up, under a pop-up showing each file as it goes. The view's figure for every
 modality and every knob, as set when the cut was applied (scales, selected gene, bar measure),
 is saved beside it in `qc_plots/{modality}_{knob}.pdf` and `.png`. `p` prints the matching
@@ -728,10 +730,13 @@ and features are cut as given.
 Plain `faba run` opens a full-screen view, pre-filled from any flags given on the command line:
 an Inputs screen (BAMs picked as foreground, passed positionally, or background, passed as
 `--control-bam`; annotation, genome, known SNPs, output directory, threads), a Steps screen, a
-Flags screen, and, once a run has started, a Run screen. Shift+Enter opens a preview of the exact
-command and of anything that keeps it from starting; Shift+Enter there starts the run. As in `qc`,
-Shift+Enter is the only key that does either: plain Enter, `G` and `y` do not, so a stray key cannot
-start a run. A terminal without the kitty keyboard protocol reports Shift+Enter as Enter; there,
+Flags screen, and, once a run has started, a Run screen. The output directory is never assumed:
+until one is named on the output row, Ctrl+Enter, `c` and `p` first open that row's line, holding
+`faba_out` beside the first BAM picked (numbered when it exists) as a suggestion, and go on once a
+folder is named; it must be new or empty. Ctrl+Enter opens a preview of the exact
+command and of anything that keeps it from starting; Ctrl+Enter there starts the run. As in `qc`,
+Ctrl+Enter is the only key that does either: plain Enter, Shift+Enter, Alt+Enter, `G` and `y` do
+not, so a stray key cannot start a run; Ctrl+J does the same as Ctrl+Enter on any terminal. Or,
 `c` (on any screen or in the preview) copies the exact `faba run --batch-process` command to the
 clipboard, and `p` leaves the view and prints that command on one line, with the output folder as
 an absolute path, writing nothing and starting nothing; run it in a shell instead. `p` does
@@ -739,7 +744,8 @@ nothing while a run is going. Starting saves the command as `faba_run.cmd.sh` in
 created only if absent (never overwritten), it is executable, and its guard refuses to run when
 `pipeline_summary.json` already exists there. Run it again with `bash faba_run.cmd.sh`. The run is
 a child process whose log the Run screen shows; `s` asks first, `s` again interrupts it, and a
-further `s` kills it. `q` is refused while a run is going. `--batch-process` skips the view and
+further `s` kills it. `q` is refused while a run is going; before any run, with BAMs picked, `q` asks
+first and only a second `q` leaves, since the setup is not kept. `--batch-process` skips the view and
 runs straight through from the flags given; it needs the BAMs, `-g`, `-f` and `-o`.
 
 The steps run in this order, and each one's output constrains the next:

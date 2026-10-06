@@ -586,7 +586,13 @@ impl LineInput {
         let Some(buf) = self.buf.as_mut() else {
             return Edit::Typing;
         };
-        match key.code {
+        // The apply key submits too; other Ctrl and Alt chords type nothing.
+        let code = match key.code {
+            _ if crate::tui::is_apply(&key) => KeyCode::Enter,
+            KeyCode::Char(_) if crate::tui::is_stray(&key) => return Edit::Typing,
+            code => code,
+        };
+        match code {
             KeyCode::Char(ch) if buf.len() < self.max => buf.push(ch),
             KeyCode::Backspace => {
                 buf.pop();

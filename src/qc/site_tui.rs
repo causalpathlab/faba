@@ -39,7 +39,10 @@ use super::browser::{Browser, Listing, Nav};
 use super::layout::{file_name, SITE_MODALITIES};
 use super::progress::Progress;
 use super::sites::{genomic_sites, Criterion, GeneSites, SiteTable};
-use crate::tui::{first_visible, is_apply, popup, popup_frame, ShiftEnter, APPLY_KEYS};
+use crate::tui::{
+    as_apply, first_visible, is_apply, is_stray, popup, popup_frame, ApplyKey, APPLY_FALLBACK,
+    APPLY_KEYS,
+};
 
 mod annotation;
 mod column;
@@ -256,8 +259,8 @@ struct SitePicker<'a> {
     tally: Tally,
     mode: Mode,
     panel: Panel,
-    /// Shift+Enter reporting, asked for at the first draw.
-    shift_enter: ShiftEnter,
+    /// Ctrl+Enter reporting, asked for at the first draw.
+    apply_key: ApplyKey,
     /// Plain Enter was pressed: say how to apply instead.
     enter_hint: bool,
     /// Steps done the last time the write was drawn.
@@ -297,7 +300,7 @@ impl<'a> SitePicker<'a> {
             tally,
             mode: Mode::Browse,
             panel: Panel::Thresholds,
-            shift_enter: ShiftEnter::default(),
+            apply_key: ApplyKey::default(),
             enter_hint: false,
             drawn_steps: 0,
             controls: Controls::new("qc_sites"),
@@ -435,7 +438,7 @@ impl<'a> SitePicker<'a> {
     }
 
     fn decide(&mut self, picked: Picked) {
-        self.shift_enter.release();
+        self.apply_key.release();
         self.decision = Some(picked);
     }
 
@@ -532,7 +535,14 @@ impl Screen for SitePicker<'_> {
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
+        let key = as_apply(key);
         self.enter_hint = false;
+        if is_stray(&key) {
+            // Shift+Enter or Alt+Enter is a terminal's stand-in for the apply
+            // key, not a plain Enter; Ctrl+S is not `s`.
+            self.enter_hint = key.code == KeyCode::Enter && matches!(self.mode, Mode::Browse);
+            return;
+        }
         if matches!(self.mode, Mode::Browse) {
             match self.controls.key(key) {
                 Key::Pass => {}
@@ -637,7 +647,7 @@ impl Screen for SitePicker<'_> {
     }
 
     fn render(&mut self, frame: &mut Frame) {
-        self.shift_enter.arm();
+        self.apply_key.arm();
         let [top, tabs, body, footer] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Length(1),
@@ -722,7 +732,8 @@ impl Screen for SitePicker<'_> {
             (Mode::Browse, None) => {
                 let apply = (APPLY_KEYS, "apply");
                 if self.enter_hint {
-                    let mut line = help_line(&[apply]);
+                    let mut line =
+                        help_line(&[apply, (APPLY_FALLBACK, "the same, on any terminal")]);
                     let hint = Span::styled("Enter does nothing here; ", DIM);
                     line.spans.insert(1, hint);
                     return frame.render_widget(line, footer);
@@ -811,7 +822,7 @@ pub fn run_site_picker(
         SitePicker::new(&file_name(input_dir), views, filter.clone(), meta).pin_genes(pinned);
     picker.annotation = annotation;
     picker.writer = writer;
-    picker.shift_enter = ShiftEnter::wanted();
+    picker.apply_key = ApplyKey::wanted();
     picker.controls = Controls::new("qc_sites").detect();
     data_beans::interactive::ui::run_screen(&mut picker)?;
     let gff = picker.gff().map(Box::from);

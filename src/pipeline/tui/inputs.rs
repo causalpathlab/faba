@@ -356,7 +356,8 @@ impl Inputs {
     }
 
     /// `faba_out` beside the first picked BAM (else in the browser's
-    /// folder), numbered when that exists.
+    /// folder), numbered when that exists: what the output line opens with
+    /// until a folder is named.
     pub fn suggested_output(&self) -> String {
         let base = self
             .picked
@@ -368,16 +369,17 @@ impl Inputs {
             .into_owned()
     }
 
+    /// The output folder as named; empty until it is.
     pub fn output(&self) -> String {
-        if self.output.trim().is_empty() {
-            self.suggested_output()
-        } else {
-            self.output.trim().to_string()
-        }
+        self.output.trim().to_string()
     }
 
     pub fn output_problem(&self) -> Option<String> {
-        crate::tui::output_problem(&self.output())
+        let out = self.output();
+        if out.is_empty() {
+            return Some("no output folder: name one on the output row".into());
+        }
+        crate::tui::output_problem(&out)
     }
 
     pub fn problems(&self) -> Vec<String> {

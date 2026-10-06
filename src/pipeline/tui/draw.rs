@@ -212,7 +212,9 @@ fn draw_inputs(app: &App, frame: &mut Frame, body: Rect) {
     let inner = framed(frame, right, " inputs ".into(), focus == InputsFocus::Rows);
     let out = inputs.output();
     let out_path = Path::new(&out);
-    let out_note = if crate::tui::output_problem(&out).is_some() {
+    let out_note = if out.is_empty() {
+        Span::styled("(none: Enter to name it)", DIM)
+    } else if crate::tui::output_problem(&out).is_some() {
         let what = if out_path.is_file() {
             "a file"
         } else {
@@ -505,10 +507,12 @@ fn draw_preview(app: &App, frame: &mut Frame, body: Rect) {
             .collect()
     };
     let out = app.inputs.output();
-    lines.push(Line::styled(
-        format!(" saved as {}/{}", tilde(Path::new(&out)), script::SCRIPT),
-        DIM,
-    ));
+    if !out.is_empty() {
+        lines.push(Line::styled(
+            format!(" saved as {}/{}", tilde(Path::new(&out)), script::SCRIPT),
+            DIM,
+        ));
+    }
     lines.push(Line::raw(""));
     let argv = app.argv();
     lines.extend(
@@ -530,7 +534,7 @@ fn draw_preview(app: &App, frame: &mut Frame, body: Rect) {
 fn footer_line(app: &App) -> Line<'static> {
     if let Some((target, line)) = &app.editing {
         let prompt = match target {
-            Target::Output => "output folder: ".to_string(),
+            Target::Output => "output folder (new or empty): ".to_string(),
             Target::DepthKb => "depth resolution (kb): ".to_string(),
             Target::Flag(i) => app
                 .form

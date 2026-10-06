@@ -68,6 +68,7 @@ fn problems_name_what_blocks_the_run() {
     let p = i.problems();
     assert!(p.iter().any(|s| s.contains("no fg BAM")));
     assert!(p.iter().any(|s| s.contains("GFF")) && p.iter().any(|s| s.contains("genome")));
+    assert!(p.iter().any(|s| s.contains("no output folder")));
     at(&mut i, "sample_A.bam");
     i.toggle();
     assert_eq!(

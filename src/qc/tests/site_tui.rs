@@ -80,8 +80,8 @@ fn press(p: &mut SitePicker, code: KeyCode) {
     p.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
 }
 
-fn shift_enter(p: &mut SitePicker) {
-    p.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
+fn apply_key(p: &mut SitePicker) {
+    p.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL));
 }
 
 fn kept_linear(t: &SiteTable, c: Option<&[usize]>, f: &SiteFilterArgs) -> usize {
@@ -236,21 +236,33 @@ fn keys_type_reset_off_and_decide() {
     // Plain Enter does nothing, in the view or the confirmation.
     press(&mut p, KeyCode::Enter);
     assert!(!p.done() && matches!(p.mode, Mode::Browse));
-    // Shift+Enter asks first; Esc goes back, Shift+Enter twice applies.
-    shift_enter(&mut p);
+    // Shift+Enter and Alt+Enter are not the apply key, nor plain Enter.
+    for m in [KeyModifiers::SHIFT, KeyModifiers::ALT] {
+        p.handle_key(KeyEvent::new(KeyCode::Enter, m));
+        assert!(!p.done() && matches!(p.mode, Mode::Browse) && p.enter_hint);
+    }
+    // Ctrl+J is Ctrl+Enter, never a `j` typed into the gene find.
+    press(&mut p, KeyCode::Char('/'));
+    p.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL));
+    assert!(matches!(p.mode, Mode::Browse) && p.list.find.is_empty());
+    // Ctrl+S is not `s`: no save prompt opens.
+    p.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+    assert!(p.controls.footer().is_none());
+    // Ctrl+Enter asks first; Esc goes back, Ctrl+Enter twice applies.
+    apply_key(&mut p);
     assert!(!p.done() && matches!(p.mode, Mode::Confirm));
     press(&mut p, KeyCode::Enter);
     assert!(!p.done() && matches!(p.mode, Mode::Confirm));
     press(&mut p, KeyCode::Esc);
     assert!(!p.done() && matches!(p.mode, Mode::Browse));
-    shift_enter(&mut p);
-    shift_enter(&mut p);
+    apply_key(&mut p);
+    apply_key(&mut p);
     // With nothing to write, the next tick ends the session.
     assert!(matches!(p.mode, Mode::Writing));
     p.tick();
     assert!(p.done());
     let Some(Picked::Apply(got)) = p.decision.clone() else {
-        panic!("Shift+Enter, Shift+Enter applies");
+        panic!("Ctrl+Enter, Ctrl+Enter applies");
     };
     assert_eq!(qc_flags(&got), qc_flags(&start));
 
@@ -857,7 +869,7 @@ fn the_confirmation_recaps_output_changes_and_every_modality() {
     for _ in 0..3 {
         press(&mut p, KeyCode::Right);
     }
-    shift_enter(&mut p);
+    apply_key(&mut p);
     assert!(matches!(p.mode, Mode::Confirm));
     let text: String = p
         .confirm_lines()
@@ -926,12 +938,12 @@ fn confirming_writes_in_the_view_and_shows_progress() {
         })),
     };
 
-    // Only Shift+Enter applies: `A`, `G`, `y` and plain Enter do not.
+    // Only Ctrl+Enter applies: `A`, `G`, `y` and plain Enter do not.
     for code in [KeyCode::Char('A'), KeyCode::Char('G')] {
         press(&mut p, code);
         assert!(matches!(p.mode, Mode::Browse));
     }
-    shift_enter(&mut p);
+    apply_key(&mut p);
     assert!(matches!(p.mode, Mode::Confirm));
     for code in [
         KeyCode::Char('y'),
@@ -942,7 +954,7 @@ fn confirming_writes_in_the_view_and_shows_progress() {
         press(&mut p, code);
         assert!(matches!(p.mode, Mode::Confirm));
     }
-    shift_enter(&mut p);
+    apply_key(&mut p);
     assert!(matches!(p.mode, Mode::Writing) && !p.done());
     // The figures are drawn, and the writer started, on the next tick.
     assert!(started.borrow().is_none());

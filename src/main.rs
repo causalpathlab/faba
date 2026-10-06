@@ -361,7 +361,7 @@ Example:\n  \
                       `{batch}_atoi` are re-pooled from the filtered site matrix, so they agree with the cut.\n\
                       \n\
                       Site thresholds are picked in a full-screen view that shows what each one keeps;\n\
-                      Shift+Enter asks to confirm, and the fileset is written with progress shown.\n\
+                      Ctrl+Enter asks to confirm, and the fileset is written with progress shown.\n\
                       Left out, the input and output directories are asked for in a pop-up first.\n\
                       --batch-process skips the view and cuts with the --site-* values as given.",
         after_long_help = "\
@@ -385,8 +385,9 @@ Example:\n  \
         about = "Set up and run the pipeline: SNP → count → ATOI → m6A → APA",
         long_about = "Set up and run the pipeline: SNP → count → ATOI → m6A → APA\n\
                       \n\
-                      Opens a view to pick the BAMs (fg = signal, bg = control), the steps and the flags,\n\
-                      previews the exact command, saves it as `faba_run.cmd.sh` in the output,\n\
+                      Opens a view to pick the BAMs (fg = signal, bg = control), the steps, the flags\n\
+                      and the output directory (asked for, never assumed), previews the exact command\n\
+                      on Ctrl+Enter, saves it as `faba_run.cmd.sh` in the output,\n\
                       and runs it with its log on screen.\n\
                       `--batch-process` runs straight through with the flags given.\n\
                       \n\

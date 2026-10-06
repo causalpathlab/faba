@@ -14,7 +14,7 @@ use rustc_hash::FxHashMap;
 use super::browser::{Browser, Listing, Nav};
 use super::layout::looks_like_faba_dir;
 use crate::figure::{Edit, LineInput};
-use crate::tui::{next_free, output_problem, popup_frame};
+use crate::tui::{as_apply, is_stray, next_free, output_problem, popup_frame};
 
 enum Step {
     /// Browsing for the input directory.
@@ -121,6 +121,9 @@ impl PathPicker {
     }
 
     fn browse_key(&mut self, key: KeyEvent) {
+        if is_stray(&key) {
+            return;
+        }
         if !matches!(self.browse(|b, l| b.key(key, l)), Nav::Ignored) {
             return;
         }
@@ -147,6 +150,7 @@ impl Screen for PathPicker {
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
+        let key = as_apply(key);
         self.error = None;
         let Step::Output { input, line } = &mut self.step else {
             return self.browse_key(key);

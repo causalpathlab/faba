@@ -20,7 +20,7 @@ use ratatui::Frame;
 
 use crate::figure::LineInput;
 use crate::pipeline::args::PipelineArgs;
-use crate::tui::ShiftEnter;
+use crate::tui::ApplyKey;
 use child::{Failed, Progress, Said, Stopper};
 use form::{Form, OWN};
 use inputs::{Browser, FileRow, Inputs, Picked, Role};
@@ -100,6 +100,9 @@ pub struct App {
     pub run_cmd: clap::Command,
     pub preview: bool,
     pub editing: Option<(Target, LineInput)>,
+    /// The key that opened the output line for want of a folder, taken
+    /// again once one is named.
+    pub asked_output: Option<KeyEvent>,
     /// A file row's pop-up browser: the row and the browser.
     pub picking: Option<(FileRow, Browser)>,
     /// The highlighted row among the visible flags.
@@ -108,10 +111,12 @@ pub struct App {
     pub find: String,
     pub note: Option<String>,
     pub job: Option<Job>,
-    pub shift_enter: ShiftEnter,
+    pub apply_key: ApplyKey,
     /// The program the run starts: this binary, or a stand-in in tests.
     pub program: PathBuf,
     pub quit: bool,
+    /// `q` was pressed once with a setup to lose: the next `q` leaves.
+    pub leaving: bool,
     /// `p` ended the session: the command to print once the terminal is
     /// back.
     pub printed: Option<String>,
@@ -135,15 +140,17 @@ impl App {
             run_cmd,
             preview: false,
             editing: None,
+            asked_output: None,
             picking: None,
             flags_at: 0,
             advanced: false,
             find: String::new(),
             note: None,
             job: None,
-            shift_enter: ShiftEnter::default(),
+            apply_key: ApplyKey::default(),
             program: std::env::current_exe().unwrap_or_else(|_| "faba".into()),
             quit: false,
+            leaving: false,
             printed: None,
             verbose: false,
             end_drawn: false,
@@ -270,8 +277,6 @@ impl App {
             return Ok(());
         }
         let out = PathBuf::from(self.inputs.output());
-        // Pin it: the suggestion moves on once the folder exists.
-        self.inputs.output = out.to_string_lossy().into_owned();
         std::fs::create_dir_all(&out).map_err(|e| anyhow::anyhow!("{}: {e}", out.display()))?;
         let argv = self.argv();
         script::write(&out, &argv)?;
@@ -328,7 +333,7 @@ impl App {
             self.note = Some("a run is going: stop it with s first".into());
         } else {
             self.quit = true;
-            self.shift_enter.release();
+            self.apply_key.release();
         }
     }
 
@@ -350,7 +355,7 @@ impl App {
         if !self.running() {
             self.printed = Some(self.command_line());
             self.quit = true;
-            self.shift_enter.release();
+            self.apply_key.release();
         }
     }
 
@@ -366,7 +371,7 @@ impl App {
 
 impl Screen for App {
     fn render(&mut self, frame: &mut Frame) {
-        self.shift_enter.arm();
+        self.apply_key.arm();
         if let Some(job) = self.job.as_mut().filter(|j| !j.running()) {
             // Nothing is left to stop.
             job.asking = false;
@@ -405,9 +410,9 @@ pub(crate) fn run_view(
     if let Some((m, args)) = prefill {
         app.prefill(m, args);
     }
-    app.shift_enter = ShiftEnter::wanted();
+    app.apply_key = ApplyKey::wanted();
     let shown = data_beans::interactive::ui::run_screen(&mut app);
-    app.shift_enter.release();
+    app.apply_key.release();
     if let Some(job) = app.job.as_mut() {
         if job.running() {
             job.stopper.stop();

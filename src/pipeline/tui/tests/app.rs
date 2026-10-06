@@ -33,6 +33,7 @@ fn app_with_bams() -> (tempfile::TempDir, App) {
     press(&mut a, KeyCode::Char('b'));
     a.inputs.gff = Some(tmp.path().join("genes.gff"));
     a.inputs.genome = Some(tmp.path().join("genome.fa"));
+    a.inputs.output = tmp.path().join("faba_out").to_string_lossy().into_owned();
     (tmp, a)
 }
 
@@ -55,23 +56,23 @@ fn the_preview_lists_the_command_and_its_problems() {
     assert!(argv.iter().any(|w| w == "--control-bam"));
     assert!(argv.windows(2).any(|w| w == ["-o", "."]));
     assert!(a.problems().is_empty(), "{:?}", a.problems());
-    a.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
+    a.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL));
     assert!(a.preview);
     press(&mut a, KeyCode::Esc);
     assert!(!a.preview);
     a.inputs.gff = None;
     assert!(a.problems().iter().any(|p| p.contains("GFF")));
-    a.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
-    a.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
+    a.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL));
+    a.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL));
     assert!(a.job.is_none(), "problems block the start");
 }
 
-fn shift_enter(a: &mut App) {
-    a.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
+fn ctrl_enter(a: &mut App) {
+    a.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL));
 }
 
 #[test]
-fn only_shift_enter_previews_and_starts() {
+fn only_ctrl_enter_previews_and_starts() {
     let (tmp, mut a) = app_with_bams();
     fake_program(&mut a, tmp.path(), "exit 0");
     assert!(a.problems().is_empty(), "{:?}", a.problems());
@@ -93,15 +94,15 @@ fn only_shift_enter_previews_and_starts() {
             && hint.contains("--batch-process"),
         "{hint}"
     );
-    shift_enter(&mut a);
+    ctrl_enter(&mut a);
     assert!(a.preview);
     for code in [KeyCode::Char('G'), KeyCode::Char('y'), KeyCode::Enter] {
         press(&mut a, code);
         assert!(a.preview && a.job.is_none(), "{code:?} does not start");
     }
     assert!(a.note.as_deref().is_some_and(|n| n.contains("c copies")));
-    shift_enter(&mut a);
-    assert!(a.job.is_some() && !a.preview, "Shift+Enter starts");
+    ctrl_enter(&mut a);
+    assert!(a.job.is_some() && !a.preview, "Ctrl+Enter starts");
     a.job
         .as_mut()
         .unwrap()
@@ -110,6 +111,90 @@ fn only_shift_enter_previews_and_starts() {
         .unwrap()
         .join()
         .unwrap();
+}
+
+#[test]
+fn shift_and_alt_enter_are_not_enter() {
+    let (_t, mut a) = app_with_bams();
+    press(&mut a, KeyCode::Char('3'));
+    let i = a.flag_row().unwrap();
+    let before = a.form.fields[i].value.clone();
+    for m in [KeyModifiers::SHIFT, KeyModifiers::ALT] {
+        a.handle_key(KeyEvent::new(KeyCode::Enter, m));
+        assert!(
+            a.editing.is_none() && !a.preview,
+            "{m:?}+Enter opens nothing"
+        );
+        assert_eq!(
+            a.form.fields[i].value, before,
+            "{m:?}+Enter toggles nothing"
+        );
+        assert!(a.note.as_deref().is_some_and(|n| n.contains("Ctrl+Enter")));
+    }
+    // Ctrl+letters are not letters: Ctrl+Q does not quit.
+    a.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL));
+    assert!(!a.quit);
+    // Ctrl+J is Ctrl+Enter, not `j`.
+    a.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL));
+    assert!(a.preview);
+}
+
+#[test]
+fn q_asks_before_losing_a_setup() {
+    let (_t, mut a) = app_with_bams();
+    press(&mut a, KeyCode::Char('q'));
+    assert!(!a.quit && a.note.as_deref().is_some_and(|n| n.contains("q again")));
+    // Any other key forgets the question.
+    press(&mut a, KeyCode::Tab);
+    press(&mut a, KeyCode::Char('q'));
+    assert!(!a.quit);
+    press(&mut a, KeyCode::Char('q'));
+    assert!(a.quit);
+    // With nothing picked, q leaves at once.
+    let tmp = tempfile::tempdir().unwrap();
+    let mut b = App::new(run_cmd(), tmp.path().to_path_buf());
+    press(&mut b, KeyCode::Char('q'));
+    assert!(b.quit);
+}
+
+#[test]
+fn the_output_folder_is_asked_for_never_assumed() {
+    let (tmp, mut a) = app_with_bams();
+    a.inputs.output.clear();
+    assert!(a.problems().iter().any(|p| p.contains("no output folder")));
+    let s = screen(&mut a, 200, 20);
+    assert!(s.contains("Enter to name it"), "{s}");
+    // The apply key opens the output line, holding a suggestion.
+    press(&mut a, KeyCode::Char('3'));
+    ctrl_enter(&mut a);
+    assert!(!a.preview && a.page == Page::Inputs);
+    let suggested = tmp.path().join("faba_out").to_string_lossy().into_owned();
+    match &a.editing {
+        Some((Target::Output, line)) => assert_eq!(line.text(), Some(suggested.as_str())),
+        _ => panic!("the output line is open"),
+    }
+    // Esc leaves it unnamed; nothing goes on.
+    press(&mut a, KeyCode::Esc);
+    assert!(a.inputs.output().is_empty() && !a.preview);
+    // Naming it goes on to the preview the apply key asked for.
+    ctrl_enter(&mut a);
+    press(&mut a, KeyCode::Enter);
+    assert_eq!(a.inputs.output(), suggested);
+    assert!(a.preview && a.problems().is_empty(), "{:?}", a.problems());
+    // `p` asks too, then prints with the folder named.
+    let mut b = app_with_bams().1;
+    b.inputs.output.clear();
+    press(&mut b, KeyCode::Char('p'));
+    assert!(!b.quit && b.editing.is_some());
+    for c in "/x".chars() {
+        press(&mut b, KeyCode::Char(c));
+    }
+    press(&mut b, KeyCode::Enter);
+    assert!(b.quit);
+    assert!(b
+        .printed
+        .as_deref()
+        .is_some_and(|l| l.contains("faba_out/x")));
 }
 
 #[test]
@@ -498,6 +583,7 @@ fn verbose_is_passed_on_to_the_run_and_its_script() {
     b.inputs.picked.clone_from(&a.inputs.picked);
     b.inputs.gff = a.inputs.gff.take();
     b.inputs.genome = a.inputs.genome.take();
+    b.inputs.output = std::mem::take(&mut a.inputs.output);
     assert_eq!(b.argv().last().map(String::as_str), Some("-v"));
     assert!(b.problems().is_empty(), "{:?}", b.problems());
     fake_program(&mut b, tmp.path(), "echo \"$@\" > args.txt");

@@ -83,28 +83,58 @@ pub(crate) fn output_problem(out: &str) -> Option<String> {
 }
 
 /// The apply key, as footers name it.
-pub const APPLY_KEYS: &str = "⇧Enter";
+pub const APPLY_KEYS: &str = "Ctrl+Enter";
 
-/// Whether `key` asks to apply: Shift+Enter, and nothing else, so a stray
-/// key cannot write anything.
+/// The apply key every terminal can send: a bare line feed, which raw mode
+/// reads as Ctrl+J.
+pub const APPLY_FALLBACK: &str = "Ctrl+J";
+
+/// Whether `key` asks to apply: Ctrl+Enter (or Ctrl+J, which is what a
+/// terminal without the kitty keyboard protocol may send for it), and
+/// nothing else, so a stray key cannot write anything.
 pub fn is_apply(key: &KeyEvent) -> bool {
-    key.code == KeyCode::Enter && key.modifiers.contains(KeyModifiers::SHIFT)
+    key.modifiers.contains(KeyModifiers::CONTROL)
+        && matches!(key.code, KeyCode::Enter | KeyCode::Char('j' | 'J'))
 }
 
-/// Asks the terminal to report Shift+Enter (the kitty keyboard protocol;
-/// others ignore the request) on the screen the view draws on, and takes the
-/// request back when the view ends.
+/// `key`, with Ctrl+J read as the Ctrl+Enter it stands for, so no view
+/// takes it for `j`.
+pub fn as_apply(key: KeyEvent) -> KeyEvent {
+    if is_apply(&key) {
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL)
+    } else {
+        key
+    }
+}
+
+/// Whether `key` is held with a modifier that makes it another key (Ctrl,
+/// Alt, or Shift on Enter) and is not the apply key. Views ignore such keys,
+/// so Shift+Enter or Alt+Enter never acts as a plain Enter, nor Ctrl+S as `s`.
+pub fn is_stray(key: &KeyEvent) -> bool {
+    let chord = KeyModifiers::CONTROL
+        | KeyModifiers::ALT
+        | KeyModifiers::SUPER
+        | KeyModifiers::META
+        | KeyModifiers::HYPER;
+    let held = key.modifiers.intersects(chord)
+        || (key.code == KeyCode::Enter && key.modifiers.contains(KeyModifiers::SHIFT));
+    held && !is_apply(key)
+}
+
+/// Asks the terminal to report Ctrl+Enter apart from Enter (the kitty
+/// keyboard protocol; others ignore the request) on the screen the view
+/// draws on, and takes the request back when the view ends.
 #[derive(Default)]
-pub struct ShiftEnter {
+pub struct ApplyKey {
     /// Ask at the next draw.
     pub want: bool,
     /// The request is in force.
     pub on: bool,
 }
 
-impl ShiftEnter {
+impl ApplyKey {
     pub fn wanted() -> Self {
-        ShiftEnter {
+        ApplyKey {
             want: true,
             on: false,
         }
