@@ -1,5 +1,4 @@
 use super::*;
-use crate::tui::View;
 use inputs::InputsFocus;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};

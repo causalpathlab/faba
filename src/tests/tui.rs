@@ -52,13 +52,6 @@ fn centered_fits_inside_small_areas() {
 }
 
 #[test]
-fn the_chords_are_asked_once_and_released() {
-    let mut c = Chords::default();
-    c.release();
-    assert!(!c.on && !c.asked, "never asked, nothing to take back");
-}
-
-#[test]
 fn output_folders_are_numbered_and_checked() {
     let tmp = tempfile::tempdir().unwrap();
     let base = tmp.path();
@@ -74,4 +67,54 @@ fn output_folders_are_numbered_and_checked() {
     let file = base.join("out/x").to_string_lossy().into_owned();
     assert!(output_problem(&file).unwrap().contains("is a file"));
     assert!(output_problem("").is_some());
+}
+
+/// A view that keeps what it is handed.
+#[derive(Default)]
+struct Keeps {
+    apply: bool,
+    keys: Vec<KeyEvent>,
+    stray: usize,
+}
+
+impl Screen for Keeps {
+    fn render(&mut self, _: &mut Frame) {}
+    fn handle_key(&mut self, key: KeyEvent) {
+        self.keys.push(key);
+    }
+    fn interrupt(&mut self) {}
+    fn done(&self) -> bool {
+        false
+    }
+}
+
+impl View for Keeps {
+    fn stray_enter(&mut self) {
+        self.stray += 1;
+    }
+    fn takes_apply(&self) -> bool {
+        self.apply
+    }
+}
+
+#[test]
+fn feed_hands_on_only_what_a_view_takes() {
+    let k = |c, m| KeyEvent::new(c, m);
+    for apply in [false, true] {
+        let mut v = Keeps {
+            apply,
+            ..Keeps::default()
+        };
+        feed(&mut v, apply_key());
+        feed(&mut v, k(KeyCode::Char('s'), KeyModifiers::CONTROL));
+        feed(&mut v, k(KeyCode::Enter, KeyModifiers::SHIFT));
+        feed(&mut v, k(KeyCode::Char('r'), KeyModifiers::NONE));
+        let want = if apply {
+            vec![apply_key(), k(KeyCode::Char('r'), KeyModifiers::NONE)]
+        } else {
+            vec![k(KeyCode::Char('r'), KeyModifiers::NONE)]
+        };
+        assert_eq!(v.keys, want, "apply taken: {apply}");
+        assert_eq!(v.stray, 1);
+    }
 }
