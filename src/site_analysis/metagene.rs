@@ -1014,15 +1014,29 @@ fn profile(args: &MetageneArgs, site_files: &[Box<str>]) -> anyhow::Result<GeneF
     let site_file = site_files[0].as_ref();
     // Several tables are one set of sites; their reads count only if each
     // has them.
+    // The tables are independent: read them together, then take them in
+    // order.
+    let read: Vec<_> = {
+        use rayon::prelude::*;
+        site_files
+            .par_iter()
+            .map(|f| -> anyhow::Result<_> {
+                let these = read_sites(f)?;
+                let reads = crate::site_analysis::site_io::read_site_reads(f, &these)
+                    .unwrap_or_else(|e| {
+                        log::warn!(
+                            "the reads of {f} could not be read ({e}); profiling the sites only"
+                        );
+                        None
+                    });
+                Ok((these, reads))
+            })
+            .collect()
+    };
     let mut sites = Vec::new();
     let mut reads = Some(Vec::new());
-    for f in site_files {
-        let these = read_sites(f)?;
-        let these_reads =
-            crate::site_analysis::site_io::read_site_reads(f, &these).unwrap_or_else(|e| {
-                log::warn!("the reads of {f} could not be read ({e}); profiling the sites only");
-                None
-            });
+    for one in read {
+        let (these, these_reads) = one?;
         match (&mut reads, these_reads) {
             (Some(all), Some(r)) => all.extend(r),
             _ => reads = None,

@@ -473,16 +473,24 @@ fn load(
     let mut label: Option<(Box<str>, Box<str>, Box<str>)> = None;
     let mut keys: Vec<Box<str>> = Vec::new();
     let mut tracks = Vec::with_capacity(groups.len());
-    for g in groups {
-        let (converted, total) =
-            match read_matrix_positions(&g.files, selector, &args.signal, totals)? {
-                Some(m) => {
-                    label.get_or_insert((m.gene, m.chr, m.modality));
-                    keys.extend(m.genes);
-                    (m.positions, m.total)
-                }
-                None => (Vec::new(), None),
-            };
+    // The tracks' files are independent: read them together, then take
+    // them in order.
+    let read: Vec<_> = {
+        use rayon::prelude::*;
+        groups
+            .par_iter()
+            .map(|g| read_matrix_positions(&g.files, selector, &args.signal, totals))
+            .collect()
+    };
+    for (g, read) in groups.iter().zip(read) {
+        let (converted, total) = match read? {
+            Some(m) => {
+                label.get_or_insert((m.gene, m.chr, m.modality));
+                keys.extend(m.genes);
+                (m.positions, m.total)
+            }
+            None => (Vec::new(), None),
+        };
         tracks.push(MatrixTrack {
             label: g.label.clone(),
             converted,
