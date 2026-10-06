@@ -69,15 +69,6 @@ pub(super) struct AnnotationSource {
     pub(super) keys: FxHashSet<Box<str>>,
 }
 
-/// Whether the annotation browser lists `name`: a GTF or GFF, gzipped or not.
-pub(super) fn is_annotation(name: &str) -> bool {
-    let name = name.to_ascii_lowercase();
-    let name = name.strip_suffix(".gz").unwrap_or(&name);
-    [".gtf", ".gff", ".gff3"]
-        .iter()
-        .any(|ext| name.ends_with(ext))
-}
-
 impl Meta {
     /// Read `source`'s annotation once, on a thread: place every table's
     /// sites on the metagene, and keep the models of its genes.
@@ -241,9 +232,7 @@ impl<'a> SitePicker<'a> {
             .and_then(|g| std::path::Path::new(g).parent())
             .filter(|d| d.is_dir())
             .map_or_else(|| self.annotation.dir.clone(), |d| d.to_path_buf());
-        let mut browser = Browser::new(dir.clone());
-        with_gff_listing(|l| browser.open(dir, l));
-        self.mode = Mode::Gff(browser);
+        self.mode = Mode::Gff(Browser::new(dir, is_annotation, |_| false).opened());
     }
 
     /// A key in the annotation browser: Enter on a file reads it.
@@ -251,14 +240,14 @@ impl<'a> SitePicker<'a> {
         let Mode::Gff(browser) = &mut self.mode else {
             return;
         };
-        match with_gff_listing(|l| browser.key(key, l)) {
+        match browser.key(key) {
             Nav::Moved => {}
             Nav::Picked(path) => {
                 self.mode = Mode::Browse;
                 self.load_gff(path.to_string_lossy().into());
             }
             Nav::Ignored => {
-                if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
+                if key.code == KeyCode::Esc {
                     self.mode = Mode::Browse;
                 }
             }
@@ -292,13 +281,4 @@ impl<'a> SitePicker<'a> {
                 .unwrap_or_else(|| "no site on a coding transcript".into()),
         }
     }
-}
-
-/// `f` with the annotation browser's listing: directories and annotation
-/// files, none tagged.
-fn with_gff_listing<R>(f: impl FnOnce(&mut Listing) -> R) -> R {
-    f(&mut Listing {
-        keep: &is_annotation,
-        tag: &mut |_| false,
-    })
 }

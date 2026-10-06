@@ -3,6 +3,7 @@
 
 mod child;
 mod draw;
+mod fetch;
 mod form;
 mod inputs;
 mod keys;
@@ -20,7 +21,7 @@ use ratatui::Frame;
 
 use crate::figure::LineInput;
 use crate::pipeline::args::PipelineArgs;
-use crate::tui::ShiftEnter;
+use crate::tui::View;
 use child::{Failed, Progress, Said, Stopper};
 use form::{Form, OWN};
 use inputs::{Browser, FileRow, Inputs, Picked, Role};
@@ -45,6 +46,31 @@ pub enum Target {
     /// A row of the form, by index.
     Flag(usize),
     Find,
+    /// The folder to download [`App::ref_pick`] into.
+    RefDir,
+}
+
+/// What a click lands on, as the last draw laid it out.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Hit {
+    Tab(Page),
+    /// The BAM list, or one of its rows (among those shown).
+    Bams(Option<usize>),
+    /// The inputs panel, or one of its rows.
+    Rows(Option<usize>),
+    Step(usize),
+    /// A flag, by its place among those shown.
+    Flag(usize),
+    /// Anywhere else on a screen's body.
+    Body,
+    /// The buttons: preview (as the apply key), and in the preview start
+    /// and cancel; stop while a run goes.
+    Preview,
+    Start,
+    Cancel,
+    Stop,
+    /// The button closing the pop-up a finished run raises.
+    Ok,
 }
 
 /// What the running child has said so far.
@@ -73,6 +99,8 @@ pub struct Job {
     pub asking: bool,
     /// Log lines the Run screen showed when last drawn: how far up it scrolls.
     pub rows: std::cell::Cell<usize>,
+    /// How long it took, once its end has been told.
+    pub took: Option<std::time::Duration>,
 }
 
 impl Job {
@@ -90,6 +118,8 @@ pub struct Checked {
     pub complaint: Option<String>,
     /// Everything that keeps the run from starting.
     pub problems: Vec<String>,
+    /// What the output row says of the folder named.
+    pub output: inputs::OutState,
 }
 
 pub struct App {
@@ -100,6 +130,21 @@ pub struct App {
     pub run_cmd: clap::Command,
     pub preview: bool,
     pub editing: Option<(Target, LineInput)>,
+    /// The key that opened the output line for want of a folder, taken
+    /// again once one is named.
+    pub asked_output: Option<KeyEvent>,
+    /// The download pop-up, while it is open.
+    pub catalogue: Option<fetch::Catalogue>,
+    /// The reference chosen there, until its folder is named.
+    pub ref_pick: Option<fetch::Pick>,
+    /// A reference being downloaded.
+    pub fetch: Option<fetch::Fetch>,
+    /// Where the last draw put what, for the mouse.
+    pub hits: crate::tui::Hits<Hit>,
+    /// The download's pop-up is up.
+    pub fetch_shown: bool,
+    /// The download's [`fetch::Status::seq`] last drawn.
+    fetch_seen: u64,
     /// A file row's pop-up browser: the row and the browser.
     pub picking: Option<(FileRow, Browser)>,
     /// The highlighted row among the visible flags.
@@ -108,10 +153,11 @@ pub struct App {
     pub find: String,
     pub note: Option<String>,
     pub job: Option<Job>,
-    pub shift_enter: ShiftEnter,
     /// The program the run starts: this binary, or a stand-in in tests.
     pub program: PathBuf,
     pub quit: bool,
+    /// `q` was pressed once with a setup to lose: the next `q` leaves.
+    pub leaving: bool,
     /// `p` ended the session: the command to print once the terminal is
     /// back.
     pub printed: Option<String>,
@@ -119,6 +165,10 @@ pub struct App {
     pub verbose: bool,
     /// The run's end has been drawn.
     end_drawn: bool,
+    /// The pop-up telling the run's end is up.
+    pub ended_shown: bool,
+    /// What to tell whoever is away, once (see [`View::take_notice`]).
+    notice: Option<String>,
     /// [`App::check`] as of the last key.
     pub checked: Checked,
 }
@@ -135,18 +185,27 @@ impl App {
             run_cmd,
             preview: false,
             editing: None,
+            asked_output: None,
+            catalogue: None,
+            ref_pick: None,
+            fetch: None,
+            hits: crate::tui::Hits::default(),
+            fetch_shown: false,
+            fetch_seen: 0,
             picking: None,
             flags_at: 0,
             advanced: false,
             find: String::new(),
             note: None,
             job: None,
-            shift_enter: ShiftEnter::default(),
             program: std::env::current_exe().unwrap_or_else(|_| "faba".into()),
             quit: false,
+            leaving: false,
             printed: None,
             verbose: false,
             end_drawn: false,
+            ended_shown: false,
+            notice: None,
             checked: Checked::default(),
         };
         app.refresh();
@@ -212,6 +271,14 @@ impl App {
         self.argv_into(".")
     }
 
+    /// The command after the program, to run from anywhere: the output
+    /// folder as an absolute path in place of `.`.
+    pub fn argv_out(&self) -> Vec<String> {
+        let out = PathBuf::from(self.inputs.output());
+        let out = std::path::absolute(&out).unwrap_or(out);
+        self.argv_into(&out.to_string_lossy())
+    }
+
     /// The command after the program, writing to `out`.
     fn argv_into(&self, out: &str) -> Vec<String> {
         let has_bg = !self.inputs.bg().is_empty();
@@ -231,6 +298,9 @@ impl App {
     pub fn check(&self) -> Checked {
         let complaint = form::check(&self.run_cmd, &self.argv()).err();
         let mut problems = self.inputs.problems();
+        if self.fetch.as_ref().is_some_and(fetch::Fetch::running) {
+            problems.push("a reference is downloading".into());
+        }
         problems.extend(self.steps.problems());
         if let Some(c) = &complaint {
             problems.push(match form::blamed(c, &self.form.fields) {
@@ -241,6 +311,7 @@ impl App {
         Checked {
             complaint,
             problems,
+            output: self.inputs.out_state(),
         }
     }
 
@@ -270,8 +341,6 @@ impl App {
             return Ok(());
         }
         let out = PathBuf::from(self.inputs.output());
-        // Pin it: the suggestion moves on once the folder exists.
-        self.inputs.output = out.to_string_lossy().into_owned();
         std::fs::create_dir_all(&out).map_err(|e| anyhow::anyhow!("{}: {e}", out.display()))?;
         let argv = self.argv();
         script::write(&out, &argv)?;
@@ -315,8 +384,10 @@ impl App {
             scroll: 0,
             asking: false,
             rows: std::cell::Cell::new(0),
+            took: None,
         });
         self.end_drawn = false;
+        self.ended_shown = false;
         self.page = Page::Run;
         self.preview = false;
         Ok(())
@@ -328,16 +399,75 @@ impl App {
             self.note = Some("a run is going: stop it with s first".into());
         } else {
             self.quit = true;
-            self.shift_enter.release();
         }
+    }
+
+    /// The run has ended and not been told yet: raise the pop-up, and leave
+    /// a notice for whoever is away. Whether it did.
+    fn tell_end(&mut self) -> bool {
+        let Some(job) = self
+            .job
+            .as_mut()
+            .filter(|j| !j.running() && j.took.is_none())
+        else {
+            return false;
+        };
+        let word = job
+            .log
+            .lock()
+            .ok()
+            .and_then(|l| l.ended.as_ref().map(child::ended_word));
+        let Some(word) = word else {
+            return false;
+        };
+        job.took = Some(job.started.elapsed());
+        self.ended_shown = true;
+        self.notice = Some(format!("faba run {word}"));
+        true
+    }
+
+    /// A pop-up is up, taking the keys and clicks the screens would.
+    pub fn popped(&self) -> bool {
+        self.editing.is_some()
+            || self.picking.is_some()
+            || self.catalogue.is_some()
+            || self.preview
+            || (self.fetch_shown && self.fetch.is_some())
+            || self.ended_shown
+    }
+
+    /// Take a finished download's files into the GFF and genome rows, or
+    /// say why it failed. Whether there is anything new to draw.
+    fn poll_fetch(&mut self) -> bool {
+        let Some(f) = &self.fetch else {
+            return false;
+        };
+        let Ok(mut status) = f.status.lock() else {
+            return false;
+        };
+        let seen = std::mem::replace(&mut self.fetch_seen, status.seq);
+        let Some(done) = status.done.take() else {
+            return seen != status.seq;
+        };
+        drop(status);
+        self.note = Some(match done {
+            Ok((gtf, genome)) => {
+                self.inputs.set(FileRow::Gff, Some(&gtf));
+                self.inputs.set(FileRow::Genome, Some(&genome));
+                format!("{} is ready: GFF and genome set", f.label)
+            }
+            Err(e) => format!("{} failed: {e}; d tries again, keeping what came", f.label),
+        });
+        self.fetch = None;
+        self.fetch_shown = false;
+        self.refresh();
+        true
     }
 
     /// The whole command on one shell-quoted line, to run from anywhere:
     /// the output folder as an absolute path in place of `.`.
     pub fn command_line(&self) -> String {
-        let out = PathBuf::from(self.inputs.output());
-        let out = std::path::absolute(&out).unwrap_or(out);
-        let argv = self.argv_into(&out.to_string_lossy());
+        let argv = self.argv_out();
         std::iter::once("faba".to_string())
             .chain(argv.iter().map(|w| script::quote(w)))
             .collect::<Vec<_>>()
@@ -350,7 +480,6 @@ impl App {
         if !self.running() {
             self.printed = Some(self.command_line());
             self.quit = true;
-            self.shift_enter.release();
         }
     }
 
@@ -364,9 +493,25 @@ impl App {
     }
 }
 
+impl View for App {
+    fn mouse(&mut self, event: ratatui::crossterm::event::MouseEvent) {
+        self.click(event);
+    }
+
+    fn take_notice(&mut self) -> Option<String> {
+        self.notice.take()
+    }
+
+    fn stray_enter(&mut self) {
+        // The preview says what the apply key does there too.
+        if self.preview || !self.popped() {
+            self.enter_hint();
+        }
+    }
+}
+
 impl Screen for App {
     fn render(&mut self, frame: &mut Frame) {
-        self.shift_enter.arm();
         if let Some(job) = self.job.as_mut().filter(|j| !j.running()) {
             // Nothing is left to stop.
             job.asking = false;
@@ -388,10 +533,16 @@ impl Screen for App {
     }
 
     fn tick(&mut self) -> bool {
-        match &self.job {
-            Some(j) => j.running() || !self.end_drawn,
-            None => false,
-        }
+        let listed = self.catalogue.as_mut().is_some_and(fetch::Catalogue::poll);
+        let fetched = self.poll_fetch();
+        let told = self.tell_end();
+        listed
+            || fetched
+            || told
+            || match &self.job {
+                Some(j) => j.running() || !self.end_drawn,
+                None => false,
+            }
     }
 }
 
@@ -405,9 +556,7 @@ pub(crate) fn run_view(
     if let Some((m, args)) = prefill {
         app.prefill(m, args);
     }
-    app.shift_enter = ShiftEnter::wanted();
-    let shown = data_beans::interactive::ui::run_screen(&mut app);
-    app.shift_enter.release();
+    let shown = crate::tui::run_view(&mut app);
     if let Some(job) = app.job.as_mut() {
         if job.running() {
             job.stopper.stop();

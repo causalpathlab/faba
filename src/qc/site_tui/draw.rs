@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::site_analysis::miami::genemodel::draw_gene_model;
+use crate::tui::marker;
 
 /// Each coding region's name at its middle bin, where a short UTR's label
 /// does not run into the next one.
@@ -68,7 +69,11 @@ pub(super) fn render_leave(frame: &mut Frame, area: Rect, picked: &Picked) {
 pub(super) fn render_gff(frame: &mut Frame, area: Rect, browser: &Browser) {
     let w = area.width.saturating_sub(4).clamp(20, 90);
     let rows = area.height.saturating_sub(6).clamp(3, 20);
-    let title = format!(" annotation (GTF/GFF) · {} ", browser.cwd.display());
+    let title = format!(
+        " annotation (GTF/GFF) · {} {}",
+        crate::tui::tilde(&browser.cwd),
+        browser.list.find.tag()
+    );
     let inner = popup_frame(frame, area, w, rows + 2, title);
     let lines = browser.lines(
         rows as usize,
@@ -199,6 +204,9 @@ impl<'a> SitePicker<'a> {
         let at = self.list.at;
         let rows = inner.height.saturating_sub(1) as usize;
         let first = first_visible(at, list.len(), rows);
+        let shown = Rect::new(inner.x, inner.y, inner.width, rows as u16);
+        self.hits
+            .rows(shown, first, list.len(), |i| Hit::Genes(Some(i)));
         let width = inner.width as usize;
         let mut lines: Vec<Line> = list
             .iter()
@@ -213,7 +221,7 @@ impl<'a> SitePicker<'a> {
                 let selected = j == at;
                 let style = if selected { HIGHLIGHT } else { PLAIN };
                 Line::from(vec![
-                    Span::styled(if selected { "▸ " } else { "  " }, HIGHLIGHT),
+                    marker(selected),
                     Span::styled(format!("{:<name_w$.name_w$}", genes.symbol(g)), style),
                     Span::styled(format!(" {counts}"), DIM),
                 ])
@@ -444,7 +452,7 @@ impl<'a> SitePicker<'a> {
                 Some(v) => (v, if focused { HIGHLIGHT } else { PLAIN }),
             };
             lines.push(Line::from(vec![
-                Span::styled(if focused { "▸ " } else { "  " }, HIGHLIGHT),
+                marker(focused),
                 Span::styled(
                     format!("{:<w$}", c.label(), w = name_w - 2),
                     if focused { HIGHLIGHT } else { PLAIN },
@@ -722,11 +730,15 @@ impl<'a> SitePicker<'a> {
 
     /// The confirmation, centred over `area`.
     pub(super) fn render_confirm(&self, frame: &mut Frame, area: Rect) {
-        popup(
+        let buttons = [("✓ apply and write", Hit::Write), ("back", Hit::Back)];
+        let title = " apply these thresholds? ";
+        button_popup(
             frame,
             area,
-            " apply these thresholds? ",
+            title,
+            &buttons,
             self.confirm_lines(),
+            &self.hits,
         );
     }
 
@@ -737,14 +749,14 @@ impl<'a> SitePicker<'a> {
             step = "drawing the figures".into();
         }
         const BAR: usize = 40;
-        let filled = (done * BAR).checked_div(total).unwrap_or(0);
+        let filled = filled(done as u64, total as u64, BAR);
         let lines = vec![
             Line::from(Span::styled("Writing the filtered fileset to ", DIM)),
             Line::from(Span::styled(format!("  {}", self.writer.output), HIGHLIGHT)),
             Line::from(""),
             Line::from(vec![
                 Span::styled("█".repeat(filled), ACCENTED),
-                Span::styled("░".repeat(BAR - filled), DIM),
+                Span::styled("░".repeat(BAR.saturating_sub(filled)), DIM),
                 Span::raw(format!("  {done} / {total}")),
             ]),
             Line::from(Span::styled(format!("{step:<BAR$}"), DIM)),

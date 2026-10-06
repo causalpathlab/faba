@@ -55,13 +55,42 @@ impl Stopper {
         }
     }
 
+    /// Run `child` where `stop` reaches it, calling `each` as it waits
+    /// (often at first, then about every 300 ms) until it ends; how it ended.
+    pub fn wait(
+        &self,
+        child: std::process::Child,
+        mut each: impl FnMut(),
+    ) -> std::io::Result<std::process::ExitStatus> {
+        self.register(child);
+        let mut pause = std::time::Duration::from_millis(20);
+        loop {
+            each();
+            {
+                let mut c = self
+                    .child
+                    .lock()
+                    .map_err(|_| std::io::Error::other("lock"))?;
+                let Some(running) = c.as_mut() else {
+                    return Err(std::io::Error::other("no child"));
+                };
+                if let Some(status) = running.try_wait()? {
+                    c.take();
+                    return Ok(status);
+                }
+            }
+            std::thread::sleep(pause);
+            pause = (pause * 2).min(std::time::Duration::from_millis(300));
+        }
+    }
+
     pub fn is_stopped(&self) -> bool {
         self.asked.load(std::sync::atomic::Ordering::SeqCst) > 0
     }
 }
 
 /// Why [`run_one`] did not finish well.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Failed {
     /// `stopper` was stopped.
     Stopped,
@@ -69,6 +98,15 @@ pub enum Failed {
     Start(String),
     /// It ended badly: the reason it gave last.
     Exit(String),
+}
+
+/// How a run ended, in a word: "finished", "was stopped" or "failed".
+pub fn ended_word(ended: &Result<(), Failed>) -> &'static str {
+    match ended {
+        Ok(()) => "finished",
+        Err(Failed::Stopped) => "was stopped",
+        Err(_) => "failed",
+    }
 }
 
 /// What a child said on its stderr.

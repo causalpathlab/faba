@@ -3,23 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-/// One spelling for a path: absolute, with `.` and `..` resolved by name.
-/// Symlinks are kept as given, so a linked BAM keeps the name it was given
-/// and its batch is named after it.
-pub fn normalize(path: &Path) -> PathBuf {
-    let abs = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
-    let mut out = PathBuf::new();
-    for c in abs.components() {
-        match c {
-            std::path::Component::CurDir => {}
-            std::path::Component::ParentDir => {
-                out.pop();
-            }
-            c => out.push(c),
-        }
-    }
-    out
-}
+pub use crate::tui::browser::{is_annotation, normalize, Browser};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Role {
@@ -43,16 +27,6 @@ impl Picked {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct Entry {
-    pub name: String,
-    pub dir: bool,
-    /// The folder's own path, or the file's.
-    pub path: PathBuf,
-    /// A file with a BAM index beside it.
-    pub indexed: bool,
-}
-
 /// A file row of the Inputs screen, picked in a pop-up browser.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FileRow {
@@ -70,13 +44,27 @@ impl FileRow {
         }
     }
 
-    /// The file names the browser offers.
-    pub fn ext(self) -> &'static [&'static str] {
-        match self {
-            FileRow::Gff => &[".gff", ".gtf", ".gff3", ".gff.gz", ".gtf.gz", ".gff3.gz"],
-            FileRow::Genome => &[".fa", ".fasta", ".fa.gz", ".fasta.gz"],
-            FileRow::KnownSnps => &[".vcf", ".vcf.gz", ".bcf", ".parquet"],
-        }
+    /// A browser at `start` offering the files this row takes.
+    pub fn browser(self, start: PathBuf) -> Browser {
+        let keep: fn(&str) -> bool = match self {
+            FileRow::Gff => is_annotation,
+            FileRow::Genome => |n| {
+                [".fa", ".fasta", ".fa.gz", ".fasta.gz"]
+                    .iter()
+                    .any(|x| n.ends_with(x))
+            },
+            FileRow::KnownSnps => |n| {
+                [".vcf", ".vcf.gz", ".bcf", ".parquet"]
+                    .iter()
+                    .any(|x| n.ends_with(x))
+            },
+        };
+        Browser::new(start, keep, |_| false).opened()
+    }
+
+    /// Whether `d` downloads this row's file (see [`super::fetch`]).
+    pub fn downloadable(self) -> bool {
+        matches!(self, FileRow::Gff | FileRow::Genome)
     }
 
     pub fn slot(self, inputs: &mut Inputs) -> &mut Option<PathBuf> {
@@ -122,101 +110,21 @@ impl Row {
     }
 }
 
-/// A folder's subfolders and files with one of `ext`, `..` first.
-pub struct Browser {
-    pub cwd: PathBuf,
-    pub entries: Vec<Entry>,
-    pub at: usize,
-    ext: &'static [&'static str],
-}
-
-impl Browser {
-    pub fn new(cwd: PathBuf, ext: &'static [&'static str]) -> Self {
-        let mut b = Browser {
-            cwd: cwd.clone(),
-            entries: Vec::new(),
-            at: 0,
-            ext,
-        };
-        b.open(cwd);
-        b
-    }
-
-    pub fn open(&mut self, dir: PathBuf) {
-        let dir = normalize(&dir);
-        let mut dirs = Vec::new();
-        let mut files = Vec::new();
-        if let Ok(rd) = std::fs::read_dir(&dir) {
-            for e in rd.flatten() {
-                let name = e.file_name().to_string_lossy().into_owned();
-                if name.starts_with('.') {
-                    continue;
-                }
-                let is_dir = e.file_type().is_ok_and(|t| t.is_dir()) || e.path().is_dir();
-                if is_dir {
-                    dirs.push(name);
-                } else if self.ext.iter().any(|x| name.ends_with(x)) {
-                    files.push(name);
-                }
-            }
-        }
-        dirs.sort();
-        files.sort();
-        let up = dir.parent().map(|p| Entry {
-            name: "..".into(),
-            dir: true,
-            path: p.to_path_buf(),
-            indexed: false,
-        });
-        let dirs = dirs.into_iter().map(|name| Entry {
-            path: dir.join(&name),
-            name,
-            dir: true,
-            indexed: false,
-        });
-        let files = files.into_iter().map(|name| {
-            let path = dir.join(&name);
-            Entry {
-                indexed: has_index(&path),
-                path,
-                name,
-                dir: false,
-            }
-        });
-        self.entries = up.into_iter().chain(dirs).chain(files).collect();
-        self.at = 0;
-        self.cwd = dir;
-    }
-
-    pub fn up(&mut self) {
-        if let Some(p) = self.cwd.parent().map(Path::to_path_buf) {
-            self.open(p)
-        }
-    }
-
-    pub fn step(&mut self, d: isize) {
-        let n = self.entries.len() as isize;
-        if n > 0 {
-            self.at = (self.at as isize + d).clamp(0, n - 1) as usize;
-        }
-    }
-
-    /// Enter: into the highlighted folder; `Some(file)` when it is a file.
-    pub fn enter(&mut self) -> Option<PathBuf> {
-        let e = self.entries.get(self.at)?;
-        let p = e.path.clone();
-        if e.dir {
-            self.open(p);
-            None
-        } else {
-            Some(p)
-        }
-    }
-}
-
 pub fn has_index(bam: &Path) -> bool {
     let s = bam.to_string_lossy();
     Path::new(&format!("{s}.bai")).exists() || bam.with_extension("bai").exists()
+}
+
+/// What the output row says of the folder named, worked out once per key
+/// rather than at each draw.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub enum OutState {
+    #[default]
+    Unnamed,
+    New,
+    Empty,
+    NotEmpty,
+    File,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -231,7 +139,7 @@ pub struct Inputs {
     pub gff: Option<PathBuf>,
     pub genome: Option<PathBuf>,
     pub known_snps: Option<PathBuf>,
-    /// As typed; empty means the suggestion.
+    /// As named; empty until it is.
     pub output: String,
     pub row: usize,
     pub focus: InputsFocus,
@@ -240,7 +148,7 @@ pub struct Inputs {
 impl Inputs {
     pub fn new(cwd: PathBuf) -> Self {
         Inputs {
-            bams: Browser::new(cwd, &[".bam"]),
+            bams: Browser::new(cwd, |n| n.ends_with(".bam"), has_index).opened(),
             picked: Vec::new(),
             gff: None,
             genome: None,
@@ -252,7 +160,7 @@ impl Inputs {
     }
 
     fn highlighted_bam(&self) -> Option<PathBuf> {
-        let e = self.bams.entries.get(self.bams.at)?;
+        let e = self.bams.highlighted()?;
         (!e.dir).then(|| e.path.clone())
     }
 
@@ -261,12 +169,14 @@ impl Inputs {
         *row.slot(self) = path.map(normalize);
     }
 
-    /// Space: the highlighted BAM in or out of the run; new picks are fg.
+    /// Space: the highlighted BAM from out of the run to fg, fg to bg, and
+    /// bg back out.
     pub fn toggle(&mut self) {
         let Some(p) = self.highlighted_bam() else {
             return;
         };
         match self.picked.iter().position(|x| x.path == p) {
+            Some(i) if self.picked[i].role == Role::Fg => self.picked[i].role = Role::Bg,
             Some(i) => {
                 self.picked.remove(i);
             }
@@ -274,20 +184,6 @@ impl Inputs {
                 path: p,
                 role: Role::Fg,
             }),
-        }
-    }
-
-    /// `b`: the highlighted picked BAM between fg and bg.
-    pub fn flip(&mut self) {
-        let Some(p) = self.highlighted_bam() else {
-            return;
-        };
-        if let Some(x) = self.picked.iter_mut().find(|x| x.path == p) {
-            x.role = if x.role == Role::Fg {
-                Role::Bg
-            } else {
-                Role::Fg
-            };
         }
     }
 
@@ -356,7 +252,8 @@ impl Inputs {
     }
 
     /// `faba_out` beside the first picked BAM (else in the browser's
-    /// folder), numbered when that exists.
+    /// folder), numbered when that exists: what the output line opens with
+    /// until a folder is named.
     pub fn suggested_output(&self) -> String {
         let base = self
             .picked
@@ -368,16 +265,33 @@ impl Inputs {
             .into_owned()
     }
 
+    /// The output folder as named; empty until it is.
     pub fn output(&self) -> String {
-        if self.output.trim().is_empty() {
-            self.suggested_output()
+        self.output.trim().to_string()
+    }
+
+    pub fn out_state(&self) -> OutState {
+        let out = self.output();
+        let path = Path::new(&out);
+        if out.is_empty() {
+            OutState::Unnamed
+        } else if path.is_file() {
+            OutState::File
+        } else if std::fs::read_dir(path).is_ok_and(|mut d| d.next().is_some()) {
+            OutState::NotEmpty
+        } else if path.exists() {
+            OutState::Empty
         } else {
-            self.output.trim().to_string()
+            OutState::New
         }
     }
 
     pub fn output_problem(&self) -> Option<String> {
-        crate::tui::output_problem(&self.output())
+        let out = self.output();
+        if out.is_empty() {
+            return Some("no output folder: name one on the output row".into());
+        }
+        crate::tui::output_problem(&out)
     }
 
     pub fn problems(&self) -> Vec<String> {

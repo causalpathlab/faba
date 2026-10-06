@@ -10,7 +10,7 @@ fn dir_with(files: &[&str]) -> tempfile::TempDir {
 }
 
 fn at(i: &mut Inputs, name: &str) {
-    i.bams.at = i.bams.entries.iter().position(|e| e.name == name).unwrap();
+    assert!(i.bams.list.select(name));
 }
 
 #[test]
@@ -22,25 +22,27 @@ fn the_browser_lists_folders_and_bams_only() {
         "sample_B.bam",
     ]);
     let i = Inputs::new(tmp.path().to_path_buf());
-    let names: Vec<&str> = i.bams.entries.iter().map(|e| e.name.as_str()).collect();
+    let names: Vec<&str> = i.bams.list.shown().map(|e| e.name.as_str()).collect();
     assert_eq!(names, ["..", "sub", "sample_A.bam", "sample_B.bam"]);
     assert!(has_index(&tmp.path().join("sample_A.bam")));
     assert!(!has_index(&tmp.path().join("sample_B.bam")));
 }
 
 #[test]
-fn space_picks_b_flips_and_argv_follows() {
+fn space_cycles_fg_bg_off_and_argv_follows() {
     let tmp = dir_with(&["sample_A.bam", "sample_B.bam", "control_A.bam"]);
     let mut i = Inputs::new(tmp.path().to_path_buf());
     for n in ["sample_A.bam", "sample_B.bam", "control_A.bam"] {
         at(&mut i, n);
         i.toggle();
     }
-    i.flip(); // control_A.bam is highlighted
-              // Toggling off and on again keeps one entry, back as fg.
+    i.toggle(); // control_A.bam is highlighted: fg to bg
+                // Round the cycle (bg, off, fg) keeps one entry, back as fg.
     at(&mut i, "sample_B.bam");
-    i.toggle();
-    i.toggle();
+    for _ in 0..3 {
+        i.toggle();
+    }
+    assert_eq!(i.picked.len(), 3);
     i.gff = Some(tmp.path().join("g.gff"));
     i.genome = Some(tmp.path().join("x.fa"));
     let argv = i.argv();
@@ -68,6 +70,7 @@ fn problems_name_what_blocks_the_run() {
     let p = i.problems();
     assert!(p.iter().any(|s| s.contains("no fg BAM")));
     assert!(p.iter().any(|s| s.contains("GFF")) && p.iter().any(|s| s.contains("genome")));
+    assert!(p.iter().any(|s| s.contains("no output folder")));
     at(&mut i, "sample_A.bam");
     i.toggle();
     assert_eq!(
@@ -89,7 +92,7 @@ fn batch_names_are_the_pipelines_own() {
         at(&mut i, n);
         i.toggle();
     }
-    i.flip();
+    i.toggle();
     let paths: Vec<Box<str>> = i
         .picked
         .iter()
@@ -107,8 +110,8 @@ fn batch_names_are_the_pipelines_own() {
 #[test]
 fn the_browser_lists_what_known_snps_accepts() {
     let tmp = dir_with(&["a.vcf", "b.vcf.gz", "c.bcf", "d.parquet", "e.txt"]);
-    let b = Browser::new(tmp.path().to_path_buf(), FileRow::KnownSnps.ext());
-    let names: Vec<&str> = b.entries.iter().map(|e| e.name.as_str()).collect();
+    let b = FileRow::KnownSnps.browser(tmp.path().to_path_buf());
+    let names: Vec<&str> = b.list.shown().map(|e| e.name.as_str()).collect();
     assert_eq!(
         names,
         ["..", "sub", "a.vcf", "b.vcf.gz", "c.bcf", "d.parquet"]

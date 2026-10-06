@@ -14,7 +14,7 @@ use data_beans::interactive::ui::{
     HIGHLIGHT, PLAIN,
 };
 use data_beans::qc::pct;
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -35,11 +35,14 @@ use arrow::record_batch::RecordBatch;
 use rustc_hash::FxHashSet;
 
 use super::args::SiteFilterArgs;
-use super::browser::{Browser, Listing, Nav};
 use super::layout::{file_name, SITE_MODALITIES};
 use super::progress::Progress;
 use super::sites::{genomic_sites, Criterion, GeneSites, SiteTable};
-use crate::tui::{first_visible, is_apply, popup, popup_frame, ShiftEnter, APPLY_KEYS};
+use crate::tui::browser::{is_annotation, Browser, Nav};
+use crate::tui::{
+    apply_key, button_popup, enter_hint, filled, first_visible, is_apply, popup, popup_frame,
+    run_view, tab_bar, wheel_key, Hits, View, APPLY_KEYS,
+};
 
 mod annotation;
 mod column;
@@ -256,10 +259,10 @@ struct SitePicker<'a> {
     tally: Tally,
     mode: Mode,
     panel: Panel,
-    /// Shift+Enter reporting, asked for at the first draw.
-    shift_enter: ShiftEnter,
     /// Plain Enter was pressed: say how to apply instead.
     enter_hint: bool,
+    /// Where the last draw put what, for the mouse.
+    hits: Hits<Hit>,
     /// Steps done the last time the write was drawn.
     drawn_steps: usize,
     controls: Controls,
@@ -297,8 +300,8 @@ impl<'a> SitePicker<'a> {
             tally,
             mode: Mode::Browse,
             panel: Panel::Thresholds,
-            shift_enter: ShiftEnter::default(),
             enter_hint: false,
+            hits: Hits::default(),
             drawn_steps: 0,
             controls: Controls::new("qc_sites"),
             plot: PlotImage::default(),
@@ -435,7 +438,6 @@ impl<'a> SitePicker<'a> {
     }
 
     fn decide(&mut self, picked: Picked) {
-        self.shift_enter.release();
         self.decision = Some(picked);
     }
 
@@ -494,6 +496,79 @@ impl<'a> SitePicker<'a> {
     fn pointer_key(&self) -> Option<i32> {
         let c = self.criterion();
         (!c.is_off(&self.filter)).then(|| self.column.key_of(c, c.get(&self.filter)))
+    }
+}
+
+/// What a click lands on, as the last draw laid it out.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Hit {
+    Modality(usize),
+    /// The thresholds panel, or one of its knobs.
+    Thresholds(Option<usize>),
+    /// The gene list, or one of its genes (by place in the list).
+    Genes(Option<usize>),
+    /// The buttons: apply (as the apply key), and in the confirmation
+    /// write and back.
+    Apply,
+    Write,
+    Back,
+}
+
+impl View for SitePicker<'_> {
+    fn stray_enter(&mut self) {
+        self.enter_hint = matches!(self.mode, Mode::Browse);
+    }
+
+    /// A click focuses and selects what is under it; the wheel then moves
+    /// as ↑/↓ would. Only while browsing, with no prompt open.
+    fn mouse(&mut self, m: MouseEvent) {
+        let Some(hit) = self.hits.at(m.column, m.row) else {
+            return;
+        };
+        let clicked = matches!(m.kind, MouseEventKind::Down(_));
+        // A button does what its key does, the same way.
+        let browsing = matches!(self.mode, Mode::Browse) && self.controls.footer().is_none();
+        let confirming = matches!(self.mode, Mode::Confirm);
+        let button = match hit {
+            _ if !clicked => None,
+            Hit::Apply if browsing => Some(apply_key()),
+            Hit::Write if confirming => Some(apply_key()),
+            Hit::Back if confirming => Some(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            _ => None,
+        };
+        if let Some(key) = button {
+            return self.handle_key(key);
+        }
+        if !browsing {
+            return;
+        }
+        self.enter_hint = false;
+        // The plots are drawn again only when what they show changes.
+        let shown = (self.modality, self.focus, self.list.at);
+        match hit {
+            Hit::Modality(i) if clicked => {
+                self.switch_modality(i as isize - self.modality as isize);
+            }
+            Hit::Thresholds(j) => {
+                self.panel = Panel::Thresholds;
+                if let Some(j) = j.filter(|_| clicked) {
+                    self.move_focus(j as isize - self.focus as isize);
+                }
+            }
+            Hit::Genes(i) => {
+                self.panel = Panel::Genes;
+                if let Some(i) = i.filter(|_| clicked) {
+                    self.step_gene(i as isize - self.list.at as isize);
+                }
+            }
+            _ => return,
+        }
+        if shown != (self.modality, self.focus, self.list.at) {
+            self.plot.invalidate();
+        }
+        if let Some(key) = wheel_key(&m) {
+            self.handle_key(key);
+        }
     }
 }
 
@@ -566,6 +641,7 @@ impl Screen for SitePicker<'_> {
             },
             // Letters type, so only the arrow keys move through the matches.
             Mode::Find => match key.code {
+                _ if is_apply(&key) => self.end_find(true),
                 KeyCode::Char(ch) if self.list.find.len() < 32 => self.set_find(|f| f.push(ch)),
                 KeyCode::Backspace => self.set_find(|f| {
                     f.pop();
@@ -637,7 +713,6 @@ impl Screen for SitePicker<'_> {
     }
 
     fn render(&mut self, frame: &mut Frame) {
-        self.shift_enter.arm();
         let [top, tabs, body, footer] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Length(1),
@@ -654,12 +729,17 @@ impl Screen for SitePicker<'_> {
         );
         frame.render_widget(header("qc", &self.title, &scales), top);
 
-        let mut spans = vec![Span::raw(" ")];
-        for (i, v) in self.views.iter().enumerate() {
-            let style = if i == self.modality { HIGHLIGHT } else { DIM };
-            spans.push(Span::styled(format!("{}  ", v.table.modality), style));
-        }
-        let tabs_line = Line::from(spans);
+        self.hits.clear();
+        let names: Vec<&str> = self.views.iter().map(|v| &*v.table.modality).collect();
+        let button = matches!(self.mode, Mode::Browse).then_some(("✓ apply", Hit::Apply));
+        let tabs_line = tab_bar(
+            tabs,
+            &names,
+            self.modality,
+            button,
+            &self.hits,
+            Hit::Modality,
+        );
         // Keep the mark clear of the header's text and the modality tabs.
         let reserve = (self.title.chars().count() + scales.chars().count() + 12)
             .max(tabs_line.width()) as u16;
@@ -679,6 +759,17 @@ impl Screen for SitePicker<'_> {
         let inner = block.inner(table_area);
         frame.render_widget(block, table_area);
         frame.render_widget(Paragraph::new(table), inner);
+        self.hits.add(table_area, Hit::Thresholds(None));
+        // The knobs come under the table's three header lines.
+        let knobs = Rect::new(
+            inner.x,
+            inner.y + 3,
+            inner.width,
+            inner.height.saturating_sub(3),
+        );
+        let n = self.view().criteria.len();
+        self.hits.rows(knobs, 0, n, |j| Hit::Thresholds(Some(j)));
+        self.hits.add(genes, Hit::Genes(None));
         self.render_gene_list(frame, genes);
         let [hist, gene, meta] = Layout::vertical([
             Constraint::Fill(3),
@@ -709,10 +800,11 @@ impl Screen for SitePicker<'_> {
                 ("Esc/n", "back"),
             ]),
             (Mode::Gff(_), None) => help_line(&[
+                ("type", "find"),
                 ("↑/↓", "move"),
                 ("Enter", "open / read"),
                 ("←", "up"),
-                ("Esc", "back"),
+                ("Esc", "clear find / back"),
             ]),
             (Mode::Find, None) => input_line(
                 "gene: ",
@@ -722,10 +814,8 @@ impl Screen for SitePicker<'_> {
             (Mode::Browse, None) => {
                 let apply = (APPLY_KEYS, "apply");
                 if self.enter_hint {
-                    let mut line = help_line(&[apply]);
-                    let hint = Span::styled("Enter does nothing here; ", DIM);
-                    line.spans.insert(1, hint);
-                    return frame.render_widget(line, footer);
+                    let hint = Line::styled(format!(" {}", enter_hint("applies")), DIM);
+                    return frame.render_widget(hint, footer);
                 }
                 let mut keys = vec![("Tab", "panel")];
                 keys.extend(match self.panel {
@@ -811,9 +901,8 @@ pub fn run_site_picker(
         SitePicker::new(&file_name(input_dir), views, filter.clone(), meta).pin_genes(pinned);
     picker.annotation = annotation;
     picker.writer = writer;
-    picker.shift_enter = ShiftEnter::wanted();
     picker.controls = Controls::new("qc_sites").detect();
-    data_beans::interactive::ui::run_screen(&mut picker)?;
+    run_view(&mut picker)?;
     let gff = picker.gff().map(Box::from);
     Ok((picker.decision.unwrap_or(Picked::Cancelled), gff))
 }

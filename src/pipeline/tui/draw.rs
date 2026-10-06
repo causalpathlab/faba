@@ -12,12 +12,16 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 
-use super::child::Failed;
+use super::child::{ended_word, Failed};
+use super::fetch::{Catalogue, Fetch, Source, SOURCES};
 use super::form::{self, Kind};
-use super::inputs::{InputsFocus, Role, Row};
+use super::inputs::{InputsFocus, OutState, Role, Row};
 use super::steps::Step;
-use super::{script, App, Page, Target};
-use crate::tui::{first_visible, popup, popup_frame, APPLY_KEYS};
+use super::{script, App, Hit, Page, Target};
+use crate::tui::{
+    button_popup, filled, first_visible, marker, popup, popup_frame, tab_bar, tilde, window,
+    APPLY_KEYS,
+};
 
 /// Width of the inputs panel on the Inputs screen.
 const INPUTS_WIDTH: u16 = 48;
@@ -25,6 +29,7 @@ const INPUTS_WIDTH: u16 = 48;
 const BAR: usize = 40;
 
 pub(super) fn draw(app: &App, frame: &mut Frame) {
+    app.hits.clear();
     let area = frame.area();
     let [top, tabs, body, footer] = Layout::vertical([
         Constraint::Length(1),
@@ -46,17 +51,24 @@ pub(super) fn draw(app: &App, frame: &mut Frame) {
     };
     frame.render_widget(header("run", &title, &extra), top);
 
-    let mut spans = vec![Span::raw(" ")];
-    for (page, name) in [
+    let pages = [
         (Page::Inputs, "Inputs"),
         (Page::Steps, "Steps"),
         (Page::Flags, "Flags"),
         (Page::Run, "Run"),
-    ] {
-        let style = if page == app.page { HIGHLIGHT } else { DIM };
-        spans.push(Span::styled(format!("{name}  "), style));
-    }
-    let tabs_line = Line::from(spans);
+    ];
+    // A button for what the apply key does, or to stop a run.
+    let button = if app.running() {
+        ("■ stop", Hit::Stop)
+    } else {
+        ("▶ preview", Hit::Preview)
+    };
+    let names: Vec<&str> = pages.iter().map(|(_, n)| *n).collect();
+    let active = pages.iter().position(|(p, _)| *p == app.page).unwrap_or(0);
+    let tabs_line = tab_bar(tabs, &names, active, Some(button), &app.hits, |i| {
+        Hit::Tab(pages[i].0)
+    });
+    app.hits.add(body, Hit::Body);
     let reserve = (title.chars().count() + extra.chars().count() + 12).max(tabs_line.width());
     frame.render_widget(tabs_line, tabs);
     if area.height >= 2 {
@@ -74,24 +86,19 @@ pub(super) fn draw(app: &App, frame: &mut Frame) {
     if app.picking.is_some() {
         draw_picking(app, frame, body);
     }
+    if let Some(c) = &app.catalogue {
+        draw_catalogue(c, frame, body);
+    }
+    if let Some(f) = app.fetch.as_ref().filter(|_| app.fetch_shown) {
+        draw_fetch(f, frame, body);
+    }
     if app.preview {
         draw_preview(app, frame, body);
     }
-    frame.render_widget(footer_line(app), footer);
-}
-
-/// `p` with the home folder as `~`.
-fn tilde(p: &Path) -> String {
-    if let Some(home) = std::env::var_os("HOME") {
-        if let Ok(rest) = p.strip_prefix(&home) {
-            return if rest.as_os_str().is_empty() {
-                "~".into()
-            } else {
-                format!("~/{}", rest.display())
-            };
-        }
+    if app.ended_shown {
+        draw_ended(app, frame, body);
     }
-    p.display().to_string()
+    frame.render_widget(footer_line(app), footer);
 }
 
 /// `hh:mm:ss`.
@@ -114,11 +121,6 @@ fn job_state(app: &App) -> String {
         Some(Err(Failed::Stopped)) => "stopped".into(),
         Some(Err(_)) => "failed".into(),
     }
-}
-
-/// The marker of the highlighted row.
-fn marker(on: bool) -> Span<'static> {
-    Span::styled(if on { "▸ " } else { "  " }, HIGHLIGHT)
 }
 
 /// `area` framed in a panel; the inside, a column clear of each side.
@@ -144,12 +146,6 @@ fn reflow(text: &str) -> Vec<Line<'static>> {
         .collect()
 }
 
-/// The `rows` lines of `lines` around line `at`.
-fn window(lines: Vec<Line<'static>>, at: usize, rows: usize) -> Vec<Line<'static>> {
-    let first = first_visible(at, lines.len(), rows);
-    lines.into_iter().skip(first).take(rows).collect()
-}
-
 fn draw_inputs(app: &App, frame: &mut Frame, body: Rect) {
     let [left, right] =
         Layout::horizontal([Constraint::Fill(1), Constraint::Length(INPUTS_WIDTH)]).areas(body);
@@ -157,29 +153,33 @@ fn draw_inputs(app: &App, frame: &mut Frame, body: Rect) {
     let bams = &inputs.bams;
     let focus = inputs.focus;
 
-    let title = format!(" BAMs · {} ", tilde(&bams.cwd));
+    let title = format!(" BAMs · {} {}", tilde(&bams.cwd), bams.list.find.tag());
     let inner = framed(frame, left, title, focus == InputsFocus::Bams);
-    let batches = inputs.batch_names();
+    app.hits.add(left, Hit::Bams(None));
+    let (at, len) = (bams.list.at, bams.list.len());
+    let first = first_visible(at, len, inner.height as usize);
+    app.hits.rows(inner, first, len, |i| Hit::Bams(Some(i)));
+    let batches: std::collections::HashMap<_, _> = inputs.batch_names().into_iter().collect();
     let name_w = bams
-        .entries
-        .iter()
+        .list
+        .shown()
         .filter(|e| !e.dir)
         .map(|e| e.name.chars().count())
         .max()
         .unwrap_or(0)
         .max(16);
     let batch_w = batches
-        .iter()
-        .map(|(_, b)| b.chars().count())
+        .values()
+        .map(|b| b.chars().count())
         .max()
         .unwrap_or(0)
         .max(10);
     let lines: Vec<Line> = bams
-        .entries
-        .iter()
+        .list
+        .shown()
         .enumerate()
         .map(|(i, e)| {
-            let mark = marker(i == bams.at && focus == InputsFocus::Bams);
+            let mark = marker(i == bams.list.at && focus == InputsFocus::Bams);
             if e.dir {
                 return Line::from(vec![mark, Span::raw(format!("{}/", e.name))]);
             }
@@ -189,10 +189,9 @@ fn draw_inputs(app: &App, frame: &mut Frame, body: Rect) {
                 None => Span::styled("[  ] ", DIM),
             };
             let batch = batches
-                .iter()
-                .find(|(p, _)| *p == e.path)
-                .map_or_else(String::new, |(_, b)| format!("batch {b}"));
-            let index = if e.indexed {
+                .get(&e.path)
+                .map_or_else(String::new, |b| format!("batch {b}"));
+            let index = if e.tagged {
                 Span::styled("indexed", DIM)
             } else {
                 Span::styled("no index", ACCENTED)
@@ -207,22 +206,30 @@ fn draw_inputs(app: &App, frame: &mut Frame, body: Rect) {
         })
         .collect();
     let rows = inner.height as usize;
-    frame.render_widget(Paragraph::new(window(lines, bams.at, rows)), inner);
+    let lines = if lines.is_empty() {
+        vec![Line::styled(bams.list.empty_note(""), DIM)]
+    } else {
+        window(lines, bams.list.at, rows)
+    };
+    frame.render_widget(Paragraph::new(lines), inner);
 
     let inner = framed(frame, right, " inputs ".into(), focus == InputsFocus::Rows);
+    app.hits.add(right, Hit::Rows(None));
+    app.hits
+        .rows(inner, 0, Row::ALL.len(), |i| Hit::Rows(Some(i)));
     let out = inputs.output();
     let out_path = Path::new(&out);
-    let out_note = if crate::tui::output_problem(&out).is_some() {
-        let what = if out_path.is_file() {
-            "a file"
-        } else {
-            "not empty"
-        };
-        Span::styled(format!("  {what}"), HIGHLIGHT)
-    } else if out_path.exists() {
-        Span::styled("  empty", DIM)
+    let state = if out.is_empty() {
+        OutState::Unnamed
     } else {
-        Span::styled("  new", DIM)
+        app.checked.output
+    };
+    let out_note = match state {
+        OutState::Unnamed => Span::styled("(none: Enter to name it)", DIM),
+        OutState::File => Span::styled("  a file", HIGHLIGHT),
+        OutState::NotEmpty => Span::styled("  not empty", HIGHLIGHT),
+        OutState::Empty => Span::styled("  empty", DIM),
+        OutState::New => Span::styled("  new", DIM),
     };
     let threads = app
         .form
@@ -239,6 +246,7 @@ fn draw_inputs(app: &App, frame: &mut Frame, body: Rect) {
             match row {
                 Row::File(f) => spans.push(match f.get(inputs) {
                     Some(p) => Span::raw(tilde(p)),
+                    None if f.downloadable() => Span::styled("(none; d downloads)", DIM),
                     None => Span::styled("(none)", DIM),
                 }),
                 Row::Output => spans.extend([Span::raw(tilde(out_path)), out_note.clone()]),
@@ -247,6 +255,9 @@ fn draw_inputs(app: &App, frame: &mut Frame, body: Rect) {
             Line::from(spans)
         })
         .collect();
+    if app.fetch.is_some() {
+        lines.push(Line::styled("downloading… (d shows it)", HIGHLIGHT));
+    }
     lines.extend([
         Line::raw(""),
         Line::styled("fg: signal, passed as BAMs", DIM),
@@ -295,6 +306,8 @@ fn draw_steps(app: &App, frame: &mut Frame, body: Rect) {
         })
         .collect();
     let rows = inner.height as usize;
+    let first = first_visible(steps.at, lines.len(), rows);
+    app.hits.rows(inner, first, lines.len(), Hit::Step);
     frame.render_widget(Paragraph::new(window(lines, steps.at, rows)), inner);
 }
 
@@ -319,6 +332,8 @@ fn draw_flags(app: &App, frame: &mut Frame, body: Rect) {
     let has_bg = !app.inputs.bg().is_empty();
 
     let mut lines: Vec<Line> = Vec::new();
+    // Each line's flag, by its place among those shown; none for headings.
+    let mut flag_of: Vec<Option<usize>> = Vec::new();
     let mut sel_line = 0;
     for h in form.headings() {
         let rows: Vec<usize> = visible
@@ -336,6 +351,7 @@ fn draw_flags(app: &App, frame: &mut Frame, body: Rect) {
         } else {
             Line::styled(name.to_string(), HIGHLIGHT)
         });
+        flag_of.push(None);
         for i in rows {
             let Some(f) = form.fields.get(i) else {
                 continue;
@@ -368,6 +384,14 @@ fn draw_flags(app: &App, frame: &mut Frame, body: Rect) {
                 spans.push(Span::styled(format!("  {c}"), ACCENTED));
             }
             lines.push(Line::from(spans));
+            flag_of.push(visible.iter().position(|&v| v == i));
+        }
+    }
+    let first = first_visible(sel_line, lines.len(), list.height as usize);
+    for (k, line) in (first..lines.len()).take(list.height as usize).enumerate() {
+        if let Some(pos) = flag_of[line] {
+            let row = Rect::new(list.x, list.y + k as u16, list.width, 1);
+            app.hits.add(row, Hit::Flag(pos));
         }
     }
     if lines.is_empty() {
@@ -440,9 +464,7 @@ fn draw_run(app: &App, frame: &mut Frame, body: Rect) {
         .map(|l| Line::raw(l.clone()))
         .collect();
     if let Some(p) = bar {
-        let filled = (p.pos.min(p.len).saturating_mul(BAR as u64))
-            .checked_div(p.len)
-            .map(|f| usize::try_from(f).unwrap_or(BAR));
+        let filled = (p.len > 0).then(|| filled(p.pos, p.len, BAR));
         lines.push(match filled {
             Some(filled) => Line::from(vec![
                 Span::styled("█".repeat(filled), ACCENTED),
@@ -464,32 +486,143 @@ fn draw_picking(app: &App, frame: &mut Frame, body: Rect) {
         return;
     };
     let label = row.label();
-    let h = u16::try_from(b.entries.len() + 2)
-        .unwrap_or(u16::MAX)
-        .max(4);
+    let h = u16::try_from(b.list.len() + 2).unwrap_or(u16::MAX).max(4);
     let h = h.min(body.height.saturating_sub(2).max(3));
-    let title = format!(" {label} · {} ", tilde(&b.cwd));
+    let title = format!(" {label} · {} {}", tilde(&b.cwd), b.list.find.tag());
     let inner = popup_frame(frame, body, 64, h, title);
-    let lines: Vec<Line> = b
-        .entries
-        .iter()
-        .enumerate()
-        .map(|(i, e)| {
-            let name = if e.dir {
-                format!("{}/", e.name)
-            } else {
-                e.name.clone()
-            };
-            let style = if e.dir { DIM } else { PLAIN };
-            Line::from(vec![marker(i == b.at), Span::styled(name, style)])
-        })
-        .collect();
-    let lines = if lines.is_empty() {
-        vec![Line::styled("nothing to pick here", DIM)]
-    } else {
-        window(lines, b.at, inner.height as usize)
-    };
+    let lines = b.lines(
+        inner.height as usize,
+        inner.width as usize,
+        "",
+        "nothing to pick here",
+    );
     frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// The pop-up telling how the run ended, how long it took, and where its
+/// output is.
+fn draw_ended(app: &App, frame: &mut Frame, body: Rect) {
+    let Some(job) = &app.job else {
+        return;
+    };
+    let ended = job.log.lock().ok().and_then(|l| l.ended.clone());
+    let Some(ended) = ended else {
+        return;
+    };
+    let title = format!(" faba run {} ", ended_word(&ended));
+    let why = match ended {
+        Err(Failed::Start(e) | Failed::Exit(e)) => Some(e),
+        _ => None,
+    };
+    let took = job.took.map_or_else(String::new, clock);
+    let mut lines = vec![
+        Line::from(vec![Span::styled(" took  ", DIM), Span::raw(took)]),
+        Line::from(vec![
+            Span::styled(" into  ", DIM),
+            Span::raw(tilde(&job.out)),
+        ]),
+    ];
+    if let Some(why) = why {
+        lines.push(Line::raw(""));
+        lines.push(Line::styled(format!(" {why}"), HIGHLIGHT));
+    }
+    lines.push(Line::raw(""));
+    lines.push(Line::styled(" its log stays on the Run screen", DIM));
+    button_popup(frame, body, &title, &[("ok", Hit::Ok)], lines, &app.hits);
+}
+
+/// A download's pop-up: what, where, the step and how far through it.
+fn draw_fetch(f: &Fetch, frame: &mut Frame, body: Rect) {
+    let (step, bytes) = f
+        .status
+        .lock()
+        .map_or_else(|_| (String::new(), None), |s| (s.step.clone(), s.bytes));
+    let mb = |b: u64| b as f64 / f64::from(1 << 20);
+    let progress = match bytes {
+        Some((got, Some(total))) if total > 0 => {
+            let w = 36;
+            let full = filled(got, total, w);
+            format!(
+                "{}{} {:>3.0}%  {:.0} / {:.0} MB",
+                "█".repeat(full),
+                "░".repeat(w - full),
+                got.min(total) as f64 / total as f64 * 100.0,
+                mb(got),
+                mb(total)
+            )
+        }
+        Some((got, _)) => format!("{:.0} MB", mb(got)),
+        None => String::new(),
+    };
+    let lines = vec![
+        Line::styled(f.label.clone(), PLAIN),
+        Line::styled(format!("into {}", tilde(&f.dir)), DIM),
+        Line::raw(""),
+        Line::styled(step, HIGHLIGHT),
+        Line::styled(progress, HIGHLIGHT),
+        Line::raw(""),
+        Line::styled("the GTF, then the genome: fetched, unpacked, indexed", DIM),
+    ];
+    popup(frame, body, " downloading a reference ", lines);
+}
+
+/// The download pop-up: the sources, or one source's releases or species.
+fn draw_catalogue(c: &Catalogue, frame: &mut Frame, body: Rect) {
+    let rows = usize::from(body.height.saturating_sub(10)).clamp(3, 16);
+    let mut lines: Vec<Line> = Vec::new();
+    let title = match c.source {
+        None => {
+            lines.extend(SOURCES.iter().enumerate().map(|(i, (name, s))| {
+                let fits = match c.bam_chr {
+                    Some(chr) if chr == s.chr_named() => "  matches your BAMs",
+                    _ => "",
+                };
+                Line::from(vec![
+                    marker(i == c.at),
+                    Span::raw(*name),
+                    Span::styled(fits, DIM),
+                ])
+            }));
+            " download a reference ".to_string()
+        }
+        Some(s) => {
+            let what = match s {
+                Source::Gencode(_) => "release",
+                Source::Ensembl => "species",
+            };
+            if c.loading() {
+                lines.push(Line::styled("reading the FTP listing…", DIM));
+            } else if let Some(e) = &c.error {
+                lines.push(Line::styled(format!("cannot list: {e}"), HIGHLIGHT));
+            } else if c.items.is_empty() {
+                lines.push(Line::styled(c.items.empty_note(""), DIM));
+            } else {
+                let items =
+                    c.items.shown().enumerate().map(|(i, n)| {
+                        Line::from(vec![marker(i == c.items.at), Span::raw(n.clone())])
+                    });
+                lines.extend(window(items.collect(), c.items.at, rows));
+            }
+            format!(" choose a {what} {}", c.items.find.tag())
+        }
+    };
+    lines.push(Line::raw(""));
+    lines.push(Line::styled(
+        "GENCODE names chromosomes chr1, Ensembl 1: take the one your BAMs use",
+        DIM,
+    ));
+    if let Some(chr) = c.bam_chr {
+        let named = if chr { "chr1" } else { "1" };
+        lines.push(Line::styled(
+            format!("your first BAM names them {named}"),
+            DIM,
+        ));
+    }
+    lines.push(Line::styled(
+        "the GTF and genome come to about 1 GB, 3 GB unpacked",
+        DIM,
+    ));
+    popup(frame, body, &title, lines);
 }
 
 fn draw_preview(app: &App, frame: &mut Frame, body: Rect) {
@@ -505,12 +638,15 @@ fn draw_preview(app: &App, frame: &mut Frame, body: Rect) {
             .collect()
     };
     let out = app.inputs.output();
-    lines.push(Line::styled(
-        format!(" saved as {}/{}", tilde(Path::new(&out)), script::SCRIPT),
-        DIM,
-    ));
+    if !out.is_empty() {
+        lines.push(Line::styled(
+            format!(" saved as {}/{}", tilde(Path::new(&out)), script::SCRIPT),
+            DIM,
+        ));
+    }
     lines.push(Line::raw(""));
-    let argv = app.argv();
+    // The folder as named: the script itself runs there, as `-o .`.
+    let argv = app.argv_out();
     lines.extend(
         script::command_lines(&argv)
             .into_iter()
@@ -524,13 +660,18 @@ fn draw_preview(app: &App, frame: &mut Frame, body: Rect) {
                 Line::styled(format!(" {l}"), PLAIN)
             }),
     );
-    popup(frame, body, " start this run? ", lines);
+    let buttons = [("▶ start", Hit::Start), ("cancel", Hit::Cancel)];
+    button_popup(frame, body, " start this run? ", &buttons, lines, &app.hits);
 }
 
 fn footer_line(app: &App) -> Line<'static> {
     if let Some((target, line)) = &app.editing {
         let prompt = match target {
-            Target::Output => "output folder: ".to_string(),
+            Target::Output => match &app.note {
+                Some(why) => format!("{why}; output folder: "),
+                None => "output folder (new or empty): ".to_string(),
+            },
+            Target::RefDir => "download into: ".to_string(),
             Target::DepthKb => "depth resolution (kb): ".to_string(),
             Target::Flag(i) => app
                 .form
@@ -548,12 +689,39 @@ fn footer_line(app: &App) -> Line<'static> {
     if let Some(note) = &app.note {
         return Line::styled(format!(" {note}"), HIGHLIGHT);
     }
-    if app.picking.is_some() {
+    if app.ended_shown {
+        return help_line(&[("Enter/Esc", "close, onto the log")]);
+    }
+    if app.fetch_shown && app.fetch.is_some() {
         return help_line(&[
+            ("Esc", "hide; it goes on (d shows it)"),
+            ("s", "stop, keeping what came"),
+        ]);
+    }
+    if let Some(c) = &app.catalogue {
+        return if c.source.is_none() {
+            help_line(&[("↑/↓", "move"), ("Enter", "list it"), ("Esc", "back")])
+        } else {
+            help_line(&[
+                ("type", "find"),
+                ("↑/↓", "move"),
+                ("Enter", "download"),
+                ("Esc", "back"),
+            ])
+        };
+    }
+    if let Some((_, b)) = &app.picking {
+        let esc = if b.list.find.text.is_empty() {
+            "back"
+        } else {
+            "clear find"
+        };
+        return help_line(&[
+            ("type", "find"),
             ("↑/↓", "move"),
             ("Enter", "pick/open"),
             ("←", "up"),
-            ("Esc", "back"),
+            ("Esc", esc),
         ]);
     }
     if app.preview {
@@ -572,15 +740,31 @@ fn footer_line(app: &App) -> Line<'static> {
     if !app.running() {
         common.extend([("p", "print the command and leave"), ("q", "quit")]);
     }
-    let mut keys: Vec<(&str, &str)> = match app.page {
-        Page::Inputs if app.inputs.focus == InputsFocus::Bams => vec![
-            ("Space", "select"),
-            ("b", "fg/bg"),
-            ("Enter", "open"),
+    if app.page == Page::Inputs && app.inputs.focus == InputsFocus::Bams {
+        // Letters type into the find here, so only these keys act.
+        let mut keys = vec![
+            ("type", "find, / and ~ go to a path"),
+            ("Space", "fg → bg → off"),
+            ("Enter/→", "open"),
             ("←", "up"),
-            ("l", "files"),
+        ];
+        if !app.inputs.bams.list.find.text.is_empty() {
+            keys.push(("Esc", "clear find"));
+        }
+        keys.extend([
+            ("Tab", "inputs"),
+            (APPLY_KEYS, "preview"),
+            ("Ctrl-C", "quit"),
+        ]);
+        return help_line(&keys);
+    }
+    let mut keys: Vec<(&str, &str)> = match app.page {
+        Page::Inputs => vec![
+            ("↑/↓", "row"),
+            ("Enter", "pick/type"),
+            ("d", "download GFF + genome"),
+            ("h/Esc", "BAMs"),
         ],
-        Page::Inputs => vec![("↑/↓", "row"), ("Enter", "pick/type"), ("h", "BAMs")],
         Page::Steps => vec![("Space", "toggle"), ("↑/↓", "move")],
         Page::Flags => vec![
             ("↑/↓", "move"),

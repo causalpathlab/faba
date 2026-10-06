@@ -8,7 +8,6 @@
 //! filtered fileset. It never touches a BAM.
 
 pub mod args;
-pub mod browser;
 pub mod layout;
 pub mod matrix;
 pub mod path_tui;
