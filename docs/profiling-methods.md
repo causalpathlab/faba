@@ -648,7 +648,10 @@ one track per batch, with its `{modality}_sites.parquet` and the GFF its run rec
 `metagene` profiles that site table against that GFF. Given no input, they open a browser: mark files
 (Space) to read together, `pileup` summing the marked matrices into one track and `metagene`
 profiling the marked site tables as one set of sites against the first one's GFF, or choose a
-whole output folder. The views draw the converted reads by default, where a
+whole output folder; Tab gives `pileup` a track per marked matrix instead (`--separate` on the
+command line), and the browser opens where the last choice was made. In the `pileup` browser,
+`-` past the whole gene reloads a span twice as wide, keeping the cursor, and `M` switches an
+output folder between its m6A and A-to-I sites at the same gene. The views draw the converted reads by default, where a
 track carries both channels (in `metagene`, where the site table has `converted` and `coverage`
 columns). `c` cycles what the bars count: converted reads, unconverted reads (the total less the
 converted), both (the converted in front of the total), and the sites themselves. In `pileup`, `d`

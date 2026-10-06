@@ -6,7 +6,7 @@
 pub mod browser;
 pub mod busy;
 
-pub use busy::busy;
+pub use busy::{busy, busy_counting};
 
 /// Frames of the spinners the workspace draws.
 pub const SPINNER: &str = "⠁⠂⠄⡀⢀⠠⠐⠈";

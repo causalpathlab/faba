@@ -1,6 +1,7 @@
 //! A spinner on screen while slow work runs, so a view never leaves the
 //! terminal blank while it reads.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
@@ -10,7 +11,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
-use super::{popup_frame, run_view, View, SPINNER};
+use super::{filled, popup_frame, run_view, View, SPINNER};
 
 /// How long the work may take before the spinner shows, so quick work
 /// never flickers the screen.
@@ -23,6 +24,9 @@ struct Busy<'a, T> {
     start: Instant,
     rx: &'a Receiver<T>,
     out: Option<T>,
+    /// Files (or other units) done, of `total`; no bar when `total` is 0.
+    done: &'a AtomicUsize,
+    total: usize,
 }
 
 impl<T> View for Busy<'_, T> {}
@@ -35,15 +39,30 @@ impl<T> Screen for Busy<'_, T> {
         let frames: Vec<char> = SPINNER.chars().collect();
         let spin = frames[(elapsed.as_millis() / 200) as usize % frames.len()];
         let w = (self.what.chars().count() as u16 + 12)
-            .max(30)
+            .max(40)
             .min(area.width);
         let inner = popup_frame(frame, area, w, 4, " working ".into());
+        let secs = format!("{}s", elapsed.as_secs());
+        let second = if self.total == 0 {
+            Line::from(Span::styled(format!("   {secs}"), DIM))
+        } else {
+            let done = self.done.load(Ordering::Relaxed).min(self.total);
+            let count = format!(" {done}/{} files  {secs}", self.total);
+            let bar_w = (inner.width as usize).saturating_sub(count.len() + 4);
+            let on = filled(done as u64, self.total as u64, bar_w);
+            Line::from(vec![
+                Span::raw("   "),
+                Span::styled("█".repeat(on), HIGHLIGHT),
+                Span::styled("░".repeat(bar_w - on), DIM),
+                Span::styled(count, DIM),
+            ])
+        };
         let lines = vec![
             Line::from(vec![
                 Span::styled(format!(" {spin} "), HIGHLIGHT),
                 Span::raw(self.what.to_string()),
             ]),
-            Line::from(Span::styled(format!("   {}s", elapsed.as_secs()), DIM)),
+            second,
         ];
         frame.render_widget(Paragraph::new(lines), inner);
     }
@@ -75,14 +94,28 @@ pub fn busy<T: Send>(
     what: &str,
     work: impl FnOnce() -> anyhow::Result<T> + Send,
 ) -> anyhow::Result<T> {
+    busy_counting(show, badge, what, 0, |_| work())
+}
+
+/// [`busy`], with a bar of `total` files that `work` counts off on the
+/// counter it is given.
+pub fn busy_counting<T: Send>(
+    show: bool,
+    badge: &str,
+    what: &str,
+    total: usize,
+    work: impl FnOnce(&AtomicUsize) -> anyhow::Result<T> + Send,
+) -> anyhow::Result<T> {
+    let done = AtomicUsize::new(0);
     if !show || !data_beans::interactive::tui_available() {
-        return work();
+        return work(&done);
     }
     let (tx, rx) = channel();
     std::thread::scope(|s| {
+        let counter = &done;
         s.spawn(move || {
             // The receiver outlives the scope, so the send cannot fail.
-            let _ = tx.send(work());
+            let _ = tx.send(work(counter));
         });
         match rx.recv_timeout(GRACE) {
             Ok(out) => return out,
@@ -95,6 +128,8 @@ pub fn busy<T: Send>(
             start: Instant::now(),
             rx: &rx,
             out: None,
+            done: &done,
+            total,
         };
         run_view(&mut screen)?;
         match screen.out {
@@ -113,12 +148,15 @@ mod tests {
     #[test]
     fn draws_at_any_terminal_size_and_ends_with_the_result() {
         let (tx, rx) = channel();
+        let done = AtomicUsize::new(1);
         let mut b = Busy {
             badge: "pileup",
-            what: "reading GENE1 from 2 file(s)",
+            what: "reading GENE1",
             start: Instant::now(),
             rx: &rx,
             out: None,
+            done: &done,
+            total: 3,
         };
         b.tick();
         assert!(!b.done());

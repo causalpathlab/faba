@@ -116,6 +116,14 @@ pub fn is_site_matrix_name(name: &str) -> bool {
     })
 }
 
+/// The batch a `{batch}_{kind}` matrix's file name carries, when it has a
+/// known kind.
+pub fn matrix_batch(name: &str) -> Option<Box<str>> {
+    let (stem, ..) = classify_matrix_name(name, true)?;
+    let (batch, kind) = split_stem(stem);
+    (!kind.is_empty()).then_some(batch)
+}
+
 /// The modality of a `{modality}_sites.parquet` site table's file name.
 pub fn site_table_modality(name: &str) -> Option<&str> {
     name.strip_suffix("_sites.parquet")

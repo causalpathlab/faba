@@ -351,7 +351,11 @@ fn an_output_directory_gives_a_track_per_batch_and_its_site_table() {
     assert_eq!(args.site_file.as_deref(), Some("x.parquet"));
     // A matrix named beside the directory has its own track.
     let (_, groups) = resolve(&[&d, "extra_m6a_site.zarr.zip"]);
-    assert_eq!(labels(&groups), ["mut", "wt", "extra_m6a_site.zarr.zip"]);
+    assert_eq!(
+        labels(&groups),
+        ["mut", "wt", "extra"],
+        "named after its batch"
+    );
     // --track regroups them all.
     let (_, groups) = resolve(&[&d, "--track", "all=*"]);
     assert_eq!(labels(&groups), ["all"]);
@@ -361,12 +365,16 @@ fn an_output_directory_gives_a_track_per_batch_and_its_site_table() {
     let (args, groups) = resolve(&[&one]);
     assert_eq!(args.data_files, vec![Box::from(one.as_str())]);
     assert_eq!(labels(&groups), ["matrix"]);
+    // --separate: a track each, by batch.
+    let two = [path("wt_m6a_site.zarr.zip"), path("mut_m6a_site.zarr.zip")];
+    let (_, groups) = resolve(&[&two[0], &two[1], "--separate"]);
+    assert_eq!(labels(&groups), ["wt", "mut"]);
 }
 
 /// `faba pileup` with `args`, resolved: the inputs and the tracks.
 fn resolve(args: &[&str]) -> (PileupArgs, Vec<TrackFiles>) {
     let args = pileup_args(args);
-    args.resolved(&args.data_files).unwrap()
+    args.resolved(&args.data_files, args.separate).unwrap()
 }
 
 fn labels(groups: &[TrackFiles]) -> Vec<&str> {

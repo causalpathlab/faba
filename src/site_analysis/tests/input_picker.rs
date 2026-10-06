@@ -29,7 +29,7 @@ fn site_matrix(name: &str) -> bool {
 fn mark_files_from_a_folder_or_choose_the_folder() {
     let tmp = tree();
     let root = tmp.path().to_path_buf();
-    let mut p = InputPicker::new(root.clone(), "pileup", "site matrices", site_matrix);
+    let mut p = InputPicker::new(root.clone(), "pileup", "site matrices", site_matrix, true);
     assert!(p.browser.list.select("plain"));
     press(&mut p, KeyCode::Char(' '));
     assert!(
@@ -40,10 +40,20 @@ fn mark_files_from_a_folder_or_choose_the_folder() {
     // A faba folder, chosen whole.
     assert!(p.browser.list.select("out"));
     press(&mut p, KeyCode::Char(' '));
-    assert_eq!(p.decision, Some(Some(vec![root.join("out")])));
+    let folder = Chosen {
+        paths: vec![root.join("out")],
+        separate: false,
+    };
+    assert_eq!(p.decision, Some(Some(folder)));
 
     // Or opened, and only its site matrices listed and marked.
-    let mut p = InputPicker::new(root.join("out"), "pileup", "site matrices", site_matrix);
+    let mut p = InputPicker::new(
+        root.join("out"),
+        "pileup",
+        "site matrices",
+        site_matrix,
+        true,
+    );
     let names: Vec<&str> = p.browser.list.shown().map(|e| e.name.as_str()).collect();
     assert_eq!(names, ["..", "a_m6a_site.zarr.zip", "b_m6a_site.zarr.zip"]);
     for (name, key) in [
@@ -65,20 +75,51 @@ fn mark_files_from_a_folder_or_choose_the_folder() {
         Some(&marked),
         "unmarked and marked again, in the order marked"
     );
+    // Tab: a track each.
+    press(&mut p, KeyCode::Tab);
     crate::tui::feed(&mut p, crate::tui::apply_key());
-    assert_eq!(p.decision, Some(Some(marked)), "the marked, not the folder");
+    let chosen = Chosen {
+        paths: marked,
+        separate: true,
+    };
+    assert_eq!(
+        p.decision,
+        Some(Some(chosen)),
+        "the marked, apart, not the folder"
+    );
 }
 
 #[test]
 fn draws_at_any_terminal_size() {
     let tmp = tree();
-    let mut p = InputPicker::new(tmp.path().join("out"), "metagene", "site tables", |n| {
-        n.ends_with("_sites.parquet")
-    });
+    let mut p = InputPicker::new(
+        tmp.path().join("out"),
+        "metagene",
+        "site tables",
+        |n| n.ends_with("_sites.parquet"),
+        false,
+    );
     p.browser
         .toggle_mark(tmp.path().join("out/m6a_sites.parquet"));
     for (w, h) in [(20, 6), (80, 24), (200, 60)] {
         let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
         t.draw(|f| p.render(f)).unwrap();
     }
+}
+
+#[test]
+fn opens_at_the_last_choice() {
+    let tmp = tree();
+    let root = tmp.path().to_path_buf();
+    let mut p = InputPicker::new(root.clone(), "pileup", "site matrices", site_matrix, true);
+    p.start_at(&root.join("out/b_m6a_site.zarr.zip"));
+    assert_eq!(p.browser.cwd, root.join("out"));
+    assert_eq!(
+        p.browser.highlighted().map(|e| e.name.as_str()),
+        Some("b_m6a_site.zarr.zip")
+    );
+    // Gone since: where it was.
+    let mut p = InputPicker::new(root.clone(), "pileup", "site matrices", site_matrix, true);
+    p.start_at(&root.join("gone/x_m6a_site.zarr.zip"));
+    assert_eq!(p.browser.cwd, root);
 }

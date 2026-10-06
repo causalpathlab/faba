@@ -204,6 +204,125 @@ pub(super) struct GroupedMatrix {
     pub(super) genes: Vec<Box<str>>,
 }
 
+/// One file's share of [`read_matrix_positions_grouped`], merged with the
+/// other files' in file order.
+#[derive(Default)]
+struct FileRead {
+    by_group: FxHashMap<Box<str>, FxHashMap<i64, PosAgg>>,
+    distinct_genes: FxHashMap<Box<str>, usize>,
+    matched_chrs: Vec<Box<str>>,
+    matched: usize,
+    first_modality: Option<Box<str>>,
+    totals: FxHashMap<i64, f64>,
+    unconverted_rows: usize,
+}
+
+/// Read the rows `selector` picks from `data_file`.
+fn read_one_file(
+    data_file: &str,
+    selector: &Selector,
+    membership: Option<&CellMembership>,
+    modality_filter: Option<&[String]>,
+    with_total: bool,
+) -> anyhow::Result<FileRead> {
+    let mut part = FileRead::default();
+    let (backend, resolved_path) = resolve_backend_file(data_file, None)?;
+    let data = open_sparse_matrix(&resolved_path, &backend)?;
+
+    let row_names = data.row_names()?;
+
+    let mut matched_rows: Vec<(usize, i64, bool)> = Vec::new();
+    for (idx, name) in row_names.iter().enumerate() {
+        if let Some((gene_part, modality, chr, pos, converted)) = parse_row_channel(name) {
+            // Unconverted rows count only toward the total.
+            let is_converted = converted != Some(false);
+            if !is_converted && !with_total {
+                continue;
+            }
+            if let Some(mf) = modality_filter {
+                if !mf.contains(&modality.to_ascii_lowercase()) {
+                    continue;
+                }
+            }
+            if selector.selects(gene_part, chr, pos) {
+                if is_converted {
+                    part.first_modality.get_or_insert_with(|| modality.into());
+                    *part.distinct_genes.entry(gene_part.into()).or_insert(0) += 1;
+                    part.matched_chrs.push(chr.into());
+                } else {
+                    part.unconverted_rows += 1;
+                }
+                matched_rows.push((idx, pos, is_converted));
+            }
+        }
+    }
+
+    if matched_rows.is_empty() {
+        return Ok(part);
+    }
+    part.matched += matched_rows.iter().filter(|r| r.2).count();
+
+    // Column index -> cell type (None to drop). Only needed when
+    // stratifying; the all-cells path skips reading column names.
+    let col_groups: Option<Vec<Option<Box<str>>>> = match membership {
+        None => None,
+        Some(m) => {
+            let col_names = data.column_names()?;
+            Some(
+                col_names
+                    .iter()
+                    .map(|bc| m.matches_barcode(&CellBarcode::Barcode(Arc::from(bc.as_ref()))))
+                    .collect(),
+            )
+        }
+    };
+
+    let local_to_pos: Vec<(i64, bool)> = matched_rows.iter().map(|r| (r.1, r.2)).collect();
+    let row_indices: Vec<usize> = matched_rows.iter().map(|r| r.0).collect();
+    let (_nrow, _ncol, triplets) = data.read_triplets_by_rows(row_indices)?;
+
+    // All-cells: pre-seed every matched position so zero-signal sites
+    // still appear (axis markers), matching the legacy behavior.
+    if membership.is_none() {
+        let g = part.by_group.entry("".into()).or_default();
+        for &(pos, is_converted) in &local_to_pos {
+            if is_converted {
+                g.entry(pos).or_insert(PosAgg { sum: 0.0, nnz: 0 });
+            }
+        }
+    }
+
+    for (row, col, val) in &triplets {
+        let local_idx = *row as usize;
+        if local_idx >= local_to_pos.len() || *val == 0.0 {
+            continue;
+        }
+        let group: Box<str> = match &col_groups {
+            None => "".into(),
+            Some(cg) => match cg.get(*col as usize).and_then(|o| o.clone()) {
+                Some(ct) => ct,
+                None => continue,
+            },
+        };
+        let (pos, is_converted) = local_to_pos[local_idx];
+        if with_total {
+            *part.totals.entry(pos).or_insert(0.0) += *val as f64;
+        }
+        if !is_converted {
+            continue;
+        }
+        let agg = part
+            .by_group
+            .entry(group)
+            .or_default()
+            .entry(pos)
+            .or_insert(PosAgg { sum: 0.0, nnz: 0 });
+        agg.sum += *val as f64;
+        agg.nnz += 1;
+    }
+    Ok(part)
+}
+
 pub(super) fn read_matrix_positions_grouped(
     data_files: &[Box<str>],
     selector: &Selector,
@@ -211,6 +330,7 @@ pub(super) fn read_matrix_positions_grouped(
     membership: Option<&CellMembership>,
     top_modality: &[Box<str>],
     with_total: bool,
+    done: Option<&std::sync::atomic::AtomicUsize>,
 ) -> anyhow::Result<GroupedMatrix> {
     // Per group: pos -> aggregate. Multiple input files (e.g. replicates)
     // merge per genomic position; gene/chr labels reflect the union.
@@ -234,100 +354,48 @@ pub(super) fn read_matrix_positions_grouped(
         )
     };
 
-    for data_file in data_files {
-        let (backend, resolved_path) = resolve_backend_file(data_file, None)?;
-        let data = open_sparse_matrix(&resolved_path, &backend)?;
-
-        let row_names = data.row_names()?;
-
-        let mut matched_rows: Vec<(usize, i64, bool)> = Vec::new();
-        for (idx, name) in row_names.iter().enumerate() {
-            if let Some((gene_part, modality, chr, pos, converted)) = parse_row_channel(name) {
-                // Unconverted rows count only toward the total.
-                let is_converted = converted != Some(false);
-                if !is_converted && !with_total {
-                    continue;
+    // The files are independent: read them together, then merge in order.
+    let parts: Vec<anyhow::Result<FileRead>> = {
+        use rayon::prelude::*;
+        data_files
+            .par_iter()
+            .map(|f| {
+                let part = read_one_file(
+                    f,
+                    selector,
+                    membership,
+                    modality_filter.as_deref(),
+                    with_total,
+                );
+                if let Some(done) = done {
+                    done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
-                if let Some(ref mf) = modality_filter {
-                    if !mf.contains(&modality.to_ascii_lowercase()) {
-                        continue;
-                    }
-                }
-                if selector.selects(gene_part, chr, pos) {
-                    if is_converted {
-                        first_modality.get_or_insert_with(|| modality.into());
-                        *distinct_genes.entry(gene_part.into()).or_insert(0) += 1;
-                        matched_chrs.push(chr.into());
-                    } else {
-                        unconverted_rows += 1;
-                    }
-                    matched_rows.push((idx, pos, is_converted));
-                }
+                part
+            })
+            .collect()
+    };
+    for part in parts {
+        let part = part?;
+        for (grp, aggs) in part.by_group {
+            let into = by_group.entry(grp).or_default();
+            for (pos, agg) in aggs {
+                let a = into.entry(pos).or_insert(PosAgg { sum: 0.0, nnz: 0 });
+                a.sum += agg.sum;
+                a.nnz += agg.nnz;
             }
         }
-
-        if matched_rows.is_empty() {
-            continue;
+        for (gene, n) in part.distinct_genes {
+            *distinct_genes.entry(gene).or_insert(0) += n;
         }
-        total_matched += matched_rows.iter().filter(|r| r.2).count();
-
-        // Column index -> cell type (None to drop). Only needed when
-        // stratifying; the all-cells path skips reading column names.
-        let col_groups: Option<Vec<Option<Box<str>>>> = match membership {
-            None => None,
-            Some(m) => {
-                let col_names = data.column_names()?;
-                Some(
-                    col_names
-                        .iter()
-                        .map(|bc| m.matches_barcode(&CellBarcode::Barcode(Arc::from(bc.as_ref()))))
-                        .collect(),
-                )
-            }
-        };
-
-        let local_to_pos: Vec<(i64, bool)> = matched_rows.iter().map(|r| (r.1, r.2)).collect();
-        let row_indices: Vec<usize> = matched_rows.iter().map(|r| r.0).collect();
-        let (_nrow, _ncol, triplets) = data.read_triplets_by_rows(row_indices)?;
-
-        // All-cells: pre-seed every matched position so zero-signal sites
-        // still appear (axis markers), matching the legacy behavior.
-        if membership.is_none() {
-            let g = by_group.entry("".into()).or_default();
-            for &(pos, is_converted) in &local_to_pos {
-                if is_converted {
-                    g.entry(pos).or_insert(PosAgg { sum: 0.0, nnz: 0 });
-                }
-            }
+        matched_chrs.extend(part.matched_chrs);
+        total_matched += part.matched;
+        if first_modality.is_none() {
+            first_modality = part.first_modality;
         }
-
-        for (row, col, val) in &triplets {
-            let local_idx = *row as usize;
-            if local_idx >= local_to_pos.len() || *val == 0.0 {
-                continue;
-            }
-            let group: Box<str> = match &col_groups {
-                None => "".into(),
-                Some(cg) => match cg.get(*col as usize).and_then(|o| o.clone()) {
-                    Some(ct) => ct,
-                    None => continue,
-                },
-            };
-            let (pos, is_converted) = local_to_pos[local_idx];
-            if with_total {
-                *totals.entry(pos).or_insert(0.0) += *val as f64;
-            }
-            if !is_converted {
-                continue;
-            }
-            let agg = by_group
-                .entry(group)
-                .or_default()
-                .entry(pos)
-                .or_insert(PosAgg { sum: 0.0, nnz: 0 });
-            agg.sum += *val as f64;
-            agg.nnz += 1;
+        for (pos, v) in part.totals {
+            *totals.entry(pos).or_insert(0.0) += v;
         }
+        unconverted_rows += part.unconverted_rows;
     }
 
     // The selection can span several genes (and chromosomes); rather than
@@ -388,9 +456,10 @@ pub(super) fn read_matrix_positions(
     selector: &Selector,
     signal: &PileupSignal,
     with_total: bool,
+    done: Option<&std::sync::atomic::AtomicUsize>,
 ) -> anyhow::Result<Option<MatrixGeneData>> {
     let grouped =
-        read_matrix_positions_grouped(data_files, selector, signal, None, &[], with_total)?;
+        read_matrix_positions_grouped(data_files, selector, signal, None, &[], with_total, done)?;
     if grouped.matched == 0 {
         return Ok(None);
     }
