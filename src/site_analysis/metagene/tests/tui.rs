@@ -7,6 +7,7 @@ use ratatui::Terminal;
 /// 5'UTR 4 bins, CDS 10, 3'UTR 6, and an optional ncRNA track of 5.
 fn hist(non_coding: bool) -> GeneFeatureHistogram {
     GeneFeatureHistogram {
+        reads: None,
         counts: [
             vec![1.0, 2.0, 3.0, 4.0],
             (0..10).map(|i| 10.0 + i as f64).collect(),
@@ -43,7 +44,7 @@ fn screen(v: &mut MetageneView, w: u16, h: u16) -> String {
 fn merging_keeps_regions_and_totals() {
     let h = hist(false);
     for merge in 1..12 {
-        let b = bars(&h, Track::Coding, merge);
+        let b = bars(&h, Track::Coding, merge, Show::Sites);
         let total: f64 = h.counts[..3].iter().flatten().sum();
         assert_eq!(
             b.iter().map(|b| b.count).sum::<f64>(),
@@ -63,11 +64,11 @@ fn fitting_merge_fits() {
     let h = hist(false);
     for width in [1, 3, 5, 8, 13, 20, 40] {
         let m = fitting_merge(&h, Track::Coding, width);
-        let n = bars(&h, Track::Coding, m).len();
+        let n = bars(&h, Track::Coding, m, Show::Sites).len();
         assert!(n <= width || m == 10, "width {width} merge {m}: {n} bars");
         if m > 1 {
             assert!(
-                bars(&h, Track::Coding, m - 1).len() > width,
+                bars(&h, Track::Coding, m - 1, Show::Sites).len() > width,
                 "not the smallest"
             );
         }
@@ -160,4 +161,56 @@ fn draws_through_the_image_path() {
     screen(&mut v, 80, 16);
     press(&mut v, KeyCode::Char('i'));
     assert!(screen(&mut v, 80, 16).contains("· text"));
+}
+
+/// [`hist`] with each bin's reads: two converted and one unconverted per site.
+fn hist_with_reads() -> GeneFeatureHistogram {
+    let mut h = hist(false);
+    let times = |k: f64| h.counts.clone().map(|r| r.iter().map(|v| v * k).collect());
+    h.reads = Some([times(2.0), times(1.0)]);
+    h
+}
+
+#[test]
+fn reads_show_converted_first_and_c_cycles() {
+    let h = hist_with_reads();
+    let mut v = MetageneView::new("x", &h);
+    let text = screen(&mut v, 120, 24);
+    assert!(text.contains("converted reads per region"), "{text}");
+    let total = |v: &MetageneView| v.bars().iter().map(|b| b.count).sum::<f64>();
+    let sites: f64 = h.counts[..3].iter().flatten().sum();
+    assert_eq!(total(&v), 2.0 * sites, "converted reads");
+    press(&mut v, KeyCode::Char('c'));
+    assert_eq!(total(&v), sites, "unconverted reads");
+    press(&mut v, KeyCode::Char('c'));
+    let bars = v.bars();
+    assert_eq!(total(&v), 3.0 * sites, "both: the total");
+    assert!(bars.iter().all(|b| b.front == Some(2.0 * b.count / 3.0)));
+    press(&mut v, KeyCode::Char('c'));
+    assert_eq!(total(&v), sites, "the sites");
+    assert!(screen(&mut v, 120, 24).contains("c: converted"));
+}
+
+#[test]
+fn without_reads_it_counts_sites_and_c_does_nothing() {
+    let h = hist(false);
+    let mut v = MetageneView::new("x", &h);
+    assert_eq!(v.show, Show::Sites);
+    press(&mut v, KeyCode::Char('c'));
+    assert_eq!(v.show, Show::Sites);
+    assert!(!screen(&mut v, 120, 24).contains("c: "));
+}
+
+#[test]
+fn the_text_plot_names_regions_with_no_ticks_and_a_colour_key() {
+    let h = hist_with_reads();
+    let mut v = MetageneView::new("x", &h);
+    let text = screen(&mut v, 120, 24);
+    assert!(!text.contains('┴'), "no tick under a region name:\n{text}");
+    for name in ["5'UTR", "CDS", "3'UTR"] {
+        assert!(
+            text.contains(&format!("█ {name}")),
+            "{name} in the key:\n{text}"
+        );
+    }
 }

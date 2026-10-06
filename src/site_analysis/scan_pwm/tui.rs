@@ -484,6 +484,7 @@ impl Screen for PwmView {
             help_line(&keys)
         });
         frame.render_widget(help, footer);
+        self.controls.render_save(frame, frame.area());
     }
 }
 

@@ -121,3 +121,38 @@ fn empty_shapes_are_not_written() {
     // Two non-zero bars plus the background.
     assert_eq!(svg.matches("<rect").count(), 3, "{svg}");
 }
+
+#[test]
+fn the_save_prompt_pops_up_with_the_figures_saved_here() {
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    let draw = |c: &mut Controls| {
+        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        term.draw(|f| c.render_save(f, f.area())).unwrap();
+        let buf = term.backend().buffer().clone();
+        (0..30)
+            .map(|y| (0..100).map(|x| buf[(x, y)].symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let mut c = Controls::new("pileup_GENE1");
+    assert!(!draw(&mut c).contains("save the figure"), "closed, nothing");
+    assert_eq!(c.key(key(KeyCode::Char('s'))), Key::Used);
+    let text = draw(&mut c);
+    assert!(
+        text.contains("save the figure") && text.contains("pileup_GENE1"),
+        "{text}"
+    );
+
+    // Saved, it is listed the next time the prompt opens.
+    let tmp = tempfile::tempdir().unwrap();
+    let prefix = tmp.path().join("fig1").to_string_lossy().into_owned();
+    c.key(key(KeyCode::Esc));
+    c.save(&panel(), &prefix);
+    c.key(key(KeyCode::Char('s')));
+    let text = draw(&mut c);
+    assert!(
+        text.contains("fig1.pdf") && text.contains("pileup"),
+        "{text}"
+    );
+}

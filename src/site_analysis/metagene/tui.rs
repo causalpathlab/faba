@@ -4,11 +4,12 @@
 //! region boundaries labelled; the ncRNA track, when profiled, is its own
 //! axis. Adjacent bins merge (never across a region boundary) so the profile
 //! fits the terminal, or to a factor the user picks. A cursor reads out a
-//! bar's region, bins, MetaPlotR coordinates and count.
+//! bar's region, bins, MetaPlotR coordinates and count. The bars count the
+//! sites' converted reads when the site table gives them (`c` cycles to the
+//! unconverted reads, both, and the sites), each region in its colour, as
+//! `faba qc` draws its metagene.
 
-use data_beans::interactive::ui::{
-    header, help_line, panel, Binning, HistPlot, Scale, Screen, DIM, HIGHLIGHT, PLAIN,
-};
+use data_beans::interactive::ui::{header, help_line, panel, Scale, Screen, DIM, HIGHLIGHT};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout};
 use ratatui::text::{Line, Span};
@@ -17,9 +18,11 @@ use ratatui::Frame;
 
 use crate::figure::term::PlotImage;
 use crate::figure::{self, Anchor, Bars, Canvas, Controls, Key, INK, MUTED};
+use crate::site_analysis::show::Show;
 
 use super::{
-    region_style, GeneFeatureHistogram, CDS, NCRNA, REGION_COLOURS, REGION_NAMES, UTR3, UTR5,
+    region_key, GeneFeatureHistogram, RegionGlyphs, CDS, NCRNA, REGION_COLOURS, REGION_NAMES, UTR3,
+    UTR5,
 };
 
 use crate::figure::GUTTER;
@@ -39,21 +42,24 @@ impl Track {
     }
 }
 
-/// One drawn bar: bins `first..=last` of one region, summed.
+/// One drawn bar: bins `first..=last` of one region, summed; `front`, the
+/// converted reads in front of it when both show.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Bar {
     region: usize,
     first: usize,
     last: usize,
     count: f64,
+    front: Option<f64>,
 }
 
-/// Bars of `track`, `merge` bins per bar within each region.
-fn bars(hist: &GeneFeatureHistogram, track: Track, merge: usize) -> Vec<Bar> {
+/// Bars of `track` as `show` draws them, `merge` bins per bar within each
+/// region.
+fn bars(hist: &GeneFeatureHistogram, track: Track, merge: usize, show: Show) -> Vec<Bar> {
     let merge = merge.max(1);
     let mut out = Vec::new();
     for &region in track.regions() {
-        let counts = &hist.counts[region];
+        let (counts, front) = hist.shown(show, region);
         for first in (0..counts.len()).step_by(merge) {
             let last = (first + merge).min(counts.len()) - 1;
             out.push(Bar {
@@ -61,6 +67,7 @@ fn bars(hist: &GeneFeatureHistogram, track: Track, merge: usize) -> Vec<Bar> {
                 first,
                 last,
                 count: counts[first..=last].iter().sum(),
+                front: front.map(|f| f[first..=last].iter().sum()),
             });
         }
     }
@@ -105,7 +112,14 @@ fn fitting_merge(hist: &GeneFeatureHistogram, track: Track, width: usize) -> usi
     let lens = track.regions().iter().map(|&r| hist.counts[r].len());
     let (n, longest) = lens.fold((0, 1), |(n, m), l| (n + l, m.max(l)));
     let mut merge = n.div_ceil(width.max(1)).clamp(1, longest);
-    while merge < longest && bars(hist, track, merge).len() > width {
+    let count = |merge: usize| -> usize {
+        track
+            .regions()
+            .iter()
+            .map(|&r| hist.counts[r].len().div_ceil(merge))
+            .sum()
+    };
+    while merge < longest && count(merge) > width {
         merge += 1;
     }
     merge
@@ -123,6 +137,8 @@ pub struct MetageneView<'a> {
     /// The bin under the cursor, as `(region, bin)`, so it survives merging.
     cursor: (usize, usize),
     y_scale: Scale,
+    /// What the bars count: the sites' reads when the table gives them.
+    show: Show,
     controls: Controls,
     plot: PlotImage,
     done: bool,
@@ -143,6 +159,11 @@ impl<'a> MetageneView<'a> {
             shown_merge: 1,
             cursor: (0, 0),
             y_scale: Scale::Linear,
+            show: if hist.has_reads() {
+                Show::Converted
+            } else {
+                Show::Sites
+            },
             controls: Controls::new("metagene"),
             plot: PlotImage::default(),
             done: false,
@@ -156,7 +177,17 @@ impl<'a> MetageneView<'a> {
     }
 
     fn bars(&self) -> Vec<Bar> {
-        bars(self.hist, self.track, self.shown_merge)
+        bars(self.hist, self.track, self.shown_merge, self.show)
+    }
+
+    /// What the bars count, for the axis and the key.
+    fn unit(&self) -> String {
+        self.show.label("converted", "unconverted")
+    }
+
+    /// Per region, the shown count summed over its bins.
+    fn region_total(&self, region: usize) -> f64 {
+        self.hist.shown(self.show, region).0.iter().sum()
     }
 
     fn cursor_to_start(&mut self) {
@@ -210,18 +241,12 @@ impl<'a> MetageneView<'a> {
             .track
             .regions()
             .iter()
-            .map(|&r| {
-                format!(
-                    "{} {}",
-                    REGION_NAMES[r],
-                    count_text(self.hist.counts[r].iter().sum::<f64>())
-                )
-            })
+            .map(|&r| format!("{} {}", REGION_NAMES[r], count_text(self.region_total(r))))
             .collect();
         c.text(
             16.0,
             38.0,
-            &format!("sites per region: {}", totals.join(", ")),
+            &format!("{} per region: {}", self.unit(), totals.join(", ")),
             9.0,
             Anchor::Start,
             MUTED,
@@ -241,6 +266,7 @@ impl<'a> MetageneView<'a> {
     ) {
         let bars = self.bars();
         let values: Vec<f64> = bars.iter().map(|b| b.count).collect();
+        let front: Option<Vec<f64>> = bars.iter().map(|b| b.front).collect();
         let ticks = region_middles(&bars);
         let dividers = region_starts(&bars)
             .map(|(i, _)| i)
@@ -248,7 +274,7 @@ impl<'a> MetageneView<'a> {
             .collect();
         Bars {
             values: &values,
-            front: None,
+            front: front.as_deref(),
             accent: &|_| false,
             colour: &|i| REGION_COLOURS[bars[i].region],
             y_scale: self.y_scale,
@@ -259,7 +285,7 @@ impl<'a> MetageneView<'a> {
             dividers,
             title,
             x_title: "metagene position (MetaPlotR scale)".into(),
-            y_title: "sites".into(),
+            y_title: self.unit(),
         }
         .draw(c, x, y, w, h);
     }
@@ -280,7 +306,10 @@ impl<'a> MetageneView<'a> {
         Line::from(vec![
             Span::styled(format!(" {}", REGION_NAMES[b.region]), HIGHLIGHT),
             dim(format!("  {bins}   coordinate {lo:.3}-{hi:.3}   ")),
-            Span::raw(format!("{} sites", count_text(b.count))),
+            Span::raw(match b.front {
+                Some(f) => format!("{}/{} {}", count_text(f), count_text(b.count), self.unit()),
+                None => format!("{} {}", count_text(b.count), self.unit()),
+            }),
             dim(format!(
                 " ({:.2}% of the track)",
                 if total > 0.0 {
@@ -294,9 +323,9 @@ impl<'a> MetageneView<'a> {
 
     fn summary_line(&self) -> Line<'static> {
         let dim = |t: String| Span::styled(t, DIM);
-        let mut spans = vec![dim(" sites per region:".into())];
+        let mut spans = vec![dim(format!(" {} per region:", self.unit()))];
         for &r in self.track.regions() {
-            let n: f64 = self.hist.counts[r].iter().sum();
+            let n = self.region_total(r);
             spans.push(dim(format!("  {} ", REGION_NAMES[r])));
             spans.push(Span::raw(count_text(n)));
         }
@@ -337,6 +366,7 @@ impl Screen for MetageneView<'_> {
             KeyCode::Char('[' | '-') => self.set_merge(-1),
             KeyCode::Char('a') => self.merge = None,
             KeyCode::Char('y') => self.y_scale = self.y_scale.next(),
+            KeyCode::Char('c') if self.hist.has_reads() => self.show = self.show.next(),
             KeyCode::Char('q') | KeyCode::Esc | KeyCode::Enter => self.done = true,
             _ => {}
         }
@@ -357,7 +387,8 @@ impl Screen for MetageneView<'_> {
             Track::NonCoding => "ncRNA",
         };
         let block = panel(format!(" {track_name} track "), true);
-        let inner = block.inner(body);
+        let [inner, key] =
+            Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(block.inner(body));
         let width = inner.width.saturating_sub(GUTTER) as usize;
         self.shown_merge = self
             .merge
@@ -373,6 +404,9 @@ impl Screen for MetageneView<'_> {
         );
         frame.render_widget(header("metagene", &self.title, &extra), top);
         frame.render_widget(block, body);
+        let next = self.hist.has_reads().then(|| self.show.next().short());
+        let key_line = region_key(&self.unit(), self.track.regions(), next);
+        frame.render_widget(Paragraph::new(key_line), key);
 
         let mut plot = std::mem::take(&mut self.plot);
         let drawn = self.controls.images().is_some_and(|picker| {
@@ -384,35 +418,16 @@ impl Screen for MetageneView<'_> {
         });
         self.plot = plot;
 
-        // The glyph plot counts whole sites; split weights round.
-        let counts: Vec<usize> = bars.iter().map(|b| b.count.round() as usize).collect();
-        let mut starts: Vec<Option<&str>> = vec![None; bars.len()];
-        for (i, name) in region_starts(&bars) {
-            starts[i] = Some(name);
-        }
-        let label = |k: i32| {
-            starts
-                .get(k as usize)
-                .copied()
-                .flatten()
-                .map(str::to_string)
-        };
         if !drawn {
-            HistPlot {
-                bins: Binning::with_width(Scale::Linear, 1.0),
-                kmin: 0,
-                counts: &counts,
-                style: &|k| {
-                    bars.get(k as usize)
-                        .map_or(PLAIN, |b| region_style(b.region))
-                },
-                subset: None,
+            let values: Vec<f64> = bars.iter().map(|b| b.count).collect();
+            let front: Option<Vec<f64>> = bars.iter().map(|b| b.front).collect();
+            RegionGlyphs {
+                values: &values,
+                front: front.as_deref(),
+                region: &|i| bars[i].region,
+                names: region_middles(&bars),
+                pointer: (!bars.is_empty()).then(|| self.cursor_bar(&bars)),
                 y_scale: self.y_scale,
-                y_max: None,
-                pointer: (!bars.is_empty()).then(|| self.cursor_bar(&bars) as i32),
-                marks: Vec::new(),
-                x_label: Some(&label),
-                tick_every: Some(1),
             }
             .render(frame.buffer_mut(), inner);
         }
@@ -432,6 +447,7 @@ impl Screen for MetageneView<'_> {
         keys.push(("q", "quit"));
         let help = self.controls.footer().unwrap_or_else(|| help_line(&keys));
         frame.render_widget(help, footer);
+        self.controls.render_save(frame, frame.area());
     }
 }
 

@@ -105,13 +105,8 @@ fn kept_key(weight: Weight) -> Line<'static> {
 /// The metagene's key: the kept sites in each region's colour, with the key
 /// that switches what they add up.
 fn meta_key(weight: Weight) -> Line<'static> {
-    let mut line = Line::from(Span::styled(format!("kept {}:  ", weight.unit()), DIM));
-    let regions: Vec<(Style, String)> = (0..3)
-        .map(|r| (region_style(r), REGION_NAMES[r].to_string()))
-        .collect();
-    line.extend(key_line(&regions).spans);
-    line.push_span(Span::styled(format!("c: {}", weight.next().unit()), DIM));
-    line
+    let unit = format!("kept {}", weight.unit());
+    region_key(&unit, &[0, 1, 2], Some(weight.next().unit()))
 }
 
 /// Bars of the `kept` sites, in the box `(x, y, w, h)`, each in `colour`.
@@ -387,41 +382,13 @@ impl<'a> SitePicker<'a> {
         if drawn {
             return;
         }
-        // Stretch the bins over the whole chart, one column each: HistPlot
-        // gives a bin a whole number of columns, which leaves the rest of a
-        // panel empty.
-        let n = m.kept.len().max(1);
-        let cols = (plot.width.saturating_sub(GUTTER) as usize).max(n);
-        let bin_of = |x: usize| x * n / cols;
-        // The glyph plot counts whole sites; split weights round.
-        let stretch = |v: &[f64]| {
-            (0..cols)
-                .map(|x| v[bin_of(x)].round() as usize)
-                .collect::<Vec<_>>()
-        };
-        let kept = stretch(m.kept);
-        let ticks: Vec<(usize, String)> = meta_ticks(m.regions)
-            .into_iter()
-            .map(|(b, t)| ((2 * b + 1) * cols / (2 * n), t))
-            .collect();
-        let label = |k: i32| {
-            ticks
-                .iter()
-                .find(|(i, _)| *i as i32 == k)
-                .map(|(_, t)| t.clone())
-        };
-        HistPlot {
-            bins: Binning::with_width(Scale::Linear, 1.0),
-            kmin: 0,
-            counts: &kept,
-            style: &|k| region_style(meta_region(m.regions, bin_of(k.max(0) as usize))),
-            subset: None,
-            y_scale: Scale::Linear,
-            y_max: None,
+        RegionGlyphs {
+            values: m.kept,
+            front: None,
+            region: &|i| meta_region(m.regions, i),
+            names: meta_ticks(m.regions),
             pointer: None,
-            marks: Vec::new(),
-            x_label: Some(&label),
-            tick_every: Some(1),
+            y_scale: Scale::Linear,
         }
         .render(frame.buffer_mut(), plot);
     }

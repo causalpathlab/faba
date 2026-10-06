@@ -449,6 +449,7 @@ fn sized_model(utr5: i64, cds: i64, utr3: i64) -> TranscriptModel {
 
 fn histogram(counts: [Vec<f64>; 4], sf5: f64, sf3: f64) -> GeneFeatureHistogram {
     GeneFeatureHistogram {
+        reads: None,
         counts,
         scale: ScaleFactors {
             twice_median: [310, 2052, 3440],
