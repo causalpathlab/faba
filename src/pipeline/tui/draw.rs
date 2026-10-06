@@ -464,15 +464,17 @@ fn draw_run(app: &App, frame: &mut Frame, body: Rect) {
         .map(|l| Line::raw(l.clone()))
         .collect();
     if let Some(p) = bar {
-        let filled = (p.len > 0).then(|| filled(p.pos, p.len, BAR));
-        lines.push(match filled {
-            Some(filled) => Line::from(vec![
-                Span::styled("█".repeat(filled), ACCENTED),
-                Span::styled("░".repeat(BAR.saturating_sub(filled)), DIM),
-                Span::raw(format!(" {}/{} {}", p.pos, p.len, p.what)),
-            ]),
+        lines.push(match p.len > 0 {
+            true => {
+                let [on, off] = crate::tui::bar_spans(p.pos, p.len, BAR, ACCENTED);
+                Line::from(vec![
+                    on,
+                    off,
+                    Span::raw(format!(" {}/{} {}", p.pos, p.len, p.what)),
+                ])
+            }
             // A spinner: no length to fill.
-            None => Line::from(vec![
+            false => Line::from(vec![
                 Span::styled("⠿ ", ACCENTED),
                 Span::raw(p.what.clone()),
             ]),

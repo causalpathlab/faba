@@ -24,6 +24,7 @@ pub(super) fn run_miami_figure(args: &PileupArgs, selector: &Selector) -> anyhow
         membership.as_ref(),
         &args.top_modality,
         false,
+        None,
     )?;
     anyhow::ensure!(
         grouped.matched > 0,

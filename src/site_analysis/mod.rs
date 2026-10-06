@@ -1,5 +1,7 @@
+pub mod input_picker;
 pub mod metagene;
 pub mod miami;
+pub mod output_dir;
 pub mod pileup;
 pub mod scan_pwm;
 pub mod show;

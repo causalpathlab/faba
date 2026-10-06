@@ -40,8 +40,8 @@ use super::progress::Progress;
 use super::sites::{genomic_sites, Criterion, GeneSites, SiteTable};
 use crate::tui::browser::{is_annotation, Browser, Nav};
 use crate::tui::{
-    apply_key, button_popup, enter_hint, filled, first_visible, is_apply, popup, popup_frame,
-    run_view, tab_bar, wheel_key, Hits, View, APPLY_KEYS,
+    apply_key, button_popup, enter_hint, first_visible, is_apply, popup, popup_frame, run_view,
+    tab_bar, wheel_key, Hits, View, APPLY_KEYS,
 };
 
 mod annotation;

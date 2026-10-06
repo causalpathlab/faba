@@ -70,6 +70,9 @@ pub struct Browser {
     /// The listing: `..` first unless at the root, then subfolders, then
     /// files, each sorted, narrowed by what has been typed.
     pub list: FindList<Entry>,
+    /// The files marked, in the order marked, from any folder; `None` when
+    /// this browser does not mark.
+    pub marked: Option<Vec<PathBuf>>,
     keep: Box<dyn Fn(&str) -> bool>,
     tag: Box<dyn FnMut(&Path) -> bool>,
 }
@@ -85,8 +88,28 @@ impl Browser {
         Self {
             cwd,
             list: FindList::default(),
+            marked: None,
             keep: Box::new(keep),
             tag: Box::new(tag),
+        }
+    }
+
+    /// Marking files, with none marked yet.
+    pub fn marking(mut self) -> Self {
+        self.marked = Some(Vec::new());
+        self
+    }
+
+    /// Mark `file`, or unmark it if it was; nothing when not marking.
+    pub fn toggle_mark(&mut self, file: PathBuf) {
+        let Some(marked) = &mut self.marked else {
+            return;
+        };
+        match marked.iter().position(|m| *m == file) {
+            Some(i) => {
+                marked.remove(i);
+            }
+            None => marked.push(file),
         }
     }
 
@@ -110,7 +133,7 @@ impl Browser {
             let is_dir = e.file_type().is_ok_and(|t| t.is_dir()) || e.path().is_dir();
             if is_dir && !name.ends_with(".zarr") {
                 dirs.push(name);
-            } else if !is_dir && (self.keep)(&name) {
+            } else if (self.keep)(&name) {
                 files.push(name);
             }
         }
@@ -187,6 +210,7 @@ impl Browser {
 
     /// `rows` lines of the listing around the cursor, `width` wide; marked
     /// entries carry `tag`, and an empty listing says `empty`.
+    /// With marking on, each file has a `[x]`/`[ ]` box.
     pub fn lines(&self, rows: usize, width: usize, tag: &str, empty: &str) -> Vec<Line<'static>> {
         if self.list.is_empty() {
             let why = self.list.empty_note(empty);
@@ -203,7 +227,13 @@ impl Browser {
                 } else {
                     String::new()
                 };
-                let name_w = width.saturating_sub(tag.len() + 3);
+                let check = match &self.marked {
+                    None => "",
+                    Some(_) if e.dir => "    ",
+                    Some(m) if m.contains(&e.path) => "[x] ",
+                    Some(_) => "[ ] ",
+                };
+                let name_w = width.saturating_sub(tag.len() + check.len() + 3);
                 let name = if e.dir {
                     format!("{}/", e.name)
                 } else {
@@ -216,6 +246,7 @@ impl Browser {
                 };
                 Line::from(vec![
                     marker(selected),
+                    Span::styled(check, HIGHLIGHT),
                     Span::styled(format!("{name:<name_w$.name_w$}"), style),
                     Span::styled(tag, DIM),
                 ])

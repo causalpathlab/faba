@@ -79,6 +79,17 @@ fn zoom_keeps_the_cursor_and_stops_at_a_base_per_bar() {
         press(&mut v, KeyCode::Char('-'));
     }
     assert_eq!(v.window, EXTENT);
+    // Past the whole extent, `-` asks for twice its span around it.
+    assert_eq!(
+        v.exit,
+        Some(Exit::Locus {
+            lo: 950_000,
+            hi: 1_150_000,
+            at: c
+        }),
+        "the cursor kept"
+    );
+    v.exit = None;
     press(&mut v, KeyCode::Char('+'));
     press(&mut v, KeyCode::Char('0'));
     assert_eq!(v.window, EXTENT);
@@ -507,4 +518,18 @@ fn unlike_tracks_are_not_mirrored() {
         EXTENT,
     );
     assert_eq!(v.rows(), vec![Row::Track(0), Row::Track(1)]);
+}
+
+#[test]
+fn shift_m_switches_modality_only_where_it_can() {
+    let (m, s) = (positions(), sites());
+    let mut v = view(&m, &s);
+    screen(&mut v, 100, 24);
+    press(&mut v, KeyCode::Char('n'));
+    press(&mut v, KeyCode::Char('M'));
+    assert_eq!(v.exit, None, "named files: nothing to switch to");
+    v.switchable = true;
+    assert!(screen(&mut v, 200, 24).contains("m6A/A-to-I"));
+    press(&mut v, KeyCode::Char('M'));
+    assert_eq!(v.exit, Some(Exit::Modality { at: v.cursor }));
 }

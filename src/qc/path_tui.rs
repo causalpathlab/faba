@@ -38,16 +38,16 @@ struct PathPicker {
     decision: Option<Option<(String, String)>>,
 }
 
-/// A browser of subdirectories only, tagging those that hold faba matrices
-/// or site tables, each checked once.
-fn faba_browser(cwd: PathBuf) -> Browser {
+/// A browser of subdirectories and the files `keep` accepts, tagging the
+/// folders that hold faba matrices or site tables, each checked once.
+pub fn faba_browser(cwd: PathBuf, keep: impl Fn(&str) -> bool + 'static) -> Browser {
     let mut seen: FxHashMap<PathBuf, bool> = FxHashMap::default();
     let tag = move |dir: &Path| {
         *seen
             .entry(dir.to_path_buf())
             .or_insert_with(|| looks_like_faba_dir(dir))
     };
-    Browser::new(cwd, |_| false, tag)
+    Browser::new(cwd, keep, tag)
 }
 
 /// A directory next to `input` named after it, that does not exist yet.
@@ -63,7 +63,7 @@ impl PathPicker {
     fn new(cwd: PathBuf, input: Option<PathBuf>, given_output: Option<String>) -> Self {
         let mut p = Self {
             step: Step::Input,
-            browser: faba_browser(cwd.clone()),
+            browser: faba_browser(cwd.clone(), |_| false),
             error: None,
             given_output,
             decision: None,

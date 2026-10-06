@@ -4,12 +4,19 @@
 //! folder.
 
 pub mod browser;
+pub mod busy;
+
+pub use busy::{busy, busy_counting};
+
+/// Frames of the spinners the workspace draws.
+pub const SPINNER: &str = "⠁⠂⠄⡀⢀⠠⠐⠈";
 
 use std::path::{Path, PathBuf};
 
-use data_beans::interactive::ui::{panel, Screen, HIGHLIGHT};
+use data_beans::interactive::ui::{panel, Screen, DIM, HIGHLIGHT};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 use ratatui::layout::Rect;
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph};
 use ratatui::Frame;
@@ -124,6 +131,16 @@ pub fn tab_bar<T: Clone>(
         spans.extend(line.spans);
     }
     Line::from(spans)
+}
+
+/// A `width`-cell bar for `done` of `total`: the filled part in `on`, the
+/// rest dim.
+pub fn bar_spans(done: u64, total: u64, width: usize, on: Style) -> [Span<'static>; 2] {
+    let full = filled(done, total, width);
+    [
+        Span::styled("█".repeat(full), on),
+        Span::styled("░".repeat(width.saturating_sub(full)), DIM),
+    ]
 }
 
 /// How many of `width` cells a bar shows filled for `done` of `total`.

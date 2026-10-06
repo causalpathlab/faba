@@ -716,16 +716,14 @@ impl<'a> SitePicker<'a> {
             step = "drawing the figures".into();
         }
         const BAR: usize = 40;
-        let filled = filled(done as u64, total as u64, BAR);
         let lines = vec![
             Line::from(Span::styled("Writing the filtered fileset to ", DIM)),
             Line::from(Span::styled(format!("  {}", self.writer.output), HIGHLIGHT)),
             Line::from(""),
-            Line::from(vec![
-                Span::styled("█".repeat(filled), ACCENTED),
-                Span::styled("░".repeat(BAR.saturating_sub(filled)), DIM),
-                Span::raw(format!("  {done} / {total}")),
-            ]),
+            {
+                let [on, off] = crate::tui::bar_spans(done as u64, total as u64, BAR, ACCENTED);
+                Line::from(vec![on, off, Span::raw(format!("  {done} / {total}"))])
+            },
             Line::from(Span::styled(format!("{step:<BAR$}"), DIM)),
         ];
         popup(frame, area, " writing ", lines);

@@ -54,6 +54,10 @@ pub struct View<'a> {
     pub keys: Option<&'a [Box<str>]>,
     /// The annotation's gene models, possibly still loading.
     pub genes: Option<SharedModels>,
+    /// Where the cursor starts; the first site when `None`.
+    pub cursor: Option<i64>,
+    /// Whether `M` switches to the other modality's sites.
+    pub switchable: bool,
 }
 
 /// Minimum gap between genes in one lane, as a share of the window, so labels stay apart.
@@ -75,7 +79,21 @@ pub enum Exit {
     Genes,
     /// `/`: a gene or locus the view cannot show itself.
     Search(String),
+    /// `-` past the whole view: this chromosome's `lo..=hi`, wider, the
+    /// cursor kept `at`.
+    Locus {
+        lo: i64,
+        hi: i64,
+        at: i64,
+    },
+    /// `M`: the other modality's sites here, the cursor kept `at`.
+    Modality {
+        at: i64,
+    },
 }
+
+/// The widest span `-` reloads.
+const MAX_SPAN: i64 = 10_000_000;
 
 /// State of the browser, independent of the terminal so it can be tested.
 pub struct PileupView<'a> {
@@ -113,6 +131,8 @@ pub struct PileupView<'a> {
     genes: Vec<GeneModel>,
     /// The annotation while it is still loading.
     pending_genes: Option<SharedModels>,
+    /// Whether `M` switches to the other modality's sites.
+    switchable: bool,
     exit: Option<Exit>,
 }
 
@@ -157,6 +177,7 @@ impl<'a> PileupView<'a> {
             mirror: true,
             genes: Vec::new(),
             pending_genes: None,
+            switchable: false,
             exit: None,
         }
     }
@@ -428,6 +449,26 @@ impl<'a> PileupView<'a> {
         self.clamp_window();
     }
 
+    /// Zoom out twice as wide; with all of the view's own span in view,
+    /// ask the caller for twice that span around it, flanks and their
+    /// genes included, up to [`MAX_SPAN`].
+    fn zoom_out(&mut self) {
+        let (lo, hi) = self.extent;
+        if self.window != self.extent {
+            return self.zoom(2.0);
+        }
+        if hi - lo >= MAX_SPAN {
+            self.status = Some("zoomed out as far as it goes".into());
+            return;
+        }
+        let pad = ((hi - lo) / 2).max(self.columns as i64);
+        self.exit = Some(Exit::Locus {
+            lo: (lo - pad).max(1),
+            hi: hi + pad,
+            at: self.cursor,
+        });
+    }
+
     /// A `/` search: a locus in this view moves there; anything else exits to the caller.
     fn submit(&mut self, query: &str) {
         match super::parse_query(query) {
@@ -674,6 +715,9 @@ impl Screen for PileupView<'_> {
                 })
             }
             KeyCode::Char('m') => self.mirror = !self.mirror,
+            KeyCode::Char('M') if self.switchable => {
+                self.exit = Some(Exit::Modality { at: self.cursor })
+            }
             KeyCode::Left | KeyCode::Char('h') => self.move_cursor(-1),
             KeyCode::Right | KeyCode::Char('l') => self.move_cursor(1),
             KeyCode::PageUp => self.move_cursor(-(self.columns as i64) / 2),
@@ -681,7 +725,7 @@ impl Screen for PileupView<'_> {
             KeyCode::Char('n') => self.jump_site(true),
             KeyCode::Char('p') => self.jump_site(false),
             KeyCode::Char('+' | '=') => self.zoom(0.5),
-            KeyCode::Char('-') => self.zoom(2.0),
+            KeyCode::Char('-') => self.zoom_out(),
             KeyCode::Char('0') => self.window = self.extent,
             KeyCode::Char('y') => self.y_scale = self.y_scale.next(),
             KeyCode::Char('g') => self.exit = Some(Exit::Genes),
@@ -898,6 +942,9 @@ impl PileupView<'_> {
         if self.mirrorable() {
             keys.push(("m", if self.mirror { "split" } else { "mirror" }));
         }
+        if self.switchable {
+            keys.push(("M", "m6A/A-to-I"));
+        }
         self.controls.help_keys(&mut keys);
         keys.push(("q", "quit"));
         help_line(&keys)
@@ -913,6 +960,10 @@ pub fn show_pileup(view: View, tracks: Vec<Track>, status: Option<String>) -> an
     browser.keys = view.keys.map(<[_]>::to_vec);
     browser.pending_genes = view.genes;
     browser.take_genes();
+    browser.switchable = view.switchable;
+    if let Some(at) = view.cursor {
+        browser.cursor = at.clamp(browser.extent.0, browser.extent.1);
+    }
     browser.status = status.or_else(|| {
         let loading = browser.pending_genes.is_some();
         loading.then(|| LOADING.to_string())
