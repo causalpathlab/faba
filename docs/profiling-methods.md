@@ -183,7 +183,9 @@ The tools that read an output directory use the records to find the annotation a
 `pileup` takes the GFF for its gene models (browser and figure) when `--gtf` is not given,
 `metagene` takes it when `-g` is not given, and `pwm --source reference` takes the genome when
 `-f` is not given. The newest record in the directory that names an existing file wins, and the
-file used is logged. Of the two paths, `path` is used while it still leads to `resolved`. If the
+file used is logged. When none is found on this machine, the `pileup` browser asks for a GTF or
+GFF and the `pwm` view for a FASTA; Tab in that pop-up downloads a GENCODE or Ensembl reference
+(its GTF and genome together) into `~/faba_refs/`, as `faba run` does. Of the two paths, `path` is used while it still leads to `resolved`. If the
 link has been repointed since the run, or removed, `resolved` is used instead, because that is
 the file the outputs were made from, and a repointed link is warned about. `qc` does not copy the input's records, which describe the input directory,
 into the new fileset. Its own record names that directory as `fileset`, carries its `gff` and

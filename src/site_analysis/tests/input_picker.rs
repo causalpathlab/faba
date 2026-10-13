@@ -155,7 +155,12 @@ fn the_genome_picker_lists_fasta_and_offers_a_download() {
     for f in ["hg38.fa", "mm10.fasta.gz", "notes.txt"] {
         std::fs::write(tmp.path().join(f), b"").unwrap();
     }
-    let mut p = GenomePicker::new(tmp.path().to_path_buf(), "pwm", Some(true));
+    let mut p = ReferencePicker::new(
+        tmp.path().to_path_buf(),
+        "pwm",
+        Reference::Genome,
+        Some(true),
+    );
     let names: Vec<&str> = p.browser.list.shown().map(|e| e.name.as_str()).collect();
     assert!(names.contains(&"hg38.fa") && names.contains(&"mm10.fasta.gz"));
     assert!(!names.contains(&"notes.txt"), "{names:?}");
@@ -170,7 +175,29 @@ fn the_genome_picker_lists_fasta_and_offers_a_download() {
     press(&mut p, KeyCode::Enter);
     assert_eq!(p.decision, Some(Some(tmp.path().join("hg38.fa"))));
 
-    let mut p = GenomePicker::new(tmp.path().to_path_buf(), "pwm", None);
+    let mut p = ReferencePicker::new(tmp.path().to_path_buf(), "pwm", Reference::Genome, None);
     press(&mut p, KeyCode::Esc);
     assert_eq!(p.decision, Some(None), "Esc cancels");
+}
+
+#[test]
+fn the_annotation_picker_lists_gtf_and_gff() {
+    let tmp = tempfile::tempdir().unwrap();
+    for f in ["genes.gtf.gz", "genes.gff3", "hg38.fa"] {
+        std::fs::write(tmp.path().join(f), b"").unwrap();
+    }
+    let mut p = ReferencePicker::new(
+        tmp.path().to_path_buf(),
+        "pileup",
+        Reference::Annotation,
+        None,
+    );
+    let names: Vec<&str> = p.browser.list.shown().map(|e| e.name.as_str()).collect();
+    assert!(names.contains(&"genes.gtf.gz") && names.contains(&"genes.gff3"));
+    assert!(!names.contains(&"hg38.fa"), "{names:?}");
+    press(&mut p, KeyCode::Tab);
+    assert!(
+        matches!(p.fetching, Fetching::Choosing(_)),
+        "Tab downloads here too"
+    );
 }

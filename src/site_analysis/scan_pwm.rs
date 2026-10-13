@@ -2,6 +2,7 @@
 mod tests;
 mod tui;
 
+use super::input_picker::Reference;
 use super::output_dir;
 use super::site_io::*;
 use crate::common::*;
@@ -374,7 +375,9 @@ pub fn run_scan_pwm(args: &ScanPwmArgs) -> anyhow::Result<()> {
                 let chr = read_sites(&site_files[0])
                     .ok()
                     .and_then(|s| s.first().map(|s| s.chr.starts_with("chr")));
-                let Some(fasta) = super::input_picker::ask_genome("pwm", chr)? else {
+                let Some(fasta) =
+                    super::input_picker::ask_reference("pwm", Reference::Genome, chr)?
+                else {
                     return Ok(());
                 };
                 Some(fasta.to_string_lossy().into())

@@ -14,7 +14,7 @@ use ratatui::Frame;
 use crate::pipeline::tui::fetch::{Catalogue, Fetch};
 use crate::qc::layout::looks_like_faba_dir;
 use crate::qc::path_tui::faba_browser;
-use crate::tui::browser::{is_fasta, Browser, Nav};
+use crate::tui::browser::{is_annotation, is_fasta, Browser, Nav};
 use crate::tui::{is_apply, popup_frame, run_view, tilde, View, APPLY_KEYS};
 
 /// What was chosen: the marked files, or one folder.
@@ -211,19 +211,54 @@ impl Screen for InputPicker {
     }
 }
 
-/// Choosing a genome FASTA, by Enter on one, or downloading one (Tab)
-/// from the references `faba run` offers: for a command that found none
-/// recorded, such as `pwm`.
-pub struct GenomePicker {
+/// Which reference a [`ReferencePicker`] asks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reference {
+    /// A genome FASTA, as `pwm` reads.
+    Genome,
+    /// A GTF or GFF, as `pileup` draws its genes from.
+    Annotation,
+}
+
+impl Reference {
+    fn keep(self) -> fn(&str) -> bool {
+        match self {
+            Reference::Genome => is_fasta,
+            Reference::Annotation => is_annotation,
+        }
+    }
+
+    /// What it is, as the pop-up says.
+    fn what(self) -> &'static str {
+        match self {
+            Reference::Genome => "genome",
+            Reference::Annotation => "annotation",
+        }
+    }
+
+    /// The files it lists.
+    fn files(self) -> &'static str {
+        match self {
+            Reference::Genome => "FASTA",
+            Reference::Annotation => "GTF or GFF",
+        }
+    }
+}
+
+/// Choosing a reference, by Enter on one, or downloading one (Tab) from
+/// the references `faba run` offers, which come as a GTF and a genome
+/// together: for a command that found none recorded on this machine.
+pub struct ReferencePicker {
     browser: Browser,
     command: &'static str,
+    kind: Reference,
     /// Choosing a reference to download, or downloading it.
     fetching: Fetching,
     /// Whether the sites name chromosomes `chr1`, for the download list.
     chr: Option<bool>,
-    /// Why the last download ended without a genome.
+    /// Why the last download ended without a reference.
     note: Option<String>,
-    /// The genome; `Some(None)` when cancelled.
+    /// The reference; `Some(None)` when cancelled.
     pub decision: Option<Option<PathBuf>>,
 }
 
@@ -233,13 +268,14 @@ enum Fetching {
     Downloading(Fetch),
 }
 
-impl GenomePicker {
-    /// Listing the folders and FASTA files at `cwd`; `chr` is whether the
-    /// sites name chromosomes `chr1`, if known.
-    pub fn new(cwd: PathBuf, command: &'static str, chr: Option<bool>) -> Self {
+impl ReferencePicker {
+    /// Listing the folders and the `kind`'s files at `cwd`; `chr` is
+    /// whether the sites name chromosomes `chr1`, if known.
+    pub fn new(cwd: PathBuf, command: &'static str, kind: Reference, chr: Option<bool>) -> Self {
         Self {
-            browser: Browser::new(cwd, is_fasta, |_| false).opened(),
+            browser: Browser::new(cwd, kind.keep(), |_| false).opened(),
             command,
+            kind,
             fetching: Fetching::No,
             chr,
             note: None,
@@ -268,9 +304,9 @@ impl GenomePicker {
     }
 }
 
-impl View for GenomePicker {}
+impl View for ReferencePicker {}
 
-impl Screen for GenomePicker {
+impl Screen for ReferencePicker {
     fn done(&self) -> bool {
         self.decision.is_some()
     }
@@ -317,7 +353,12 @@ impl Screen for GenomePicker {
             Fetching::Downloading(f) => {
                 let done = f.status.lock().ok().and_then(|mut s| s.done.take());
                 match done {
-                    Some(Ok((_, genome))) => self.decision = Some(Some(genome)),
+                    Some(Ok((gtf, genome))) => {
+                        self.decision = Some(Some(match self.kind {
+                            Reference::Genome => genome,
+                            Reference::Annotation => gtf,
+                        }))
+                    }
                     Some(Err(e)) => {
                         self.note = Some(format!("{} failed: {e}", f.label));
                         self.fetching = Fetching::No;
@@ -331,7 +372,8 @@ impl Screen for GenomePicker {
 
     fn render(&mut self, frame: &mut Frame) {
         let area = frame.area();
-        frame.render_widget(header(self.command, "choose the genome", ""), area);
+        let choose = format!("choose the {}", self.kind.what());
+        frame.render_widget(header(self.command, &choose, ""), area);
         let w = area.width.saturating_sub(4).clamp(20, 90);
         let help = [
             help_line(&[
@@ -350,7 +392,9 @@ impl Screen for GenomePicker {
         let help_rows = help.len() as u16;
         let rows = area.height.saturating_sub(7 + help_rows).clamp(3, 24);
         let title = format!(
-            " no genome recorded: a FASTA · {} {}",
+            " no {} found: a {} · {} {}",
+            self.kind.what(),
+            self.kind.files(),
             tilde(&self.browser.cwd),
             self.browser.list.find.tag()
         );
@@ -359,7 +403,7 @@ impl Screen for GenomePicker {
             rows as usize,
             inner.width as usize,
             "",
-            "no subfolder or FASTA here",
+            &format!("no subfolder or {} here", self.kind.files()),
         );
         lines.push(match &self.note {
             Some(why) => Line::from(Span::styled(format!(" {why}"), HIGHLIGHT)),
@@ -375,11 +419,15 @@ impl Screen for GenomePicker {
     }
 }
 
-/// A genome FASTA chosen in a browser at the working folder, or downloaded;
-/// `Ok(None)` when the user cancels. `chr` is whether the sites name
-/// chromosomes `chr1`, if known.
-pub fn ask_genome(command: &'static str, chr: Option<bool>) -> anyhow::Result<Option<PathBuf>> {
-    let mut picker = GenomePicker::new(std::env::current_dir()?, command, chr);
+/// A `kind` of reference chosen in a browser at the working folder, or
+/// downloaded; `Ok(None)` when the user cancels. `chr` is whether the
+/// sites name chromosomes `chr1`, if known.
+pub fn ask_reference(
+    command: &'static str,
+    kind: Reference,
+    chr: Option<bool>,
+) -> anyhow::Result<Option<PathBuf>> {
+    let mut picker = ReferencePicker::new(std::env::current_dir()?, command, kind, chr);
     run_view(&mut picker)?;
     Ok(picker.decision.flatten())
 }
