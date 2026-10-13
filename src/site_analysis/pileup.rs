@@ -601,16 +601,50 @@ fn browse(
     genes: Option<&SharedModels>,
     status: Option<String>,
     switchable: bool,
+    settings: &mut tui::Settings,
 ) -> anyhow::Result<tui::Exit> {
-    let is_log = matches!(args.signal, PileupSignal::Log10Sum);
+    let stacked_name = stacked_name(args, loaded);
+    let tracks = tracks_of(args, loaded, &stacked_name);
+    let view = view_of(loaded, genes, switchable);
+    tui::show_pileup(view, tracks, status, settings)
+}
+
+/// Browse `loaded`'s genes stacked top to bottom, as [`browse`] does one.
+fn browse_stack(
+    args: &PileupArgs,
+    loaded: &[Loaded],
+    genes: Option<&SharedModels>,
+    settings: &mut tui::Settings,
+) -> anyhow::Result<tui::Exit> {
+    let names: Vec<String> = loaded.iter().map(|l| stacked_name(args, l)).collect();
+    let views = loaded
+        .iter()
+        .zip(&names)
+        .map(|(l, name)| (view_of(l, genes, false), tracks_of(args, l, name)))
+        .collect();
+    tui::show_stack(views, settings)
+}
+
+/// What a read track with a total is titled: its two channels and signal.
+fn stacked_name(args: &PileupArgs, loaded: &Loaded) -> String {
     let (on, off) = channel_names(&loaded.modality);
-    let stacked_name = format!("{on} / {off} ({})", args.signal.name());
+    format!("{on} / {off} ({})", args.signal.name())
+}
+
+/// `loaded`'s tracks as the browser draws them, those with a total titled
+/// `stacked_name`, and its depth.
+fn tracks_of<'a>(
+    args: &'a PileupArgs,
+    loaded: &'a Loaded,
+    stacked_name: &'a str,
+) -> Vec<tui::Track<'a>> {
+    let is_log = matches!(args.signal, PileupSignal::Log10Sum);
     let mut tracks: Vec<tui::Track> = loaded
         .tracks
         .iter()
         .map(|t| {
             let name = match t.total {
-                Some(_) => &stacked_name,
+                Some(_) => stacked_name,
                 None => args.signal.name(),
             };
             let track = tui::Track::single(&t.label, name, &t.converted, is_log);
@@ -623,7 +657,17 @@ fn browse(
     if !args.depth_files.is_empty() {
         tracks.push(tui::Track::depth("depth", &loaded.depth));
     }
-    let view = tui::View {
+    tracks
+}
+
+/// What the browser shows of `loaded` besides its tracks.
+fn view_of<'a>(
+    loaded: &'a Loaded,
+    genes: Option<&SharedModels>,
+    switchable: bool,
+) -> tui::View<'a> {
+    let (on, off) = channel_names(&loaded.modality);
+    tui::View {
         title: &loaded.gene,
         chr: &loaded.chr,
         extent: loaded.extent,
@@ -633,8 +677,7 @@ fn browse(
         genes: genes.cloned(),
         cursor: loaded.cursor,
         switchable,
-    };
-    tui::show_pileup(view, tracks, status)
+    }
 }
 
 /// Bases shown around a single searched position.
@@ -818,7 +861,7 @@ fn switch_modality(
 /// `M` switches between the m6A and A-to-I sites of the output folders
 /// among `base`'s inputs.
 fn interactive(base: &PileupArgs, source: Source, first: Option<Loaded>) -> anyhow::Result<()> {
-    let genes = start_gene_models(source.args.annotation().as_deref());
+    let models = start_gene_models(source.args.annotation().as_deref());
     let switchable = base
         .data_files
         .iter()
@@ -826,8 +869,12 @@ fn interactive(base: &PileupArgs, source: Source, first: Option<Loaded>) -> anyh
     let mut sources = vec![source];
     let mut shown = 0;
     let mut filter = String::new();
+    // The genes marked in the list, kept while browsing.
+    let mut marked: Vec<usize> = Vec::new();
     let mut current = first;
     let mut status: Option<String> = None;
+    // How the bars are drawn carries from one gene to the next.
+    let mut settings = tui::Settings::default();
     loop {
         let Source {
             args,
@@ -841,9 +888,11 @@ fn interactive(base: &PileupArgs, source: Source, first: Option<Loaded>) -> anyh
                 let genes = catalog.get()?;
                 let mut list = picker::GenePicker::new(genes);
                 list.set_filter(&filter);
+                list.set_marked(&marked);
                 list.set_status(status.take());
                 let choice = list.pick()?;
                 filter = list.filter().to_string();
+                marked = list.marked().to_vec();
                 let query = match choice {
                     picker::Choice::Quit => return Ok(()),
                     picker::Choice::Gene(i) => {
@@ -851,6 +900,18 @@ fn interactive(base: &PileupArgs, source: Source, first: Option<Loaded>) -> anyh
                         let selector = Selector::exact(gene);
                         current = Some(loading(true, args, groups, &selector, None, gene)?);
                         continue;
+                    }
+                    picker::Choice::Genes(ids) => {
+                        let mut stacked = Vec::with_capacity(ids.len());
+                        for &i in &ids {
+                            let gene = &genes[i].gene;
+                            let selector = Selector::exact(gene);
+                            stacked.push(loading(true, args, groups, &selector, None, gene)?);
+                        }
+                        match browse_stack(args, &stacked, models.as_ref(), &mut settings)? {
+                            tui::Exit::Quit => return Ok(()),
+                            _ => continue,
+                        }
                     }
                     picker::Choice::Locus(q) => q,
                 };
@@ -864,7 +925,14 @@ fn interactive(base: &PileupArgs, source: Source, first: Option<Loaded>) -> anyh
                 }
             }
         };
-        match browse(args, &loaded, genes.as_ref(), status.take(), switchable)? {
+        match browse(
+            args,
+            &loaded,
+            models.as_ref(),
+            status.take(),
+            switchable,
+            &mut settings,
+        )? {
             tui::Exit::Quit => return Ok(()),
             tui::Exit::Genes => {}
             tui::Exit::Locus { lo, hi, at } => {

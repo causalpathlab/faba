@@ -405,7 +405,7 @@ fn saves_the_view_as_pdf_and_png() {
     }
     press(&mut p, KeyCode::Enter);
     assert!(dir.path().join("view1.pdf").exists());
-    assert!(dir.path().join("view1.png").exists());
+    assert!(!dir.path().join("view1.png").exists(), "PDF only");
     assert!(!p.done(), "saving does not leave the view");
     let svg = p.figure();
     assert!(svg.contains("kept") && svg.contains(figure::ACCENT));

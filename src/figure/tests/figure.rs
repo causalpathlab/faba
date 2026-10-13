@@ -10,6 +10,7 @@ fn panel() -> String {
     let front = [0.0, 1.0, 8.0, 4.0, 0.0];
     let mut c = Canvas::new(300.0, 160.0);
     Bars {
+        rotated: false,
         values: &values,
         front: Some(&front),
         accent: &|i| i < 2,
@@ -61,16 +62,15 @@ fn svg_is_well_formed_and_escaped() {
 }
 
 #[test]
-fn save_writes_pdf_and_png() {
+fn save_writes_a_pdf_only() {
     let dir = tempfile::tempdir().unwrap();
     let prefix = dir.path().join("fig1.pdf");
     let paths = save(&panel(), prefix.to_str().unwrap()).unwrap();
-    assert_eq!(paths.len(), 2);
+    assert_eq!(paths.len(), 1);
     let pdf = std::fs::read(&paths[0]).unwrap();
     assert!(pdf.starts_with(b"%PDF"), "{}", paths[0]);
-    let png = std::fs::read(&paths[1]).unwrap();
-    assert!(png.starts_with(b"\x89PNG"), "{}", paths[1]);
-    assert!(paths[0].ends_with("fig1.pdf") && paths[1].ends_with("fig1.png"));
+    assert!(paths[0].ends_with("fig1.pdf"));
+    assert!(!dir.path().join("fig1.png").exists(), "no PNG");
 }
 
 #[test]
@@ -106,6 +106,7 @@ fn empty_shapes_are_not_written() {
     c.rect(1.0, 1.0, 10.0, f64::NAN, INK);
     let values = [Some(0.0), Some(1.5), None, Some(-0.5), Some(0.0)];
     Diverging {
+        rotated: false,
         values: &values,
         ticks: Vec::new(),
         pointer: None,
@@ -183,4 +184,38 @@ fn the_prompt_never_replaces_a_saved_figure() {
     assert_eq!(p.text(), Some(at("logo_3").as_str()));
     assert_eq!(p.handle(key(KeyCode::Enter)), Some(at("logo_3")));
     assert!(p.taken().is_none());
+}
+
+#[test]
+fn a_bar_too_thin_to_write_is_skipped() {
+    let mut c = Canvas::new(100.0, 100.0);
+    c.rect(1.0, 1.0, 10.0, 0.004, INK);
+    c.rect(1.0, 1.0, 0.001, 10.0, INK);
+    c.rect(1.0, 1.0, 10.0, f64::INFINITY, INK);
+    c.rect(1.0, 1.0, 10.0, 0.5, INK);
+    let svg = c.finish();
+    assert!(
+        !svg.contains(r#"height="0.00""#) && !svg.contains(r#"width="0.00""#),
+        "{svg}"
+    );
+    assert!(!svg.contains("inf"), "{svg}");
+    // The background, and the one bar thick enough to see.
+    assert_eq!(svg.matches("<rect").count(), 2, "{svg}");
+}
+
+#[test]
+fn figures_tile_in_rows_of_the_given_width() {
+    let fig = |w: f64, h: f64| Canvas::new(w, h).finish();
+    let figs = [fig(100.0, 50.0), fig(80.0, 70.0), fig(100.0, 40.0)];
+    let size = |svg: &str| {
+        let get = |k: &str| -> f64 {
+            let at = svg.find(&format!(" {k}=\"")).unwrap() + k.len() + 3;
+            svg[at..].split('"').next().unwrap().parse().unwrap()
+        };
+        (get("width"), get("height"))
+    };
+    assert_eq!(size(&tile_svgs(&figs, 1)), (100.0, 160.0), "a column");
+    assert_eq!(size(&tile_svgs(&figs, 3)), (300.0, 70.0), "a row");
+    assert_eq!(size(&tile_svgs(&figs, 2)), (200.0, 110.0), "two to a row");
+    assert!(tile_svgs(&figs, 2).contains(r#"<svg x="100" y="0" "#));
 }

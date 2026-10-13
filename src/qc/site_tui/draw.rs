@@ -123,6 +123,7 @@ fn kept_bars(
     y_title: &str,
 ) {
     Bars {
+        rotated: false,
         values: kept,
         front: None,
         accent: &|_| false,
@@ -546,6 +547,7 @@ impl<'a> SitePicker<'a> {
         let values: Vec<f64> = col.hist.counts.iter().map(|&v| v as f64).collect();
         let front: Vec<f64> = self.tally.subset.iter().map(|&v| v as f64).collect();
         Bars {
+            rotated: false,
             values: &values,
             front: Some(&front),
             accent: &dropped,

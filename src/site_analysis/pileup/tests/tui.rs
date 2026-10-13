@@ -163,7 +163,7 @@ fn saves_the_window() {
         press(&mut v, KeyCode::Char(ch));
     }
     press(&mut v, KeyCode::Enter);
-    assert!(dir.path().join("pile1.pdf").exists() && dir.path().join("pile1.png").exists());
+    assert!(dir.path().join("pile1.pdf").exists() && !dir.path().join("pile1.png").exists());
 }
 
 #[test]
@@ -358,7 +358,7 @@ fn genes_row_stacks_overlapping_genes() {
     let text = screen(&mut v, 110, 34);
     assert!(text.contains("GENE1") && text.contains("GENE2"), "{text}");
     assert!(
-        text.contains('━') && text.contains('›') && text.contains('‹'),
+        text.contains('█') && text.contains('›') && text.contains('‹'),
         "{text}"
     );
     let svg = v.figure();
@@ -445,6 +445,10 @@ fn the_genes_model_widens_the_view_to_its_tss_and_tes() {
     ]));
     v.tick();
     assert_eq!(v.extent, (950_000, 1_149_999), "GENE1 only, TSS to TES");
+    assert_eq!(
+        v.window, v.extent,
+        "not zoomed yet: it opens on the whole gene"
+    );
     press(&mut v, KeyCode::Char('0'));
     assert_eq!(v.window, v.extent, "zooming all the way out shows it");
 }
@@ -559,4 +563,45 @@ fn enter_stays_esc_goes_back_to_the_genes_and_q_quits() {
     let mut v = view(&m, &s);
     press(&mut v, KeyCode::Char('q'));
     assert!(matches!(v.exit, Some(Exit::Quit)));
+}
+
+#[test]
+fn how_bars_draw_carries_to_the_next_gene() {
+    let (m, s) = (positions(), sites());
+    let mut v = view(&m, &s);
+    screen(&mut v, 100, 24);
+    press(&mut v, KeyCode::Char('y'));
+    press(&mut v, KeyCode::Char('Y'));
+    let kept = v.settings();
+    assert!(kept.y_lock.is_some());
+    let mut next = view(&m, &s);
+    next.apply(&kept);
+    assert_eq!(next.y_scale, v.y_scale, "the y scale carries over");
+    assert_eq!(next.y_lock, v.y_lock, "and the locked y maximum");
+    assert_eq!(next.bins().shared, v.y_lock);
+    press(&mut next, KeyCode::Char('Y'));
+    assert!(next.y_lock.is_none(), "Y again unlocks");
+}
+
+#[test]
+fn the_browser_draws_text_and_saves_turned_position_labels() {
+    let (m, s) = (positions(), sites());
+    let view = View {
+        title: "GENE1",
+        chr: "chr1",
+        extent: EXTENT,
+        on: "methylated",
+        off: "unmethylated",
+        keys: None,
+        genes: None,
+        cursor: None,
+        switchable: false,
+    };
+    let tracks = vec![Track::single("matrix", "sum", &m, false)];
+    let mut b = browser(view, tracks, None);
+    assert!(b.controls.images().is_none(), "no image mode in pileup");
+    let text = screen(&mut b, 100, 24);
+    assert!(!text.contains("image/text"), "{text}");
+    let _ = s;
+    assert!(b.figure().contains("rotate(-90)"), "position labels turned");
 }
