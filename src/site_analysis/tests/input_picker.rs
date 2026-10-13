@@ -1,7 +1,7 @@
 use super::*;
 use ratatui::crossterm::event::KeyModifiers;
 
-fn press(p: &mut InputPicker, code: KeyCode) {
+fn press(p: &mut impl View, code: KeyCode) {
     crate::tui::feed(p, KeyEvent::new(code, KeyModifiers::NONE));
 }
 
@@ -147,4 +147,30 @@ fn the_last_choice_is_kept_per_working_folder() {
     );
     let kept = std::fs::read_to_string(&memo).unwrap();
     assert_eq!(kept.lines().count(), 2, "one line per folder");
+}
+
+#[test]
+fn the_genome_picker_lists_fasta_and_offers_a_download() {
+    let tmp = tempfile::tempdir().unwrap();
+    for f in ["hg38.fa", "mm10.fasta.gz", "notes.txt"] {
+        std::fs::write(tmp.path().join(f), b"").unwrap();
+    }
+    let mut p = GenomePicker::new(tmp.path().to_path_buf(), "pwm", Some(true));
+    let names: Vec<&str> = p.browser.list.shown().map(|e| e.name.as_str()).collect();
+    assert!(names.contains(&"hg38.fa") && names.contains(&"mm10.fasta.gz"));
+    assert!(!names.contains(&"notes.txt"), "{names:?}");
+
+    // Tab: the sources, on the one naming chromosomes chr1; Esc backs out.
+    press(&mut p, KeyCode::Tab);
+    assert!(matches!(&p.fetching, Fetching::Choosing(c) if c.bam_chr == Some(true)));
+    press(&mut p, KeyCode::Esc);
+    assert!(matches!(p.fetching, Fetching::No) && p.decision.is_none());
+
+    p.browser.list.select("hg38.fa");
+    press(&mut p, KeyCode::Enter);
+    assert_eq!(p.decision, Some(Some(tmp.path().join("hg38.fa"))));
+
+    let mut p = GenomePicker::new(tmp.path().to_path_buf(), "pwm", None);
+    press(&mut p, KeyCode::Esc);
+    assert_eq!(p.decision, Some(None), "Esc cancels");
 }

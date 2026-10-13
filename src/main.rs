@@ -209,7 +209,8 @@ Example:\n  \
                       \n\
                       Give it a faba output directory (or a run record in it) and it reads\n\
                       that directory's site table of --modality against its recorded genome.\n\
-                      With no sites named, a browser asks for them. It then shows the PWM\n\
+                      With no sites named, a browser asks for them; with no genome recorded\n\
+                      (or found here), another asks for a FASTA, or downloads one. It then shows the PWM\n\
                       as a sequence logo full screen, unless --batch-process.",
         after_long_help = "\
 	Example:\n\

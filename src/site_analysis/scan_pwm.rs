@@ -279,29 +279,23 @@ fn write_pwm(pwm: &[DnaBaseCount], window: i64, output: &str) -> anyhow::Result<
 }
 
 /// The genome to read every table's sites against: `explicit`, else the one
-/// recorded next to each table, which must be the same for all.
-fn genome_of(explicit: Option<&str>, site_files: &[Box<str>]) -> anyhow::Result<Box<str>> {
+/// recorded next to the tables (and still there), which must be the same
+/// for all; `None` when none is.
+fn genome_of(explicit: Option<&str>, site_files: &[Box<str>]) -> anyhow::Result<Option<Box<str>>> {
     if let Some(genome) = explicit {
-        return Ok(genome.into());
+        return Ok(Some(genome.into()));
     }
-    let recorded = |f: &str| {
-        crate::run_record::explicit_or_recorded(None, f, "genome", "genome").ok_or_else(|| {
-            anyhow::anyhow!(
-                "--genome is required when --source reference: \
-                 no run record next to {f} names a genome"
-            )
-        })
-    };
-    let first = recorded(&site_files[0])?;
-    for f in &site_files[1..] {
-        let this = recorded(f)?;
-        anyhow::ensure!(
-            this == first,
-            "the site tables were called against different genomes ({first}, {this}); \
-             name one with --genome"
-        );
-    }
-    Ok(first)
+    let mut found: Vec<Box<str>> = site_files
+        .iter()
+        .filter_map(|f| crate::run_record::explicit_or_recorded(None, f, "genome", "genome"))
+        .collect();
+    found.dedup();
+    anyhow::ensure!(
+        found.len() < 2,
+        "the site tables were called against different genomes ({}); name one with --genome",
+        found.join(", ")
+    );
+    Ok(found.pop())
 }
 
 /// Whether `path` names an alignment file (BAM, CRAM or SAM) rather than
@@ -347,8 +341,28 @@ pub fn run_scan_pwm(args: &ScanPwmArgs) -> anyhow::Result<()> {
         );
     }
     // A genome missing, or differing between tables, fails before the reading.
+    let batch = crate::tui::batch(args.batch_process, "pwm");
+    // A genome missing, or differing between tables, is settled before the
+    // reading: in the view, by choosing a FASTA.
     let genome = match args.source {
-        PwmSource::Reference => Some(genome_of(args.genome_file.as_deref(), &site_files)?),
+        PwmSource::Reference => match genome_of(args.genome_file.as_deref(), &site_files)? {
+            Some(genome) => Some(genome),
+            None if batch => anyhow::bail!(
+                "--genome is required when --source reference: \
+                 no run record next to {} names a genome found here",
+                site_files[0]
+            ),
+            None => {
+                // The sites' chromosome names steer the download list.
+                let chr = read_sites(&site_files[0])
+                    .ok()
+                    .and_then(|s| s.first().map(|s| s.chr.starts_with("chr")));
+                let Some(fasta) = super::input_picker::ask_genome("pwm", chr)? else {
+                    return Ok(());
+                };
+                Some(fasta.to_string_lossy().into())
+            }
+        },
         PwmSource::Reads => {
             anyhow::ensure!(
                 !bam_files.is_empty(),
@@ -357,7 +371,6 @@ pub fn run_scan_pwm(args: &ScanPwmArgs) -> anyhow::Result<()> {
             None
         }
     };
-    let batch = crate::tui::batch(args.batch_process, "pwm");
     let what = format!("collecting bases around {} site table(s)", site_files.len());
     let pwm = crate::tui::busy(!batch, "pwm", &what, || {
         collect(args, &site_files, genome.as_deref(), &bam_files, !batch)

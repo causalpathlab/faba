@@ -615,7 +615,9 @@ None of these fit a model or produce a p-value.
   reverse-complementing minus-strand sites. Bases come from the reference FASTA by default
   (`--source reference`) or from the reads (`--source reads`). The output is a base-frequency
   matrix, not a log-odds PWM. It takes a faba output directory for its site table, browses for
-  sites when none is named, and shows a sequence logo unless `--batch-process`.
+  sites when none is named, and shows a sequence logo unless `--batch-process`. With no genome
+  recorded (or the recorded one not on this machine), the view asks for a FASTA, or downloads one
+  from GENCODE or Ensembl into `~/faba_refs/` as `faba run` does.
 - **`pileup`** aggregates the matrix rows matched by `--genes` and/or `--regions` into one ASCII
   histogram, or (with `--gtf`, `--bam`, `--format`, `--svg` or `--png`) a faceted Miami plot:
   sites above, gene model in the middle, read depth below, one panel per cell type.

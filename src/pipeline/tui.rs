@@ -3,7 +3,7 @@
 
 mod child;
 mod draw;
-mod fetch;
+pub(crate) mod fetch;
 mod form;
 mod inputs;
 mod keys;

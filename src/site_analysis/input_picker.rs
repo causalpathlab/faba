@@ -11,9 +11,10 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
+use crate::pipeline::tui::fetch::{Catalogue, Fetch};
 use crate::qc::layout::looks_like_faba_dir;
 use crate::qc::path_tui::faba_browser;
-use crate::tui::browser::{Browser, Nav};
+use crate::tui::browser::{is_fasta, Browser, Nav};
 use crate::tui::{is_apply, popup_frame, run_view, tilde, View, APPLY_KEYS};
 
 /// What was chosen: the marked files, or one folder.
@@ -208,6 +209,179 @@ impl Screen for InputPicker {
         lines.extend(help);
         frame.render_widget(Paragraph::new(lines), inner);
     }
+}
+
+/// Choosing a genome FASTA, by Enter on one, or downloading one (Tab)
+/// from the references `faba run` offers: for a command that found none
+/// recorded, such as `pwm`.
+pub struct GenomePicker {
+    browser: Browser,
+    command: &'static str,
+    /// Choosing a reference to download, or downloading it.
+    fetching: Fetching,
+    /// Whether the sites name chromosomes `chr1`, for the download list.
+    chr: Option<bool>,
+    /// Why the last download ended without a genome.
+    note: Option<String>,
+    /// The genome; `Some(None)` when cancelled.
+    pub decision: Option<Option<PathBuf>>,
+}
+
+enum Fetching {
+    No,
+    Choosing(Catalogue),
+    Downloading(Fetch),
+}
+
+impl GenomePicker {
+    /// Listing the folders and FASTA files at `cwd`; `chr` is whether the
+    /// sites name chromosomes `chr1`, if known.
+    pub fn new(cwd: PathBuf, command: &'static str, chr: Option<bool>) -> Self {
+        Self {
+            browser: Browser::new(cwd, is_fasta, |_| false).opened(),
+            command,
+            fetching: Fetching::No,
+            chr,
+            note: None,
+            decision: None,
+        }
+    }
+
+    fn key_choosing(&mut self, key: KeyEvent) {
+        let Fetching::Choosing(c) = &mut self.fetching else {
+            return;
+        };
+        if c.key(&key) {
+            return;
+        }
+        match key.code {
+            KeyCode::Enter | KeyCode::Right => {
+                if let Some(pick) = c.enter() {
+                    let base = crate::tui::home().unwrap_or_else(|| self.browser.cwd.clone());
+                    let dir = base.join("faba_refs").join(pick.dir_name());
+                    self.fetching = Fetching::Downloading(Fetch::start(pick, dir));
+                }
+            }
+            KeyCode::Esc | KeyCode::Left if !c.back() => self.fetching = Fetching::No,
+            _ => {}
+        }
+    }
+}
+
+impl View for GenomePicker {}
+
+impl Screen for GenomePicker {
+    fn done(&self) -> bool {
+        self.decision.is_some()
+    }
+
+    fn interrupt(&mut self) {
+        self.decision = Some(None);
+    }
+
+    fn handle_key(&mut self, key: KeyEvent) {
+        match &self.fetching {
+            Fetching::Choosing(_) => return self.key_choosing(key),
+            Fetching::Downloading(f) => {
+                // Esc stops it; what came stays for the next try.
+                if key.code == KeyCode::Esc {
+                    f.stop();
+                    self.fetching = Fetching::No;
+                    self.note = Some("download stopped; Tab picks up where it left".into());
+                }
+                return;
+            }
+            Fetching::No => {}
+        }
+        if key.code == KeyCode::Tab {
+            let mut c = Catalogue::new(self.chr);
+            c.chr_from = "your sites";
+            self.fetching = Fetching::Choosing(c);
+            self.note = None;
+            return;
+        }
+        match self.browser.key(key) {
+            Nav::Picked(file) => self.decision = Some(Some(file)),
+            Nav::Moved => {}
+            Nav::Ignored if key.code == KeyCode::Esc => self.decision = Some(None),
+            Nav::Ignored => {}
+        }
+    }
+
+    /// Take a listing or the download's end as they come; redraw while
+    /// either is under way.
+    fn tick(&mut self) -> bool {
+        match &mut self.fetching {
+            Fetching::No => false,
+            Fetching::Choosing(c) => c.poll(),
+            Fetching::Downloading(f) => {
+                let done = f.status.lock().ok().and_then(|mut s| s.done.take());
+                match done {
+                    Some(Ok((_, genome))) => self.decision = Some(Some(genome)),
+                    Some(Err(e)) => {
+                        self.note = Some(format!("{} failed: {e}", f.label));
+                        self.fetching = Fetching::No;
+                    }
+                    None => {}
+                }
+                true
+            }
+        }
+    }
+
+    fn render(&mut self, frame: &mut Frame) {
+        let area = frame.area();
+        frame.render_widget(header(self.command, "choose the genome", ""), area);
+        let w = area.width.saturating_sub(4).clamp(20, 90);
+        let help = [
+            help_line(&[
+                ("type", "find"),
+                ("↑/↓", "move"),
+                ("→", "open"),
+                ("←", "up"),
+            ]),
+            help_line(&[
+                ("Enter", "choose"),
+                ("Tab", "download one"),
+                ("Esc", "clear find / cancel"),
+            ]),
+        ];
+        // Header, border and the note line, besides the list and the help.
+        let help_rows = help.len() as u16;
+        let rows = area.height.saturating_sub(7 + help_rows).clamp(3, 24);
+        let title = format!(
+            " no genome recorded: a FASTA · {} {}",
+            tilde(&self.browser.cwd),
+            self.browser.list.find.tag()
+        );
+        let inner = popup_frame(frame, area, w, rows + 3 + help_rows, title);
+        let mut lines = self.browser.lines(
+            rows as usize,
+            inner.width as usize,
+            "",
+            "no subfolder or FASTA here",
+        );
+        lines.push(match &self.note {
+            Some(why) => Line::from(Span::styled(format!(" {why}"), HIGHLIGHT)),
+            None => Line::from(""),
+        });
+        lines.extend(help);
+        frame.render_widget(Paragraph::new(lines), inner);
+        match &self.fetching {
+            Fetching::No => {}
+            Fetching::Choosing(c) => c.draw(frame, area),
+            Fetching::Downloading(f) => f.draw(frame, area),
+        }
+    }
+}
+
+/// A genome FASTA chosen in a browser at the working folder, or downloaded;
+/// `Ok(None)` when the user cancels. `chr` is whether the sites name
+/// chromosomes `chr1`, if known.
+pub fn ask_genome(command: &'static str, chr: Option<bool>) -> anyhow::Result<Option<PathBuf>> {
+    let mut picker = GenomePicker::new(std::env::current_dir()?, command, chr);
+    run_view(&mut picker)?;
+    Ok(picker.decision.flatten())
 }
 
 /// Where the last choices are kept, one line per working folder

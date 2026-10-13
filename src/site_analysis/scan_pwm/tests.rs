@@ -83,13 +83,22 @@ fn tables_called_against_different_genomes_need_one_named() {
         table("b", "hg.fa"),
         table("c", "mm.fa"),
     );
-    let same = genome_of(None, &[a.clone(), b]).unwrap();
+    let same = genome_of(None, &[a.clone(), b]).unwrap().unwrap();
     assert!(same.ends_with("hg.fa"));
     let err = genome_of(None, &[a.clone(), c.clone()]).unwrap_err();
     assert!(err.to_string().contains("different genomes"), "{err}");
     assert_eq!(
-        &*genome_of(Some("x.fa"), &[a, c]).unwrap(),
+        &*genome_of(Some("x.fa"), &[a, c]).unwrap().unwrap(),
         "x.fa",
         "--genome wins"
     );
+}
+
+#[test]
+fn no_genome_recorded_is_none_to_ask_for() {
+    let tmp = tempfile::tempdir().unwrap();
+    let sites = tmp.path().join("m6a_sites.parquet");
+    std::fs::write(&sites, "").unwrap();
+    let sites: Box<str> = sites.to_string_lossy().into();
+    assert!(genome_of(None, &[sites]).unwrap().is_none());
 }

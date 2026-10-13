@@ -13,14 +13,12 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 
 use super::child::{ended_word, Failed};
-use super::fetch::{Catalogue, Fetch, Source, SOURCES};
 use super::form::{self, Kind};
 use super::inputs::{InputsFocus, OutState, Role, Row};
 use super::steps::Step;
 use super::{script, App, Hit, Page, Target};
 use crate::tui::{
-    button_popup, filled, first_visible, marker, popup, popup_frame, tab_bar, tilde, window,
-    APPLY_KEYS,
+    button_popup, first_visible, marker, popup_frame, tab_bar, tilde, window, APPLY_KEYS,
 };
 
 /// Width of the inputs panel on the Inputs screen.
@@ -87,10 +85,10 @@ pub(super) fn draw(app: &App, frame: &mut Frame) {
         draw_picking(app, frame, body);
     }
     if let Some(c) = &app.catalogue {
-        draw_catalogue(c, frame, body);
+        c.draw(frame, body);
     }
     if let Some(f) = app.fetch.as_ref().filter(|_| app.fetch_shown) {
-        draw_fetch(f, frame, body);
+        f.draw(frame, body);
     }
     if app.preview {
         draw_preview(app, frame, body);
@@ -531,100 +529,6 @@ fn draw_ended(app: &App, frame: &mut Frame, body: Rect) {
     lines.push(Line::raw(""));
     lines.push(Line::styled(" its log stays on the Run screen", DIM));
     button_popup(frame, body, &title, &[("ok", Hit::Ok)], lines, &app.hits);
-}
-
-/// A download's pop-up: what, where, the step and how far through it.
-fn draw_fetch(f: &Fetch, frame: &mut Frame, body: Rect) {
-    let (step, bytes) = f
-        .status
-        .lock()
-        .map_or_else(|_| (String::new(), None), |s| (s.step.clone(), s.bytes));
-    let mb = |b: u64| b as f64 / f64::from(1 << 20);
-    let progress = match bytes {
-        Some((got, Some(total))) if total > 0 => {
-            let w = 36;
-            let full = filled(got, total, w);
-            format!(
-                "{}{} {:>3.0}%  {:.0} / {:.0} MB",
-                "█".repeat(full),
-                "░".repeat(w - full),
-                got.min(total) as f64 / total as f64 * 100.0,
-                mb(got),
-                mb(total)
-            )
-        }
-        Some((got, _)) => format!("{:.0} MB", mb(got)),
-        None => String::new(),
-    };
-    let lines = vec![
-        Line::styled(f.label.clone(), PLAIN),
-        Line::styled(format!("into {}", tilde(&f.dir)), DIM),
-        Line::raw(""),
-        Line::styled(step, HIGHLIGHT),
-        Line::styled(progress, HIGHLIGHT),
-        Line::raw(""),
-        Line::styled("the GTF, then the genome: fetched, unpacked, indexed", DIM),
-    ];
-    popup(frame, body, " downloading a reference ", lines);
-}
-
-/// The download pop-up: the sources, or one source's releases or species.
-fn draw_catalogue(c: &Catalogue, frame: &mut Frame, body: Rect) {
-    let rows = usize::from(body.height.saturating_sub(10)).clamp(3, 16);
-    let mut lines: Vec<Line> = Vec::new();
-    let title = match c.source {
-        None => {
-            lines.extend(SOURCES.iter().enumerate().map(|(i, (name, s))| {
-                let fits = match c.bam_chr {
-                    Some(chr) if chr == s.chr_named() => "  matches your BAMs",
-                    _ => "",
-                };
-                Line::from(vec![
-                    marker(i == c.at),
-                    Span::raw(*name),
-                    Span::styled(fits, DIM),
-                ])
-            }));
-            " download a reference ".to_string()
-        }
-        Some(s) => {
-            let what = match s {
-                Source::Gencode(_) => "release",
-                Source::Ensembl => "species",
-            };
-            if c.loading() {
-                lines.push(Line::styled("reading the FTP listing…", DIM));
-            } else if let Some(e) = &c.error {
-                lines.push(Line::styled(format!("cannot list: {e}"), HIGHLIGHT));
-            } else if c.items.is_empty() {
-                lines.push(Line::styled(c.items.empty_note(""), DIM));
-            } else {
-                let items =
-                    c.items.shown().enumerate().map(|(i, n)| {
-                        Line::from(vec![marker(i == c.items.at), Span::raw(n.clone())])
-                    });
-                lines.extend(window(items.collect(), c.items.at, rows));
-            }
-            format!(" choose a {what} {}", c.items.find.tag())
-        }
-    };
-    lines.push(Line::raw(""));
-    lines.push(Line::styled(
-        "GENCODE names chromosomes chr1, Ensembl 1: take the one your BAMs use",
-        DIM,
-    ));
-    if let Some(chr) = c.bam_chr {
-        let named = if chr { "chr1" } else { "1" };
-        lines.push(Line::styled(
-            format!("your first BAM names them {named}"),
-            DIM,
-        ));
-    }
-    lines.push(Line::styled(
-        "the GTF and genome come to about 1 GB, 3 GB unpacked",
-        DIM,
-    ));
-    popup(frame, body, &title, lines);
 }
 
 fn draw_preview(app: &App, frame: &mut Frame, body: Rect) {
