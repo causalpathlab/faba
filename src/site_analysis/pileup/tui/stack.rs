@@ -118,8 +118,10 @@ impl<'a> StackView<'a> {
             ("|", self.arrange.next().name()),
             ("←/→", "bar"),
             ("n/N", "next/prev site"),
-            ("+/-", "zoom"),
+            ("=/-", "zoom"),
+            ("+/_", "zoom all"),
             ("0", "whole"),
+            (")", "all whole"),
             ("y", "scale"),
             (
                 "Y",
@@ -210,6 +212,23 @@ impl Screen for StackView<'_> {
             KeyCode::Char('g') | KeyCode::Esc => self.exit = Some(Exit::Genes),
             // A search or the other modality opens one gene, not a stack.
             KeyCode::Char('/' | 'm' | 'M') => self.status = Some(ONE_GENE.into()),
+            // Shifted, the zoom keys act on every gene: `+` (Shift+=) in,
+            // `_` (Shift+-) out, `)` (Shift+0) each whole.
+            KeyCode::Char(c @ ('+' | '_' | ')')) => {
+                let one = match c {
+                    '+' => '=',
+                    '_' => '-',
+                    _ => '0',
+                };
+                let key = KeyEvent::new(KeyCode::Char(one), key.modifiers);
+                for v in &mut self.views {
+                    v.handle_key(key);
+                    // Out past a gene would reload one gene's span alone.
+                    if v.exit.take().is_some() {
+                        self.status = Some(ONE_GENE.into());
+                    }
+                }
+            }
             // One y axis for every gene: the tallest of them, as a locked
             // maximum only ever raises an axis (no bar is cut off).
             KeyCode::Char('Y') if self.views[self.focus].y_lock.is_none() => {

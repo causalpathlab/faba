@@ -193,3 +193,27 @@ fn a_click_gives_the_gene_the_keys_and_moves_its_cursor() {
     let (lo, hi) = s.views[1].bar_range(40);
     assert!((lo..=hi).contains(&s.views[1].cursor));
 }
+
+#[test]
+fn shifted_zoom_keys_zoom_every_gene() {
+    let (a, b) = (positions(1.0), positions(3.0));
+    let mut s = stack(&a, &b);
+    screen(&mut s, 100, 40);
+    let whole: Vec<_> = s.views.iter().map(|v| v.window).collect();
+    press(&mut s, KeyCode::Char('='));
+    assert_ne!(
+        s.views[0].window, whole[0],
+        "= zooms the gene with the keys"
+    );
+    assert_eq!(s.views[1].window, whole[1], "and only it");
+    press(&mut s, KeyCode::Char('+'));
+    assert_ne!(s.views[1].window, whole[1], "+ zooms every gene");
+    press(&mut s, KeyCode::Char(')'));
+    let now: Vec<_> = s.views.iter().map(|v| v.window).collect();
+    assert_eq!(now, whole, ") shows every gene whole");
+    press(&mut s, KeyCode::Char('+'));
+    press(&mut s, KeyCode::Char('_'));
+    let now: Vec<_> = s.views.iter().map(|v| v.window).collect();
+    assert_eq!(now, whole, "_ zooms every gene back out");
+    assert!(s.exit.is_none());
+}

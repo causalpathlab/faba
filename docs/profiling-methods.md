@@ -667,7 +667,9 @@ maximum for every gene opened after, so they compare; a gene taller than the loc
 bars whole, its axis raised to fit. In the gene list, Space marks genes and Ctrl+R opens the marked
 ones stacked top to bottom, each with its tracks: Tab (or a click on a gene) moves the keys from
 gene to gene, a click on the bars moves that gene's cursor there, how the bars are drawn applies to
-all of them, `Y` locks every gene to the tallest one's axis, `|` lays them out one under another,
+all of them, `=`/`-` zoom the gene with the keys while their shifted keys `+`/`_` zoom every
+gene (and `)` shows every gene whole, as `0` does one), `Y` locks every gene to the tallest one's
+axis, `|` lays them out one under another,
 side by side, or in a grid, and `s` saves them as one PDF laid out as on screen. Esc in the list
 clears the search, then every mark, then leaves. A search, the other modality or zooming out past a
 gene needs one gene on its own: `g` (or Esc) goes back to the list, where the marks are kept.
