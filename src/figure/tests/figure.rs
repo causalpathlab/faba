@@ -200,3 +200,20 @@ fn a_bar_too_thin_to_write_is_skipped() {
     // The background, and the one bar thick enough to see.
     assert_eq!(svg.matches("<rect").count(), 2, "{svg}");
 }
+
+#[test]
+fn figures_tile_in_rows_of_the_given_width() {
+    let fig = |w: f64, h: f64| Canvas::new(w, h).finish();
+    let figs = [fig(100.0, 50.0), fig(80.0, 70.0), fig(100.0, 40.0)];
+    let size = |svg: &str| {
+        let get = |k: &str| -> f64 {
+            let at = svg.find(&format!(" {k}=\"")).unwrap() + k.len() + 3;
+            svg[at..].split('"').next().unwrap().parse().unwrap()
+        };
+        (get("width"), get("height"))
+    };
+    assert_eq!(size(&tile_svgs(&figs, 1)), (100.0, 160.0), "a column");
+    assert_eq!(size(&tile_svgs(&figs, 3)), (300.0, 70.0), "a row");
+    assert_eq!(size(&tile_svgs(&figs, 2)), (200.0, 110.0), "two to a row");
+    assert!(tile_svgs(&figs, 2).contains(r#"<svg x="100" y="0" "#));
+}

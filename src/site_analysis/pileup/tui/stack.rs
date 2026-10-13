@@ -15,10 +15,49 @@ use crate::figure::{status_line, Controls, Key};
 /// What a stack says when a key needs one gene to itself.
 const ONE_GENE: &str = "that works on one gene: g goes back to the list to open it alone";
 
+/// How the genes are laid out (`|` cycles), on screen and in the figure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Arrange {
+    /// One under another.
+    Column,
+    /// Side by side.
+    Row,
+    /// About as many across as down.
+    Grid,
+}
+
+impl Arrange {
+    fn next(self) -> Self {
+        match self {
+            Arrange::Column => Arrange::Row,
+            Arrange::Row => Arrange::Grid,
+            Arrange::Grid => Arrange::Column,
+        }
+    }
+
+    /// Genes to a row, of `n`.
+    fn cols(self, n: usize) -> usize {
+        match self {
+            Arrange::Column => 1,
+            Arrange::Row => n.max(1),
+            Arrange::Grid => (n as f64).sqrt().ceil().max(1.0) as usize,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Arrange::Column => "one under another",
+            Arrange::Row => "side by side",
+            Arrange::Grid => "a grid",
+        }
+    }
+}
+
 pub struct StackView<'a> {
     views: Vec<PileupView<'a>>,
     /// The view the keys go to.
     focus: usize,
+    arrange: Arrange,
     /// Saving the whole stack, and images for all.
     controls: Controls,
     status: Option<String>,
@@ -31,6 +70,7 @@ impl<'a> StackView<'a> {
         let mut stack = Self {
             views,
             focus: 0,
+            arrange: Arrange::Column,
             controls,
             status: None,
             exit: None,
@@ -59,10 +99,10 @@ impl<'a> StackView<'a> {
         }
     }
 
-    /// The genes' figures, top to bottom, as one.
+    /// The genes' figures as one, laid out as on screen.
     pub(super) fn figure(&self) -> String {
         let figures: Vec<String> = self.views.iter().map(PileupView::figure).collect();
-        crate::figure::stack_svgs(&figures)
+        crate::figure::tile_svgs(&figures, self.arrange.cols(figures.len()))
     }
 
     pub(super) fn footer_line(&self) -> Line<'static> {
@@ -74,7 +114,8 @@ impl<'a> StackView<'a> {
         }
         let v = &self.views[self.focus];
         let mut keys = vec![
-            ("Tab", "next gene"),
+            ("Tab/click", "next gene"),
+            ("|", self.arrange.next().name()),
             ("←/→", "bar"),
             ("n/N", "next/prev site"),
             ("+/-", "zoom"),
@@ -106,6 +147,28 @@ impl crate::tui::View for StackView<'_> {
 }
 
 impl Screen for StackView<'_> {
+    fn takes_mouse(&self) -> bool {
+        true
+    }
+
+    /// A click gives the gene under it the keys, and over its bars moves
+    /// its cursor there.
+    fn mouse(&mut self, m: ratatui::crossterm::event::MouseEvent) -> bool {
+        use ratatui::crossterm::event::MouseEventKind;
+        if !matches!(m.kind, MouseEventKind::Down(_)) {
+            return false;
+        }
+        let at = ratatui::layout::Position::new(m.column, m.row);
+        let Some(i) = self.views.iter().position(|v| v.drawn.contains(at)) else {
+            return false;
+        };
+        self.focus = i;
+        self.views[i].click_at(m.column);
+        self.status = None;
+        self.mark_focus();
+        true
+    }
+
     fn done(&self) -> bool {
         self.exit.is_some()
     }
@@ -134,6 +197,14 @@ impl Screen for StackView<'_> {
         let n = self.views.len();
         match key.code {
             KeyCode::Tab => self.focus = (self.focus + 1) % n,
+            KeyCode::Char('|') => {
+                self.arrange = self.arrange.next();
+                for v in &mut self.views {
+                    v.plots
+                        .iter_mut()
+                        .for_each(crate::figure::term::PlotImage::invalidate);
+                }
+            }
             KeyCode::BackTab => self.focus = (self.focus + n - 1) % n,
             KeyCode::Char('q') => self.exit = Some(Exit::Quit),
             KeyCode::Char('g') | KeyCode::Esc => self.exit = Some(Exit::Genes),
@@ -166,14 +237,21 @@ impl Screen for StackView<'_> {
     fn render(&mut self, frame: &mut Frame) {
         let area = frame.area();
         let help = crate::tui::wrap_help(self.footer_line(), area.width);
-        let n = self.views.len() as u32;
-        let mut layout: Vec<Constraint> = (0..n).map(|_| Constraint::Ratio(1, n)).collect();
-        layout.push(Constraint::Length(help.len() as u16));
-        let areas = Layout::vertical(layout).split(area);
-        for (v, &a) in self.views.iter_mut().zip(areas.iter()) {
-            v.render_in(frame, a, false);
+        let [body, footer] =
+            Layout::vertical([Constraint::Fill(1), Constraint::Length(help.len() as u16)])
+                .areas(area);
+        let n = self.views.len();
+        let cols = self.arrange.cols(n);
+        let rows = n.div_ceil(cols);
+        let row_areas = Layout::vertical(vec![Constraint::Ratio(1, rows as u32); rows]).split(body);
+        for (r, chunk) in self.views.chunks_mut(cols).enumerate() {
+            let cells = Layout::horizontal(vec![Constraint::Ratio(1, cols as u32); cols])
+                .split(row_areas[r]);
+            for (v, &cell) in chunk.iter_mut().zip(cells.iter()) {
+                v.render_in(frame, cell, false);
+            }
         }
-        frame.render_widget(Paragraph::new(help), areas[areas.len() - 1]);
+        frame.render_widget(Paragraph::new(help), footer);
         self.controls.render_save(frame, area);
     }
 }

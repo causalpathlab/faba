@@ -139,6 +139,10 @@ pub struct PileupView<'a> {
     y_lock: Option<f64>,
     /// The header's badge: `pileup`, or in a stack, which gene has the keys.
     badge: &'static str,
+    /// Where the last frame drew the view, and the column its bars start
+    /// at, for clicks.
+    drawn: Rect,
+    chart_x: u16,
     exit: Option<Exit>,
 }
 
@@ -198,6 +202,8 @@ impl<'a> PileupView<'a> {
             switchable: false,
             y_lock: None,
             badge: "pileup",
+            drawn: Rect::default(),
+            chart_x: 0,
             exit: None,
         }
     }
@@ -219,6 +225,19 @@ impl<'a> PileupView<'a> {
         if self.settings() != before {
             self.plots.iter_mut().for_each(PlotImage::invalidate);
         }
+    }
+
+    /// A click at screen column `x`: the cursor to the bar there, when it
+    /// is over the bars; whether it moved.
+    pub(super) fn click_at(&mut self, x: u16) -> bool {
+        let col = usize::from(x.saturating_sub(self.chart_x));
+        if x < self.chart_x || col >= self.columns {
+            return false;
+        }
+        let (start, stop) = self.bar_range(col);
+        self.cursor = (start + (stop - start) / 2).clamp(self.extent.0, self.extent.1);
+        self.plots.iter_mut().for_each(PlotImage::invalidate);
+        true
     }
 
     /// How this view draws, to keep for the next gene.
@@ -732,6 +751,16 @@ impl crate::tui::View for PileupView<'_> {
 }
 
 impl Screen for PileupView<'_> {
+    fn takes_mouse(&self) -> bool {
+        true
+    }
+
+    /// A click on the bars moves the cursor there.
+    fn mouse(&mut self, m: ratatui::crossterm::event::MouseEvent) -> bool {
+        use ratatui::crossterm::event::MouseEventKind;
+        matches!(m.kind, MouseEventKind::Down(_)) && self.click_at(m.column)
+    }
+
     fn done(&self) -> bool {
         self.exit.is_some()
     }
@@ -829,6 +858,8 @@ impl PileupView<'_> {
 
         let inner_width = areas[1].width.saturating_sub(2 + GUTTER);
         self.columns = (inner_width as usize).max(1);
+        // Inside the panel's border, past the y axis.
+        (self.drawn, self.chart_x) = (area, areas[1].x + 1 + GUTTER);
         self.clamp_window();
         let (lo, hi) = self.window;
         let extra = format!(

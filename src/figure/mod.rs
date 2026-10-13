@@ -204,22 +204,29 @@ impl Canvas {
     }
 }
 
-/// Figures from [`Canvas::finish`] stacked top to bottom into one, as wide
-/// as the widest.
-pub fn stack_svgs(svgs: &[String]) -> String {
+/// Figures from [`Canvas::finish`] tiled into one, `cols` to a row, in
+/// order: one column stacks them top to bottom, as many columns as figures
+/// lays them side by side. Each cell is as wide as the widest figure and
+/// each row as tall as its tallest.
+pub fn tile_svgs(svgs: &[String], cols: usize) -> String {
     let size = |svg: &str, key: &str| -> f64 {
         let at = svg.find(&format!(" {key}=\"")).map(|i| i + key.len() + 3);
         at.and_then(|i| svg[i..].split('"').next()?.parse().ok())
             .unwrap_or(0.0)
     };
-    let width = svgs.iter().map(|s| size(s, "width")).fold(0.0, f64::max);
+    let cols = cols.max(1);
+    let cell = svgs.iter().map(|s| size(s, "width")).fold(0.0, f64::max);
     let mut y = 0.0;
     let mut body = String::new();
-    for svg in svgs {
-        // Each nested at its offset, as it was drawn.
-        body.push_str(&svg.replacen("<svg ", &format!("<svg y=\"{y}\" "), 1));
-        y += size(svg, "height");
+    for row in svgs.chunks(cols) {
+        for (k, svg) in row.iter().enumerate() {
+            // Each nested at its offset, as it was drawn.
+            let x = cell * k as f64;
+            body.push_str(&svg.replacen("<svg ", &format!("<svg x=\"{x}\" y=\"{y}\" "), 1));
+        }
+        y += row.iter().map(|s| size(s, "height")).fold(0.0, f64::max);
     }
+    let width = cell * cols.min(svgs.len()).max(1) as f64;
     format!(
         r#"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{y}" viewBox="0 0 {width} {y}">
 {body}</svg>

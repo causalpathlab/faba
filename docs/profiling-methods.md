@@ -664,9 +664,11 @@ In the `pileup` browser, how the bars are drawn (the y scale, what `c` counts, m
 the contrast measure, images or text) carries from one gene to the next. `Y` locks the y-axis
 maximum for every gene opened after, so they compare; a gene taller than the lock still shows its
 bars whole, its axis raised to fit. In the gene list, Space marks genes and Ctrl+R opens the marked
-ones stacked top to bottom, each with its tracks: Tab moves the keys from gene to gene, how the bars
-are drawn applies to all of them, `Y` locks every gene to the tallest one's axis, and `s` saves the
-stack as one PDF, the genes one under another. A search, the other modality or zooming out past a
+ones stacked top to bottom, each with its tracks: Tab (or a click on a gene) moves the keys from
+gene to gene, a click on the bars moves that gene's cursor there, how the bars are drawn applies to
+all of them, `Y` locks every gene to the tallest one's axis, `|` lays them out one under another,
+side by side, or in a grid, and `s` saves them as one PDF laid out as on screen. Esc in the list
+clears the search, then every mark, then leaves. A search, the other modality or zooming out past a
 gene needs one gene on its own: `g` (or Esc) goes back to the list, where the marks are kept.
 
 Every view keeps the same key rules. Enter opens or chooses, and never quits or applies; Ctrl+R

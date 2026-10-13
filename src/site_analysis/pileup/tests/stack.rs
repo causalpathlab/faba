@@ -147,3 +147,49 @@ fn every_gene_redraws_when_the_scale_or_bars_change() {
         "the gene without the keys redraws too"
     );
 }
+
+#[test]
+fn bar_cycles_the_layout_and_the_figure_follows() {
+    let (a, b) = (positions(1.0), positions(3.0));
+    let mut s = stack(&a, &b);
+    let width = |svg: &str| -> f64 {
+        let at = svg.find(" width=\"").unwrap() + 8;
+        svg[at..].split('"').next().unwrap().parse().unwrap()
+    };
+    let one = width(&s.views[0].figure());
+    assert_eq!(width(&s.figure()), one, "one under another");
+    press(&mut s, KeyCode::Char('|'));
+    assert_eq!(s.arrange, Arrange::Row);
+    assert_eq!(width(&s.figure()), 2.0 * one, "side by side");
+    // Side by side on screen, too: GENE2 to the right of GENE1, same rows.
+    let text = screen(&mut s, 160, 30);
+    let row_of = |i: usize| i / 160;
+    let (g1, g2) = (text.find("GENE1").unwrap(), text.find("GENE2").unwrap());
+    assert_eq!(row_of(g1), row_of(g2), "{text}");
+    press(&mut s, KeyCode::Char('|'));
+    assert_eq!(s.arrange, Arrange::Grid);
+    press(&mut s, KeyCode::Char('|'));
+    assert_eq!(s.arrange, Arrange::Column);
+}
+
+#[test]
+fn a_click_gives_the_gene_the_keys_and_moves_its_cursor() {
+    use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    let (a, b) = (positions(1.0), positions(3.0));
+    let mut s = stack(&a, &b);
+    screen(&mut s, 100, 40);
+    let lower = s.views[1].drawn;
+    let x = s.views[1].chart_x + 40;
+    let click = MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: x,
+        row: lower.y + 3,
+        modifiers: KeyModifiers::NONE,
+    };
+    let before = s.views[1].cursor;
+    assert!(s.mouse(click));
+    assert_eq!(s.focus, 1, "the clicked gene has the keys");
+    assert_ne!(s.views[1].cursor, before, "its cursor moved to the bar");
+    let (lo, hi) = s.views[1].bar_range(40);
+    assert!((lo..=hi).contains(&s.views[1].cursor));
+}

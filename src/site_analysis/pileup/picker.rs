@@ -229,6 +229,10 @@ impl Screen for GenePicker<'_> {
                     self.decision = Some(Choice::Gene(i));
                 }
             }
+            // Esc backs out a step at a time: the search, the marks, the list.
+            KeyCode::Esc if self.filter.is_empty() && !self.marked.is_empty() => {
+                self.marked.clear()
+            }
             KeyCode::Esc if self.filter.is_empty() => self.decision = Some(Choice::Quit),
             // Esc, and `/` as in the browser, start the search over.
             KeyCode::Esc | KeyCode::Char('/') => self.set_filter(""),
@@ -274,7 +278,16 @@ impl Screen for GenePicker<'_> {
                             "open the marked together"
                         },
                     ),
-                    ("Esc", "clear/quit"),
+                    (
+                        "Esc",
+                        if !self.filter.is_empty() {
+                            "clear search"
+                        } else if !self.marked.is_empty() {
+                            "clear all marks"
+                        } else {
+                            "quit"
+                        },
+                    ),
                 ],
             ),
         };

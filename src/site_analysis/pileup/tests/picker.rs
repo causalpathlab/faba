@@ -119,7 +119,13 @@ fn every_footer_key_shows_at_60_columns() {
         .iter()
         .map(|c| c.symbol())
         .collect();
-    for key in ["↑/↓ move", "PgUp/PgDn page", "Enter open", "Esc clear/quit"] {
+    for key in [
+        "↑/↓ move",
+        "PgUp/PgDn page",
+        "Enter open",
+        "Space mark",
+        "Esc quit",
+    ] {
         assert!(text.contains(key), "{key}\n{text}");
     }
 }
@@ -151,4 +157,24 @@ fn space_marks_genes_and_the_apply_key_opens_them_together() {
         KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
     );
     assert_eq!(p.decision, Some(Choice::Gene(1)));
+}
+
+#[test]
+fn esc_clears_the_search_then_the_marks_then_quits() {
+    let c = catalog_from_rows(rows());
+    let mut p = GenePicker::new(&c);
+    p.set_marked(&[0, 1]);
+    press(&mut p, KeyCode::Char('g'));
+    press(&mut p, KeyCode::Esc);
+    assert!(
+        p.filter.is_empty() && p.marked().len() == 2,
+        "first the search"
+    );
+    press(&mut p, KeyCode::Esc);
+    assert!(
+        p.marked().is_empty() && p.decision.is_none(),
+        "then every mark"
+    );
+    press(&mut p, KeyCode::Esc);
+    assert_eq!(p.decision, Some(Choice::Quit));
 }
