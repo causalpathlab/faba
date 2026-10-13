@@ -159,6 +159,8 @@ fn allot(heights: &[f64; 4], rows: f64) -> [usize; 4] {
 
 /// State of the logo view, independent of the terminal so it can be tested.
 pub struct PwmView {
+    /// Where the last frame drew the view, for a saved figure's shape.
+    drawn: Rect,
     title: String,
     /// Relative position of the first column.
     first: i64,
@@ -188,6 +190,7 @@ impl PwmView {
             cursor: window.max(0) as usize,
             offset: 0,
             controls: Controls::new("pwm_logo"),
+            drawn: Rect::default(),
             plot: PlotImage::default(),
             done: false,
         }
@@ -229,10 +232,16 @@ impl PwmView {
     /// The logo as a figure: letters stretched to their heights.
     fn figure(&self) -> String {
         let n = self.columns.len().max(1) as f64;
-        let width = 56.0 + (560.0 / n).clamp(8.0, 40.0) * n + 20.0;
-        let mut c = Canvas::new(width, 330.0);
+        // The view's shape on screen, its letters 8 to 40 points wide
+        // whatever the motif's length; else a page of readable letters.
+        let margins = 76.0;
+        let (width, height) = match crate::figure::page(self.drawn, (300.0, 200.0)) {
+            Some((w, h)) => (w.clamp(margins + 8.0 * n, margins + 40.0 * n), h),
+            None => (margins + (560.0 / n).clamp(8.0, 40.0) * n, 330.0),
+        };
+        let mut c = Canvas::new(width, height);
         c.bold(16.0, 22.0, &self.title, 12.0, Anchor::Start, INK);
-        self.draw_logo(&mut c, (0.0, 30.0, width, 300.0), None);
+        self.draw_logo(&mut c, (0.0, 30.0, width, height - 30.0), None);
         c.finish()
     }
 
@@ -445,6 +454,7 @@ impl Screen for PwmView {
     }
 
     fn render(&mut self, frame: &mut Frame) {
+        self.drawn = frame.area();
         let help = self.controls.footer().unwrap_or_else(|| {
             let mut keys = vec![
                 ("←/→", "position"),

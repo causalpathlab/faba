@@ -250,3 +250,19 @@ fn enter_stays_and_plus_is_finer() {
     press(&mut v, KeyCode::Esc);
     assert!(v.done());
 }
+
+#[test]
+fn a_saved_figure_keeps_the_views_shape() {
+    let h = hist(true);
+    let mut v = MetageneView::new("sites", &h);
+    let size = crate::figure::svg_size;
+    screen(&mut v, 150, 40);
+    let (cw, ch) = crate::figure::CELL;
+    assert_eq!(size(&v.figure()), (150.0 * cw, 40.0 * ch));
+    screen(&mut v, 90, 50);
+    assert_eq!(
+        size(&v.figure()),
+        (90.0 * cw, 50.0 * ch),
+        "a taller view, a taller page"
+    );
+}

@@ -182,3 +182,25 @@ fn enter_stays_and_esc_leaves() {
     press(&mut v, KeyCode::Esc);
     assert!(v.done());
 }
+
+#[test]
+fn a_saved_logo_keeps_the_views_shape() {
+    let mut v = PwmView::new("x", &pwm(), 2);
+    let size = crate::figure::svg_size;
+    // The height follows the view; five letters stop at 40 points each.
+    let (_, ch) = crate::figure::CELL;
+    screen(&mut v, 120, 30);
+    assert_eq!(size(&v.figure()), (76.0 + 40.0 * 5.0, 30.0 * ch));
+    screen(&mut v, 120, 40);
+    assert_eq!(size(&v.figure()).1, 40.0 * ch);
+}
+
+#[test]
+fn a_long_motif_keeps_readable_letters() {
+    // 41 positions saved from a narrow terminal: at least 8 points a letter.
+    let wide: Vec<DnaBaseCount> = (0..41).map(|_| count(5, 1, 1, 1)).collect();
+    let mut v = PwmView::new("x", &wide, 20);
+    screen(&mut v, 60, 20);
+    let (w, _) = crate::figure::svg_size(&v.figure());
+    assert!(w >= 76.0 + 8.0 * 41.0, "{w}");
+}
