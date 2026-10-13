@@ -107,6 +107,12 @@ impl PlotImage {
         self.stale = true;
     }
 
+    /// Whether the next frame rebuilds it.
+    #[cfg(test)]
+    pub fn is_stale(&self) -> bool {
+        self.stale
+    }
+
     /// Draw into `area`. `draw(width, height)` returns the SVG, in figure
     /// units, for an area that size. False when no image could be made, so
     /// the caller can fall back to text.

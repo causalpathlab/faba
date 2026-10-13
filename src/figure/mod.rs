@@ -88,7 +88,8 @@ impl Canvas {
     /// A filled rectangle; empty ones (zero or negative size) are skipped,
     /// as SVG renderers reject them.
     pub fn rect(&mut self, x: f64, y: f64, w: f64, h: f64, fill: &str) {
-        if !(w > 0.0 && h > 0.0) {
+        // Written to two decimals: what would read as zero is skipped too.
+        if !(w >= 0.005 && h >= 0.005 && w.is_finite() && h.is_finite()) {
             return;
         }
         let _ = writeln!(

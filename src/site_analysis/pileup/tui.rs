@@ -144,7 +144,7 @@ pub struct PileupView<'a> {
 
 /// What the browser keeps from one gene to the next: how the bars are
 /// drawn, not where. `None` leaves a view's own default.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Settings {
     pub y_scale: Option<Scale>,
     pub show: Option<Show>,
@@ -202,8 +202,10 @@ impl<'a> PileupView<'a> {
         }
     }
 
-    /// Draw as `s` keeps from the gene before.
+    /// Draw as `s` keeps from the gene before (or another in a stack); a
+    /// plot drawn as an image is redrawn when that changes it.
     pub fn apply(&mut self, s: &Settings) {
+        let before = self.settings();
         self.y_scale = s.y_scale.unwrap_or(self.y_scale);
         self.show = s.show.unwrap_or(self.show);
         self.mirror = s.mirror.unwrap_or(self.mirror);
@@ -213,6 +215,9 @@ impl<'a> PileupView<'a> {
         self.y_lock = s.y_lock;
         if let Some(on) = s.images {
             self.controls.set_images(on);
+        }
+        if self.settings() != before {
+            self.plots.iter_mut().for_each(PlotImage::invalidate);
         }
     }
 

@@ -125,3 +125,25 @@ fn y_locks_every_gene_to_the_tallest() {
         "Y again unlocks all"
     );
 }
+
+#[test]
+fn every_gene_redraws_when_the_scale_or_bars_change() {
+    let (a, b) = (positions(1.0), positions(3.0));
+    let mut s = stack(&a, &b);
+    screen(&mut s, 100, 40);
+    // Drawn once: no plot waits to be redrawn.
+    for v in &mut s.views {
+        v.plots.iter_mut().for_each(|p| *p = Default::default());
+    }
+    press(&mut s, KeyCode::Tab);
+    press(&mut s, KeyCode::Char('y'));
+    let other = &s.views[0];
+    assert_ne!(other.y_scale, Scale::Linear);
+    assert!(
+        other
+            .plots
+            .iter()
+            .all(crate::figure::term::PlotImage::is_stale),
+        "the gene without the keys redraws too"
+    );
+}

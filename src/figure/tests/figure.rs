@@ -183,3 +183,20 @@ fn the_prompt_never_replaces_a_saved_figure() {
     assert_eq!(p.handle(key(KeyCode::Enter)), Some(at("logo_3")));
     assert!(p.taken().is_none());
 }
+
+#[test]
+fn a_bar_too_thin_to_write_is_skipped() {
+    let mut c = Canvas::new(100.0, 100.0);
+    c.rect(1.0, 1.0, 10.0, 0.004, INK);
+    c.rect(1.0, 1.0, 0.001, 10.0, INK);
+    c.rect(1.0, 1.0, 10.0, f64::INFINITY, INK);
+    c.rect(1.0, 1.0, 10.0, 0.5, INK);
+    let svg = c.finish();
+    assert!(
+        !svg.contains(r#"height="0.00""#) && !svg.contains(r#"width="0.00""#),
+        "{svg}"
+    );
+    assert!(!svg.contains("inf"), "{svg}");
+    // The background, and the one bar thick enough to see.
+    assert_eq!(svg.matches("<rect").count(), 2, "{svg}");
+}
