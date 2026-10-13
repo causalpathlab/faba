@@ -405,7 +405,12 @@ impl PwmView {
     }
 }
 
-impl crate::tui::View for PwmView {}
+impl crate::tui::View for PwmView {
+    /// The apply key submits the save name being typed.
+    fn takes_apply(&self) -> bool {
+        self.controls.prompting()
+    }
+}
 
 impl Screen for PwmView {
     fn done(&self) -> bool {
@@ -428,23 +433,35 @@ impl Screen for PwmView {
             KeyCode::Home => self.cursor = 0,
             KeyCode::End => self.cursor = self.columns.len().saturating_sub(1),
             KeyCode::Char('0') => self.cursor = (-self.first).max(0) as usize,
-            KeyCode::Char('m') => {
+            KeyCode::Char('b') => {
                 self.mode = match self.mode {
                     Mode::Bits => Mode::Freq,
                     Mode::Freq => Mode::Bits,
                 }
             }
-            KeyCode::Char('q') | KeyCode::Esc | KeyCode::Enter => self.done = true,
+            KeyCode::Char('q') | KeyCode::Esc => self.done = true,
             _ => {}
         }
     }
 
     fn render(&mut self, frame: &mut Frame) {
+        let help = self.controls.footer().unwrap_or_else(|| {
+            let mut keys = vec![
+                ("←/→", "position"),
+                ("Home/End", "ends"),
+                ("0", "site"),
+                ("b", "bits/frequency"),
+            ];
+            self.controls.help_keys(&mut keys);
+            keys.push(("q/Esc", "quit"));
+            help_line(&keys)
+        });
+        let help = crate::tui::wrap_help(help, frame.area().width);
         let [top, body, stats, footer] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Fill(1),
             Constraint::Length(1),
-            Constraint::Length(1),
+            Constraint::Length(help.len() as u16),
         ])
         .areas(frame.area());
         let n = self.columns.len();
@@ -477,13 +494,7 @@ impl Screen for PwmView {
             self.render_logo(frame.buffer_mut(), inner);
         }
         frame.render_widget(Paragraph::new(self.stats_line()), stats);
-        let help = self.controls.footer().unwrap_or_else(|| {
-            let mut keys = vec![("←/→", "position"), ("0", "site"), ("m", "bits/frequency")];
-            self.controls.help_keys(&mut keys);
-            keys.push(("q", "quit"));
-            help_line(&keys)
-        });
-        frame.render_widget(help, footer);
+        frame.render_widget(Paragraph::new(help), footer);
         self.controls.render_save(frame, frame.area());
     }
 }

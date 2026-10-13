@@ -340,7 +340,7 @@ impl<'a> SitePicker<'a> {
         let Some(m) = self.meta_counts() else {
             let mut lines = vec![Line::from(Span::styled(self.meta_status(), DIM))];
             if !matches!(self.meta, Meta::Pending(_)) {
-                lines.push(help_line(&[("g", "choose an annotation (GTF/GFF)")]));
+                lines.push(help_line(&[("a", "choose an annotation (GTF/GFF)")]));
             }
             frame.render_widget(Paragraph::new(lines), inner);
             return;

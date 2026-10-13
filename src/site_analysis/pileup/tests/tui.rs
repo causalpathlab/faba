@@ -103,9 +103,9 @@ fn site_jumps_and_moves_stay_in_the_extent() {
     assert_eq!(v.cursor, 1_000_000, "starts at the first site");
     press(&mut v, KeyCode::Char('n'));
     assert_eq!(v.cursor, 1_000_097);
-    press(&mut v, KeyCode::Char('p'));
+    press(&mut v, KeyCode::Char('N'));
     assert_eq!(v.cursor, 1_000_000);
-    press(&mut v, KeyCode::Char('p'));
+    press(&mut v, KeyCode::Char('N'));
     assert_eq!(v.cursor, 1_000_000, "no site before the first");
     for _ in 0..500 {
         press(&mut v, KeyCode::Right);
@@ -489,17 +489,17 @@ fn like_tracks_share_a_mirrored_row_until_split() {
         text.contains("wt above, mut below · methylated reads"),
         "{text}"
     );
-    assert!(text.contains("m split"), "{text}");
+    assert!(text.contains("v split"), "{text}");
     assert!(v.figure().contains("wt above, mut below"));
     // Bars grow both ways from the zero line.
     assert!(text.contains('▀') || text.lines().any(|l| l.contains('█')));
 
-    press(&mut v, KeyCode::Char('m'));
+    press(&mut v, KeyCode::Char('v'));
     assert_eq!(
         v.rows(),
         vec![Row::Contrast(DIFFERENCE), Row::Track(0), Row::Track(1)]
     );
-    assert!(screen(&mut v, 160, 30).contains("m mirror"));
+    assert!(screen(&mut v, 160, 30).contains("v mirror"));
 }
 
 #[test]
@@ -532,4 +532,31 @@ fn shift_m_switches_modality_only_where_it_can() {
     assert!(screen(&mut v, 200, 24).contains("m6A/A-to-I"));
     press(&mut v, KeyCode::Char('M'));
     assert_eq!(v.exit, Some(Exit::Modality { at: v.cursor }));
+}
+
+#[test]
+fn every_footer_key_shows_at_80_columns() {
+    let m = positions();
+    let half: Vec<(i64, f64)> = m.iter().map(|&(p, v)| (p, v * 2.0)).collect();
+    let a = Track::single("wt", "sum", &m, false).with_total(&half);
+    let b = Track::single("mut", "sum", &half, false).with_total(&half);
+    let mut v = PileupView::new("GENE1", "chr1", vec![a, b], EXTENT);
+    v.switchable = true;
+    let screen = screen(&mut v, 80, 30);
+    let missing = crate::tui::missing_keys(&v.footer_line(), &screen);
+    assert!(missing.is_empty(), "{missing:?}\n{screen}");
+}
+
+#[test]
+fn enter_stays_esc_goes_back_to_the_genes_and_q_quits() {
+    let (m, s) = (positions(), sites());
+    let mut v = view(&m, &s);
+    screen(&mut v, 100, 24);
+    press(&mut v, KeyCode::Enter);
+    assert!(v.exit.is_none(), "Enter never quits");
+    press(&mut v, KeyCode::Esc);
+    assert!(matches!(v.exit, Some(Exit::Genes)));
+    let mut v = view(&m, &s);
+    press(&mut v, KeyCode::Char('q'));
+    assert!(matches!(v.exit, Some(Exit::Quit)));
 }

@@ -340,7 +340,12 @@ impl<'a> MetageneView<'a> {
     }
 }
 
-impl crate::tui::View for MetageneView<'_> {}
+impl crate::tui::View for MetageneView<'_> {
+    /// The apply key submits the save name being typed.
+    fn takes_apply(&self) -> bool {
+        self.controls.prompting()
+    }
+}
 
 impl Screen for MetageneView<'_> {
     fn done(&self) -> bool {
@@ -362,23 +367,38 @@ impl Screen for MetageneView<'_> {
             KeyCode::Right | KeyCode::Char('l') => self.move_cursor(1),
             KeyCode::Home => self.cursor_to_start(),
             KeyCode::Tab | KeyCode::BackTab => self.switch_track(),
-            KeyCode::Char(']' | '+' | '=') => self.set_merge(1),
-            KeyCode::Char('[' | '-') => self.set_merge(-1),
-            KeyCode::Char('a') => self.merge = None,
+            // As pileup's zoom: `+` finer (fewer bins a bar), `-` coarser.
+            KeyCode::Char(']' | '+' | '=') => self.set_merge(-1),
+            KeyCode::Char('[' | '-') => self.set_merge(1),
+            KeyCode::Char('a' | '0') => self.merge = None,
             KeyCode::Char('y') => self.y_scale = self.y_scale.next(),
             KeyCode::Char('c') if self.hist.has_reads() => self.show = self.show.next(),
-            KeyCode::Char('q') | KeyCode::Esc | KeyCode::Enter => self.done = true,
+            KeyCode::Char('q') | KeyCode::Esc => self.done = true,
             _ => {}
         }
     }
 
     fn render(&mut self, frame: &mut Frame) {
+        let mut keys = vec![
+            ("←/→", "bar"),
+            ("Home", "first"),
+            ("+/-", "finer/coarser"),
+            ("0", "fit"),
+            ("y", "scale"),
+        ];
+        if self.has_non_coding() {
+            keys.push(("Tab", "track"));
+        }
+        self.controls.help_keys(&mut keys);
+        keys.push(("q/Esc", "quit"));
+        let help = self.controls.footer().unwrap_or_else(|| help_line(&keys));
+        let help = crate::tui::wrap_help(help, frame.area().width);
         let [top, body, stats, summary, footer] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Fill(1),
             Constraint::Length(1),
             Constraint::Length(1),
-            Constraint::Length(1),
+            Constraint::Length(help.len() as u16),
         ])
         .areas(frame.area());
 
@@ -434,19 +454,8 @@ impl Screen for MetageneView<'_> {
 
         frame.render_widget(Paragraph::new(self.stats_line(&bars)), stats);
         frame.render_widget(Paragraph::new(self.summary_line()), summary);
-        let mut keys = vec![
-            ("←/→", "bar"),
-            ("-/+", "merge"),
-            ("a", "fit"),
-            ("y", "scale"),
-        ];
-        if self.has_non_coding() {
-            keys.push(("Tab", "track"));
-        }
-        self.controls.help_keys(&mut keys);
-        keys.push(("q", "quit"));
-        let help = self.controls.footer().unwrap_or_else(|| help_line(&keys));
-        frame.render_widget(help, footer);
+        frame.render_widget(Paragraph::new(help), footer);
+
         self.controls.render_save(frame, frame.area());
     }
 }

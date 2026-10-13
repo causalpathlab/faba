@@ -1099,7 +1099,7 @@ fn g_browses_for_an_annotation_and_reads_the_one_picked() {
 
     // The browser opens where the sites are, since the named one is absent,
     // and lists directories and annotations only.
-    press(&mut p, KeyCode::Char('g'));
+    press(&mut p, KeyCode::Char('a'));
     let Mode::Gff(b) = &p.mode else {
         panic!("no browser")
     };
@@ -1126,7 +1126,7 @@ fn g_browses_for_an_annotation_and_reads_the_one_picked() {
     assert!(!p.meta_status().ends_with("not found"));
 
     // Esc leaves the browser without reading anything.
-    press(&mut p, KeyCode::Char('g'));
+    press(&mut p, KeyCode::Char('a'));
     press(&mut p, KeyCode::Esc);
     assert!(matches!(p.mode, Mode::Browse));
     assert_eq!(p.gff(), Some(picked.to_str().unwrap()));
@@ -1148,4 +1148,41 @@ fn a_pick_that_fails_to_read_keeps_the_annotation_given_for_the_record() {
     p.load_gff("/nowhere/picked.gtf".into());
     assert_eq!(p.meta_status(), "/nowhere/picked.gtf: not found");
     assert_eq!(p.gff(), Some(&*given));
+}
+
+#[test]
+fn every_footer_key_shows_at_80_columns() {
+    let t = table(M6A, 600);
+    let start = SiteFilterArgs::default_values();
+    let view = SiteView::new(&t, Some(cells(t.len())), &start);
+    let mut p = SitePicker::new("input", vec![view], start, Meta::Unavailable("none".into()));
+    for panel in [KeyCode::Tab, KeyCode::Tab] {
+        let mut term = Terminal::new(TestBackend::new(80, 30)).unwrap();
+        term.draw(|f| p.render(f)).unwrap();
+        let screen: String = term
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        let missing = crate::tui::missing_keys(&p.footer_line(), &screen);
+        assert!(missing.is_empty(), "{missing:?}");
+        press(&mut p, panel);
+    }
+}
+
+#[test]
+fn ctrl_c_asks_first_as_q_does() {
+    let t = table(M6A, 600);
+    let start = SiteFilterArgs::default_values();
+    let mut p = picker(&t, None, start);
+    press(&mut p, KeyCode::Char('+'));
+    p.interrupt();
+    assert!(
+        matches!(p.mode, Mode::Leave(Picked::Cancelled)) && !p.done(),
+        "asks"
+    );
+    p.interrupt();
+    assert!(p.done(), "the second leaves");
 }

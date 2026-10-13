@@ -29,11 +29,13 @@ const BAR: usize = 40;
 pub(super) fn draw(app: &App, frame: &mut Frame) {
     app.hits.clear();
     let area = frame.area();
+    // The footer takes as many lines as its keys need at this width.
+    let help = crate::tui::wrap_help(footer_line(app), area.width);
     let [top, tabs, body, footer] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Fill(1),
-        Constraint::Length(1),
+        Constraint::Length(help.len() as u16),
     ])
     .areas(area);
 
@@ -96,7 +98,7 @@ pub(super) fn draw(app: &App, frame: &mut Frame) {
     if app.ended_shown {
         draw_ended(app, frame, body);
     }
-    frame.render_widget(footer_line(app), footer);
+    frame.render_widget(Paragraph::new(help), footer);
 }
 
 /// `hh:mm:ss`.
@@ -570,7 +572,7 @@ fn draw_preview(app: &App, frame: &mut Frame, body: Rect) {
     button_popup(frame, body, " start this run? ", &buttons, lines, &app.hits);
 }
 
-fn footer_line(app: &App) -> Line<'static> {
+pub(super) fn footer_line(app: &App) -> Line<'static> {
     if let Some((target, line)) = &app.editing {
         let prompt = match target {
             Target::Output => match &app.note {
@@ -654,14 +656,12 @@ fn footer_line(app: &App) -> Line<'static> {
             ("Enter/→", "open"),
             ("←", "up"),
         ];
-        if !app.inputs.bams.list.find.text.is_empty() {
-            keys.push(("Esc", "clear find"));
-        }
-        keys.extend([
-            ("Tab", "inputs"),
-            (APPLY_KEYS, "preview"),
-            ("Ctrl-C", "quit"),
-        ]);
+        keys.push(if app.inputs.bams.list.find.text.is_empty() {
+            ("Esc", "rows, where q quits")
+        } else {
+            ("Esc", "clear find")
+        });
+        keys.extend([("Tab", "inputs"), (APPLY_KEYS, "preview")]);
         return help_line(&keys);
     }
     let mut keys: Vec<(&str, &str)> = match app.page {

@@ -214,3 +214,39 @@ fn the_text_plot_names_regions_with_no_ticks_and_a_colour_key() {
         );
     }
 }
+
+#[test]
+fn every_footer_key_shows_at_80_columns() {
+    let h = hist(true);
+    let mut v = MetageneView::new("sites", &h);
+    let s = screen(&mut v, 80, 24);
+    for key in [
+        "Home first",
+        "+/- finer/coarser",
+        "0 fit",
+        "Tab track",
+        "s save",
+        "q/Esc quit",
+    ] {
+        assert!(s.contains(key), "{key}\n{s}");
+    }
+}
+
+#[test]
+fn enter_stays_and_plus_is_finer() {
+    let h = hist(true);
+    let mut v = MetageneView::new("sites", &h);
+    screen(&mut v, 100, 18);
+    press(&mut v, KeyCode::Enter);
+    assert!(!v.done(), "Enter never quits");
+    press(&mut v, KeyCode::Char('-'));
+    let coarser = v.merge;
+    press(&mut v, KeyCode::Char('+'));
+    assert!(
+        v.merge < coarser,
+        "+ undoes -, finer: {:?} < {coarser:?}",
+        v.merge
+    );
+    press(&mut v, KeyCode::Esc);
+    assert!(v.done());
+}

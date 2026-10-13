@@ -61,7 +61,7 @@ fn mark_files_from_a_folder_or_choose_the_folder() {
     assert_eq!(names, ["..", "a_m6a_site.zarr.zip", "b_m6a_site.zarr.zip"]);
     for (name, key) in [
         ("b_m6a_site.zarr.zip", KeyCode::Char(' ')),
-        ("a_m6a_site.zarr.zip", KeyCode::Enter),
+        ("a_m6a_site.zarr.zip", KeyCode::Char(' ')),
         ("b_m6a_site.zarr.zip", KeyCode::Char(' ')),
         ("b_m6a_site.zarr.zip", KeyCode::Char(' ')),
     ] {
@@ -200,4 +200,29 @@ fn the_annotation_picker_lists_gtf_and_gff() {
         matches!(p.fetching, Fetching::Choosing(_)),
         "Tab downloads here too"
     );
+}
+
+#[test]
+fn enter_only_hints_and_a_folder_asks_before_dropping_marks() {
+    let tmp = tree();
+    let root = tmp.path().to_path_buf();
+    let mut p = picker(root.join("out"), None);
+    assert!(p.browser.list.select("a_m6a_site.zarr.zip"));
+    press(&mut p, KeyCode::Enter);
+    assert!(
+        p.browser.marked.as_ref().is_some_and(Vec::is_empty),
+        "Enter does not mark"
+    );
+    assert!(p
+        .error
+        .as_deref()
+        .is_some_and(|e| e.contains("Space marks")));
+    press(&mut p, KeyCode::Char(' '));
+    // Up to the root, where `out` is a faba folder.
+    press(&mut p, KeyCode::Left);
+    assert!(p.browser.list.select("out"));
+    press(&mut p, KeyCode::Char(' '));
+    assert!(p.decision.is_none() && p.error.as_deref().is_some_and(|e| e.contains("again")));
+    press(&mut p, KeyCode::Char(' '));
+    assert!(p.decision.is_some(), "the second Space takes it");
 }

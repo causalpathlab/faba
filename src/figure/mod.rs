@@ -942,6 +942,11 @@ impl Controls {
     pub fn footer(&self) -> Option<Line<'static>> {
         self.save.footer()
     }
+
+    /// Whether the save prompt is open, where the apply key submits.
+    pub fn prompting(&self) -> bool {
+        self.save.active()
+    }
 }
 
 #[cfg(test)]

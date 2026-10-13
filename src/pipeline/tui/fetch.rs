@@ -332,6 +332,13 @@ impl Fetch {
             Line::styled(progress, HIGHLIGHT),
             Line::raw(""),
             Line::styled("the GTF, then the genome: fetched, unpacked, indexed", DIM),
+            Line::raw(""),
+            Line::from(vec![
+                Span::styled("s", HIGHLIGHT),
+                Span::styled(" stop (what came is kept)  ", DIM),
+                Span::styled("Esc", HIGHLIGHT),
+                Span::styled(" hide (it carries on)", DIM),
+            ]),
         ];
         popup(frame, body, " downloading a reference ", lines);
     }

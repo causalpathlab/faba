@@ -167,7 +167,12 @@ impl<'a> GenePicker<'a> {
     }
 }
 
-impl crate::tui::View for GenePicker<'_> {}
+impl crate::tui::View for GenePicker<'_> {
+    /// The apply key opens the gene or locus, as Enter does.
+    fn takes_apply(&self) -> bool {
+        true
+    }
+}
 
 impl Screen for GenePicker<'_> {
     fn done(&self) -> bool {
@@ -180,7 +185,12 @@ impl Screen for GenePicker<'_> {
 
     fn handle_key(&mut self, key: KeyEvent) {
         self.status = None;
-        match key.code {
+        let code = if crate::tui::is_apply(&key) {
+            KeyCode::Enter
+        } else {
+            key.code
+        };
+        match code {
             KeyCode::Up => self.move_by(-1),
             KeyCode::Down => self.move_by(1),
             KeyCode::PageUp => self.move_by(-20),
@@ -210,10 +220,24 @@ impl Screen for GenePicker<'_> {
     }
 
     fn render(&mut self, frame: &mut Frame) {
+        let line = match &self.status {
+            Some(msg) => status_line(msg),
+            None => input_line(
+                "search gene or chr:start-end: ",
+                &self.filter,
+                &[
+                    ("↑/↓", "move"),
+                    ("PgUp/PgDn", "page"),
+                    ("Enter", "open"),
+                    ("Esc", "clear/quit"),
+                ],
+            ),
+        };
+        let help = crate::tui::wrap_help(line, frame.area().width);
         let [top, body, footer] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Fill(1),
-            Constraint::Length(1),
+            Constraint::Length(help.len() as u16),
         ])
         .areas(frame.area());
         frame.render_widget(
@@ -256,15 +280,7 @@ impl Screen for GenePicker<'_> {
             ]));
         }
         frame.render_widget(Paragraph::new(lines), inner);
-        let line = match &self.status {
-            Some(msg) => status_line(msg),
-            None => input_line(
-                "search gene or chr:start-end: ",
-                &self.filter,
-                &[("↑/↓", "move"), ("Enter", "open"), ("Esc", "clear/quit")],
-            ),
-        };
-        frame.render_widget(line, footer);
+        frame.render_widget(Paragraph::new(help), footer);
     }
 }
 

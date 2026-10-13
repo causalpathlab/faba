@@ -26,6 +26,8 @@ struct Busy<'a, T> {
     out: Option<T>,
     /// The work ended without a result: it panicked.
     gone: bool,
+    /// A key (or Ctrl-C) came: say it cannot stop the work.
+    pressed: bool,
     /// Files done, of `total`; no bar when `total` is 0.
     done: &'a AtomicUsize,
     total: usize,
@@ -41,9 +43,10 @@ impl<T> Screen for Busy<'_, T> {
         let frames: Vec<char> = SPINNER.chars().collect();
         let spin = frames[(elapsed.as_millis() / 200) as usize % frames.len()];
         let w = (self.what.chars().count() as u16 + 12)
-            .max(40)
+            .max(if self.pressed { 56 } else { 40 })
             .min(area.width);
-        let inner = popup_frame(frame, area, w, 4, " working ".into());
+        let rows = if self.pressed { 5 } else { 4 };
+        let inner = popup_frame(frame, area, w, rows, " working ".into());
         let secs = format!("{}s", elapsed.as_secs());
         let second = if self.total == 0 {
             Line::from(Span::styled(format!("   {secs}"), DIM))
@@ -54,20 +57,31 @@ impl<T> Screen for Busy<'_, T> {
             let [on, off] = bar_spans(done as u64, self.total as u64, bar_w, HIGHLIGHT);
             Line::from(vec![Span::raw("   "), on, off, Span::styled(count, DIM)])
         };
-        let lines = vec![
+        let mut lines = vec![
             Line::from(vec![
                 Span::styled(format!(" {spin} "), HIGHLIGHT),
                 Span::raw(self.what.to_string()),
             ]),
             second,
         ];
+        if self.pressed {
+            lines.push(Line::from(Span::styled(
+                "   it cannot stop halfway; the view opens when done",
+                DIM,
+            )));
+        }
         frame.render_widget(Paragraph::new(lines), inner);
     }
 
-    /// Keys wait: the work cannot be stopped halfway.
-    fn handle_key(&mut self, _key: KeyEvent) {}
+    /// Keys wait: the work cannot be stopped halfway, which the pop-up
+    /// then says.
+    fn handle_key(&mut self, _key: KeyEvent) {
+        self.pressed = true;
+    }
 
-    fn interrupt(&mut self) {}
+    fn interrupt(&mut self) {
+        self.pressed = true;
+    }
 
     fn done(&self) -> bool {
         self.out.is_some() || self.gone
@@ -128,6 +142,7 @@ pub fn busy_counting<T: Send>(
             rx: &rx,
             out: None,
             gone: false,
+            pressed: false,
             done: &done,
             total,
         };
@@ -156,6 +171,7 @@ mod tests {
             rx: &rx,
             out: None,
             gone: false,
+            pressed: false,
             done: &done,
             total: 3,
         };
@@ -182,6 +198,7 @@ mod tests {
             rx: &rx,
             out: None,
             gone: false,
+            pressed: false,
             done: &done,
             total: 0,
         };

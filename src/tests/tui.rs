@@ -130,3 +130,29 @@ fn a_plain_axis_keeps_its_line_and_labels_but_not_its_ticks() {
     assert_eq!(row(0), "────────");
     assert_eq!(row(1), "  CDS   ");
 }
+
+#[test]
+fn help_wraps_whole_keys_within_the_width() {
+    use data_beans::interactive::ui::help_line;
+    let keys = [
+        ("type", "find"),
+        ("↑/↓", "move"),
+        ("Space", "mark file / choose folder"),
+    ];
+    let line = help_line(&keys);
+    assert_eq!(
+        wrap_help(line.clone(), 200).len(),
+        1,
+        "all on one line when it fits"
+    );
+    let lines = wrap_help(line, 40);
+    assert_eq!(lines.len(), 2);
+    assert!(
+        lines.iter().all(|l| l.width() <= 40),
+        "each within the width"
+    );
+    assert_eq!(
+        lines[1].spans[1].content, "Space",
+        "a key moves with what it does"
+    );
+}

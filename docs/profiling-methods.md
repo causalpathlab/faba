@@ -657,6 +657,18 @@ colours and the dividers at the start and stop codons; the regions are named und
 with no tick, since a tick would read as a position. `s`, in every view, asks for a name in a pop-up
 that lists the figures already saved where faba runs, newest first, with a thumbnail of each where
 the terminal draws images; the list is kept in `.faba-view/` there, so it lasts between sessions.
+A name already taken is never overwritten: the prompt offers the next free one (`name_2`, …).
+
+Every view keeps the same key rules. Enter opens or chooses, and never quits or applies; Ctrl+R
+applies, starts, or submits whatever line is open. Esc goes back one level (out of a pop-up, a
+find, or from the `pileup` browser to its gene list) and quits a view that has nothing above it;
+`q` quits. Where leaving would lose work (`faba run`'s setup, `qc`'s changed thresholds), `q` and
+Ctrl-C both ask first. `s` saves the figure (and on `faba run`'s Run screen, stops the run, asking
+first). `+`/`-` make the view finer and coarser (`pileup`'s zoom, `metagene`'s bins), `0` resets
+it, `y` cycles the y scale, `c` what the bars count, `i` images and text, and `m`/`M` the
+modality (`pileup` mirrors its first two tracks with `v`; `n`/`N` step through its sites).
+Every footer wraps onto further lines rather than cut a key off, and while slow work runs, a key
+pressed says it cannot stop halfway.
 
 ---
 
@@ -711,7 +723,7 @@ A gene list at the bottom left shows each gene's kept and putative sites. Genes 
 `--genes` come first, then the rest by kept sites, re-sorted as the thresholds move (the selection
 stays on its gene); `[` and `]` move through it and
 `/` filters it by symbol. Tab moves between the thresholds panel and the gene list, and the arrow
-keys drive the one in focus; `m` switches the editing modality. The gene models and the metagene come from the annotation, read on a
+keys drive the one in focus; `m` and `M` switch the editing modality. The gene models and the metagene come from the annotation, read on a
 thread once (`--gff`, or the one in the input directory's run record); without one, the gene plot
 spans the gene's own sites and the metagene is left out. Every count is decided by the same rule `qc`
 applies, so the view cannot disagree with the written fileset. Ctrl+R, or a click on the
@@ -735,7 +747,7 @@ faba output directory (directories holding faba matrices or site tables are mark
 one, ← goes up, Space chooses the highlighted one, Ctrl+R the one being shown), then name the
 output, which starts as `{input}_qc` and must be new or empty.
 
-Every file list (this one, the annotation browser `g` opens, and those of `faba run`) narrows as
+Every file list (this one, the annotation browser `a` opens, and those of `faba run`) narrows as
 you type: the names holding the typed text, in any case, with the cursor on the first that starts
 with it. Typing a path walks it: `/` with nothing typed goes to the root, `~` home, and `/` after a
 name into that folder (the name as typed, else the highlighted folder), so `/data/runs/` lands in
@@ -764,7 +776,7 @@ an Inputs screen (BAMs picked as foreground, passed positionally, or background,
 Flags screen, and, once a run has started, a Run screen. In the BAM list, Space takes the
 highlighted BAM from out of the run to fg, to bg, and back out, and typing finds and walks paths as
 in `qc`'s file lists; since letters type there, the screen keys (`c`, `p`, `q`, `1`-`4`) work
-everywhere else, and Ctrl-C leaves. Tab goes from the BAM list to the inputs rows and on through
+everywhere else, and Esc (with nothing typed) moves on to the inputs rows, where they do. Tab goes from the BAM list to the inputs rows and on through
 the screens; Shift+Tab goes back.
 
 Without an annotation or genome at hand, `d` on the inputs rows downloads a matching pair instead
@@ -796,8 +808,9 @@ a child process whose log the Run screen shows; `s` asks first, `s` again interr
 further `s` kills it. When the run ends, a pop-up says so: finished, stopped or failed (with the
 reason it gave), how long it took and where its output is; the terminal also rings its bell and is
 asked for a desktop notification (OSC 9), for whoever is away. Enter, Esc or `[ ok ]` closes it,
-onto the log. `q` is refused while a run is going; before any run, with BAMs picked, `q` asks
-first and only a second `q` leaves, since the setup is not kept. `--batch-process` skips the view and
+onto the log. `q` is refused while a run is going; before any run, with BAMs picked or anything
+changed, `q` (or Ctrl-C) asks first and only a second leaves, since the setup is not kept. `R` on
+the Flags screen resets every flag, likewise only on a second `R`. `--batch-process` skips the view and
 runs straight through from the flags given; it needs the BAMs, `-g`, `-f` and `-o`.
 
 The steps run in this order, and each one's output constrains the next:

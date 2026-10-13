@@ -156,8 +156,13 @@ pub struct App {
     /// The program the run starts: this binary, or a stand-in in tests.
     pub program: PathBuf,
     pub quit: bool,
-    /// `q` was pressed once with a setup to lose: the next `q` leaves.
+    /// `q` (or Ctrl-C) was pressed once with a setup to lose: the next
+    /// one leaves.
     pub leaving: bool,
+    /// `R` was pressed once on the Flags screen: the next `R` resets them.
+    pub resetting: bool,
+    /// The command as it stood once set up, to tell when it has changed.
+    initial: Vec<String>,
     /// `p` ended the session: the command to print once the terminal is
     /// back.
     pub printed: Option<String>,
@@ -201,6 +206,8 @@ impl App {
             program: std::env::current_exe().unwrap_or_else(|_| "faba".into()),
             quit: false,
             leaving: false,
+            resetting: false,
+            initial: Vec::new(),
             printed: None,
             verbose: false,
             end_drawn: false,
@@ -209,6 +216,7 @@ impl App {
             checked: Checked::default(),
         };
         app.refresh();
+        app.initial = app.argv();
         app
     }
 
@@ -246,6 +254,24 @@ impl App {
             self.inputs.output = o.to_string();
         }
         self.refresh();
+        self.initial = self.argv();
+    }
+
+    /// Whether leaving now loses a setup: BAMs picked, or anything changed.
+    pub fn set_up(&self) -> bool {
+        self.job.is_none() && (!self.inputs.picked.is_empty() || self.argv() != self.initial)
+    }
+
+    /// `q` or Ctrl-C: leave, but with a setup to lose only on the second.
+    pub fn ask_leave(&mut self, key: &str) {
+        if self.set_up() && !self.leaving {
+            self.leaving = true;
+            self.note = Some(format!(
+                "{key} again leaves, losing this setup; p prints its command"
+            ));
+        } else {
+            self.leave();
+        }
     }
 
     /// Indices of the form rows shown: advanced ones only when asked for,
@@ -540,8 +566,9 @@ impl Screen for App {
         self.key(key);
     }
 
+    /// Ctrl-C asks first, as `q` does.
     fn interrupt(&mut self) {
-        self.leave();
+        self.ask_leave("Ctrl-C");
     }
 
     fn done(&self) -> bool {
