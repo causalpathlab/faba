@@ -143,6 +143,8 @@ pub struct PileupView<'a> {
     /// at, for clicks.
     drawn: Rect,
     chart_x: u16,
+    /// The screen rows the plots (not the genes) take, for grabbing.
+    chart_rows: (u16, u16),
     /// The column a press on the bars came at, until it is let go: a drag
     /// pans, a click moves the cursor.
     grabbed: Option<u16>,
@@ -207,6 +209,7 @@ impl<'a> PileupView<'a> {
             badge: "pileup",
             drawn: Rect::default(),
             chart_x: 0,
+            chart_rows: (0, 0),
             grabbed: None,
             exit: None,
         }
@@ -500,12 +503,34 @@ impl<'a> PileupView<'a> {
 
     /// Slide the window `bars` bars along, keeping its width and the cursor
     /// in it.
-    fn pan(&mut self, bars: i64) {
-        let shift = bars * self.bin_width();
+    /// Whether it moved: at an end of the view's span it cannot.
+    fn pan(&mut self, bars: i64) -> bool {
+        // As far as the bars travel: the window's span a column, not the
+        // whole bases a bar rounds up to.
+        let span = self.window.1 - self.window.0;
+        let shift = bars * span / self.columns.max(1) as i64;
+        let before = self.window;
         self.window = (self.window.0 + shift, self.window.1 + shift);
         self.clamp_window();
+        if self.window == before {
+            return false;
+        }
         self.cursor = self.cursor.clamp(self.window.0, self.window.1);
         self.plots.iter_mut().for_each(PlotImage::invalidate);
+        true
+    }
+
+    /// Whether screen cell `(x, y)` is over the plots' bars.
+    fn over_bars(&self, x: u16, y: u16) -> bool {
+        let (top, bottom) = self.chart_rows;
+        x >= self.chart_x
+            && usize::from(x - self.chart_x) < self.columns
+            && (top..bottom).contains(&y)
+    }
+
+    /// Let go of a grab, as a press outside the view does.
+    pub(super) fn let_go(&mut self) {
+        self.grabbed = None;
     }
 
     /// A press, release or wheel turn on the view: a press on the bars
@@ -513,32 +538,24 @@ impl<'a> PileupView<'a> {
     /// it moves the cursor there); the wheel, either way, pans a tenth of
     /// the view a notch. Whether it changed.
     pub(super) fn pointer(&mut self, m: ratatui::crossterm::event::MouseEvent) -> bool {
-        use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+        use ratatui::crossterm::event::MouseEventKind;
         let notch = (self.columns as i64 / 10).max(1);
         match m.kind {
-            MouseEventKind::Down(MouseButton::Left) => {
-                let over =
-                    m.column >= self.chart_x && usize::from(m.column - self.chart_x) < self.columns;
-                self.grabbed = over.then_some(m.column);
+            // Any button: a click with any of them moves the cursor.
+            MouseEventKind::Down(_) => {
+                self.grabbed = self.over_bars(m.column, m.row).then_some(m.column);
                 false
             }
-            MouseEventKind::Up(MouseButton::Left) => match self.grabbed.take() {
+            MouseEventKind::Up(_) => match self.grabbed.take() {
                 // Dragged: the bars follow the pointer, as when grabbed.
                 Some(from) if from.abs_diff(m.column) >= 2 => {
-                    self.pan(i64::from(from) - i64::from(m.column));
-                    true
+                    self.pan(i64::from(from) - i64::from(m.column))
                 }
                 Some(from) => self.click_at(from),
                 None => false,
             },
-            MouseEventKind::ScrollUp | MouseEventKind::ScrollLeft => {
-                self.pan(-notch);
-                true
-            }
-            MouseEventKind::ScrollDown | MouseEventKind::ScrollRight => {
-                self.pan(notch);
-                true
-            }
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollLeft => self.pan(-notch),
+            MouseEventKind::ScrollDown | MouseEventKind::ScrollRight => self.pan(notch),
             _ => false,
         }
     }
@@ -633,17 +650,14 @@ impl<'a> PileupView<'a> {
         let n_plots = rows.iter().filter(|&&r| r != Row::Genes).count().max(1) as f64;
         // The shape the view has on screen, its plots sharing what the title
         // and the genes leave; else a page of its own.
-        let (width, panel_h) = match figure::page(self.drawn) {
+        let (width, panel_h) = match figure::page(self.drawn, (360.0, 0.0)) {
             Some((w, h)) => {
                 let genes = if rows.contains(&Row::Genes) {
                     genes_h
                 } else {
                     0.0
                 };
-                (
-                    w.max(360.0),
-                    ((h - 50.0 - genes) / n_plots).max(100.0 + room),
-                )
+                (w, ((h - 50.0 - genes) / n_plots).max(100.0 + room))
             }
             None => (720.0, 170.0 + room),
         };
@@ -935,6 +949,8 @@ impl PileupView<'_> {
         self.columns = (inner_width as usize).max(1);
         // Inside the panel's border, past the y axis.
         (self.drawn, self.chart_x) = (area, areas[1].x + 1 + GUTTER);
+        let plot_rows = rows.iter().filter(|&&r| r != Row::Genes).count().max(1);
+        self.chart_rows = (areas[1].y, areas[plot_rows].bottom());
         self.clamp_window();
         let (lo, hi) = self.window;
         let extra = format!(

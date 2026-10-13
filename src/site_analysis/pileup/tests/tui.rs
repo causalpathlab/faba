@@ -605,3 +605,32 @@ fn the_browser_draws_text_and_saves_turned_position_labels() {
     let _ = s;
     assert!(b.figure().contains("rotate(-90)"), "position labels turned");
 }
+
+#[test]
+fn only_the_bars_grab_and_any_button_clicks() {
+    use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    let (m, s) = (positions(), sites());
+    let mut v = view(&m, &s);
+    press(&mut v, KeyCode::Char('+'));
+    screen(&mut v, 100, 30);
+    let at = |kind, column, row| MouseEvent {
+        kind,
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    };
+    let (x, before) = (v.chart_x + 40, v.window);
+    // A drag from the header row does not pan.
+    v.mouse(at(MouseEventKind::Down(MouseButton::Left), x, 0));
+    v.mouse(at(MouseEventKind::Up(MouseButton::Left), x - 10, 0));
+    assert_eq!(v.window, before);
+    // A right click on the bars moves the cursor.
+    let y = v.chart_rows.0 + 2;
+    let cursor = v.cursor;
+    v.mouse(at(MouseEventKind::Down(MouseButton::Right), x, y));
+    v.mouse(at(MouseEventKind::Up(MouseButton::Right), x, y));
+    assert_ne!(v.cursor, cursor);
+    // The wheel at the start of the span changes nothing, and says so.
+    press(&mut v, KeyCode::Char('0'));
+    assert!(!v.mouse(at(MouseEventKind::ScrollUp, x, y)));
+}

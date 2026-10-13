@@ -164,7 +164,11 @@ impl Screen for StackView<'_> {
             // Let go anywhere: the gene that was grabbed.
             MouseEventKind::Up(_) => self.focus,
             MouseEventKind::Down(_) => {
-                let Some(i) = under else { return false };
+                let Some(i) = under else {
+                    // Nothing grabbed, so no later release pans.
+                    self.views[self.focus].let_go();
+                    return false;
+                };
                 self.focus = i;
                 self.status = None;
                 self.mark_focus();

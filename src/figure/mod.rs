@@ -222,13 +222,26 @@ pub const CELL: (f64, f64) = (6.0, 12.0);
 
 /// The size in points of a figure saved from a view that took `area` on
 /// screen, so it keeps the view's shape; `None` before it was drawn.
-pub fn page(area: Rect) -> Option<(f64, f64)> {
+/// No smaller than `min` (a view states its own), lest a narrow terminal
+/// squeeze the text out.
+pub fn page(area: Rect, min: (f64, f64)) -> Option<(f64, f64)> {
     (area.width > 0 && area.height > 0).then(|| {
         (
-            f64::from(area.width) * CELL.0,
-            f64::from(area.height) * CELL.1,
+            (f64::from(area.width) * CELL.0).max(min.0),
+            (f64::from(area.height) * CELL.1).max(min.1),
         )
     })
+}
+
+/// The `(width, height)` an SVG from [`Canvas::finish`] declares; zero
+/// where one is missing.
+pub(crate) fn svg_size(svg: &str) -> (f64, f64) {
+    let get = |key: &str| -> f64 {
+        let at = svg.find(&format!(" {key}=\"")).map(|i| i + key.len() + 3);
+        at.and_then(|i| svg[i..].split('"').next()?.parse().ok())
+            .unwrap_or(0.0)
+    };
+    (get("width"), get("height"))
 }
 
 /// Figures from [`Canvas::finish`] tiled into one, `cols` to a row, in
@@ -236,13 +249,8 @@ pub fn page(area: Rect) -> Option<(f64, f64)> {
 /// lays them side by side. Each cell is as wide as the widest figure and
 /// each row as tall as its tallest.
 pub fn tile_svgs(svgs: &[String], cols: usize) -> String {
-    let size = |svg: &str, key: &str| -> f64 {
-        let at = svg.find(&format!(" {key}=\"")).map(|i| i + key.len() + 3);
-        at.and_then(|i| svg[i..].split('"').next()?.parse().ok())
-            .unwrap_or(0.0)
-    };
     let cols = cols.max(1);
-    let cell = svgs.iter().map(|s| size(s, "width")).fold(0.0, f64::max);
+    let cell = svgs.iter().map(|s| svg_size(s).0).fold(0.0, f64::max);
     let mut y = 0.0;
     let mut body = String::new();
     for row in svgs.chunks(cols) {
@@ -251,7 +259,7 @@ pub fn tile_svgs(svgs: &[String], cols: usize) -> String {
             let x = cell * k as f64;
             body.push_str(&svg.replacen("<svg ", &format!("<svg x=\"{x}\" y=\"{y}\" "), 1));
         }
-        y += row.iter().map(|s| size(s, "height")).fold(0.0, f64::max);
+        y += row.iter().map(|s| svg_size(s).1).fold(0.0, f64::max);
     }
     let width = cell * cols.min(svgs.len()).max(1) as f64;
     format!(

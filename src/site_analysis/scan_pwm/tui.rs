@@ -232,9 +232,11 @@ impl PwmView {
     /// The logo as a figure: letters stretched to their heights.
     fn figure(&self) -> String {
         let n = self.columns.len().max(1) as f64;
-        // The view's shape on screen, else letters of a readable width.
-        let (width, height) = match crate::figure::page(self.drawn) {
-            Some((w, h)) => (w.max(300.0), h.max(200.0)),
+        // The view's shape on screen, its letters 8 to 40 points wide
+        // whatever the motif's length; else a page of readable letters.
+        let margins = 76.0;
+        let (width, height) = match crate::figure::page(self.drawn, (300.0, 200.0)) {
+            Some((w, h)) => (w.clamp(margins + 8.0 * n, margins + 40.0 * n), h),
             None => (56.0 + (560.0 / n).clamp(8.0, 40.0) * n + 20.0, 330.0),
         };
         let mut c = Canvas::new(width, height);

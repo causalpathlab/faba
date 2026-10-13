@@ -240,14 +240,16 @@ fn a_drag_or_the_wheel_pans_the_gene_under_the_pointer() {
         modifiers: KeyModifiers::NONE,
     };
     let v = &s.views[1];
-    let (x, y, before, bin) = (v.chart_x + 50, v.drawn.y + 3, v.window, v.bin_width());
+    let (x, y, before) = (v.chart_x + 50, v.drawn.y + 3, v.window);
+    // As far as the pointer: the window's span a column.
+    let ten_columns = 10 * (before.1 - before.0) / v.columns as i64;
     s.mouse(at(MouseEventKind::Down(MouseButton::Left), x, y));
     s.mouse(at(MouseEventKind::Up(MouseButton::Left), x - 10, y));
     assert_eq!(s.focus, 1);
     let after = s.views[1].window;
     assert_eq!(
         after.0 - before.0,
-        10 * bin,
+        ten_columns,
         "dragged left: the view moves right"
     );
     assert_eq!(after.1 - after.0, before.1 - before.0, "the same width");
@@ -265,13 +267,7 @@ fn a_drag_or_the_wheel_pans_the_gene_under_the_pointer() {
 fn a_saved_gene_keeps_its_shape_on_screen() {
     let (a, b) = (positions(1.0), positions(3.0));
     let mut s = stack(&a, &b);
-    let size = |svg: &str| {
-        let get = |k: &str| -> f64 {
-            let at = svg.find(&format!(" {k}=\"")).unwrap() + k.len() + 3;
-            svg[at..].split('"').next().unwrap().parse().unwrap()
-        };
-        (get("width"), get("height"))
-    };
+    let size = crate::figure::svg_size;
     screen(&mut s, 120, 40);
     let tall = size(&s.views[0].figure());
     press(&mut s, KeyCode::Char('|'));
@@ -281,4 +277,27 @@ fn a_saved_gene_keeps_its_shape_on_screen() {
     assert_eq!(tall.0, 120.0 * crate::figure::CELL.0);
     assert_eq!(wide.0, 60.0 * crate::figure::CELL.0);
     assert!(wide.1 > tall.1, "side by side, each gene is taller");
+}
+
+#[test]
+fn a_press_outside_every_gene_lets_go_of_a_grab() {
+    use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+    let (a, b) = (positions(1.0), positions(3.0));
+    let mut s = stack(&a, &b);
+    press(&mut s, KeyCode::Char('+'));
+    screen(&mut s, 100, 40);
+    let at = |kind, column, row| MouseEvent {
+        kind,
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    };
+    let v = &s.views[0];
+    let (x, y, before) = (v.chart_x + 30, v.drawn.y + 3, v.window);
+    // Grabbed, then its release lost (let go outside the terminal).
+    s.mouse(at(MouseEventKind::Down(MouseButton::Left), x, y));
+    // A press and release on the footer, outside every gene.
+    s.mouse(at(MouseEventKind::Down(MouseButton::Left), x + 20, 39));
+    s.mouse(at(MouseEventKind::Up(MouseButton::Left), x + 20, 39));
+    assert_eq!(s.views[0].window, before, "no stale grab pans the gene");
 }

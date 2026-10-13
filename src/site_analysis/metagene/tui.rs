@@ -239,8 +239,7 @@ impl<'a> MetageneView<'a> {
     /// The shown track as a figure, at the shown merge factor.
     fn figure(&self) -> String {
         // The view's shape on screen, else a page of its own.
-        let (w, h) = crate::figure::page(self.drawn).unwrap_or((680.0, 300.0));
-        let (w, h) = (w.max(360.0), h.max(200.0));
+        let (w, h) = crate::figure::page(self.drawn, (360.0, 200.0)).unwrap_or((680.0, 300.0));
         let mut c = Canvas::new(w, h);
         c.bold(16.0, 22.0, &self.title, 12.0, Anchor::Start, INK);
         let totals: Vec<String> = self

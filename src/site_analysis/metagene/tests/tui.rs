@@ -255,13 +255,7 @@ fn enter_stays_and_plus_is_finer() {
 fn a_saved_figure_keeps_the_views_shape() {
     let h = hist(true);
     let mut v = MetageneView::new("sites", &h);
-    let size = |svg: &str| {
-        let get = |k: &str| -> f64 {
-            let at = svg.find(&format!(" {k}=\"")).unwrap() + k.len() + 3;
-            svg[at..].split('"').next().unwrap().parse().unwrap()
-        };
-        (get("width"), get("height"))
-    };
+    let size = crate::figure::svg_size;
     screen(&mut v, 150, 40);
     let (cw, ch) = crate::figure::CELL;
     assert_eq!(size(&v.figure()), (150.0 * cw, 40.0 * ch));
