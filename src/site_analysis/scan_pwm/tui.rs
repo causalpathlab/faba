@@ -237,7 +237,7 @@ impl PwmView {
         let margins = 76.0;
         let (width, height) = match crate::figure::page(self.drawn, (300.0, 200.0)) {
             Some((w, h)) => (w.clamp(margins + 8.0 * n, margins + 40.0 * n), h),
-            None => (56.0 + (560.0 / n).clamp(8.0, 40.0) * n + 20.0, 330.0),
+            None => (margins + (560.0 / n).clamp(8.0, 40.0) * n, 330.0),
         };
         let mut c = Canvas::new(width, height);
         c.bold(16.0, 22.0, &self.title, 12.0, Anchor::Start, INK);

@@ -237,10 +237,9 @@ impl<'a> PileupView<'a> {
     /// A click at screen column `x`: the cursor to the bar there, when it
     /// is over the bars; whether it moved.
     pub(super) fn click_at(&mut self, x: u16) -> bool {
-        let col = usize::from(x.saturating_sub(self.chart_x));
-        if x < self.chart_x || col >= self.columns {
+        let Some(col) = self.bar_at(x) else {
             return false;
-        }
+        };
         let (start, stop) = self.bar_range(col);
         self.cursor = (start + (stop - start) / 2).clamp(self.extent.0, self.extent.1);
         self.plots.iter_mut().for_each(PlotImage::invalidate);
@@ -523,14 +522,18 @@ impl<'a> PileupView<'a> {
     /// Whether screen cell `(x, y)` is over the plots' bars.
     fn over_bars(&self, x: u16, y: u16) -> bool {
         let (top, bottom) = self.chart_rows;
-        x >= self.chart_x
-            && usize::from(x - self.chart_x) < self.columns
-            && (top..bottom).contains(&y)
+        self.bar_at(x).is_some() && (top..bottom).contains(&y)
     }
 
-    /// Let go of a grab, as a press outside the view does.
-    pub(super) fn let_go(&mut self) {
-        self.grabbed = None;
+    /// The bar at screen column `x`, when it is over the bars.
+    fn bar_at(&self, x: u16) -> Option<usize> {
+        let col = usize::from(x.checked_sub(self.chart_x)?);
+        (col < self.columns).then_some(col)
+    }
+
+    /// Rows of plots, as against the genes row.
+    fn plot_count(rows: &[Row]) -> usize {
+        rows.iter().filter(|&&r| r != Row::Genes).count().max(1)
     }
 
     /// A press, release or wheel turn on the view: a press on the bars
@@ -647,7 +650,7 @@ impl<'a> PileupView<'a> {
         let room = figure::tick_room(&self.tick_list(), true);
         let rows = self.rows();
         let genes_h = 24.0 + GENE_LANE * self.lanes() as f64;
-        let n_plots = rows.iter().filter(|&&r| r != Row::Genes).count().max(1) as f64;
+        let n_plots = Self::plot_count(&rows) as f64;
         // The shape the view has on screen, its plots sharing what the title
         // and the genes leave; else a page of its own.
         let (width, panel_h) = match figure::page(self.drawn, (360.0, 0.0)) {
@@ -928,7 +931,8 @@ impl PileupView<'_> {
     pub(super) fn render_in(&mut self, frame: &mut Frame, area: Rect, footer: bool) {
         self.take_genes();
         let rows = self.rows();
-        let n_plots = rows.iter().filter(|&&r| r != Row::Genes).count().max(1) as u32;
+        let plot_rows = Self::plot_count(&rows);
+        let n_plots = plot_rows as u32;
         let genes_height = self.lanes() as u16 + 2;
         let mut layout = vec![Constraint::Length(1)];
         layout.extend(rows.iter().map(|&r| match r {
@@ -949,7 +953,6 @@ impl PileupView<'_> {
         self.columns = (inner_width as usize).max(1);
         // Inside the panel's border, past the y axis.
         (self.drawn, self.chart_x) = (area, areas[1].x + 1 + GUTTER);
-        let plot_rows = rows.iter().filter(|&&r| r != Row::Genes).count().max(1);
         self.chart_rows = (areas[1].y, areas[plot_rows].bottom());
         self.clamp_window();
         let (lo, hi) = self.window;

@@ -163,16 +163,15 @@ impl Screen for StackView<'_> {
         let i = match m.kind {
             // Let go anywhere: the gene that was grabbed.
             MouseEventKind::Up(_) => self.focus,
+            // Outside every gene, the press still goes to the one with the
+            // keys: off its bars, it lets go of any grab.
             MouseEventKind::Down(_) => {
-                let Some(i) = under else {
-                    // Nothing grabbed, so no later release pans.
-                    self.views[self.focus].let_go();
-                    return false;
-                };
-                self.focus = i;
-                self.status = None;
-                self.mark_focus();
-                i
+                if let Some(i) = under {
+                    self.focus = i;
+                    self.status = None;
+                    self.mark_focus();
+                }
+                self.focus
             }
             _ => match under {
                 Some(i) => i,
