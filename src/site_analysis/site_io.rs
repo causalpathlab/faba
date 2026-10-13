@@ -138,20 +138,32 @@ pub fn read_sites(site_file: &str) -> anyhow::Result<Vec<GenomicSite>> {
             });
         }
     } else if has_genomic_alpha {
-        // APA format: chr, genomic_alpha (no strand column)
+        // APA format: chr, genomic_alpha, and the UTR's strand (tables
+        // written before it was recorded have none: taken as forward).
         let pos_idx = field_names
             .iter()
             .position(|f| f.as_ref() == "genomic_alpha")
             .unwrap();
+        let strand_idx = field_names.iter().position(|f| f.as_ref() == "strand");
+        if strand_idx.is_none() {
+            log::warn!(
+                "{site_file} records no strand: every APA site is taken as on the forward \
+                 strand; rerun `faba apa` to record it"
+            );
+        }
 
         for record in row_iter {
             let row = record?;
             let chr: Box<str> = row.get_string(chr_idx)?.clone().into_boxed_str();
             let position = row.get_long(pos_idx)?;
+            let strand = match strand_idx {
+                Some(i) => parse_strand(row.get_string(i)?),
+                None => Strand::Forward,
+            };
             sites.push(GenomicSite {
                 chr,
                 position,
-                strand: Strand::Forward,
+                strand,
             });
         }
     } else if has_primary_pos {

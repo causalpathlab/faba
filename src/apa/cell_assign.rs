@@ -1,7 +1,7 @@
 use crate::apa::em::EmResult;
 use crate::apa::fragment::FragmentRecord;
 use crate::apa::utr_region::UtrRegion;
-use genomic_data::sam::{CellBarcode, UmiBarcode};
+use genomic_data::sam::{CellBarcode, Strand, UmiBarcode};
 use rustc_hash::FxHashMap as HashMap;
 
 /// A cell-level count at a specific pA site.
@@ -22,6 +22,8 @@ pub struct ApaSiteAnnotation {
     pub site_id: Box<str>,
     pub gene_name: Box<str>,
     pub chr: Box<str>,
+    /// The UTR's strand, so a reader can orient the site.
+    pub strand: Strand,
     pub genomic_alpha: i64,
     pub beta: f32,
     pub genomic_start: i64,
@@ -141,6 +143,7 @@ pub fn assign_fragments_to_sites(
             site_id,
             gene_name: utr.name.clone(),
             chr: utr.chr.clone(),
+            strand: utr.strand,
             genomic_alpha,
             beta,
             genomic_start: gstart,
@@ -205,6 +208,7 @@ pub fn assign_fragments_two_site_fast(
                 site_id: crate::apa::site_id(&utr.name, &k.to_string()),
                 gene_name: utr.name.clone(),
                 chr: utr.chr.clone(),
+                strand: utr.strand,
                 genomic_alpha,
                 beta,
                 genomic_start: gstart,
