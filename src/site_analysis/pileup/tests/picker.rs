@@ -105,3 +105,21 @@ fn slash_starts_a_fresh_search() {
     press(&mut p, KeyCode::Enter);
     assert_eq!(p.decision, Some(Choice::Gene(2)));
 }
+
+#[test]
+fn every_footer_key_shows_at_60_columns() {
+    let c = catalog_from_rows(rows());
+    let mut p = GenePicker::new(&c);
+    let mut term = Terminal::new(TestBackend::new(60, 12)).unwrap();
+    term.draw(|f| p.render(f)).unwrap();
+    let text: String = term
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|c| c.symbol())
+        .collect();
+    for key in ["↑/↓ move", "PgUp/PgDn page", "Enter open", "Esc clear/quit"] {
+        assert!(text.contains(key), "{key}\n{text}");
+    }
+}

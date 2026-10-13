@@ -883,10 +883,14 @@ fn compute_and_write_pdui(
 }
 
 /// Write APA site annotations to a Parquet file.
-fn write_apa_annotations(annotations: &[ApaSiteAnnotation], path: &str) -> anyhow::Result<()> {
+pub(crate) fn write_apa_annotations(
+    annotations: &[ApaSiteAnnotation],
+    path: &str,
+) -> anyhow::Result<()> {
     let mut site_ids = Vec::with_capacity(annotations.len());
     let mut gene_names = Vec::with_capacity(annotations.len());
     let mut chrs = Vec::with_capacity(annotations.len());
+    let mut strands = Vec::with_capacity(annotations.len());
     let mut genomic_alphas = Vec::with_capacity(annotations.len());
     let mut betas = Vec::with_capacity(annotations.len());
     let mut genomic_starts = Vec::with_capacity(annotations.len());
@@ -899,6 +903,10 @@ fn write_apa_annotations(annotations: &[ApaSiteAnnotation], path: &str) -> anyho
         site_ids.push(a.site_id.as_ref());
         gene_names.push(a.gene_name.as_ref());
         chrs.push(a.chr.as_ref());
+        strands.push(match a.strand {
+            Strand::Forward => "+",
+            Strand::Backward => "-",
+        });
         genomic_alphas.push(a.genomic_alpha);
         betas.push(a.beta);
         genomic_starts.push(a.genomic_start);
@@ -912,6 +920,7 @@ fn write_apa_annotations(annotations: &[ApaSiteAnnotation], path: &str) -> anyho
         arrow::datatypes::Field::new("site_id", arrow::datatypes::DataType::Utf8, false),
         arrow::datatypes::Field::new("gene_name", arrow::datatypes::DataType::Utf8, false),
         arrow::datatypes::Field::new("chr", arrow::datatypes::DataType::Utf8, false),
+        arrow::datatypes::Field::new("strand", arrow::datatypes::DataType::Utf8, false),
         arrow::datatypes::Field::new("genomic_alpha", arrow::datatypes::DataType::Int64, false),
         arrow::datatypes::Field::new("beta", arrow::datatypes::DataType::Float32, false),
         arrow::datatypes::Field::new("genomic_start", arrow::datatypes::DataType::Int64, false),
@@ -931,6 +940,7 @@ fn write_apa_annotations(annotations: &[ApaSiteAnnotation], path: &str) -> anyho
             Arc::new(StringArray::from(site_ids)) as ArrayRef,
             Arc::new(StringArray::from(gene_names)) as ArrayRef,
             Arc::new(StringArray::from(chrs)) as ArrayRef,
+            Arc::new(StringArray::from(strands)) as ArrayRef,
             Arc::new(Int64Array::from(genomic_alphas)) as ArrayRef,
             Arc::new(Float32Array::from(betas)) as ArrayRef,
             Arc::new(Int64Array::from(genomic_starts)) as ArrayRef,

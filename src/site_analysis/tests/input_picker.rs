@@ -1,7 +1,7 @@
 use super::*;
 use ratatui::crossterm::event::KeyModifiers;
 
-fn press(p: &mut InputPicker, code: KeyCode) {
+fn press(p: &mut impl View, code: KeyCode) {
     crate::tui::feed(p, KeyEvent::new(code, KeyModifiers::NONE));
 }
 
@@ -61,7 +61,7 @@ fn mark_files_from_a_folder_or_choose_the_folder() {
     assert_eq!(names, ["..", "a_m6a_site.zarr.zip", "b_m6a_site.zarr.zip"]);
     for (name, key) in [
         ("b_m6a_site.zarr.zip", KeyCode::Char(' ')),
-        ("a_m6a_site.zarr.zip", KeyCode::Enter),
+        ("a_m6a_site.zarr.zip", KeyCode::Char(' ')),
         ("b_m6a_site.zarr.zip", KeyCode::Char(' ')),
         ("b_m6a_site.zarr.zip", KeyCode::Char(' ')),
     ] {
@@ -147,4 +147,82 @@ fn the_last_choice_is_kept_per_working_folder() {
     );
     let kept = std::fs::read_to_string(&memo).unwrap();
     assert_eq!(kept.lines().count(), 2, "one line per folder");
+}
+
+#[test]
+fn the_genome_picker_lists_fasta_and_offers_a_download() {
+    let tmp = tempfile::tempdir().unwrap();
+    for f in ["hg38.fa", "mm10.fasta.gz", "notes.txt"] {
+        std::fs::write(tmp.path().join(f), b"").unwrap();
+    }
+    let mut p = ReferencePicker::new(
+        tmp.path().to_path_buf(),
+        "pwm",
+        Reference::Genome,
+        Some(true),
+    );
+    let names: Vec<&str> = p.browser.list.shown().map(|e| e.name.as_str()).collect();
+    assert!(names.contains(&"hg38.fa") && names.contains(&"mm10.fasta.gz"));
+    assert!(!names.contains(&"notes.txt"), "{names:?}");
+
+    // Tab: the sources, on the one naming chromosomes chr1; Esc backs out.
+    press(&mut p, KeyCode::Tab);
+    assert!(matches!(&p.fetching, Fetching::Choosing(c) if c.bam_chr == Some(true)));
+    press(&mut p, KeyCode::Esc);
+    assert!(matches!(p.fetching, Fetching::No) && p.decision.is_none());
+
+    p.browser.list.select("hg38.fa");
+    press(&mut p, KeyCode::Enter);
+    assert_eq!(p.decision, Some(Some(tmp.path().join("hg38.fa"))));
+
+    let mut p = ReferencePicker::new(tmp.path().to_path_buf(), "pwm", Reference::Genome, None);
+    press(&mut p, KeyCode::Esc);
+    assert_eq!(p.decision, Some(None), "Esc cancels");
+}
+
+#[test]
+fn the_annotation_picker_lists_gtf_and_gff() {
+    let tmp = tempfile::tempdir().unwrap();
+    for f in ["genes.gtf.gz", "genes.gff3", "hg38.fa"] {
+        std::fs::write(tmp.path().join(f), b"").unwrap();
+    }
+    let mut p = ReferencePicker::new(
+        tmp.path().to_path_buf(),
+        "pileup",
+        Reference::Annotation,
+        None,
+    );
+    let names: Vec<&str> = p.browser.list.shown().map(|e| e.name.as_str()).collect();
+    assert!(names.contains(&"genes.gtf.gz") && names.contains(&"genes.gff3"));
+    assert!(!names.contains(&"hg38.fa"), "{names:?}");
+    press(&mut p, KeyCode::Tab);
+    assert!(
+        matches!(p.fetching, Fetching::Choosing(_)),
+        "Tab downloads here too"
+    );
+}
+
+#[test]
+fn enter_only_hints_and_a_folder_asks_before_dropping_marks() {
+    let tmp = tree();
+    let root = tmp.path().to_path_buf();
+    let mut p = picker(root.join("out"), None);
+    assert!(p.browser.list.select("a_m6a_site.zarr.zip"));
+    press(&mut p, KeyCode::Enter);
+    assert!(
+        p.browser.marked.as_ref().is_some_and(Vec::is_empty),
+        "Enter does not mark"
+    );
+    assert!(p
+        .error
+        .as_deref()
+        .is_some_and(|e| e.contains("Space marks")));
+    press(&mut p, KeyCode::Char(' '));
+    // Up to the root, where `out` is a faba folder.
+    press(&mut p, KeyCode::Left);
+    assert!(p.browser.list.select("out"));
+    press(&mut p, KeyCode::Char(' '));
+    assert!(p.decision.is_none() && p.error.as_deref().is_some_and(|e| e.contains("again")));
+    press(&mut p, KeyCode::Char(' '));
+    assert!(p.decision.is_some(), "the second Space takes it");
 }

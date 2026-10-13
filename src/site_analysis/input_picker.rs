@@ -5,15 +5,17 @@
 
 use std::path::{Path, PathBuf};
 
-use data_beans::interactive::ui::{header, help_line, Screen, HIGHLIGHT};
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use data_beans::interactive::ui::{header, help_line, input_line, Screen, HIGHLIGHT};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
+use crate::figure::{Edit, LineInput};
+use crate::pipeline::tui::fetch::{Catalogue, Fetch, Pick};
 use crate::qc::layout::looks_like_faba_dir;
 use crate::qc::path_tui::faba_browser;
-use crate::tui::browser::{Browser, Nav};
+use crate::tui::browser::{is_annotation, is_fasta, Browser, Nav};
 use crate::tui::{is_apply, popup_frame, run_view, tilde, View, APPLY_KEYS};
 
 /// What was chosen: the marked files, or one folder.
@@ -37,6 +39,9 @@ pub struct InputPicker {
     separate: Option<bool>,
     /// Why the last choice was refused.
     pub error: Option<String>,
+    /// A folder Space was pressed on while files were marked: Space on it
+    /// again takes it, dropping them.
+    confirm_dir: Option<PathBuf>,
     /// The choice; `Some(None)` when cancelled.
     pub decision: Option<Option<Chosen>>,
 }
@@ -66,6 +71,7 @@ impl InputPicker {
             what,
             separate: separable.then_some(false),
             error: None,
+            confirm_dir: None,
             decision: None,
         }
     }
@@ -120,6 +126,7 @@ impl Screen for InputPicker {
 
     fn handle_key(&mut self, key: KeyEvent) {
         self.error = None;
+        let confirm_dir = self.confirm_dir.take();
         if is_apply(&key) {
             let marked = self.browser.marked.take().unwrap_or_default();
             if marked.is_empty() {
@@ -129,7 +136,11 @@ impl Screen for InputPicker {
             return self.finish(marked);
         }
         match self.browser.key(key) {
-            Nav::Picked(file) => return self.browser.toggle_mark(file),
+            // Space marks, as in `faba run`'s BAM list; Enter only says so.
+            Nav::Picked(_) => {
+                self.error = Some(format!("Space marks a file; {APPLY_KEYS} reads the marked"));
+                return;
+            }
             Nav::Moved => return,
             Nav::Ignored => {}
         }
@@ -139,9 +150,18 @@ impl Screen for InputPicker {
                     return;
                 };
                 let (path, dir, up) = (e.path.clone(), e.dir, e.name == "..");
+                let n_marked = self.browser.marked.as_ref().map_or(0, Vec::len);
                 if !dir {
                     self.browser.toggle_mark(path);
-                } else if !up {
+                } else if up {
+                } else if n_marked > 0 && confirm_dir.as_ref() != Some(&path) {
+                    // Taking a folder drops the marked files: ask first.
+                    self.error = Some(format!(
+                        "Space again takes this folder alone, dropping {n_marked} marked; \
+                         {APPLY_KEYS} reads the marked"
+                    ));
+                    self.confirm_dir = Some(path);
+                } else {
                     self.choose_dir(path);
                 }
             }
@@ -159,7 +179,6 @@ impl Screen for InputPicker {
         let area = frame.area();
         frame.render_widget(header(self.command, "choose the input", ""), area);
         let w = area.width.saturating_sub(4).clamp(20, 90);
-        let rows = area.height.saturating_sub(8).clamp(3, 24);
         let n_marked = self.browser.marked.as_ref().map_or(0, Vec::len);
         let marked = match (n_marked, self.track_mode()) {
             (0, _) => String::new(),
@@ -172,7 +191,30 @@ impl Screen for InputPicker {
             tilde(&self.browser.cwd),
             self.browser.list.find.tag()
         );
-        let inner = popup_frame(frame, area, w, rows + 4, title);
+        let apply = if n_marked == 0 {
+            "choose this folder"
+        } else {
+            "read the marked"
+        };
+        // Three lines: getting about, marking, and finishing.
+        let mut mark = vec![("Space", "mark file / choose folder")];
+        if let Some((_, tab)) = self.track_mode() {
+            mark.push(("Tab", tab));
+        }
+        let help = [
+            help_line(&[
+                ("type", "find"),
+                ("↑/↓", "move"),
+                ("Enter/→", "open"),
+                ("←", "up"),
+            ]),
+            help_line(&mark),
+            help_line(&[(APPLY_KEYS, apply), ("Esc", "clear find / cancel")]),
+        ];
+        // Header, border and the error line, besides the list and the help.
+        let help_rows = help.len() as u16;
+        let rows = area.height.saturating_sub(7 + help_rows).clamp(3, 24);
+        let inner = popup_frame(frame, area, w, rows + 3 + help_rows, title);
         let mut lines = self.browser.lines(
             rows as usize,
             inner.width as usize,
@@ -183,25 +225,291 @@ impl Screen for InputPicker {
             Some(why) => Line::from(Span::styled(format!(" {why}"), HIGHLIGHT)),
             None => Line::from(""),
         });
-        let apply = if n_marked == 0 {
-            "choose this folder"
-        } else {
-            "read the marked"
-        };
-        let mut keys = vec![
-            ("type", "find"),
-            ("↑/↓", "move"),
-            ("Enter/→", "open"),
-            ("←", "up"),
-            ("Space", "mark file / choose folder"),
-        ];
-        if let Some((_, tab)) = self.track_mode() {
-            keys.push(("Tab", tab));
-        }
-        keys.extend([(APPLY_KEYS, apply), ("Esc", "clear find / cancel")]);
-        lines.push(help_line(&keys));
+        lines.extend(help);
         frame.render_widget(Paragraph::new(lines), inner);
     }
+}
+
+/// Which reference a [`ReferencePicker`] asks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reference {
+    /// A genome FASTA, as `pwm` reads.
+    Genome,
+    /// A GTF or GFF, as `pileup` draws its genes from.
+    Annotation,
+}
+
+impl Reference {
+    fn keep(self) -> fn(&str) -> bool {
+        match self {
+            Reference::Genome => is_fasta,
+            Reference::Annotation => is_annotation,
+        }
+    }
+
+    /// What it is, as the pop-up says.
+    fn what(self) -> &'static str {
+        match self {
+            Reference::Genome => "genome",
+            Reference::Annotation => "annotation",
+        }
+    }
+
+    /// The files it lists.
+    fn files(self) -> &'static str {
+        match self {
+            Reference::Genome => "FASTA",
+            Reference::Annotation => "GTF or GFF",
+        }
+    }
+}
+
+/// Choosing a reference, by Enter on one, or downloading one (Tab) from
+/// the references `faba run` offers, which come as a GTF and a genome
+/// together: for a command that found none recorded on this machine.
+pub struct ReferencePicker {
+    browser: Browser,
+    command: &'static str,
+    kind: Reference,
+    /// Choosing a reference to download, or downloading it.
+    fetching: Fetching,
+    /// Whether the sites name chromosomes `chr1`, for the download list.
+    chr: Option<bool>,
+    /// Why the last download ended without a reference.
+    note: Option<String>,
+    /// The reference; `Some(None)` when cancelled.
+    pub decision: Option<Option<PathBuf>>,
+}
+
+enum Fetching {
+    No,
+    Choosing(Catalogue),
+    /// A reference chosen, its folder being typed.
+    Target(Pick, LineInput),
+    /// Under way; shown, or hidden (Esc) while the browser stays in use.
+    Downloading(Fetch, bool),
+}
+
+impl ReferencePicker {
+    /// Listing the folders and the `kind`'s files at `cwd`; `chr` is
+    /// whether the sites name chromosomes `chr1`, if known.
+    pub fn new(cwd: PathBuf, command: &'static str, kind: Reference, chr: Option<bool>) -> Self {
+        Self {
+            browser: Browser::new(cwd, kind.keep(), |_| false).opened(),
+            command,
+            kind,
+            fetching: Fetching::No,
+            chr,
+            note: None,
+            decision: None,
+        }
+    }
+
+    fn key_choosing(&mut self, key: KeyEvent) {
+        let Fetching::Choosing(c) = &mut self.fetching else {
+            return;
+        };
+        if c.key(&key) {
+            return;
+        }
+        match key.code {
+            KeyCode::Enter | KeyCode::Right => {
+                if let Some(pick) = c.enter() {
+                    // Where it goes is said, and can be changed, first.
+                    let base = crate::tui::home().unwrap_or_else(|| self.browser.cwd.clone());
+                    let dir = base.join("faba_refs").join(pick.dir_name());
+                    let mut line = LineInput::new(512);
+                    line.open(&tilde(&dir));
+                    self.fetching = Fetching::Target(pick, line);
+                }
+            }
+            KeyCode::Esc | KeyCode::Left if !c.back() => self.fetching = Fetching::No,
+            _ => {}
+        }
+    }
+}
+
+impl View for ReferencePicker {
+    /// The apply key chooses the file, or confirms the folder typed.
+    fn takes_apply(&self) -> bool {
+        true
+    }
+}
+
+impl Screen for ReferencePicker {
+    fn done(&self) -> bool {
+        self.decision.is_some()
+    }
+
+    fn interrupt(&mut self) {
+        self.decision = Some(None);
+    }
+
+    fn handle_key(&mut self, key: KeyEvent) {
+        // The apply key acts as Enter: on a file, it chooses it.
+        let key = if is_apply(&key) {
+            KeyEvent::new(KeyCode::Enter, key.modifiers - KeyModifiers::CONTROL)
+        } else {
+            key
+        };
+        match &mut self.fetching {
+            Fetching::Choosing(_) => return self.key_choosing(key),
+            Fetching::Target(_, line) => {
+                match line.handle(key) {
+                    Edit::Submitted(dir) if !dir.is_empty() => {
+                        let Fetching::Target(pick, _) =
+                            std::mem::replace(&mut self.fetching, Fetching::No)
+                        else {
+                            return;
+                        };
+                        let fetch = Fetch::start(pick, crate::tui::typed_path(&dir));
+                        self.fetching = Fetching::Downloading(fetch, true);
+                    }
+                    Edit::Submitted(_) | Edit::Cancelled => self.fetching = Fetching::No,
+                    Edit::Typing => {}
+                }
+                return;
+            }
+            // As in `faba run`: s stops it, keeping what came for the next
+            // try; Esc hides it, and it carries on.
+            Fetching::Downloading(f, shown @ true) => {
+                match key.code {
+                    KeyCode::Char('s') => {
+                        f.stop();
+                        self.fetching = Fetching::No;
+                        self.note = Some("download stopped; Tab picks up where it left".into());
+                    }
+                    KeyCode::Esc => *shown = false,
+                    _ => {}
+                }
+                return;
+            }
+            Fetching::Downloading(_, shown) => {
+                if key.code == KeyCode::Tab {
+                    *shown = true;
+                    return;
+                }
+            }
+            Fetching::No => {}
+        }
+        if key.code == KeyCode::Tab {
+            let mut c = Catalogue::new(self.chr);
+            c.chr_from = "your sites";
+            self.fetching = Fetching::Choosing(c);
+            self.note = None;
+            return;
+        }
+        match self.browser.key(key) {
+            Nav::Picked(file) => self.decision = Some(Some(file)),
+            Nav::Moved => {}
+            Nav::Ignored if key.code == KeyCode::Esc => self.decision = Some(None),
+            Nav::Ignored => {}
+        }
+    }
+
+    /// Take a listing or the download's end as they come; redraw while
+    /// either is under way.
+    fn tick(&mut self) -> bool {
+        match &mut self.fetching {
+            Fetching::No | Fetching::Target(..) => false,
+            Fetching::Choosing(c) => c.poll(),
+            Fetching::Downloading(f, _) => {
+                let done = f.status.lock().ok().and_then(|mut s| s.done.take());
+                match done {
+                    Some(Ok((gtf, genome))) => {
+                        self.decision = Some(Some(match self.kind {
+                            Reference::Genome => genome,
+                            Reference::Annotation => gtf,
+                        }))
+                    }
+                    Some(Err(e)) => {
+                        self.note = Some(format!("{} failed: {e}", f.label));
+                        self.fetching = Fetching::No;
+                    }
+                    None => {}
+                }
+                true
+            }
+        }
+    }
+
+    fn render(&mut self, frame: &mut Frame) {
+        let area = frame.area();
+        let choose = format!("choose the {}", self.kind.what());
+        frame.render_widget(header(self.command, &choose, ""), area);
+        let w = area.width.saturating_sub(4).clamp(20, 90);
+        let help = [
+            help_line(&[
+                ("type", "find"),
+                ("↑/↓", "move"),
+                ("→", "open"),
+                ("←", "up"),
+            ]),
+            help_line(&[
+                ("Enter", "choose"),
+                (
+                    "Tab",
+                    if matches!(self.fetching, Fetching::Downloading(..)) {
+                        "show the download"
+                    } else {
+                        "download one"
+                    },
+                ),
+                ("Esc", "clear find / cancel"),
+            ]),
+        ];
+        // Header, border and the note line, besides the list and the help.
+        let help_rows = help.len() as u16;
+        let rows = area.height.saturating_sub(7 + help_rows).clamp(3, 24);
+        let title = format!(
+            " no {} found: a {} · {} {}",
+            self.kind.what(),
+            self.kind.files(),
+            tilde(&self.browser.cwd),
+            self.browser.list.find.tag()
+        );
+        let inner = popup_frame(frame, area, w, rows + 3 + help_rows, title);
+        let mut lines = self.browser.lines(
+            rows as usize,
+            inner.width as usize,
+            "",
+            &format!("no subfolder or {} here", self.kind.files()),
+        );
+        lines.push(match &self.note {
+            Some(why) => Line::from(Span::styled(format!(" {why}"), HIGHLIGHT)),
+            None => Line::from(""),
+        });
+        lines.extend(help);
+        frame.render_widget(Paragraph::new(lines), inner);
+        match &self.fetching {
+            Fetching::No | Fetching::Downloading(_, false) => {}
+            Fetching::Choosing(c) => c.draw(frame, area),
+            Fetching::Target(pick, line) => {
+                let lines = vec![
+                    Line::from(pick.label()),
+                    Line::from(""),
+                    input_line("download into: ", line.text().unwrap_or(""), &[]),
+                    Line::from(""),
+                    help_line(&[(APPLY_KEYS, "start"), ("Esc", "back")]),
+                ];
+                crate::tui::popup(frame, area, " download a reference ", lines);
+            }
+            Fetching::Downloading(f, true) => f.draw(frame, area),
+        }
+    }
+}
+
+/// A `kind` of reference chosen in a browser at the working folder, or
+/// downloaded; `Ok(None)` when the user cancels. `chr` is whether the
+/// sites name chromosomes `chr1`, if known.
+pub fn ask_reference(
+    command: &'static str,
+    kind: Reference,
+    chr: Option<bool>,
+) -> anyhow::Result<Option<PathBuf>> {
+    let mut picker = ReferencePicker::new(std::env::current_dir()?, command, kind, chr);
+    run_view(&mut picker)?;
+    Ok(picker.decision.flatten())
 }
 
 /// Where the last choices are kept, one line per working folder

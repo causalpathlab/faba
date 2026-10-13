@@ -427,6 +427,66 @@ impl<'a> SitePicker<'a> {
         self.retally();
     }
 
+    /// The footer: a prompt, a hint, or the keys of the mode.
+    fn footer_line(&self) -> Line<'static> {
+        match (&self.mode, self.controls.footer()) {
+            (_, Some(line)) => line,
+            (Mode::Edit(buf), None) => input_line(
+                &format!("{} {}: ", self.criterion().label(), self.criterion().flag()),
+                buf,
+                &[("Enter", "set"), ("Esc", "back")],
+            ),
+            (Mode::Confirm, None) => {
+                help_line(&[(APPLY_KEYS, "apply and write"), ("Esc/n", "back")])
+            }
+            (Mode::Writing, None) => help_line(&[("", "writing; the view closes when done")]),
+            (Mode::Leave(picked), None) => help_line(&[
+                match picked {
+                    Picked::PrintOnly(_) => ("p", "print the flags and leave"),
+                    _ => ("q", "leave without writing"),
+                },
+                ("Esc/n", "back"),
+            ]),
+            (Mode::Gff(_), None) => help_line(&[
+                ("type", "find"),
+                ("↑/↓", "move"),
+                ("Enter", "open / read"),
+                ("←", "up"),
+                ("Esc", "clear find / back"),
+            ]),
+            (Mode::Find, None) => input_line(
+                "gene: ",
+                &self.list.find,
+                &[("↑/↓", "move"), ("Enter", "focus"), ("Esc", "cancel")],
+            ),
+            (Mode::Browse, None) => {
+                let apply = (APPLY_KEYS, "apply");
+                if self.enter_hint {
+                    return Line::styled(format!(" {}", enter_hint("applies")), DIM);
+                }
+                let mut keys = vec![("Tab", "panel")];
+                keys.extend(match self.panel {
+                    Panel::Thresholds => [("↑/↓", "knob"), ("←/→", "bin")],
+                    Panel::Genes => [("↑/↓", "gene"), ("/", "find")],
+                });
+                // What matters most first.
+                keys.extend([apply, ("p", "print flags"), ("q", "cancel")]);
+                self.controls.help_keys(&mut keys);
+                keys.extend([
+                    ("m/M", "modality"),
+                    ("[ ]", "gene"),
+                    ("-/+", "±1"),
+                    ("0-9/e", "type"),
+                    ("o", "off"),
+                    ("r", "reset"),
+                    ("x/y", "scale"),
+                    ("a", "annotation"),
+                ]);
+                help_line(&keys)
+            }
+        }
+    }
+
     /// End the session, handing the terminal's keyboard back as it was.
     /// Leave as `picked` says; first ask, when the thresholds have changed.
     fn leave(&mut self, picked: Picked) {
@@ -599,10 +659,14 @@ impl Screen for SitePicker<'_> {
         self.decision.is_some()
     }
 
+    /// Ctrl-C asks first when the thresholds have changed, as `q` does;
+    /// a second one leaves. A write under way finishes: stopping it would
+    /// leave half a fileset.
     fn interrupt(&mut self) {
-        // A write under way finishes: stopping it would leave half a fileset.
-        if !matches!(self.mode, Mode::Writing) {
-            self.decide(Picked::Cancelled);
+        match self.mode {
+            Mode::Writing => {}
+            Mode::Leave(_) => self.decide(Picked::Cancelled),
+            _ => self.leave(Picked::Cancelled),
         }
     }
 
@@ -643,6 +707,14 @@ impl Screen for SitePicker<'_> {
         }
         match &mut self.mode {
             Mode::Edit(buf) => match key.code {
+                // The apply key sets the value, as Enter does.
+                _ if is_apply(&key) || key.code == KeyCode::Enter => {
+                    let typed = buf.parse::<f64>().ok();
+                    self.mode = Mode::Browse;
+                    if let Some(v) = typed {
+                        self.set_threshold(v);
+                    }
+                }
                 KeyCode::Char(ch)
                     if (ch.is_ascii_digit() || "-+.eEinf".contains(ch)) && buf.len() < 24 =>
                 {
@@ -650,13 +722,6 @@ impl Screen for SitePicker<'_> {
                 }
                 KeyCode::Backspace => {
                     buf.pop();
-                }
-                KeyCode::Enter => {
-                    let typed = buf.parse::<f64>().ok();
-                    self.mode = Mode::Browse;
-                    if let Some(v) = typed {
-                        self.set_threshold(v);
-                    }
                 }
                 KeyCode::Esc => self.mode = Mode::Browse,
                 _ => {}
@@ -705,7 +770,7 @@ impl Screen for SitePicker<'_> {
                 KeyCode::Char(']') => self.step_gene(1),
                 KeyCode::Char('/') => self.start_find(),
                 KeyCode::Char('c') => self.switch_weight(),
-                KeyCode::Char('g') => self.open_gff_browser(),
+                KeyCode::Char('a') => self.open_gff_browser(),
                 KeyCode::Up | KeyCode::Char('k') if self.panel == Panel::Genes => {
                     self.step_gene(-1)
                 }
@@ -735,11 +800,13 @@ impl Screen for SitePicker<'_> {
     }
 
     fn render(&mut self, frame: &mut Frame) {
+        // The footer takes as many lines as its keys need at this width.
+        let help = crate::tui::wrap_help(self.footer_line(), frame.area().width);
         let [top, tabs, body, footer] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Fill(1),
-            Constraint::Length(1),
+            Constraint::Length(help.len() as u16),
         ])
         .areas(frame.area());
 
@@ -803,63 +870,7 @@ impl Screen for SitePicker<'_> {
         self.render_gene(frame, gene);
         self.render_meta(frame, meta);
 
-        let help = match (&self.mode, self.controls.footer()) {
-            (_, Some(line)) => line,
-            (Mode::Edit(buf), None) => input_line(
-                &format!("{} {}: ", self.criterion().label(), self.criterion().flag()),
-                buf,
-                &[("Enter", "set"), ("Esc", "back")],
-            ),
-            (Mode::Confirm, None) => {
-                help_line(&[(APPLY_KEYS, "apply and write"), ("Esc/n", "back")])
-            }
-            (Mode::Writing, None) => help_line(&[("", "writing; the view closes when done")]),
-            (Mode::Leave(picked), None) => help_line(&[
-                match picked {
-                    Picked::PrintOnly(_) => ("p", "print the flags and leave"),
-                    _ => ("q", "leave without writing"),
-                },
-                ("Esc/n", "back"),
-            ]),
-            (Mode::Gff(_), None) => help_line(&[
-                ("type", "find"),
-                ("↑/↓", "move"),
-                ("Enter", "open / read"),
-                ("←", "up"),
-                ("Esc", "clear find / back"),
-            ]),
-            (Mode::Find, None) => input_line(
-                "gene: ",
-                &self.list.find,
-                &[("↑/↓", "move"), ("Enter", "focus"), ("Esc", "cancel")],
-            ),
-            (Mode::Browse, None) => {
-                let apply = (APPLY_KEYS, "apply");
-                if self.enter_hint {
-                    let hint = Line::styled(format!(" {}", enter_hint("applies")), DIM);
-                    return frame.render_widget(hint, footer);
-                }
-                let mut keys = vec![("Tab", "panel")];
-                keys.extend(match self.panel {
-                    Panel::Thresholds => [("↑/↓", "knob"), ("←/→", "bin")],
-                    Panel::Genes => [("↑/↓", "gene"), ("/", "find")],
-                });
-                // What matters most first: a narrow footer cuts from the end.
-                keys.extend([apply, ("p", "print flags"), ("q", "cancel")]);
-                self.controls.help_keys(&mut keys);
-                keys.extend([
-                    ("m", "modality"),
-                    ("-/+", "±1"),
-                    ("0-9", "type"),
-                    ("o", "off"),
-                    ("r", "reset"),
-                    ("x/y", "scale"),
-                    ("g", "annotation"),
-                ]);
-                help_line(&keys)
-            }
-        };
-        frame.render_widget(help, footer);
+        frame.render_widget(Paragraph::new(help), footer);
         match self.mode {
             Mode::Confirm => self.render_confirm(frame, body),
             Mode::Writing => self.render_writing(frame, body),

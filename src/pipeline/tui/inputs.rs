@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-pub use crate::tui::browser::{is_annotation, normalize, Browser};
+pub use crate::tui::browser::{is_annotation, is_fasta, normalize, Browser};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Role {
@@ -48,11 +48,7 @@ impl FileRow {
     pub fn browser(self, start: PathBuf) -> Browser {
         let keep: fn(&str) -> bool = match self {
             FileRow::Gff => is_annotation,
-            FileRow::Genome => |n| {
-                [".fa", ".fasta", ".fa.gz", ".fasta.gz"]
-                    .iter()
-                    .any(|x| n.ends_with(x))
-            },
+            FileRow::Genome => is_fasta,
             FileRow::KnownSnps => |n| {
                 [".vcf", ".vcf.gz", ".bcf", ".parquet"]
                     .iter()

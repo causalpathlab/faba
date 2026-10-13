@@ -36,6 +36,15 @@ pub fn is_annotation(name: &str) -> bool {
         .any(|ext| name.ends_with(ext))
 }
 
+/// Whether `name` is a genome FASTA, gzipped or not, any case.
+pub fn is_fasta(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    let name = name.strip_suffix(".gz").unwrap_or(&name);
+    [".fa", ".fasta", ".fna"]
+        .iter()
+        .any(|ext| name.ends_with(ext))
+}
+
 /// One listed name.
 #[derive(Debug)]
 pub struct Entry {

@@ -1,4 +1,4 @@
-//! Full-screen gene-body browser for `faba pileup --interactive`. Tracks share one axis,
+//! Full-screen gene-body browser for `faba pileup`. Tracks share one axis,
 //! re-binned each frame (a bar per column, via [`BinEdges`]); the cursor is a genomic position.
 use super::{distinct_positions, fmt_thousands, BinEdges};
 use super::{genes_to_draw, SharedModels};
@@ -673,7 +673,12 @@ impl<'a> PileupView<'a> {
     }
 }
 
-impl crate::tui::View for PileupView<'_> {}
+impl crate::tui::View for PileupView<'_> {
+    /// The apply key submits the search or the save name being typed.
+    fn takes_apply(&self) -> bool {
+        self.search.active() || self.controls.prompting()
+    }
+}
 
 impl Screen for PileupView<'_> {
     fn done(&self) -> bool {
@@ -714,8 +719,8 @@ impl Screen for PileupView<'_> {
                     ..c
                 })
             }
-            KeyCode::Char('m') => self.mirror = !self.mirror,
-            KeyCode::Char('M') if self.switchable => {
+            KeyCode::Char('v') => self.mirror = !self.mirror,
+            KeyCode::Char('m' | 'M') if self.switchable => {
                 self.exit = Some(Exit::Modality { at: self.cursor })
             }
             KeyCode::Left | KeyCode::Char('h') => self.move_cursor(-1),
@@ -723,13 +728,14 @@ impl Screen for PileupView<'_> {
             KeyCode::PageUp => self.move_cursor(-(self.columns as i64) / 2),
             KeyCode::PageDown => self.move_cursor(self.columns as i64 / 2),
             KeyCode::Char('n') => self.jump_site(true),
-            KeyCode::Char('p') => self.jump_site(false),
+            KeyCode::Char('N') => self.jump_site(false),
             KeyCode::Char('+' | '=') => self.zoom(0.5),
             KeyCode::Char('-') => self.zoom_out(),
             KeyCode::Char('0') => self.window = self.extent,
             KeyCode::Char('y') => self.y_scale = self.y_scale.next(),
-            KeyCode::Char('g') => self.exit = Some(Exit::Genes),
-            KeyCode::Char('q') | KeyCode::Esc | KeyCode::Enter => self.exit = Some(Exit::Quit),
+            // Esc goes back one level: the gene list it came from.
+            KeyCode::Char('g') | KeyCode::Esc => self.exit = Some(Exit::Genes),
+            KeyCode::Char('q') => self.exit = Some(Exit::Quit),
             _ => {}
         }
     }
@@ -744,7 +750,9 @@ impl Screen for PileupView<'_> {
             Row::Genes => Constraint::Length(genes_height),
             _ => Constraint::Ratio(1, n_plots),
         }));
-        layout.extend([Constraint::Length(1), Constraint::Length(1)]);
+        // The footer takes as many lines as its keys need at this width.
+        let help = crate::tui::wrap_help(self.footer_line(), frame.area().width);
+        layout.extend([Constraint::Length(1), Constraint::Length(help.len() as u16)]);
         let areas = Layout::vertical(layout).split(frame.area());
         let (top, readout, footer) = (areas[0], areas[areas.len() - 2], areas[areas.len() - 1]);
 
@@ -863,18 +871,7 @@ impl Screen for PileupView<'_> {
         self.plots = plots;
 
         frame.render_widget(Paragraph::new(self.readout(&bins)), readout);
-        let help = if let Some(buf) = self.search.text() {
-            input_line(
-                "search gene or chr:start-end: ",
-                buf,
-                &[("Enter", "go"), ("Esc", "back")],
-            )
-        } else if let Some(msg) = &self.status {
-            status_line(msg)
-        } else {
-            self.controls.footer().unwrap_or_else(|| self.help())
-        };
-        frame.render_widget(help, footer);
+        frame.render_widget(Paragraph::new(help), footer);
         self.controls.render_save(frame, frame.area());
     }
 }
@@ -923,15 +920,32 @@ impl PileupView<'_> {
         }
     }
 
+    /// The footer: the search being typed, a status, the save prompt, or
+    /// the keys.
+    fn footer_line(&self) -> Line<'static> {
+        if let Some(buf) = self.search.text() {
+            input_line(
+                "search gene or chr:start-end: ",
+                buf,
+                &[("Enter", "go"), ("Esc", "back")],
+            )
+        } else if let Some(msg) = &self.status {
+            status_line(msg)
+        } else {
+            self.controls.footer().unwrap_or_else(|| self.help())
+        }
+    }
+
     fn help(&self) -> Line<'static> {
         let mut keys = vec![
             ("←/→", "bar"),
-            ("n/p", "next/prev site"),
+            ("PgUp/PgDn", "half a view"),
+            ("n/N", "next/prev site"),
             ("+/-", "zoom"),
             ("0", "whole"),
             ("/", "search"),
             ("y", "scale"),
-            ("g", "genes"),
+            ("g/Esc", "gene list"),
         ];
         if self.tracks.iter().any(|t| t.is_reads()) {
             keys.push(("c", self.show.next().short()));
@@ -940,10 +954,10 @@ impl PileupView<'_> {
             keys.push(("d", "difference/fold"));
         }
         if self.mirrorable() {
-            keys.push(("m", if self.mirror { "split" } else { "mirror" }));
+            keys.push(("v", if self.mirror { "split" } else { "mirror" }));
         }
         if self.switchable {
-            keys.push(("M", "m6A/A-to-I"));
+            keys.push(("m", "m6A/A-to-I"));
         }
         self.controls.help_keys(&mut keys);
         keys.push(("q", "quit"));

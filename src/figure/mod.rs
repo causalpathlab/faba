@@ -533,6 +533,32 @@ fn strip_extension(prefix: &str) -> &str {
         .unwrap_or(prefix)
 }
 
+/// The files a save under `prefix` writes: the PDF, then the PNG.
+fn saved_paths(prefix: &str) -> [String; 2] {
+    let prefix = strip_extension(prefix);
+    [format!("{prefix}.pdf"), format!("{prefix}.png")]
+}
+
+/// Whether a save under `prefix` would replace a file already there.
+fn taken(prefix: &str) -> bool {
+    saved_paths(prefix)
+        .iter()
+        .any(|p| std::path::Path::new(p).exists())
+}
+
+/// `prefix`, or failing that the first of `{prefix}_2`, `{prefix}_3`, …
+/// that no save would replace a file under.
+fn free_name(prefix: &str) -> String {
+    let prefix = strip_extension(prefix);
+    (1..)
+        .map(|n| match n {
+            1 => prefix.to_string(),
+            n => format!("{prefix}_{n}"),
+        })
+        .find(|p| !taken(p))
+        .expect("some suffix is free")
+}
+
 /// SVG parsing options, with the system fonts loaded once.
 fn options() -> usvg::Options<'static> {
     usvg::Options {
@@ -549,13 +575,11 @@ pub fn save(svg: &str, prefix: &str) -> anyhow::Result<Vec<String>> {
 
 /// [`save`], and the picture the PNG holds.
 fn save_picture(svg: &str, prefix: &str) -> anyhow::Result<(Vec<String>, image::RgbaImage)> {
-    let prefix = strip_extension(prefix);
+    let [pdf_path, png_path] = saved_paths(prefix);
     let tree = usvg::Tree::from_str(svg, &options())?;
     let pdf = svg2pdf::to_pdf(&tree, Default::default(), Default::default())
         .map_err(|e| anyhow::anyhow!("PDF conversion failed: {e:?}"))?;
-    let pdf_path = format!("{prefix}.pdf");
     std::fs::write(&pdf_path, pdf)?;
-    let png_path = format!("{prefix}.png");
     let pixmap = term::pixmap(&tree, PNG_SCALE)?;
     pixmap.save_png(&png_path)?;
     let (w, h) = (pixmap.width(), pixmap.height());
@@ -625,12 +649,16 @@ impl LineInput {
     }
 }
 
-/// The save-as prompt every view shares: it opens with a suggested name,
-/// Enter confirms, Esc closes; the outcome shows until the next key.
+/// The save-as prompt every view shares: it opens with a suggested name
+/// no save has used here yet, Enter confirms, Esc closes; the outcome shows
+/// until the next key. It never replaces a file: a name already taken
+/// keeps the prompt open, offering the next free one.
 pub struct SavePrompt {
     input: LineInput,
     status: Option<Result<String, String>>,
     default: String,
+    /// Why the prompt is still open: the name tried was taken.
+    taken: Option<String>,
 }
 
 impl SavePrompt {
@@ -639,6 +667,7 @@ impl SavePrompt {
             input: LineInput::new(512),
             status: None,
             default: default.to_string(),
+            taken: None,
         }
     }
 
@@ -647,15 +676,22 @@ impl SavePrompt {
     }
 
     pub fn open(&mut self) {
-        self.input.open(&self.default);
+        self.input.open(&free_name(&self.default));
         self.status = None;
+        self.taken = None;
     }
 
     /// Handle a key while open: `Some(prefix)` once the user confirms.
     pub fn handle(&mut self, key: KeyEvent) -> Option<String> {
         match self.input.handle(key) {
+            Edit::Submitted(name) if taken(&name) => {
+                self.input.open(&free_name(&name));
+                self.taken = Some(format!("{} is already there", strip_extension(&name)));
+                None
+            }
             Edit::Submitted(name) if !name.is_empty() => {
                 self.default = name.clone();
+                self.taken = None;
                 Some(name)
             }
             _ => None,
@@ -678,6 +714,11 @@ impl SavePrompt {
     /// The name being typed, while the prompt is open.
     pub fn text(&self) -> Option<&str> {
         self.input.text()
+    }
+
+    /// Why the prompt offers another name, after a taken one was tried.
+    pub fn taken(&self) -> Option<&str> {
+        self.taken.as_deref()
     }
 
     /// The footer while the prompt or an outcome is showing.
@@ -823,7 +864,10 @@ impl Controls {
             Line::from(Span::styled(" save as (.pdf + .png)", DIM)),
             Line::from(""),
             Line::from(Span::styled(format!(" {name}▏"), HIGHLIGHT)),
-            Line::from(""),
+            match self.save.taken() {
+                Some(why) => status_line(&format!("{why}; not replacing it")),
+                None => Line::from(""),
+            },
             Line::from(Span::styled(format!(" in {}", self.here), DIM)),
             Line::from(""),
             help_line(&[("Enter", "save"), ("Esc", "back")]),
@@ -897,6 +941,11 @@ impl Controls {
     /// The footer while the save prompt or its outcome is showing.
     pub fn footer(&self) -> Option<Line<'static>> {
         self.save.footer()
+    }
+
+    /// Whether the save prompt is open, where the apply key submits.
+    pub fn prompting(&self) -> bool {
+        self.save.active()
     }
 }
 

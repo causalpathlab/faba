@@ -83,7 +83,7 @@ fn keys_move_the_cursor_and_switch_mode() {
     assert_eq!(v.cursor, 0);
     press(&mut v, KeyCode::Char('0'));
     assert_eq!(v.rel(v.cursor), 0);
-    press(&mut v, KeyCode::Char('m'));
+    press(&mut v, KeyCode::Char('b'));
     assert_eq!(v.mode, Mode::Freq);
     assert!(!v.done());
     press(&mut v, KeyCode::Char('q'));
@@ -99,7 +99,7 @@ fn renders_a_logo_with_the_site_labelled() {
     assert!(s.contains("IC 2.000 bits"), "{s}");
     // In bits the uniform column is empty; in frequency it is full.
     let bits_letters = s.matches(['A', 'C', 'G', 'T']).count();
-    press(&mut v, KeyCode::Char('m'));
+    press(&mut v, KeyCode::Char('b'));
     let freq_letters = screen(&mut v, 100, 20)
         .matches(['A', 'C', 'G', 'T'])
         .count();
@@ -155,4 +155,30 @@ fn draws_through_the_image_path() {
     assert!(v.controls.images().is_none());
     let text = screen(&mut v, 60, 20);
     assert!(text.contains("image/text"));
+}
+
+#[test]
+fn every_footer_key_shows_at_60_columns() {
+    let mut v = PwmView::new("x", &pwm(), 2);
+    let s = screen(&mut v, 60, 20);
+    for key in [
+        "←/→ position",
+        "Home/End ends",
+        "0 site",
+        "b bits/frequency",
+        "s save",
+        "q/Esc quit",
+    ] {
+        assert!(s.contains(key), "{key}\n{s}");
+    }
+}
+
+#[test]
+fn enter_stays_and_esc_leaves() {
+    let mut v = PwmView::new("x", &pwm(), 2);
+    screen(&mut v, 60, 20);
+    press(&mut v, KeyCode::Enter);
+    assert!(!v.done(), "Enter never quits");
+    press(&mut v, KeyCode::Esc);
+    assert!(v.done());
 }

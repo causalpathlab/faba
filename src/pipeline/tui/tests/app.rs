@@ -854,3 +854,45 @@ fn p_is_ignored_while_a_run_goes() {
         "p works once the run is over"
     );
 }
+
+#[test]
+fn every_footer_key_shows_at_80_columns() {
+    let (_t, mut a) = app_with_bams();
+    for focus in [InputsFocus::Bams, InputsFocus::Rows] {
+        for page in [Page::Inputs, Page::Steps, Page::Flags, Page::Run] {
+            a.page = page;
+            a.inputs.focus = focus;
+            let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+            term.draw(|f| a.render(f)).unwrap();
+            let screen: String = term
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|c| c.symbol())
+                .collect();
+            let missing = crate::tui::missing_keys(&draw::footer_line(&a), &screen);
+            assert!(missing.is_empty(), "{page:?}: {missing:?}");
+        }
+    }
+}
+
+#[test]
+fn ctrl_c_and_reset_all_ask_first() {
+    let (_t, mut a) = app_with_bams();
+    a.interrupt();
+    assert!(!a.done() && a.leaving, "a setup to lose: Ctrl-C asks");
+    a.interrupt();
+    assert!(a.done(), "the second leaves");
+
+    let (_t, mut a) = app_with_bams();
+    a.page = Page::Flags;
+    a.inputs.focus = InputsFocus::Rows;
+    let i = a.form.fields.iter().position(|f| f.is_default()).unwrap();
+    a.form.fields[i].set_text("7");
+    press(&mut a, KeyCode::Char('R'));
+    assert!(!a.form.fields[i].is_default(), "the first R only asks");
+    assert!(a.note.as_deref().is_some_and(|n| n.contains("R again")));
+    press(&mut a, KeyCode::Char('R'));
+    assert!(a.form.fields[i].is_default());
+}

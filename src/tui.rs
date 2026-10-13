@@ -21,6 +21,19 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph};
 use ratatui::Frame;
 
+/// Whether to write and stop rather than open the view: when `asked`
+/// (`--batch-process`), or when there is no terminal to show it in.
+pub fn batch(asked: bool, command: &str) -> bool {
+    if asked {
+        return true;
+    }
+    let terminal = data_beans::interactive::tui_available();
+    if !terminal {
+        log::info!("no terminal for the view: {command} runs as with --batch-process");
+    }
+    !terminal
+}
+
 /// A `w` x `h` rectangle centred in `area`, shrunk to fit it.
 pub fn centered(area: Rect, w: u16, h: u16) -> Rect {
     let (w, h) = (w.min(area.width), h.min(area.height));
@@ -131,6 +144,54 @@ pub fn tab_bar<T: Clone>(
         spans.extend(line.spans);
     }
     Line::from(spans)
+}
+
+/// A footer `line` as lines no wider than `width`, so no key is cut off:
+/// a help line ([`help_line`], [`input_line`]) is a lead span, then a key
+/// and what it does, span by span, and a key is never parted from what it
+/// does. A line that fits is left as it is.
+///
+/// [`help_line`]: data_beans::interactive::ui::help_line
+/// [`input_line`]: data_beans::interactive::ui::input_line
+pub fn wrap_help(line: Line<'static>, width: u16) -> Vec<Line<'static>> {
+    let width = usize::from(width);
+    if line.width() <= width {
+        return vec![line];
+    }
+    // A key (drawn highlighted) starts a group with what follows it.
+    let mut groups: Vec<Vec<Span<'static>>> = vec![Vec::new()];
+    for span in line.spans {
+        if span.style == HIGHLIGHT {
+            groups.push(Vec::new());
+        }
+        groups.last_mut().expect("one group at least").push(span);
+    }
+    let mut out = Vec::new();
+    let mut row: Vec<Span<'static>> = Vec::new();
+    let mut used = 0;
+    for group in groups {
+        let w: usize = group.iter().map(Span::width).sum();
+        if used + w > width && used > 1 {
+            out.push(Line::from(std::mem::take(&mut row)));
+            row.push(Span::raw(" "));
+            used = 1;
+        }
+        used += w;
+        row.extend(group);
+    }
+    out.push(Line::from(row));
+    out
+}
+
+/// The keys and descriptions of `help` that `screen` does not show, as a
+/// test reads a drawn terminal: empty when every one is there.
+#[cfg(test)]
+pub fn missing_keys(help: &Line, screen: &str) -> Vec<String> {
+    help.spans
+        .iter()
+        .map(|s| s.content.trim().to_string())
+        .filter(|t| !t.is_empty() && !screen.contains(t.as_str()))
+        .collect()
 }
 
 /// A `width`-cell bar for `done` of `total`: the filled part in `on`, the

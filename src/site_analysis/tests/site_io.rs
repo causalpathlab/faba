@@ -77,3 +77,35 @@ fn a_sites_reads_are_its_rows_summed_or_none_without_the_columns() {
     write(&path, &rows, false);
     assert!(read_site_reads(&file, &sites).unwrap().is_none());
 }
+
+#[test]
+fn apa_sites_keep_their_utr_strand() {
+    use crate::apa::cell_assign::ApaSiteAnnotation;
+    let site = |id: &str, alpha: i64, strand: Strand| ApaSiteAnnotation {
+        site_id: id.into(),
+        gene_name: "G".into(),
+        chr: "chr1".into(),
+        strand,
+        genomic_alpha: alpha,
+        beta: 30.0,
+        genomic_start: alpha - 50,
+        genomic_stop: alpha + 50,
+        pi_weight: 0.5,
+        expected_tail_length: 100.0,
+        utr_length: 1000,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("apa_components.parquet");
+    let path = path.to_str().unwrap();
+    let written = [
+        site("a", 100, Strand::Forward),
+        site("b", 200, Strand::Backward),
+    ];
+    crate::apa::pipeline::write_apa_annotations(&written, path).unwrap();
+    let read = read_sites(path).unwrap();
+    let got: Vec<(i64, bool)> = read
+        .iter()
+        .map(|s| (s.position, matches!(s.strand, Strand::Forward)))
+        .collect();
+    assert_eq!(got, [(100, true), (200, false)]);
+}

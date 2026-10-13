@@ -204,7 +204,9 @@ impl Screen for PathPicker {
                 3,
             ),
         };
-        let inner = popup_frame(frame, area, w, rows + 4, title);
+        // The border takes two columns; the help wraps within the rest.
+        let help = crate::tui::wrap_help(help, w.saturating_sub(2));
+        let inner = popup_frame(frame, area, w, rows + 3 + help.len() as u16, title);
         let mut lines = match &self.step {
             Step::Input => self.browser.lines(
                 rows as usize,
@@ -225,7 +227,7 @@ impl Screen for PathPicker {
             Some(why) => Line::from(Span::styled(format!(" {why}"), HIGHLIGHT)),
             None => Line::from(""),
         });
-        lines.push(help);
+        lines.extend(help);
         frame.render_widget(Paragraph::new(lines), inner);
     }
 }

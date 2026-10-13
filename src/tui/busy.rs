@@ -2,7 +2,7 @@
 //! terminal blank while it reads.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{channel, Receiver, RecvTimeoutError};
+use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, TryRecvError};
 use std::time::{Duration, Instant};
 
 use data_beans::interactive::ui::{header, Screen, DIM, HIGHLIGHT};
@@ -24,6 +24,10 @@ struct Busy<'a, T> {
     start: Instant,
     rx: &'a Receiver<T>,
     out: Option<T>,
+    /// The work ended without a result: it panicked.
+    gone: bool,
+    /// A key (or Ctrl-C) came: say it cannot stop the work.
+    pressed: bool,
     /// Files done, of `total`; no bar when `total` is 0.
     done: &'a AtomicUsize,
     total: usize,
@@ -39,9 +43,10 @@ impl<T> Screen for Busy<'_, T> {
         let frames: Vec<char> = SPINNER.chars().collect();
         let spin = frames[(elapsed.as_millis() / 200) as usize % frames.len()];
         let w = (self.what.chars().count() as u16 + 12)
-            .max(40)
+            .max(if self.pressed { 56 } else { 40 })
             .min(area.width);
-        let inner = popup_frame(frame, area, w, 4, " working ".into());
+        let rows = if self.pressed { 5 } else { 4 };
+        let inner = popup_frame(frame, area, w, rows, " working ".into());
         let secs = format!("{}s", elapsed.as_secs());
         let second = if self.total == 0 {
             Line::from(Span::styled(format!("   {secs}"), DIM))
@@ -52,29 +57,42 @@ impl<T> Screen for Busy<'_, T> {
             let [on, off] = bar_spans(done as u64, self.total as u64, bar_w, HIGHLIGHT);
             Line::from(vec![Span::raw("   "), on, off, Span::styled(count, DIM)])
         };
-        let lines = vec![
+        let mut lines = vec![
             Line::from(vec![
                 Span::styled(format!(" {spin} "), HIGHLIGHT),
                 Span::raw(self.what.to_string()),
             ]),
             second,
         ];
+        if self.pressed {
+            lines.push(Line::from(Span::styled(
+                "   it cannot stop halfway; the view opens when done",
+                DIM,
+            )));
+        }
         frame.render_widget(Paragraph::new(lines), inner);
     }
 
-    /// Keys wait: the work cannot be stopped halfway.
-    fn handle_key(&mut self, _key: KeyEvent) {}
+    /// Keys wait: the work cannot be stopped halfway, which the pop-up
+    /// then says.
+    fn handle_key(&mut self, _key: KeyEvent) {
+        self.pressed = true;
+    }
 
-    fn interrupt(&mut self) {}
+    fn interrupt(&mut self) {
+        self.pressed = true;
+    }
 
     fn done(&self) -> bool {
-        self.out.is_some()
+        self.out.is_some() || self.gone
     }
 
     /// Pick up the result, else redraw for the spinner and the clock.
     fn tick(&mut self) -> bool {
-        if let Ok(out) = self.rx.try_recv() {
-            self.out = Some(out);
+        match self.rx.try_recv() {
+            Ok(out) => self.out = Some(out),
+            Err(TryRecvError::Disconnected) => self.gone = true,
+            Err(TryRecvError::Empty) => {}
         }
         true
     }
@@ -123,6 +141,8 @@ pub fn busy_counting<T: Send>(
             start: Instant::now(),
             rx: &rx,
             out: None,
+            gone: false,
+            pressed: false,
             done: &done,
             total,
         };
@@ -150,6 +170,8 @@ mod tests {
             start: Instant::now(),
             rx: &rx,
             out: None,
+            gone: false,
+            pressed: false,
             done: &done,
             total: 3,
         };
@@ -163,6 +185,26 @@ mod tests {
         b.tick();
         assert!(b.done());
         assert_eq!(b.out, Some(7));
+    }
+
+    #[test]
+    fn work_that_dies_ends_the_spinner() {
+        let (tx, rx) = channel::<i32>();
+        let done = AtomicUsize::new(0);
+        let mut b = Busy {
+            badge: "pwm",
+            what: "collecting",
+            start: Instant::now(),
+            rx: &rx,
+            out: None,
+            gone: false,
+            pressed: false,
+            done: &done,
+            total: 0,
+        };
+        drop(tx);
+        b.tick();
+        assert!(b.done() && b.out.is_none(), "not left spinning");
     }
 
     #[test]

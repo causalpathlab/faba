@@ -221,15 +221,6 @@ pub struct PileupArgs {
     )]
     separate: bool,
 
-    /// The browser is the default now; kept so older command lines still run.
-    #[arg(
-        short = 'I',
-        long = "interactive",
-        hide = true,
-        default_value_t = false
-    )]
-    interactive: bool,
-
     ///////////////////////
     // Miami figure mode //
     ///////////////////////
@@ -243,7 +234,8 @@ pub struct PileupArgs {
         long_help = "Gene annotation GTF/GFF for the middle gene-model track (exons, introns, strand).\n\
                      Enables figure mode with --batch-process; in the browser, draws the genes in view.\n\
                      Without it, the browser and the figure use the GFF recorded in the\n\
-                     `*.run.json` next to the first matrix, when there is one."
+                     `*.run.json` next to the first matrix, when there is one; when that is\n\
+                     not on this machine either, the browser asks for one, or downloads one."
     )]
     gtf: Option<Box<str>>,
 
@@ -993,18 +985,26 @@ pub fn run_pileup(args: &PileupArgs) -> anyhow::Result<()> {
         base.separate = chosen.separate;
     }
     let base = &base;
-    let source = Source::new(base)?;
-    let (args, groups) = (&source.args, &source.groups);
+    let mut source = Source::new(base)?;
     // A figure flag makes the Miami figure; otherwise the browser, unless
     // asked to print (or there is no terminal to browse in), when `--gtf`
     // makes the figure too. In the browser `--gtf` draws the genes in view.
-    let figure_flags = !args.bam_files.is_empty() || args.format.is_some() || args.svg || args.png;
-    let browse_it = !args.batch_process && !figure_flags;
-    let terminal = data_beans::interactive::tui_available();
-    if browse_it && !terminal {
-        log::info!("no terminal to browse in: printing the pileup, as --batch-process does");
+    let figure_flags = {
+        let a = &source.args;
+        !a.bam_files.is_empty() || a.format.is_some() || a.svg || a.png
+    };
+    let interactive = !figure_flags && !crate::tui::batch(source.args.batch_process, "pileup");
+    // In the browser, an annotation not given nor recorded here is asked
+    // for (or downloaded); any GTF of the assembly draws the genes.
+    if interactive && source.args.annotation().is_none() {
+        let ask = crate::site_analysis::input_picker::ask_reference(
+            "pileup",
+            crate::site_analysis::input_picker::Reference::Annotation,
+            None,
+        )?;
+        source.args.gtf = ask.map(|p| p.to_string_lossy().into());
     }
-    let interactive = browse_it && terminal;
+    let (args, groups) = (&source.args, &source.groups);
     let figure_mode = !interactive && (args.gtf.is_some() || figure_flags);
     if interactive && args.genes.is_empty() && args.regions.is_empty() {
         return self::interactive(base, source, None);

@@ -6,6 +6,7 @@ fn make_annotation(site_id: &str, gene: &str, alpha: i64, weight: f32) -> ApaSit
         site_id: site_id.into(),
         gene_name: gene.into(),
         chr: "chr1".into(),
+        strand: Strand::Forward,
         genomic_alpha: alpha,
         beta: 30.0_f32,
         genomic_start: alpha - 50,

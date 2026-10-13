@@ -40,6 +40,7 @@ impl App {
     fn route(&mut self, key: KeyEvent) {
         self.note = None;
         let leaving = std::mem::take(&mut self.leaving);
+        let resetting = std::mem::take(&mut self.resetting);
         if self.editing.is_some() {
             return self.key_editing(key);
         }
@@ -74,6 +75,11 @@ impl App {
             match self.inputs.bams.key(key) {
                 Nav::Moved => return,
                 Nav::Picked(_) => return self.enter_hint(),
+                // Esc with nothing typed: on to the rows, where letters act.
+                Nav::Ignored if key.code == KeyCode::Esc => {
+                    self.inputs.focus = InputsFocus::Rows;
+                    return;
+                }
                 Nav::Ignored => {}
             }
         }
@@ -91,20 +97,16 @@ impl App {
                 return;
             }
             // A set-up run is lost on leaving: the first `q` only asks.
-            KeyCode::Char('q')
-                if !leaving && self.job.is_none() && !self.inputs.picked.is_empty() =>
-            {
-                self.leaving = true;
-                self.note = Some("q again leaves, losing this setup; p prints its command".into());
-                return;
+            KeyCode::Char('q') => {
+                self.leaving = leaving;
+                return self.ask_leave("q");
             }
-            KeyCode::Char('q') => return self.leave(),
             _ => {}
         }
         match self.page {
             Page::Inputs => self.key_inputs(key),
             Page::Steps => self.key_steps(key),
-            Page::Flags => self.key_flags(key),
+            Page::Flags => self.key_flags(key, resetting),
             Page::Run => self.key_run(key),
         }
     }
@@ -452,7 +454,7 @@ impl App {
         }
     }
 
-    fn key_flags(&mut self, key: KeyEvent) {
+    fn key_flags(&mut self, key: KeyEvent, resetting: bool) {
         let n = self.visible_flags().len();
         let last = n.saturating_sub(1);
         let at = self.flags_at.min(last);
@@ -471,6 +473,11 @@ impl App {
             KeyCode::Char('a') => {
                 self.advanced ^= true;
                 self.flags_at = 0;
+            }
+            // Every flag at once: the first `R` only asks.
+            KeyCode::Char('R') if !resetting => {
+                self.resetting = true;
+                self.note = Some("R again resets every flag to its default".into());
             }
             KeyCode::Char('R') => self.form.fields.iter_mut().for_each(|f| f.reset()),
             _ => {
