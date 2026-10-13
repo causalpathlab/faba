@@ -658,7 +658,9 @@ with no tick, since a tick would read as a position. `s`, in every view, asks fo
 that lists the figures already saved where faba runs, newest first, with a thumbnail of each where
 the terminal draws images; the list is kept in `.faba-view/` there, so it lasts between sessions.
 Saves are PDF only. A name already taken is never overwritten: the prompt offers the next free
-one (`name_2`, …).
+one (`name_2`, …). A figure saved from `pileup`, `metagene` or `pwm` takes the shape its view has on
+screen, each terminal cell 6 × 12 points, so its text sits about as large against the plots as the
+terminal's does; in a stack, each gene keeps its pane's shape.
 
 In the `pileup` browser, plots are always drawn as text, and only a saved figure is a picture: a
 PDF, its position labels turned to read bottom to top. How the bars are drawn (the y scale, what `c`
@@ -666,7 +668,8 @@ counts, mirrored or split, the contrast measure) carries from one gene to the ne
 maximum for every gene opened after, so they compare; a gene taller than the lock still shows its
 bars whole, its axis raised to fit. In the gene list, Space marks genes and Ctrl+R opens the marked
 ones stacked top to bottom, each with its tracks: Tab (or a click on a gene) moves the keys from
-gene to gene, a click on the bars moves that gene's cursor there, how the bars are drawn applies to
+gene to gene, a click on the bars moves that gene's cursor there, a drag (press, move, let go)
+pans it as if grabbed, the wheel or a sideways swipe pans the gene under the pointer, how the bars are drawn applies to
 all of them, `=`/`-` zoom the gene with the keys while their shifted keys `+`/`_` zoom every
 gene (and `)` shows every gene whole, as `0` does one), `Y` locks every gene to the tallest one's
 axis, `|` lays them out one under another,

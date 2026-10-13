@@ -11,7 +11,7 @@
 
 use data_beans::interactive::ui::{header, help_line, panel, Scale, Screen, DIM, HIGHLIGHT};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
-use ratatui::layout::{Constraint, Layout};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
@@ -127,6 +127,8 @@ fn fitting_merge(hist: &GeneFeatureHistogram, track: Track, width: usize) -> usi
 
 /// State of the profile view, independent of the terminal so it can be tested.
 pub struct MetageneView<'a> {
+    /// Where the last frame drew the view, for a saved figure's shape.
+    drawn: Rect,
     title: String,
     hist: &'a GeneFeatureHistogram,
     track: Track,
@@ -165,6 +167,7 @@ impl<'a> MetageneView<'a> {
                 Show::Sites
             },
             controls: Controls::new("metagene"),
+            drawn: Rect::default(),
             plot: PlotImage::default(),
             done: false,
         };
@@ -235,7 +238,10 @@ impl<'a> MetageneView<'a> {
 
     /// The shown track as a figure, at the shown merge factor.
     fn figure(&self) -> String {
-        let mut c = Canvas::new(680.0, 300.0);
+        // The view's shape on screen, else a page of its own.
+        let (w, h) = crate::figure::page(self.drawn).unwrap_or((680.0, 300.0));
+        let (w, h) = (w.max(360.0), h.max(200.0));
+        let mut c = Canvas::new(w, h);
         c.bold(16.0, 22.0, &self.title, 12.0, Anchor::Start, INK);
         let totals: Vec<String> = self
             .track
@@ -252,7 +258,7 @@ impl<'a> MetageneView<'a> {
             MUTED,
         );
         let title = format!("{} bin(s) per bar", self.shown_merge);
-        self.draw_track(&mut c, (8.0, 48.0, 664.0, 244.0), None, title);
+        self.draw_track(&mut c, (8.0, 48.0, w - 16.0, h - 56.0), None, title);
         c.finish()
     }
 
@@ -380,6 +386,7 @@ impl Screen for MetageneView<'_> {
     }
 
     fn render(&mut self, frame: &mut Frame) {
+        self.drawn = frame.area();
         let mut keys = vec![
             ("←/→", "bar"),
             ("Home", "first"),

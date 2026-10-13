@@ -143,6 +143,9 @@ pub struct PileupView<'a> {
     /// at, for clicks.
     drawn: Rect,
     chart_x: u16,
+    /// The column a press on the bars came at, until it is let go: a drag
+    /// pans, a click moves the cursor.
+    grabbed: Option<u16>,
     exit: Option<Exit>,
 }
 
@@ -204,6 +207,7 @@ impl<'a> PileupView<'a> {
             badge: "pileup",
             drawn: Rect::default(),
             chart_x: 0,
+            grabbed: None,
             exit: None,
         }
     }
@@ -494,6 +498,51 @@ impl<'a> PileupView<'a> {
         self.window = (lo, lo + w);
     }
 
+    /// Slide the window `bars` bars along, keeping its width and the cursor
+    /// in it.
+    fn pan(&mut self, bars: i64) {
+        let shift = bars * self.bin_width();
+        self.window = (self.window.0 + shift, self.window.1 + shift);
+        self.clamp_window();
+        self.cursor = self.cursor.clamp(self.window.0, self.window.1);
+        self.plots.iter_mut().for_each(PlotImage::invalidate);
+    }
+
+    /// A press, release or wheel turn on the view: a press on the bars
+    /// grabs them, and letting go elsewhere pans as far (in the same place,
+    /// it moves the cursor there); the wheel, either way, pans a tenth of
+    /// the view a notch. Whether it changed.
+    pub(super) fn pointer(&mut self, m: ratatui::crossterm::event::MouseEvent) -> bool {
+        use ratatui::crossterm::event::{MouseButton, MouseEventKind};
+        let notch = (self.columns as i64 / 10).max(1);
+        match m.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                let over =
+                    m.column >= self.chart_x && usize::from(m.column - self.chart_x) < self.columns;
+                self.grabbed = over.then_some(m.column);
+                false
+            }
+            MouseEventKind::Up(MouseButton::Left) => match self.grabbed.take() {
+                // Dragged: the bars follow the pointer, as when grabbed.
+                Some(from) if from.abs_diff(m.column) >= 2 => {
+                    self.pan(i64::from(from) - i64::from(m.column));
+                    true
+                }
+                Some(from) => self.click_at(from),
+                None => false,
+            },
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollLeft => {
+                self.pan(-notch);
+                true
+            }
+            MouseEventKind::ScrollDown | MouseEventKind::ScrollRight => {
+                self.pan(notch);
+                true
+            }
+            _ => false,
+        }
+    }
+
     fn move_cursor(&mut self, bars: i64) {
         let (lo, hi) = self.extent;
         self.cursor = (self.cursor + bars * self.bin_width()).clamp(lo, hi);
@@ -578,15 +627,32 @@ impl<'a> PileupView<'a> {
     fn figure(&self) -> String {
         let (lo, hi) = self.window;
         // Turned position labels take room under the axis: the bars keep theirs.
-        let panel_h = 170.0 + figure::tick_room(&self.tick_list(), true);
+        let room = figure::tick_room(&self.tick_list(), true);
         let rows = self.rows();
         let genes_h = 24.0 + GENE_LANE * self.lanes() as f64;
+        let n_plots = rows.iter().filter(|&&r| r != Row::Genes).count().max(1) as f64;
+        // The shape the view has on screen, its plots sharing what the title
+        // and the genes leave; else a page of its own.
+        let (width, panel_h) = match figure::page(self.drawn) {
+            Some((w, h)) => {
+                let genes = if rows.contains(&Row::Genes) {
+                    genes_h
+                } else {
+                    0.0
+                };
+                (
+                    w.max(360.0),
+                    ((h - 50.0 - genes) / n_plots).max(100.0 + room),
+                )
+            }
+            None => (720.0, 170.0 + room),
+        };
         let heights: Vec<f64> = rows
             .iter()
             .map(|&r| if r == Row::Genes { genes_h } else { panel_h })
             .collect();
         let total: f64 = heights.iter().sum();
-        let mut c = Canvas::new(720.0, 50.0 + total);
+        let mut c = Canvas::new(width, 50.0 + total);
         c.bold(16.0, 22.0, &self.title, 12.0, Anchor::Start, INK);
         c.text(
             16.0,
@@ -606,7 +672,7 @@ impl<'a> PileupView<'a> {
         let mut y = 44.0;
         for (&row, &h) in rows.iter().zip(&heights) {
             let title = self.row_title(row);
-            self.draw_row(row, &bins, &mut c, (8.0, y, 704.0, h), None, title);
+            self.draw_row(row, &bins, &mut c, (8.0, y, width - 16.0, h), None, title);
             y += h;
         }
 
@@ -764,10 +830,10 @@ impl Screen for PileupView<'_> {
         true
     }
 
-    /// A click on the bars moves the cursor there.
+    /// A click on the bars moves the cursor there; a drag or the wheel
+    /// pans (see [`PileupView::pointer`]).
     fn mouse(&mut self, m: ratatui::crossterm::event::MouseEvent) -> bool {
-        use ratatui::crossterm::event::MouseEventKind;
-        matches!(m.kind, MouseEventKind::Down(_)) && self.click_at(m.column)
+        self.pointer(m)
     }
 
     fn done(&self) -> bool {

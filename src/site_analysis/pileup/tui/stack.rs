@@ -153,22 +153,30 @@ impl Screen for StackView<'_> {
         true
     }
 
-    /// A click gives the gene under it the keys, and over its bars moves
-    /// its cursor there.
+    /// A press gives the gene under it the keys; then, as in one gene's
+    /// browser, a click on its bars moves its cursor, a drag pans it, and
+    /// the wheel pans the gene under the pointer.
     fn mouse(&mut self, m: ratatui::crossterm::event::MouseEvent) -> bool {
         use ratatui::crossterm::event::MouseEventKind;
-        if !matches!(m.kind, MouseEventKind::Down(_)) {
-            return false;
-        }
         let at = ratatui::layout::Position::new(m.column, m.row);
-        let Some(i) = self.views.iter().position(|v| v.drawn.contains(at)) else {
-            return false;
+        let under = self.views.iter().position(|v| v.drawn.contains(at));
+        let i = match m.kind {
+            // Let go anywhere: the gene that was grabbed.
+            MouseEventKind::Up(_) => self.focus,
+            MouseEventKind::Down(_) => {
+                let Some(i) = under else { return false };
+                self.focus = i;
+                self.status = None;
+                self.mark_focus();
+                i
+            }
+            _ => match under {
+                Some(i) => i,
+                None => return false,
+            },
         };
-        self.focus = i;
-        self.views[i].click_at(m.column);
-        self.status = None;
-        self.mark_focus();
-        true
+        let changed = self.views[i].pointer(m);
+        changed || matches!(m.kind, MouseEventKind::Down(_))
     }
 
     fn done(&self) -> bool {

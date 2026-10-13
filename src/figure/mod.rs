@@ -215,6 +215,22 @@ impl Canvas {
     }
 }
 
+/// Points per terminal cell in a figure saved from a view: a cell is about
+/// twice as tall as wide, and the figures' 8- to 12-point text about a row
+/// high, as the terminal's is.
+pub const CELL: (f64, f64) = (6.0, 12.0);
+
+/// The size in points of a figure saved from a view that took `area` on
+/// screen, so it keeps the view's shape; `None` before it was drawn.
+pub fn page(area: Rect) -> Option<(f64, f64)> {
+    (area.width > 0 && area.height > 0).then(|| {
+        (
+            f64::from(area.width) * CELL.0,
+            f64::from(area.height) * CELL.1,
+        )
+    })
+}
+
 /// Figures from [`Canvas::finish`] tiled into one, `cols` to a row, in
 /// order: one column stacks them top to bottom, as many columns as figures
 /// lays them side by side. Each cell is as wide as the widest figure and
