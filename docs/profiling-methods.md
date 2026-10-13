@@ -657,7 +657,17 @@ colours and the dividers at the start and stop codons; the regions are named und
 with no tick, since a tick would read as a position. `s`, in every view, asks for a name in a pop-up
 that lists the figures already saved where faba runs, newest first, with a thumbnail of each where
 the terminal draws images; the list is kept in `.faba-view/` there, so it lasts between sessions.
-A name already taken is never overwritten: the prompt offers the next free one (`name_2`, …).
+Saves are PDF only. A name already taken is never overwritten: the prompt offers the next free
+one (`name_2`, …).
+
+In the `pileup` browser, how the bars are drawn (the y scale, what `c` counts, mirrored or split,
+the contrast measure, images or text) carries from one gene to the next. `Y` locks the y-axis
+maximum for every gene opened after, so they compare; a gene taller than the lock still shows its
+bars whole, its axis raised to fit. In the gene list, Space marks genes and Ctrl+R opens the marked
+ones stacked top to bottom, each with its tracks: Tab moves the keys from gene to gene, how the bars
+are drawn applies to all of them, `Y` locks every gene to the tallest one's axis, and `s` saves the
+stack as one PDF, the genes one under another. A search, the other modality or zooming out past a
+gene needs one gene on its own: `g` (or Esc) goes back to the list, where the marks are kept.
 
 Every view keeps the same key rules. Enter opens or chooses, and never quits or applies; Ctrl+R
 applies, starts, or submits whatever line is open. Esc goes back one level (out of a pop-up, a
@@ -736,8 +746,8 @@ Ctrl+Enter, so a stray key cannot start a write; Enter there shows a hint naming
 gives the command to run instead. Once applied, the fileset is written
 with the view still up, under a pop-up showing each file as it goes. The view's figure for every
 modality and every knob, as set when the cut was applied (scales, selected gene, bar measure),
-is saved beside it in `qc_plots/{modality}_{knob}.pdf` and `.png`. `p` prints the matching
-`faba qc --batch-process` command, with every cell, feature and site option, and writes nothing; `s` saves the view as a PDF and PNG under a name it asks for, in a pop-up listing the figures saved before (§7).
+is saved beside it in `qc_plots/{modality}_{knob}.pdf`. `p` prints the matching
+`faba qc --batch-process` command, with every cell, feature and site option, and writes nothing; `s` saves the view as a PDF under a name it asks for, in a pop-up listing the figures saved before (§7).
 `q` leaves without writing. With any threshold changed, `q` and `p` first ask, and only the same
 key again leaves; Esc closes pop-ups and never leaves the view.
 Nothing is written until the thresholds are applied.

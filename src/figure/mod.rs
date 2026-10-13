@@ -34,9 +34,6 @@ pub const FAINT: &str = "#cfcfcf";
 pub const ACCENT: &str = "#d97757";
 const FONT: &str = "Helvetica, Arial, 'DejaVu Sans', sans-serif";
 
-/// PNG pixels per SVG unit (the SVG is laid out in points: 3x is 216 dpi).
-const PNG_SCALE: f32 = 3.0;
-
 /// Escape text for SVG content and attributes.
 pub(crate) fn esc(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -204,6 +201,29 @@ impl Canvas {
             body = self.body
         )
     }
+}
+
+/// Figures from [`Canvas::finish`] stacked top to bottom into one, as wide
+/// as the widest.
+pub fn stack_svgs(svgs: &[String]) -> String {
+    let size = |svg: &str, key: &str| -> f64 {
+        let at = svg.find(&format!(" {key}=\"")).map(|i| i + key.len() + 3);
+        at.and_then(|i| svg[i..].split('"').next()?.parse().ok())
+            .unwrap_or(0.0)
+    };
+    let width = svgs.iter().map(|s| size(s, "width")).fold(0.0, f64::max);
+    let mut y = 0.0;
+    let mut body = String::new();
+    for svg in svgs {
+        // Each nested at its offset, as it was drawn.
+        body.push_str(&svg.replacen("<svg ", &format!("<svg y=\"{y}\" "), 1));
+        y += size(svg, "height");
+    }
+    format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{y}" viewBox="0 0 {width} {y}">
+{body}</svg>
+"#
+    )
 }
 
 /// A `w` x `h` drawing made by `draw`, as SVG.
@@ -539,6 +559,11 @@ fn saved_paths(prefix: &str) -> [String; 2] {
     [format!("{prefix}.pdf"), format!("{prefix}.png")]
 }
 
+/// The PDF a save under `prefix` writes.
+fn pdf_path(prefix: &str) -> String {
+    format!("{}.pdf", strip_extension(prefix))
+}
+
 /// Whether a save under `prefix` would replace a file already there.
 fn taken(prefix: &str) -> bool {
     saved_paths(prefix)
@@ -567,25 +592,31 @@ fn options() -> usvg::Options<'static> {
     }
 }
 
-/// Write `svg` as `{prefix}.pdf` (vector) and `{prefix}.png`; returns the
-/// paths written.
+/// Write `svg` as `{prefix}.pdf` (vector); returns the path written.
 pub fn save(svg: &str, prefix: &str) -> anyhow::Result<Vec<String>> {
-    save_picture(svg, prefix).map(|(paths, _)| paths)
+    let tree = usvg::Tree::from_str(svg, &options())?;
+    Ok(vec![write_pdf(&tree, prefix)?])
 }
 
-/// [`save`], and the picture the PNG holds.
-fn save_picture(svg: &str, prefix: &str) -> anyhow::Result<(Vec<String>, image::RgbaImage)> {
-    let [pdf_path, png_path] = saved_paths(prefix);
-    let tree = usvg::Tree::from_str(svg, &options())?;
-    let pdf = svg2pdf::to_pdf(&tree, Default::default(), Default::default())
+/// The PDF of `tree` under `prefix`.
+fn write_pdf(tree: &usvg::Tree, prefix: &str) -> anyhow::Result<String> {
+    let path = pdf_path(prefix);
+    let pdf = svg2pdf::to_pdf(tree, Default::default(), Default::default())
         .map_err(|e| anyhow::anyhow!("PDF conversion failed: {e:?}"))?;
-    std::fs::write(&pdf_path, pdf)?;
-    let pixmap = term::pixmap(&tree, PNG_SCALE)?;
-    pixmap.save_png(&png_path)?;
+    std::fs::write(&path, pdf)?;
+    Ok(path)
+}
+
+/// [`save`], and a picture of it for the gallery's thumbnail, drawn in
+/// memory only.
+fn save_picture(svg: &str, prefix: &str) -> anyhow::Result<(Vec<String>, image::RgbaImage)> {
+    let tree = usvg::Tree::from_str(svg, &options())?;
+    let pdf = write_pdf(&tree, prefix)?;
+    let pixmap = term::pixmap(&tree, 1.0)?;
     let (w, h) = (pixmap.width(), pixmap.height());
     let picture = image::RgbaImage::from_raw(w, h, pixmap.take())
         .ok_or_else(|| anyhow::anyhow!("pixel buffer size mismatch"))?;
-    Ok((vec![pdf_path, png_path], picture))
+    Ok((vec![pdf], picture))
 }
 
 /// What a key did to a [`LineInput`].
@@ -725,7 +756,7 @@ impl SavePrompt {
     pub fn footer(&self) -> Option<Line<'static>> {
         if let Some(buf) = self.input.text() {
             return Some(input_line(
-                "save as (.pdf + .png): ",
+                "save as (.pdf): ",
                 buf,
                 &[("Enter", "save"), ("Esc", "back")],
             ));
@@ -861,7 +892,7 @@ impl Controls {
         let [left, right] =
             Layout::horizontal([Constraint::Length(strip), Constraint::Fill(1)]).areas(inner);
         let lines = vec![
-            Line::from(Span::styled(" save as (.pdf + .png)", DIM)),
+            Line::from(Span::styled(" save as (.pdf)", DIM)),
             Line::from(""),
             Line::from(Span::styled(format!(" {name}▏"), HIGHLIGHT)),
             match self.save.taken() {
@@ -941,6 +972,17 @@ impl Controls {
     /// The footer while the save prompt or its outcome is showing.
     pub fn footer(&self) -> Option<Line<'static>> {
         self.save.footer()
+    }
+
+    /// Whether plots draw as images (`i`), where the terminal can.
+    pub fn images_on(&self) -> bool {
+        self.images
+    }
+
+    /// Draw plots as images or not, as a view kept from before; text
+    /// only where the terminal has no images.
+    pub fn set_images(&mut self, on: bool) {
+        self.images = on && self.picker.is_some();
     }
 
     /// Whether the save prompt is open, where the apply key submits.

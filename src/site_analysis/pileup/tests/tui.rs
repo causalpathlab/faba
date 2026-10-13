@@ -163,7 +163,7 @@ fn saves_the_window() {
         press(&mut v, KeyCode::Char(ch));
     }
     press(&mut v, KeyCode::Enter);
-    assert!(dir.path().join("pile1.pdf").exists() && dir.path().join("pile1.png").exists());
+    assert!(dir.path().join("pile1.pdf").exists() && !dir.path().join("pile1.png").exists());
 }
 
 #[test]
@@ -559,4 +559,22 @@ fn enter_stays_esc_goes_back_to_the_genes_and_q_quits() {
     let mut v = view(&m, &s);
     press(&mut v, KeyCode::Char('q'));
     assert!(matches!(v.exit, Some(Exit::Quit)));
+}
+
+#[test]
+fn how_bars_draw_carries_to_the_next_gene() {
+    let (m, s) = (positions(), sites());
+    let mut v = view(&m, &s);
+    screen(&mut v, 100, 24);
+    press(&mut v, KeyCode::Char('y'));
+    press(&mut v, KeyCode::Char('Y'));
+    let kept = v.settings();
+    assert!(kept.y_lock.is_some());
+    let mut next = view(&m, &s);
+    next.apply(&kept);
+    assert_eq!(next.y_scale, v.y_scale, "the y scale carries over");
+    assert_eq!(next.y_lock, v.y_lock, "and the locked y maximum");
+    assert_eq!(next.bins().shared, v.y_lock);
+    press(&mut next, KeyCode::Char('Y'));
+    assert!(next.y_lock.is_none(), "Y again unlocks");
 }

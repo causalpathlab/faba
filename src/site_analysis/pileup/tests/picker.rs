@@ -123,3 +123,32 @@ fn every_footer_key_shows_at_60_columns() {
         assert!(text.contains(key), "{key}\n{text}");
     }
 }
+
+#[test]
+fn space_marks_genes_and_the_apply_key_opens_them_together() {
+    let c = catalog_from_rows(rows());
+    let mut p = GenePicker::new(&c);
+    press(&mut p, KeyCode::Char(' '));
+    press(&mut p, KeyCode::Down);
+    press(&mut p, KeyCode::Down);
+    press(&mut p, KeyCode::Char(' '));
+    assert_eq!(p.marked(), [0, 2], "in the order marked");
+    assert!(p.filter.is_empty(), "Space does not type");
+    crate::tui::feed(
+        &mut p,
+        KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
+    );
+    assert_eq!(p.decision, Some(Choice::Genes(vec![0, 2])));
+
+    // Space again unmarks; with none marked, the apply key opens one gene.
+    let mut p = GenePicker::new(&c);
+    p.set_marked(&[1]);
+    press(&mut p, KeyCode::Down);
+    press(&mut p, KeyCode::Char(' '));
+    assert!(p.marked().is_empty());
+    crate::tui::feed(
+        &mut p,
+        KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
+    );
+    assert_eq!(p.decision, Some(Choice::Gene(1)));
+}

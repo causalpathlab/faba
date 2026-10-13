@@ -93,6 +93,8 @@ pub fn gene_catalog(files: &[Box<str>]) -> anyhow::Result<Vec<GeneEntry>> {
 pub enum Choice {
     /// An entry, by index.
     Gene(usize),
+    /// The marked entries, by index in the order marked, stacked in one view.
+    Genes(Vec<usize>),
     /// A typed `chr:start-end` or `chr:pos`.
     Locus(String),
     Quit,
@@ -111,6 +113,8 @@ pub struct GenePicker<'a> {
     offset: usize,
     /// A message for the footer, until the next key.
     status: Option<String>,
+    /// Entries marked (Space), by index in the order marked.
+    marked: Vec<usize>,
     decision: Option<Choice>,
 }
 
@@ -124,8 +128,23 @@ impl<'a> GenePicker<'a> {
             selected: 0,
             offset: 0,
             status: None,
+            marked: Vec::new(),
             decision: None,
         }
+    }
+
+    /// The entries marked, by index in the order marked.
+    pub fn marked(&self) -> &[usize] {
+        &self.marked
+    }
+
+    /// Mark these entries again, as when the list was left.
+    pub fn set_marked(&mut self, marked: &[usize]) {
+        self.marked = marked
+            .iter()
+            .copied()
+            .filter(|&i| i < self.entries.len())
+            .collect();
     }
 
     /// Case-insensitive substring match on the gene key or chromosome.
@@ -185,6 +204,12 @@ impl Screen for GenePicker<'_> {
 
     fn handle_key(&mut self, key: KeyEvent) {
         self.status = None;
+        // The apply key opens the marked genes together; with none, it
+        // opens the highlighted one, as Enter does.
+        if crate::tui::is_apply(&key) && !self.marked.is_empty() {
+            self.decision = Some(Choice::Genes(self.marked.clone()));
+            return;
+        }
         let code = if crate::tui::is_apply(&key) {
             KeyCode::Enter
         } else {
@@ -211,6 +236,17 @@ impl Screen for GenePicker<'_> {
                 self.filter.pop();
                 self.refilter();
             }
+            // Space marks the highlighted gene (no gene or locus has one).
+            KeyCode::Char(' ') => {
+                if let Some(&i) = self.shown.get(self.selected) {
+                    match self.marked.iter().position(|&m| m == i) {
+                        Some(at) => {
+                            self.marked.remove(at);
+                        }
+                        None => self.marked.push(i),
+                    }
+                }
+            }
             KeyCode::Char(c) if !c.is_control() => {
                 self.filter.push(c);
                 self.refilter();
@@ -229,6 +265,15 @@ impl Screen for GenePicker<'_> {
                     ("↑/↓", "move"),
                     ("PgUp/PgDn", "page"),
                     ("Enter", "open"),
+                    ("Space", "mark"),
+                    (
+                        crate::tui::APPLY_KEYS,
+                        if self.marked.is_empty() {
+                            "open"
+                        } else {
+                            "open the marked together"
+                        },
+                    ),
                     ("Esc", "clear/quit"),
                 ],
             ),
@@ -244,7 +289,14 @@ impl Screen for GenePicker<'_> {
             header(
                 "pileup",
                 "pick a gene",
-                &format!("{} of {} genes", self.shown.len(), self.entries.len()),
+                &match self.marked.len() {
+                    0 => format!("{} of {} genes", self.shown.len(), self.entries.len()),
+                    n => format!(
+                        "{} of {} genes · {n} marked",
+                        self.shown.len(),
+                        self.entries.len()
+                    ),
+                },
             ),
             top,
         );
@@ -267,8 +319,14 @@ impl Screen for GenePicker<'_> {
             let e = &self.entries[i];
             let focused = k == self.selected;
             let style = if focused { HIGHLIGHT } else { PLAIN };
+            let mark = match self.marked.contains(&i) {
+                true => "[x] ",
+                false if self.marked.is_empty() => "",
+                false => "[ ] ",
+            };
             lines.push(Line::from(vec![
                 Span::styled(if focused { "▸ " } else { "  " }, HIGHLIGHT),
+                Span::styled(mark, HIGHLIGHT),
                 Span::styled(format!("{:<32}", e.gene), style),
                 Span::raw(format!(" {:>7}  ", e.sites)),
                 dim(format!(

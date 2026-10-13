@@ -13,13 +13,15 @@ use data_beans::interactive::ui::{
 };
 use genomic_data::coordinates::chr_eq;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
-use ratatui::layout::{Constraint, Layout};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
+mod stack;
 mod track;
 
+pub use stack::show_stack;
 pub use track::*;
 
 use crate::figure::GUTTER;
@@ -133,7 +135,23 @@ pub struct PileupView<'a> {
     pending_genes: Option<SharedModels>,
     /// Whether `M` switches to the other modality's sites.
     switchable: bool,
+    /// The y-axis maximum `Y` locked, kept for every gene opened after.
+    y_lock: Option<f64>,
+    /// The header's badge: `pileup`, or in a stack, which gene has the keys.
+    badge: &'static str,
     exit: Option<Exit>,
+}
+
+/// What the browser keeps from one gene to the next: how the bars are
+/// drawn, not where. `None` leaves a view's own default.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Settings {
+    pub y_scale: Option<Scale>,
+    pub show: Option<Show>,
+    pub mirror: Option<bool>,
+    pub measure: Option<Measure>,
+    pub y_lock: Option<f64>,
+    pub images: Option<bool>,
 }
 
 impl<'a> PileupView<'a> {
@@ -178,7 +196,35 @@ impl<'a> PileupView<'a> {
             genes: Vec::new(),
             pending_genes: None,
             switchable: false,
+            y_lock: None,
+            badge: "pileup",
             exit: None,
+        }
+    }
+
+    /// Draw as `s` keeps from the gene before.
+    pub fn apply(&mut self, s: &Settings) {
+        self.y_scale = s.y_scale.unwrap_or(self.y_scale);
+        self.show = s.show.unwrap_or(self.show);
+        self.mirror = s.mirror.unwrap_or(self.mirror);
+        if let (Some(c), Some(measure)) = (&mut self.contrast, s.measure) {
+            c.measure = measure;
+        }
+        self.y_lock = s.y_lock;
+        if let Some(on) = s.images {
+            self.controls.set_images(on);
+        }
+    }
+
+    /// How this view draws, to keep for the next gene.
+    pub fn settings(&self) -> Settings {
+        Settings {
+            y_scale: Some(self.y_scale),
+            show: Some(self.show),
+            mirror: Some(self.mirror),
+            measure: self.contrast.map(|c| c.measure),
+            y_lock: self.y_lock,
+            images: Some(self.controls.images_on()),
         }
     }
 
@@ -321,7 +367,7 @@ impl<'a> PileupView<'a> {
             edges,
             tracks,
             shown,
-            shared: (tallest > 0.0).then_some(tallest),
+            shared: self.y_lock.or((tallest > 0.0).then_some(tallest)),
         }
     }
 
@@ -733,6 +779,14 @@ impl Screen for PileupView<'_> {
             KeyCode::Char('-') => self.zoom_out(),
             KeyCode::Char('0') => self.window = self.extent,
             KeyCode::Char('y') => self.y_scale = self.y_scale.next(),
+            // Keep this y-axis maximum for every gene opened after, so they
+            // compare; again, back to each its own.
+            KeyCode::Char('Y') => {
+                self.y_lock = match self.y_lock {
+                    Some(_) => None,
+                    None => self.bins().shared,
+                }
+            }
             // Esc goes back one level: the gene list it came from.
             KeyCode::Char('g') | KeyCode::Esc => self.exit = Some(Exit::Genes),
             KeyCode::Char('q') => self.exit = Some(Exit::Quit),
@@ -741,6 +795,14 @@ impl Screen for PileupView<'_> {
     }
 
     fn render(&mut self, frame: &mut Frame) {
+        self.render_in(frame, frame.area(), true);
+    }
+}
+
+impl PileupView<'_> {
+    /// Draw in `area`: the header, the rows and the readout, and with
+    /// `footer` the keys and the save pop-up (a stack draws those once).
+    pub(super) fn render_in(&mut self, frame: &mut Frame, area: Rect, footer: bool) {
         self.take_genes();
         let rows = self.rows();
         let n_plots = rows.iter().filter(|&&r| r != Row::Genes).count().max(1) as u32;
@@ -751,26 +813,34 @@ impl Screen for PileupView<'_> {
             _ => Constraint::Ratio(1, n_plots),
         }));
         // The footer takes as many lines as its keys need at this width.
-        let help = crate::tui::wrap_help(self.footer_line(), frame.area().width);
+        let help = match footer {
+            true => crate::tui::wrap_help(self.footer_line(), area.width),
+            false => Vec::new(),
+        };
         layout.extend([Constraint::Length(1), Constraint::Length(help.len() as u16)]);
-        let areas = Layout::vertical(layout).split(frame.area());
-        let (top, readout, footer) = (areas[0], areas[areas.len() - 2], areas[areas.len() - 1]);
+        let areas = Layout::vertical(layout).split(area);
+        let (top, readout, footer_area) =
+            (areas[0], areas[areas.len() - 2], areas[areas.len() - 1]);
 
         let inner_width = areas[1].width.saturating_sub(2 + GUTTER);
         self.columns = (inner_width as usize).max(1);
         self.clamp_window();
         let (lo, hi) = self.window;
         let extra = format!(
-            "{}:{}-{}  {} bp/bar · {} · y {}{}",
+            "{}:{}-{}  {} bp/bar · {} · y {}{}{}",
             self.chr,
             fmt_thousands(lo),
             fmt_thousands(hi),
             self.bin_width(),
             self.show.label(self.on, self.off),
             self.y_scale.name(),
+            match self.y_lock {
+                Some(max) => format!(" ≤ {max:.0} locked"),
+                None => String::new(),
+            },
             self.controls.tag()
         );
-        frame.render_widget(header("pileup", &self.title, &extra), top);
+        frame.render_widget(header(self.badge, &self.title, &extra), top);
 
         let every = TICK_SPACING.max(self.columns / 5);
         let ticks: Vec<Option<String>> = (0..self.columns)
@@ -871,8 +941,10 @@ impl Screen for PileupView<'_> {
         self.plots = plots;
 
         frame.render_widget(Paragraph::new(self.readout(&bins)), readout);
-        frame.render_widget(Paragraph::new(help), footer);
-        self.controls.render_save(frame, frame.area());
+        if footer {
+            frame.render_widget(Paragraph::new(help), footer_area);
+            self.controls.render_save(frame, frame.area());
+        }
     }
 }
 
@@ -945,6 +1017,14 @@ impl PileupView<'_> {
             ("0", "whole"),
             ("/", "search"),
             ("y", "scale"),
+            (
+                "Y",
+                if self.y_lock.is_some() {
+                    "unlock y"
+                } else {
+                    "lock y"
+                },
+            ),
             ("g/Esc", "gene list"),
         ];
         if self.tracks.iter().any(|t| t.is_reads()) {
@@ -965,9 +1045,8 @@ impl PileupView<'_> {
     }
 }
 
-/// Browse until the user quits, asks for the gene list, or searches outside the view.
-/// `status` shows on the footer first.
-pub fn show_pileup(view: View, tracks: Vec<Track>, status: Option<String>) -> anyhow::Result<Exit> {
+/// The browser for `view`'s `tracks`, `status` on its footer first.
+fn browser<'a>(view: View<'a>, tracks: Vec<Track<'a>>, status: Option<String>) -> PileupView<'a> {
     let mut browser = PileupView::new(view.title, view.chr, tracks, view.extent);
     browser.on = view.on;
     browser.off = view.off;
@@ -983,7 +1062,23 @@ pub fn show_pileup(view: View, tracks: Vec<Track>, status: Option<String>) -> an
         loading.then(|| LOADING.to_string())
     });
     browser.controls = Controls::new(&format!("pileup_{}", view.title)).detect();
+    browser
+}
+
+/// Browse until the user quits, asks for the gene list, or searches outside the view.
+/// `status` shows on the footer first.
+/// `settings` holds how the gene before was drawn: this one starts so, and
+/// leaves it as this one was.
+pub fn show_pileup(
+    view: View,
+    tracks: Vec<Track>,
+    status: Option<String>,
+    settings: &mut Settings,
+) -> anyhow::Result<Exit> {
+    let mut browser = browser(view, tracks, status);
+    browser.apply(settings);
     crate::tui::run_view(&mut browser)?;
+    *settings = browser.settings();
     Ok(browser.exit.unwrap_or(Exit::Quit))
 }
 

@@ -147,7 +147,7 @@ fn saves_the_profile() {
         press(&mut v, KeyCode::Char(ch));
     }
     press(&mut v, KeyCode::Enter);
-    assert!(dir.path().join("mg1.pdf").exists() && dir.path().join("mg1.png").exists());
+    assert!(dir.path().join("mg1.pdf").exists() && !dir.path().join("mg1.png").exists());
 }
 
 #[test]

@@ -61,16 +61,15 @@ fn svg_is_well_formed_and_escaped() {
 }
 
 #[test]
-fn save_writes_pdf_and_png() {
+fn save_writes_a_pdf_only() {
     let dir = tempfile::tempdir().unwrap();
     let prefix = dir.path().join("fig1.pdf");
     let paths = save(&panel(), prefix.to_str().unwrap()).unwrap();
-    assert_eq!(paths.len(), 2);
+    assert_eq!(paths.len(), 1);
     let pdf = std::fs::read(&paths[0]).unwrap();
     assert!(pdf.starts_with(b"%PDF"), "{}", paths[0]);
-    let png = std::fs::read(&paths[1]).unwrap();
-    assert!(png.starts_with(b"\x89PNG"), "{}", paths[1]);
-    assert!(paths[0].ends_with("fig1.pdf") && paths[1].ends_with("fig1.png"));
+    assert!(paths[0].ends_with("fig1.pdf"));
+    assert!(!dir.path().join("fig1.png").exists(), "no PNG");
 }
 
 #[test]

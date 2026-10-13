@@ -133,7 +133,7 @@ fn saves_the_logo() {
         press(&mut v, KeyCode::Char(ch));
     }
     press(&mut v, KeyCode::Enter);
-    assert!(dir.path().join("logo1.pdf").exists() && dir.path().join("logo1.png").exists());
+    assert!(dir.path().join("logo1.pdf").exists() && !dir.path().join("logo1.png").exists());
     assert!(!v.done());
 }
 
