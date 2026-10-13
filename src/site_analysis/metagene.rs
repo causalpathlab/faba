@@ -158,15 +158,6 @@ pub struct MetageneArgs {
     )]
     batch_process: bool,
 
-    /// The view is the default now; kept so older command lines still run.
-    #[arg(
-        short = 'I',
-        long = "interactive",
-        hide = true,
-        default_value_t = false
-    )]
-    interactive: bool,
-
     #[arg(
         long = "max-width",
         default_value_t = 60,

@@ -1,4 +1,4 @@
-//! Full-screen metagene profile for `faba metagene --interactive`.
+//! Full-screen metagene profile for `faba metagene`.
 //!
 //! The coding track draws 5'UTR, CDS and 3'UTR bins end to end with the
 //! region boundaries labelled; the ncRNA track, when profiled, is its own

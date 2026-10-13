@@ -221,15 +221,6 @@ pub struct PileupArgs {
     )]
     separate: bool,
 
-    /// The browser is the default now; kept so older command lines still run.
-    #[arg(
-        short = 'I',
-        long = "interactive",
-        hide = true,
-        default_value_t = false
-    )]
-    interactive: bool,
-
     ///////////////////////
     // Miami figure mode //
     ///////////////////////

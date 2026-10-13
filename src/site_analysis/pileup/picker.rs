@@ -1,4 +1,4 @@
-//! The gene list `faba pileup --interactive` opens when no gene or region
+//! The gene list `faba pileup` opens when no gene or region
 //! was given: every gene with site rows in the inputs, read off the row
 //! names alone, filtered as you type (`/` starts over). A typed
 //! `chr:start-end` or `chr:pos` opens that locus.

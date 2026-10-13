@@ -642,7 +642,7 @@ None of these fit a model or produce a p-value.
   which on a 3′-biased library means the last bins of the 3′UTR; a terminal peak is not evidence of
   enrichment on its own.
 
-The `--interactive` views of `pileup` and `metagene` draw the converted reads by default, where a
+The views of `pileup` and `metagene` draw the converted reads by default, where a
 track carries both channels (in `metagene`, where the site table has `converted` and `coverage`
 columns). `c` cycles what the bars count: converted reads, unconverted reads (the total less the
 converted), both (the converted in front of the total), and the sites themselves. In `pileup`, `d`

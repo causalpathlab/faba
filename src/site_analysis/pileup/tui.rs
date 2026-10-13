@@ -1,4 +1,4 @@
-//! Full-screen gene-body browser for `faba pileup --interactive`. Tracks share one axis,
+//! Full-screen gene-body browser for `faba pileup`. Tracks share one axis,
 //! re-binned each frame (a bar per column, via [`BinEdges`]); the cursor is a genomic position.
 use super::{distinct_positions, fmt_thousands, BinEdges};
 use super::{genes_to_draw, SharedModels};

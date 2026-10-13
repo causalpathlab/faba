@@ -104,15 +104,6 @@ pub struct ScanPwmArgs {
                      sequence logo in a view (when there is a terminal)."
     )]
     batch_process: bool,
-
-    /// The view is the default now; kept so older command lines still run.
-    #[arg(
-        short = 'I',
-        long = "interactive",
-        hide = true,
-        default_value_t = false
-    )]
-    interactive: bool,
 }
 
 /// Swap A<->T and G<->C counts to complement a DnaBaseCount.
