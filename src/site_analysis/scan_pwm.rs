@@ -1,5 +1,8 @@
+#[cfg(test)]
+mod tests;
 mod tui;
 
+use super::output_dir;
 use super::site_io::*;
 use crate::common::*;
 use crate::data::dna::{Dna, DnaBaseCount};
@@ -21,18 +24,32 @@ pub enum PwmSource {
 #[derive(Args, Debug)]
 pub struct ScanPwmArgs {
     #[arg(
-        short = 's',
-        long = "sites",
-        required = true,
-        help = "Site-level parquet file (from dartseq, atoi or apa output)"
+        value_delimiter = ',',
+        value_name = "SITES|DIR|BAM",
+        help = "Site parquets or faba output directories, and BAM files for --source reads",
+        long_help = "Site-level parquet file (from dartseq, atoi or apa output).\n\
+                     Or a faba output directory (from `faba run`, a producer, or `faba qc`),\n\
+                     or a run record in it (`*.run.json`, `pipeline_summary.json`): its\n\
+                     `{modality}_sites.parquet` of --modality is read. Several are read\n\
+                     together, as one set of sites. A `.bam` or `.cram` is a BAM file,\n\
+                     read with --source reads. Without sites (here or -s), a browser\n\
+                     asks: mark site tables, or choose an output directory."
     )]
-    site_file: Box<str>,
+    input: Vec<Box<str>>,
 
     #[arg(
-        value_delimiter = ',',
-        help = "Input BAM file(s), comma-separated (required for --source reads)"
+        short = 's',
+        long = "sites",
+        help = "Site-level parquet file, as the positional SITES"
     )]
-    bam_files: Vec<Box<str>>,
+    sites: Option<Box<str>>,
+
+    #[arg(
+        long = "modality",
+        value_name = "m6a|atoi",
+        help = "Which site table to take from an output directory (default: m6a, else atoi)"
+    )]
+    modality: Option<Box<str>>,
 
     #[arg(
         short = 'f',
@@ -70,16 +87,30 @@ pub struct ScanPwmArgs {
     #[arg(
         short,
         long,
-        required = true,
-        help = "Output file path (TSV, or .gz for gzipped)"
+        help = "Output file path, TSV or .gz (default with --batch-process: `{sites}.pwm.tsv` here)",
+        long_help = "Output file path (TSV, or .gz for gzipped). In the view, written only\n\
+                     when given; with --batch-process, without it, `{sites}.pwm.tsv` in the\n\
+                     current directory, after the site table's name."
     )]
-    output: Box<str>,
+    output: Option<Box<str>>,
 
+    #[arg(
+        long = "batch-process",
+        visible_alias = "batch-mode",
+        default_value_t = false,
+        help = "Write the PWM and stop, without showing the logo full screen",
+        long_help = "Write the PWM and stop, without showing the logo full screen.\n\
+                     By default `faba pwm` writes it (when -o is given) and then shows the\n\
+                     sequence logo in a view (when there is a terminal)."
+    )]
+    batch_process: bool,
+
+    /// The view is the default now; kept so older command lines still run.
     #[arg(
         short = 'I',
         long = "interactive",
-        default_value_t = false,
-        help = "After writing, show the PWM as a sequence logo full screen (needs a terminal)"
+        hide = true,
+        default_value_t = false
     )]
     interactive: bool,
 }
@@ -140,10 +171,12 @@ fn collect_from_reference(
 }
 
 /// Collect PWM from BAM read base frequencies around each site.
+/// `quiet` drops the progress bar, for when a view's spinner shows instead.
 fn collect_from_reads(
     sites: &[GenomicSite],
     bam_files: &[Box<str>],
     window: i64,
+    quiet: bool,
 ) -> anyhow::Result<Vec<DnaBaseCount>> {
     let width = (2 * window + 1) as usize;
 
@@ -152,12 +185,16 @@ fn collect_from_reads(
         util_htslib::check_bam_index(bam_file, None)?;
     }
 
+    let empty = || (0..width).map(|_| DnaBaseCount::new()).collect::<Vec<_>>();
     let pwm: Vec<DnaBaseCount> = sites
         .par_iter()
-        .progress_with(new_progress_bar(sites.len() as u64))
-        .map(|site| {
-            let mut local_pwm: Vec<DnaBaseCount> =
-                (0..width).map(|_| DnaBaseCount::new()).collect();
+        .progress_with(if quiet {
+            indicatif::ProgressBar::hidden()
+        } else {
+            new_progress_bar(sites.len() as u64)
+        })
+        .map(|site| -> anyhow::Result<Vec<DnaBaseCount>> {
+            let mut local_pwm = empty();
 
             let bed = Bed {
                 chr: site.chr.clone(),
@@ -167,9 +204,9 @@ fn collect_from_reads(
 
             let mut freq_map = DnaBaseFreqMap::new();
             for bam_file in bam_files {
-                freq_map
-                    .update_from_region(bam_file, &bed)
-                    .expect("failed to read BAM file");
+                freq_map.update_from_region(bam_file, &bed).map_err(|e| {
+                    anyhow::anyhow!("{bam_file}: {}:{}: {e}", bed.chr, site.position)
+                })?;
             }
 
             if let Some(counts) = freq_map.marginal_frequency_map() {
@@ -190,17 +227,14 @@ fn collect_from_reads(
                 }
             }
 
-            local_pwm
+            Ok(local_pwm)
         })
-        .reduce(
-            || (0..width).map(|_| DnaBaseCount::new()).collect(),
-            |mut acc, local| {
-                for (a, b) in acc.iter_mut().zip(local.iter()) {
-                    *a += b;
-                }
-                acc
-            },
-        );
+        .try_reduce(empty, |mut acc, local| {
+            for (a, b) in acc.iter_mut().zip(local.iter()) {
+                *a += b;
+            }
+            Ok(acc)
+        })?;
 
     Ok(pwm)
 }
@@ -253,46 +287,130 @@ fn write_pwm(pwm: &[DnaBaseCount], window: i64, output: &str) -> anyhow::Result<
     Ok(())
 }
 
+/// The genome to read every table's sites against: `explicit`, else the one
+/// recorded next to each table, which must be the same for all.
+fn genome_of(explicit: Option<&str>, site_files: &[Box<str>]) -> anyhow::Result<Box<str>> {
+    if let Some(genome) = explicit {
+        return Ok(genome.into());
+    }
+    let recorded = |f: &str| {
+        crate::run_record::explicit_or_recorded(None, f, "genome", "genome").ok_or_else(|| {
+            anyhow::anyhow!(
+                "--genome is required when --source reference: \
+                 no run record next to {f} names a genome"
+            )
+        })
+    };
+    let first = recorded(&site_files[0])?;
+    for f in &site_files[1..] {
+        let this = recorded(f)?;
+        anyhow::ensure!(
+            this == first,
+            "the site tables were called against different genomes ({first}, {this}); \
+             name one with --genome"
+        );
+    }
+    Ok(first)
+}
+
+/// Whether `path` names an alignment file (BAM, CRAM or SAM) rather than
+/// sites.
+fn is_bam(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    [".bam", ".cram", ".sam"]
+        .iter()
+        .any(|ext| lower.ends_with(ext))
+}
+
+/// Site tables, and BAM files.
+type Inputs = (Vec<Box<str>>, Vec<Box<str>>);
+
+impl ScanPwmArgs {
+    /// The site tables and the BAM files: `-s`, then the positional inputs
+    /// that are not BAMs, each of which may name an output directory (or a
+    /// run record in it) holding one; with neither, those chosen in a
+    /// browser. `None` when that is cancelled.
+    fn inputs(&self) -> anyhow::Result<Option<Inputs>> {
+        let (bams, given): (Vec<Box<str>>, Vec<Box<str>>) =
+            self.input.iter().cloned().partition(|p| is_bam(p));
+        let given = self.sites.iter().cloned().chain(given).collect();
+        let modality = self.modality.as_deref();
+        let ask = output_dir::site_tables("pwm", self.batch_process, given, modality);
+        Ok(ask?.map(|sites| (sites, bams)))
+    }
+}
+
 pub fn run_scan_pwm(args: &ScanPwmArgs) -> anyhow::Result<()> {
     rayon::ThreadPoolBuilder::new()
         .num_threads(args.threads)
         .build_global()
         .ok(); // ignore if already set
 
-    let sites = read_sites(&args.site_file)?;
-
-    let pwm = match args.source {
-        PwmSource::Reference => {
-            let genome = crate::run_record::explicit_or_recorded(
-                args.genome_file.as_deref(),
-                &args.site_file,
-                "genome",
-                "genome",
-            )
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "--genome is required when --source reference: \
-                         no run record next to {} names a genome",
-                    args.site_file
-                )
-            })?;
-            collect_from_reference(&sites, &genome, args.window)?
-        }
+    let Some((site_files, bam_files)) = args.inputs()? else {
+        return Ok(());
+    };
+    if !bam_files.is_empty() && matches!(args.source, PwmSource::Reference) {
+        log::warn!(
+            "{} read only with --source reads; the reference gives the bases",
+            bam_files.join(", ")
+        );
+    }
+    // A genome missing, or differing between tables, fails before the reading.
+    let genome = match args.source {
+        PwmSource::Reference => Some(genome_of(args.genome_file.as_deref(), &site_files)?),
         PwmSource::Reads => {
-            if args.bam_files.is_empty() {
-                return Err(anyhow::anyhow!("BAM file(s) required when --source reads"));
-            }
-            collect_from_reads(&sites, &args.bam_files, args.window)?
+            anyhow::ensure!(
+                !bam_files.is_empty(),
+                "BAM file(s) required when --source reads"
+            );
+            None
         }
     };
+    let batch = crate::tui::batch(args.batch_process, "pwm");
+    let what = format!("collecting bases around {} site table(s)", site_files.len());
+    let pwm = crate::tui::busy(!batch, "pwm", &what, || {
+        collect(args, &site_files, genome.as_deref(), &bam_files, !batch)
+    })?;
 
-    write_pwm(&pwm, args.window, &args.output)?;
-    info!("wrote PWM to {}", args.output);
-
-    if args.interactive {
-        let title = crate::qc::layout::file_name(&args.site_file);
-        crate::figure::term::when_terminal(|| tui::show_pwm(&title, &pwm, args.window))?;
+    let output = args
+        .output
+        .clone()
+        .or_else(|| batch.then(|| output_dir::default_output(&site_files, ".pwm.tsv")));
+    if let Some(output) = &output {
+        write_pwm(&pwm, args.window, output)?;
+        info!("wrote PWM to {output}");
+    }
+    if !batch {
+        tui::show_pwm(&output_dir::title(&site_files), &pwm, args.window)?;
     }
 
     Ok(())
+}
+
+/// The base counts around the sites of `site_files`, as one set, from
+/// `genome` when given, else from `bam_files`.
+fn collect(
+    args: &ScanPwmArgs,
+    site_files: &[Box<str>],
+    genome: Option<&str>,
+    bam_files: &[Box<str>],
+    quiet: bool,
+) -> anyhow::Result<Vec<DnaBaseCount>> {
+    // The tables are independent: read them together.
+    let tables = site_files
+        .par_iter()
+        .map(|f| read_sites(f))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let sites: Vec<GenomicSite> = tables.into_iter().flatten().collect();
+    if site_files.len() > 1 {
+        info!(
+            "{} sites from {} tables, together",
+            sites.len(),
+            site_files.len()
+        );
+    }
+    match genome {
+        Some(genome) => collect_from_reference(&sites, genome, args.window),
+        None => collect_from_reads(&sites, bam_files, args.window, quiet),
+    }
 }

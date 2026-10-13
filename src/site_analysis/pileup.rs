@@ -999,12 +999,7 @@ pub fn run_pileup(args: &PileupArgs) -> anyhow::Result<()> {
     // asked to print (or there is no terminal to browse in), when `--gtf`
     // makes the figure too. In the browser `--gtf` draws the genes in view.
     let figure_flags = !args.bam_files.is_empty() || args.format.is_some() || args.svg || args.png;
-    let browse_it = !args.batch_process && !figure_flags;
-    let terminal = data_beans::interactive::tui_available();
-    if browse_it && !terminal {
-        log::info!("no terminal to browse in: printing the pileup, as --batch-process does");
-    }
-    let interactive = browse_it && terminal;
+    let interactive = !figure_flags && !crate::tui::batch(args.batch_process, "pileup");
     let figure_mode = !interactive && (args.gtf.is_some() || figure_flags);
     if interactive && args.genes.is_empty() && args.regions.is_empty() {
         return self::interactive(base, source, None);

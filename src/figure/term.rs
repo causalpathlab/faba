@@ -92,17 +92,6 @@ pub(super) fn protocol(picker: &Picker, img: DynamicImage, area: Rect) -> Option
         .ok()
 }
 
-/// Run a view when stdin and stdout are a terminal; otherwise say why not
-/// and carry on without it.
-pub fn when_terminal(view: impl FnOnce() -> anyhow::Result<()>) -> anyhow::Result<()> {
-    if data_beans::interactive::tui_available() {
-        view()
-    } else {
-        log::warn!("--interactive needs stdin and stdout on a terminal; skipping the view");
-        Ok(())
-    }
-}
-
 /// One plot area drawn as an image: rebuilt only when marked stale or when
 /// the area changes size.
 #[derive(Default)]

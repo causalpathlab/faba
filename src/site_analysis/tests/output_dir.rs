@@ -35,3 +35,16 @@ fn a_directory_gives_its_site_matrices_by_batch_and_its_site_table() {
     let matrix = dir.join("b1_m6a.zarr.zip");
     assert!(crate::run_record::output_dir_of(&matrix.to_string_lossy()).is_none());
 }
+
+#[test]
+fn the_default_output_and_title_follow_the_site_tables() {
+    let one: Vec<Box<str>> = vec!["out/m6a_sites.parquet".into()];
+    assert_eq!(&*default_output(&one, ".pwm.tsv"), "m6a_sites.pwm.tsv");
+    assert_eq!(title(&one), "m6a_sites.parquet");
+    let two: Vec<Box<str>> = vec!["a/m6a_sites.parquet".into(), "b/atoi_sites.parquet".into()];
+    assert_eq!(
+        &*default_output(&two, ".metagene.tsv"),
+        "m6a_sites_combined.metagene.tsv"
+    );
+    assert_eq!(title(&two), "m6a_sites.parquet + atoi_sites.parquet");
+}

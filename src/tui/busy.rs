@@ -2,7 +2,7 @@
 //! terminal blank while it reads.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{channel, Receiver, RecvTimeoutError};
+use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, TryRecvError};
 use std::time::{Duration, Instant};
 
 use data_beans::interactive::ui::{header, Screen, DIM, HIGHLIGHT};
@@ -24,6 +24,8 @@ struct Busy<'a, T> {
     start: Instant,
     rx: &'a Receiver<T>,
     out: Option<T>,
+    /// The work ended without a result: it panicked.
+    gone: bool,
     /// Files done, of `total`; no bar when `total` is 0.
     done: &'a AtomicUsize,
     total: usize,
@@ -68,13 +70,15 @@ impl<T> Screen for Busy<'_, T> {
     fn interrupt(&mut self) {}
 
     fn done(&self) -> bool {
-        self.out.is_some()
+        self.out.is_some() || self.gone
     }
 
     /// Pick up the result, else redraw for the spinner and the clock.
     fn tick(&mut self) -> bool {
-        if let Ok(out) = self.rx.try_recv() {
-            self.out = Some(out);
+        match self.rx.try_recv() {
+            Ok(out) => self.out = Some(out),
+            Err(TryRecvError::Disconnected) => self.gone = true,
+            Err(TryRecvError::Empty) => {}
         }
         true
     }
@@ -123,6 +127,7 @@ pub fn busy_counting<T: Send>(
             start: Instant::now(),
             rx: &rx,
             out: None,
+            gone: false,
             done: &done,
             total,
         };
@@ -150,6 +155,7 @@ mod tests {
             start: Instant::now(),
             rx: &rx,
             out: None,
+            gone: false,
             done: &done,
             total: 3,
         };
@@ -163,6 +169,25 @@ mod tests {
         b.tick();
         assert!(b.done());
         assert_eq!(b.out, Some(7));
+    }
+
+    #[test]
+    fn work_that_dies_ends_the_spinner() {
+        let (tx, rx) = channel::<i32>();
+        let done = AtomicUsize::new(0);
+        let mut b = Busy {
+            badge: "pwm",
+            what: "collecting",
+            start: Instant::now(),
+            rx: &rx,
+            out: None,
+            gone: false,
+            done: &done,
+            total: 0,
+        };
+        drop(tx);
+        b.tick();
+        assert!(b.done() && b.out.is_none(), "not left spinning");
     }
 
     #[test]

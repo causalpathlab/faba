@@ -21,6 +21,19 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph};
 use ratatui::Frame;
 
+/// Whether to write and stop rather than open the view: when `asked`
+/// (`--batch-process`), or when there is no terminal to show it in.
+pub fn batch(asked: bool, command: &str) -> bool {
+    if asked {
+        return true;
+    }
+    let terminal = data_beans::interactive::tui_available();
+    if !terminal {
+        log::info!("no terminal for the view: {command} runs as with --batch-process");
+    }
+    !terminal
+}
+
 /// A `w` x `h` rectangle centred in `area`, shrunk to fit it.
 pub fn centered(area: Rect, w: u16, h: u16) -> Rect {
     let (w, h) = (w.min(area.width), h.min(area.height));

@@ -156,3 +156,31 @@ fn the_save_prompt_pops_up_with_the_figures_saved_here() {
         "{text}"
     );
 }
+
+#[test]
+fn the_prompt_never_replaces_a_saved_figure() {
+    let dir = tempfile::tempdir().unwrap();
+    let at = |n: &str| dir.path().join(n).to_string_lossy().into_owned();
+    std::fs::write(at("logo.pdf"), b"").unwrap();
+    std::fs::write(at("logo_2.png"), b"").unwrap();
+    let mut p = SavePrompt::new(&at("logo"));
+    p.open();
+    assert_eq!(
+        p.text(),
+        Some(at("logo_3").as_str()),
+        "the first name free of both"
+    );
+
+    // A taken name typed in keeps the prompt open, with the next free one.
+    p.handle(key(KeyCode::Esc));
+    p.open();
+    for _ in 0..2 {
+        p.handle(key(KeyCode::Backspace));
+    }
+    assert_eq!(p.text(), Some(at("logo").as_str()));
+    assert_eq!(p.handle(key(KeyCode::Enter)), None, "logo.pdf is there");
+    assert!(p.active() && p.taken().is_some());
+    assert_eq!(p.text(), Some(at("logo_3").as_str()));
+    assert_eq!(p.handle(key(KeyCode::Enter)), Some(at("logo_3")));
+    assert!(p.taken().is_none());
+}

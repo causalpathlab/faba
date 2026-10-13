@@ -159,7 +159,6 @@ impl Screen for InputPicker {
         let area = frame.area();
         frame.render_widget(header(self.command, "choose the input", ""), area);
         let w = area.width.saturating_sub(4).clamp(20, 90);
-        let rows = area.height.saturating_sub(8).clamp(3, 24);
         let n_marked = self.browser.marked.as_ref().map_or(0, Vec::len);
         let marked = match (n_marked, self.track_mode()) {
             (0, _) => String::new(),
@@ -172,7 +171,30 @@ impl Screen for InputPicker {
             tilde(&self.browser.cwd),
             self.browser.list.find.tag()
         );
-        let inner = popup_frame(frame, area, w, rows + 4, title);
+        let apply = if n_marked == 0 {
+            "choose this folder"
+        } else {
+            "read the marked"
+        };
+        // Three lines: getting about, marking, and finishing.
+        let mut mark = vec![("Space", "mark file / choose folder")];
+        if let Some((_, tab)) = self.track_mode() {
+            mark.push(("Tab", tab));
+        }
+        let help = [
+            help_line(&[
+                ("type", "find"),
+                ("↑/↓", "move"),
+                ("Enter/→", "open"),
+                ("←", "up"),
+            ]),
+            help_line(&mark),
+            help_line(&[(APPLY_KEYS, apply), ("Esc", "clear find / cancel")]),
+        ];
+        // Header, border and the error line, besides the list and the help.
+        let help_rows = help.len() as u16;
+        let rows = area.height.saturating_sub(7 + help_rows).clamp(3, 24);
+        let inner = popup_frame(frame, area, w, rows + 3 + help_rows, title);
         let mut lines = self.browser.lines(
             rows as usize,
             inner.width as usize,
@@ -183,23 +205,7 @@ impl Screen for InputPicker {
             Some(why) => Line::from(Span::styled(format!(" {why}"), HIGHLIGHT)),
             None => Line::from(""),
         });
-        let apply = if n_marked == 0 {
-            "choose this folder"
-        } else {
-            "read the marked"
-        };
-        let mut keys = vec![
-            ("type", "find"),
-            ("↑/↓", "move"),
-            ("Enter/→", "open"),
-            ("←", "up"),
-            ("Space", "mark file / choose folder"),
-        ];
-        if let Some((_, tab)) = self.track_mode() {
-            keys.push(("Tab", tab));
-        }
-        keys.extend([(APPLY_KEYS, apply), ("Esc", "clear find / cancel")]);
-        lines.push(help_line(&keys));
+        lines.extend(help);
         frame.render_widget(Paragraph::new(lines), inner);
     }
 }

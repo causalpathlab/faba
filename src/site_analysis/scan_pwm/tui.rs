@@ -1,4 +1,4 @@
-//! Full-screen sequence logo for `faba pwm --interactive`.
+//! Full-screen sequence logo for `faba pwm`.
 //!
 //! One stack of letters per position around the sites, tallest on top, in
 //! information content (bits) or frequency, in the usual logo colours; the

@@ -205,10 +205,17 @@ Example:\n  \
                       \n\
                       Reads site-level parquet files from dartseq, atoi or apa output,\n\
                       collects base frequencies in a +/- window around each site,\n\
-                      and outputs a position weight matrix as TSV.",
+                      and outputs a position weight matrix as TSV.\n\
+                      \n\
+                      Give it a faba output directory (or a run record in it) and it reads\n\
+                      that directory's site table of --modality against its recorded genome.\n\
+                      With no sites named, a browser asks for them. It then shows the PWM\n\
+                      as a sequence logo full screen, unless --batch-process.",
         after_long_help = "\
 	Example:\n\
-	faba pwm -s out/m6a_sites.parquet -f genome.fa -o pwm.tsv\n\
+	# an output directory's m6A sites against its recorded genome, then the logo\n\
+	faba pwm out/\n\
+	faba pwm -s out/m6a_sites.parquet -f genome.fa -o pwm.tsv --batch-process\n\
   faba pwm -s out/m6a_sites.parquet sample.bam --source reads -o pwm.tsv"
     )]
     Pwm(ScanPwmArgs),

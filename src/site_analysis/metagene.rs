@@ -4,6 +4,7 @@
 //! not procedure (Olarerin-George & Jaffrey, Bioinformatics 33:1563, 2017,
 //! <https://doi.org/10.1093/bioinformatics/btx002>).
 
+use super::output_dir;
 use super::site_io::*;
 use crate::site_analysis::show::Show;
 use clap::{Args, ValueEnum};
@@ -932,38 +933,9 @@ impl MetageneArgs {
     /// name an output directory (or a run record in it) holding one; with
     /// neither, those chosen in a browser. `None` when that is cancelled.
     fn site_files(&self) -> anyhow::Result<Option<Vec<Box<str>>>> {
-        let mut given: Vec<Box<str>> = self.sites.iter().chain(&self.input).cloned().collect();
-        if given.is_empty() {
-            let ask = crate::site_analysis::input_picker::ask_inputs(
-                "metagene",
-                self.batch_process,
-                "site tables",
-                |n| crate::qc::layout::site_table_modality(n).is_some(),
-                false,
-            );
-            let Some(chosen) = ask? else {
-                return Ok(None);
-            };
-            given = chosen.paths;
-        }
-        given
-            .iter()
-            .map(|g| self.site_file(g))
-            .collect::<anyhow::Result<_>>()
-            .map(Some)
-    }
-
-    /// `given`, or the site table of the output directory it names.
-    fn site_file(&self, given: &str) -> anyhow::Result<Box<str>> {
-        let Some(dir) = crate::run_record::output_dir_of(given) else {
-            return Ok(given.into());
-        };
-        let sites = crate::site_analysis::output_dir::output_sites(&dir, self.modality.as_deref())?;
-        let table = sites.site_table.ok_or_else(|| {
-            anyhow::anyhow!("{} has no {}_sites.parquet", dir.display(), sites.modality)
-        })?;
-        info!("{}: profiling {table}", dir.display());
-        Ok(table)
+        let given = self.sites.iter().chain(&self.input).cloned().collect();
+        let modality = self.modality.as_deref();
+        output_dir::site_tables("metagene", self.batch_process, given, modality)
     }
 }
 
@@ -971,26 +943,14 @@ pub fn run_metagene(args: &MetageneArgs) -> anyhow::Result<()> {
     let Some(site_files) = args.site_files()? else {
         return Ok(());
     };
+    let batch = crate::tui::batch(args.batch_process, "metagene");
     // In the view a spinner shows while the sites are placed.
     let what = format!("profiling {} site table(s)", site_files.len());
-    let histogram = crate::tui::busy(!args.batch_process, "metagene", &what, || {
-        profile(args, &site_files)
-    })?;
-    let site_file = site_files[0].as_ref();
-    let default = || {
-        let name = crate::qc::layout::file_name(site_file);
-        let stem = name.strip_suffix(".parquet").unwrap_or(&name);
-        let together = if site_files.len() > 1 {
-            "_combined"
-        } else {
-            ""
-        };
-        format!("{stem}{together}.metagene.tsv").into_boxed_str()
-    };
+    let histogram = crate::tui::busy(!batch, "metagene", &what, || profile(args, &site_files))?;
     let output = args
         .output
         .clone()
-        .or_else(|| args.batch_process.then(default));
+        .or_else(|| batch.then(|| output_dir::default_output(&site_files, ".metagene.tsv")));
     if let Some(output) = &output {
         histogram.to_tsv(output)?;
         info!("wrote metagene histogram to {output}");
@@ -999,13 +959,8 @@ pub fn run_metagene(args: &MetageneArgs) -> anyhow::Result<()> {
     if args.print_histogram {
         histogram.print(args.max_width as usize);
     }
-    if !args.batch_process {
-        let names: Vec<String> = site_files
-            .iter()
-            .map(|f| crate::qc::layout::file_name(f).to_string())
-            .collect();
-        let title = names.join(" + ");
-        crate::figure::term::when_terminal(|| tui::show_metagene(&title, &histogram))?;
+    if !batch {
+        tui::show_metagene(&output_dir::title(&site_files), &histogram)?;
     }
 
     Ok(())
