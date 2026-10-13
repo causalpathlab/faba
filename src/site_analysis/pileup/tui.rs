@@ -69,9 +69,9 @@ const LANE_GAP: f64 = 0.08;
 const MAX_LANES: usize = 4;
 
 /// Exon height and lane pitch of the gene models in figures.
-const GENE_BAND: f64 = 8.0;
+const GENE_BAND: f64 = 12.0;
 
-const GENE_LANE: f64 = 18.0;
+const GENE_LANE: f64 = 22.0;
 
 /// How the user left the browser.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -268,10 +268,15 @@ impl<'a> PileupView<'a> {
                 // (no keys) keeps its bounds.
                 if self.keys.is_some() {
                     let (lo, hi) = self.extent;
+                    // Not zoomed yet: the window follows to the whole gene.
+                    let whole = self.window == self.extent;
                     let here = drawn.iter().filter(|g| chr_eq(&g.chr, &self.chr));
                     self.extent = here
                         .filter(|g| g.hi > lo && g.lo <= hi)
                         .fold((lo, hi), |(a, b), g| (a.min(g.lo), b.max(g.hi - 1)));
+                    if whole {
+                        self.window = self.extent;
+                    }
                 }
                 let (lo, hi) = self.extent;
                 self.genes = drawn
@@ -572,7 +577,8 @@ impl<'a> PileupView<'a> {
     /// The visible window as a figure, one panel per track.
     fn figure(&self) -> String {
         let (lo, hi) = self.window;
-        let panel_h = 170.0;
+        // Turned position labels take room under the axis: the bars keep theirs.
+        let panel_h = 170.0 + figure::tick_room(&self.tick_list(), true);
         let rows = self.rows();
         let genes_h = 24.0 + GENE_LANE * self.lanes() as f64;
         let heights: Vec<f64> = rows
@@ -626,6 +632,7 @@ impl<'a> PileupView<'a> {
                 let shown = &bins.shown[i];
                 let marks = t.sites_in(lo, hi).into_iter();
                 Bars {
+                    rotated: true,
                     values: &shown.values,
                     front: shown.front.as_deref(),
                     accent: &|_| shown.accent,
@@ -646,6 +653,7 @@ impl<'a> PileupView<'a> {
                 let values = self.contrast_values(contrast, bins);
                 let measure = contrast.measure;
                 figure::Diverging {
+                    rotated: true,
                     values: &values,
                     ticks: self.tick_list(),
                     pointer,
@@ -673,6 +681,7 @@ impl<'a> PileupView<'a> {
                     }
                 };
                 figure::Mirror {
+                    rotated: true,
                     up: half(a),
                     down: half(b),
                     y_scale: self.y_scale,
@@ -1013,7 +1022,8 @@ impl PileupView<'_> {
                     continue;
                 }
                 for x in col(es)..=col(ee - 1).min(right - 1) {
-                    buf[(x, y)].set_symbol("━").set_style(PLAIN);
+                    // A full block: an exon reads thick against the intron line.
+                    buf[(x, y)].set_symbol("█").set_style(PLAIN);
                 }
             }
             // The symbol after the gene if it fits, else before it.
@@ -1097,7 +1107,8 @@ fn browser<'a>(view: View<'a>, tracks: Vec<Track<'a>>, status: Option<String>) -
         let loading = browser.pending_genes.is_some();
         loading.then(|| LOADING.to_string())
     });
-    browser.controls = Controls::new(&format!("pileup_{}", view.title)).detect();
+    // Text plots on screen; only the saved figure is drawn as a picture.
+    browser.controls = Controls::new(&format!("pileup_{}", view.title));
     browser
 }
 

@@ -10,6 +10,7 @@ fn panel() -> String {
     let front = [0.0, 1.0, 8.0, 4.0, 0.0];
     let mut c = Canvas::new(300.0, 160.0);
     Bars {
+        rotated: false,
         values: &values,
         front: Some(&front),
         accent: &|i| i < 2,
@@ -105,6 +106,7 @@ fn empty_shapes_are_not_written() {
     c.rect(1.0, 1.0, 10.0, f64::NAN, INK);
     let values = [Some(0.0), Some(1.5), None, Some(-0.5), Some(0.0)];
     Diverging {
+        rotated: false,
         values: &values,
         ticks: Vec::new(),
         pointer: None,

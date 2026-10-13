@@ -132,6 +132,17 @@ impl Canvas {
         );
     }
 
+    /// Text turned 90° counter-clockwise, reading bottom to top, anchored
+    /// at `(x, y)` as `anchor` says along its length.
+    pub fn rotated(&mut self, x: f64, y: f64, s: &str, size: f64, anchor: Anchor, fill: &str) {
+        let _ = writeln!(
+            self.body,
+            r#"<text transform="translate({x:.2} {y:.2}) rotate(-90)" font-family="{FONT}" font-size="{size}" text-anchor="{}" fill="{fill}">{}</text>"#,
+            anchor.svg(),
+            esc(s)
+        );
+    }
+
     pub fn bold(&mut self, x: f64, y: f64, s: &str, size: f64, anchor: Anchor, fill: &str) {
         let _ = writeln!(
             self.body,
@@ -281,11 +292,14 @@ pub struct Bars<'a> {
     pub title: String,
     pub x_title: String,
     pub y_title: String,
+    /// Tick labels turned 90° counter-clockwise, for long ones (positions).
+    pub rotated: bool,
 }
 
 impl Bars<'_> {
     pub fn draw(&self, c: &mut Canvas, x: f64, y: f64, w: f64, h: f64) {
-        let (left, right, top, bottom) = (52.0, 12.0, 20.0, 38.0);
+        let (left, right, top) = (52.0, 12.0, 20.0);
+        let bottom = 38.0 + tick_room(&self.ticks, self.rotated);
         let (px, py, pw, ph) = (x + left, y + top, w - left - right, h - top - bottom);
         c.bold(x + left, y + 13.0, &self.title, 11.0, Anchor::Start, INK);
         let n = self.values.len().max(1);
@@ -360,13 +374,8 @@ impl Bars<'_> {
             let dx = px + d as f64 * bw;
             c.dashed(dx, py, dx, py + ph + 4.0, MUTED, 0.8);
         }
-        for (i, label) in &self.ticks {
-            let tx = px + (*i as f64 + 0.5) * bw;
-            if self.dividers.is_empty() {
-                c.line(tx, py + ph, tx, py + ph + 4.0, INK, 0.6);
-            }
-            c.text(tx, py + ph + 13.0, label, 8.0, Anchor::Middle, INK);
-        }
+        let stub = self.dividers.is_empty();
+        x_ticks(c, &self.ticks, (px, bw, py + ph), stub, self.rotated);
         c.text(
             px + pw / 2.0,
             y + h - 6.0,
@@ -389,6 +398,8 @@ pub struct Diverging<'a> {
     pub y_title: String,
     /// Label for a value on the y axis.
     pub label: &'a dyn Fn(f64) -> String,
+    /// Tick labels turned, as [`Bars::rotated`].
+    pub rotated: bool,
 }
 
 impl Diverging<'_> {
@@ -406,8 +417,49 @@ impl Diverging<'_> {
             title: self.title.clone(),
             x_title: self.x_title.clone(),
             y_title: self.y_title.clone(),
+            rotated: self.rotated,
         }
         .draw(c, x, y, w, h);
+    }
+}
+
+/// Height of an 8-point character's advance, roughly, for laying out
+/// turned labels.
+const CHAR_W: f64 = 4.6;
+
+/// Room below the axis that turned tick labels take beyond flat ones.
+pub(crate) fn tick_room(ticks: &[(usize, String)], rotated: bool) -> f64 {
+    if !rotated {
+        return 0.0;
+    }
+    let longest = ticks
+        .iter()
+        .map(|(_, l)| l.chars().count())
+        .max()
+        .unwrap_or(0);
+    (longest as f64 * CHAR_W - 6.0).max(0.0)
+}
+
+/// The x ticks under the axis at `base`, bar `i` at `px + (i + ½)·bw`:
+/// a stub (with `stub`) and the label, flat and centred, or turned 90°
+/// counter-clockwise to end just under the stub.
+fn x_ticks(
+    c: &mut Canvas,
+    ticks: &[(usize, String)],
+    (px, bw, base): (f64, f64, f64),
+    stub: bool,
+    rotated: bool,
+) {
+    for (i, label) in ticks {
+        let tx = px + (*i as f64 + 0.5) * bw;
+        if stub {
+            c.line(tx, base, tx, base + 4.0, INK, 0.6);
+        }
+        if rotated {
+            c.rotated(tx + 3.0, base + 6.0, label, 8.0, Anchor::End, INK);
+        } else {
+            c.text(tx, base + 13.0, label, 8.0, Anchor::Middle, INK);
+        }
     }
 }
 
@@ -457,11 +509,14 @@ pub struct Mirror<'a> {
     pub title: String,
     pub x_title: String,
     pub y_title: String,
+    /// Tick labels turned, as [`Bars::rotated`].
+    pub rotated: bool,
 }
 
 impl Mirror<'_> {
     pub fn draw(&self, c: &mut Canvas, x: f64, y: f64, w: f64, h: f64) {
-        let (left, right, top, bottom) = (52.0, 12.0, 20.0, 38.0);
+        let (left, right, top) = (52.0, 12.0, 20.0);
+        let bottom = 38.0 + tick_room(&self.ticks, self.rotated);
         let (px, py, pw, ph) = (x + left, y + top, w - left - right, h - top - bottom);
         c.bold(x + left, y + 13.0, &self.title, 11.0, Anchor::Start, INK);
         let n = self.up.values.len().max(self.down.values.len()).max(1);
@@ -527,11 +582,7 @@ impl Mirror<'_> {
         c.line(px, zero, px + pw, zero, INK, 0.6);
         c.line(px, py, px, py + ph, INK, 0.6);
         let base = py + ph;
-        for (i, label) in &self.ticks {
-            let tx = px + (*i as f64 + 0.5) * bw;
-            c.line(tx, base, tx, base + 4.0, INK, 0.6);
-            c.text(tx, base + 13.0, label, 8.0, Anchor::Middle, INK);
-        }
+        x_ticks(c, &self.ticks, (px, bw, base), true, self.rotated);
         c.text(
             px + pw / 2.0,
             y + h - 6.0,

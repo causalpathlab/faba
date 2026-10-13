@@ -358,7 +358,7 @@ fn genes_row_stacks_overlapping_genes() {
     let text = screen(&mut v, 110, 34);
     assert!(text.contains("GENE1") && text.contains("GENE2"), "{text}");
     assert!(
-        text.contains('━') && text.contains('›') && text.contains('‹'),
+        text.contains('█') && text.contains('›') && text.contains('‹'),
         "{text}"
     );
     let svg = v.figure();
@@ -445,6 +445,10 @@ fn the_genes_model_widens_the_view_to_its_tss_and_tes() {
     ]));
     v.tick();
     assert_eq!(v.extent, (950_000, 1_149_999), "GENE1 only, TSS to TES");
+    assert_eq!(
+        v.window, v.extent,
+        "not zoomed yet: it opens on the whole gene"
+    );
     press(&mut v, KeyCode::Char('0'));
     assert_eq!(v.window, v.extent, "zooming all the way out shows it");
 }
@@ -577,4 +581,27 @@ fn how_bars_draw_carries_to_the_next_gene() {
     assert_eq!(next.bins().shared, v.y_lock);
     press(&mut next, KeyCode::Char('Y'));
     assert!(next.y_lock.is_none(), "Y again unlocks");
+}
+
+#[test]
+fn the_browser_draws_text_and_saves_turned_position_labels() {
+    let (m, s) = (positions(), sites());
+    let view = View {
+        title: "GENE1",
+        chr: "chr1",
+        extent: EXTENT,
+        on: "methylated",
+        off: "unmethylated",
+        keys: None,
+        genes: None,
+        cursor: None,
+        switchable: false,
+    };
+    let tracks = vec![Track::single("matrix", "sum", &m, false)];
+    let mut b = browser(view, tracks, None);
+    assert!(b.controls.images().is_none(), "no image mode in pileup");
+    let text = screen(&mut b, 100, 24);
+    assert!(!text.contains("image/text"), "{text}");
+    let _ = s;
+    assert!(b.figure().contains("rotate(-90)"), "position labels turned");
 }

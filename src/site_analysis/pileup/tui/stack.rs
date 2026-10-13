@@ -279,7 +279,8 @@ pub fn show_stack(views: Vec<(View, Vec<Track>)>, settings: &mut Settings) -> an
         .collect();
     anyhow::ensure!(!views.is_empty(), "no gene to show");
     let mut stack = StackView::new(views);
-    stack.controls = Controls::new(&save_name(&stack.views)).detect();
+    // Text plots on screen, as one gene's browser; the saved figure is a picture.
+    stack.controls = Controls::new(&save_name(&stack.views));
     if let Some(on) = settings.images {
         stack.controls.set_images(on);
     }

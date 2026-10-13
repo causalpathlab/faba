@@ -660,8 +660,9 @@ the terminal draws images; the list is kept in `.faba-view/` there, so it lasts 
 Saves are PDF only. A name already taken is never overwritten: the prompt offers the next free
 one (`name_2`, …).
 
-In the `pileup` browser, how the bars are drawn (the y scale, what `c` counts, mirrored or split,
-the contrast measure, images or text) carries from one gene to the next. `Y` locks the y-axis
+In the `pileup` browser, plots are always drawn as text, and only a saved figure is a picture: a
+PDF, its position labels turned to read bottom to top. How the bars are drawn (the y scale, what `c`
+counts, mirrored or split, the contrast measure) carries from one gene to the next. `Y` locks the y-axis
 maximum for every gene opened after, so they compare; a gene taller than the lock still shows its
 bars whole, its axis raised to fit. In the gene list, Space marks genes and Ctrl+R opens the marked
 ones stacked top to bottom, each with its tracks: Tab (or a click on a gene) moves the keys from

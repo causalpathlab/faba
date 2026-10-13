@@ -273,6 +273,7 @@ impl<'a> MetageneView<'a> {
             .filter(|&i| i > 0)
             .collect();
         Bars {
+            rotated: false,
             values: &values,
             front: front.as_deref(),
             accent: &|_| false,
