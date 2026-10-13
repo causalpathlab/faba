@@ -182,3 +182,18 @@ fn enter_stays_and_esc_leaves() {
     press(&mut v, KeyCode::Esc);
     assert!(v.done());
 }
+
+#[test]
+fn a_saved_logo_keeps_the_views_shape() {
+    let mut v = PwmView::new("x", &pwm(), 2);
+    let size = |svg: &str| {
+        let get = |k: &str| -> f64 {
+            let at = svg.find(&format!(" {k}=\"")).unwrap() + k.len() + 3;
+            svg[at..].split('"').next().unwrap().parse().unwrap()
+        };
+        (get("width"), get("height"))
+    };
+    screen(&mut v, 120, 30);
+    let (cw, ch) = crate::figure::CELL;
+    assert_eq!(size(&v.figure()), (120.0 * cw, 30.0 * ch));
+}
