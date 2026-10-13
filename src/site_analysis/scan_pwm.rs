@@ -116,49 +116,66 @@ fn complement_base_count(count: &DnaBaseCount) -> DnaBaseCount {
     out
 }
 
-/// Collect PWM from reference FASTA sequence around each site.
+/// Collect PWM from reference FASTA sequence around each site, in chunks
+/// of sites across threads, each with its own FASTA reader (one cannot be
+/// shared; opening one reads only the index).
 fn collect_from_reference(
     sites: &[GenomicSite],
     genome_file: &str,
     window: i64,
 ) -> anyhow::Result<Vec<DnaBaseCount>> {
     let width = (2 * window + 1) as usize;
-    let mut pwm: Vec<DnaBaseCount> = (0..width).map(|_| DnaBaseCount::new()).collect();
+    let empty = || (0..width).map(|_| DnaBaseCount::new()).collect::<Vec<_>>();
+    // Fail on an unreadable genome before splitting up the work.
+    util_htslib::load_fasta_index(genome_file)?;
+    let chunk = sites
+        .len()
+        .div_ceil(rayon::current_num_threads() * 4)
+        .max(1);
 
-    let faidx = util_htslib::load_fasta_index(genome_file)?;
-
-    for site in sites {
-        let start = site.position - window;
-        let end = site.position + window; // inclusive
-        let seq = util_htslib::fetch_reference_seq(&faidx, &site.chr, start, end)?;
-
-        if let Some(bases) = seq {
-            if bases.len() != width {
-                continue; // skip sites near chromosome boundaries
-            }
-            match site.strand {
-                Strand::Forward => {
-                    for (j, base) in bases.iter().enumerate() {
-                        pwm[j].add(Some(base), 1);
+    sites
+        .par_chunks(chunk)
+        .map(|chunk| -> anyhow::Result<Vec<DnaBaseCount>> {
+            let faidx = util_htslib::load_fasta_index(genome_file)?;
+            let mut pwm = empty();
+            for site in chunk {
+                let start = site.position - window;
+                let end = site.position + window; // inclusive
+                let Some(bases) = util_htslib::fetch_reference_seq(&faidx, &site.chr, start, end)?
+                else {
+                    continue;
+                };
+                if bases.len() != width {
+                    continue; // skip sites near chromosome boundaries
+                }
+                match site.strand {
+                    Strand::Forward => {
+                        for (j, base) in bases.iter().enumerate() {
+                            pwm[j].add(Some(base), 1);
+                        }
+                    }
+                    Strand::Backward => {
+                        // Reverse complement: reverse order and complement each base
+                        for (j, base) in bases.iter().rev().enumerate() {
+                            let comp = match base {
+                                Dna::A => Dna::T,
+                                Dna::T => Dna::A,
+                                Dna::G => Dna::C,
+                                Dna::C => Dna::G,
+                            };
+                            pwm[j].add(Some(&comp), 1);
+                        }
                     }
                 }
-                Strand::Backward => {
-                    // Reverse complement: reverse order and complement each base
-                    for (j, base) in bases.iter().rev().enumerate() {
-                        let comp = match base {
-                            Dna::A => Dna::T,
-                            Dna::T => Dna::A,
-                            Dna::G => Dna::C,
-                            Dna::C => Dna::G,
-                        };
-                        pwm[j].add(Some(&comp), 1);
-                    }
-                }
             }
-        }
-    }
-
-    Ok(pwm)
+            Ok(pwm)
+        })
+        .try_reduce(empty, |mut acc, local| {
+            for (a, b) in acc.iter_mut().zip(local.iter()) {
+                *a += b;
+            }
+            Ok(acc)
+        })
 }
 
 /// Collect PWM from BAM read base frequencies around each site.
