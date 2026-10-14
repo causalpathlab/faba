@@ -6,9 +6,26 @@
 RNA modifications (DART-seq m6A, A-to-I editing), alternative polyadenylation
 (APA), gene counts, read depth, and SNP genotypes.
 
-Its product is the matrices; nothing here fits a model. The embedding,
-trajectory and annotation commands that read them live in
-[`senna`](https://github.com/causalpathlab/legume-rs) (legume-rs).
+## A quick look
+
+Run in a terminal, `run`, `qc`, `pileup`, `metagene` and `pwm` open full-screen views;
+`--batch-process` skips them for scripts and clusters.
+
+**`faba run`**: pick the BAMs (signal and control), steps and flags, preview the command, and run it.
+
+![faba run](docs/screenshots/run.png)
+
+**`faba qc`**: set site thresholds, see what each one keeps, and write a filtered copy.
+
+![faba qc](docs/screenshots/qc.png)
+
+**`faba pileup`**: browse a gene's modification sites, one track per batch.
+
+![faba pileup](docs/screenshots/pileup.png)
+
+**`faba pwm`**: the sequence logo around the called sites.
+
+![faba pwm](docs/screenshots/pwm.png)
 
 ## Installation
 
@@ -74,7 +91,7 @@ cargo install --path .
 | `hdf5`  | HDF5 backend + `.h5`/`.h5ad` readers | `libhdf5` on the build host |
 
 There is no `cuda` / `metal` feature: nothing on the BAM-to-matrix path touches a
-GPU. `senna` (in legume-rs) carries those for the code that does.
+GPU.
 
 Add them with `--features`:
 
@@ -147,10 +164,6 @@ faba <COMMAND> [OPTIONS]
 
 Run `faba <COMMAND> --help` for the detailed options of each subcommand.
 
-Embedding (`gem`), annotation (`annotate-by-projection`), trajectory
-(`lineage`, `lineage-plot`) and modality dynamics (`dyn-assoc`) are `senna`
-subcommands — they read the matrices above by prefix.
-
 ## Methods
 
 The method write-ups are **compiled into the binary** — `include_str!`, not files read at
@@ -161,8 +174,6 @@ checkout beside it, and the build fails if one of them goes missing.
 faba docs                # list what there is
 faba docs profiling      # BAM -> per-cell features: m6A, A-to-I, APA, counts, SNPs
 ```
-
-The annotation and lineage write-ups moved with their subcommands: `senna docs`.
 
 The same files live in [`docs/`](docs/), which also carries the design notes for work that is
 planned but **not implemented** (kept separate on purpose — reading a plan as though it described
