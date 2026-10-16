@@ -28,6 +28,11 @@ pub struct Posterior {
     pub rhat_log_posterior: f64,
     pub chains: usize,
     pub draws: usize,
+    /// Each chain's mean log posterior: one far below the others sits in a
+    /// worse mode.
+    pub chain_log_posterior: Vec<f64>,
+    /// Adjusted Rand index between each pair of chains' last draws (1: the same partition).
+    pub chain_agreement: Vec<f64>,
     pub accepted_splits: usize,
     pub accepted_merges: usize,
 }
@@ -90,8 +95,44 @@ pub fn posterior(chains: &[Chain], min_cells: usize) -> Posterior {
         rhat_log_posterior: split_rhat_chains(&series(&|s| s.log_post)) as f64,
         chains: chains.len(),
         draws: draws.len(),
+        chain_log_posterior: chains
+            .iter()
+            .map(|c| {
+                c.samples.iter().map(|s| s.log_post).sum::<f64>() / c.samples.len().max(1) as f64
+            })
+            .collect(),
+        chain_agreement: {
+            let last: Vec<&Sample> = chains.iter().filter_map(|c| c.samples.last()).collect();
+            let mut v = Vec::new();
+            for a in 0..last.len() {
+                for b in a + 1..last.len() {
+                    v.push(ari(last[a], last[b]));
+                }
+            }
+            v
+        },
         accepted_splits: chains.iter().map(|c| c.splits).sum(),
         accepted_merges: chains.iter().map(|c| c.merges).sum(),
+    }
+}
+
+/// Adjusted Rand index of two draws' partitions.
+pub fn ari(x: &Sample, y: &Sample) -> f64 {
+    let n = contingency(&x.z, x.k, &y.z, y.k);
+    let c2 = |v: f64| v * (v - 1.0) / 2.0;
+    let index: f64 = n.iter().map(|&v| c2(v as f64)).sum();
+    let rows: f64 = (0..x.k)
+        .map(|a| c2(n[a * y.k..(a + 1) * y.k].iter().sum::<u32>() as f64))
+        .sum();
+    let cols: f64 = (0..y.k)
+        .map(|b| c2((0..x.k).map(|a| n[a * y.k + b]).sum::<u32>() as f64))
+        .sum();
+    let expected = rows * cols / c2(x.z.len() as f64);
+    let max = (rows + cols) / 2.0;
+    if max == expected {
+        1.0
+    } else {
+        (index - expected) / (max - expected)
     }
 }
 

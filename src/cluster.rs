@@ -12,6 +12,7 @@ use log::{info, warn};
 use std::path::{Path, PathBuf};
 
 mod crp;
+mod embed;
 mod fit;
 mod read;
 mod summary;
@@ -138,9 +139,16 @@ pub struct ClusterArgs {
     #[arg(
         long,
         default_value_t = 20,
-        help = "Chains start from a random partition of up to this many clusters"
+        help = "Chains start from k-means into a number of clusters drawn from 1 up to this"
     )]
     start_clusters: usize,
+
+    #[arg(
+        long,
+        default_value_t = 15,
+        help = "Nearest cells offered as a split-merge anchor's partner (0: random anchors only)"
+    )]
+    anchor_neighbours: usize,
 
     #[arg(
         long,
@@ -275,6 +283,7 @@ fn cluster(args: &ClusterArgs, dir: &Path, record: &mut RunRecord) -> anyhow::Re
         split_merge: args.split_merge,
         restricted: args.restricted_scans,
         start_clusters: args.start_clusters,
+        neighbours: args.anchor_neighbours,
         gibbs: true,
         fixed_alpha: None,
     };

@@ -12,6 +12,7 @@ fn settings(gibbs: bool, split_merge: usize, fixed_alpha: Option<f64>) -> Settin
         split_merge,
         restricted: 2,
         start_clusters: 3,
+        neighbours: 2,
         gibbs,
         fixed_alpha,
     }
@@ -198,14 +199,16 @@ fn recovers_planted_clusters() {
     let reads = Reads::from_cells(per_cell);
     let model = Model::new(&reads, sites, settings(true, 5, None), None);
     let config = McmcConfig {
-        n_samples: 30,
-        warmup: 30,
+        n_samples: 60,
+        warmup: 60,
         thin: 1,
         seed: 11,
     };
     let chains: Vec<Chain> = run_mcmc_parallel(&model, &config, 2);
-    let (part, _) = super::fit::settle(&reads, &summary::partition(&chains), 10, sites, 2.0);
-    let post = summary::posterior(&chains, 10);
+    // A side group of ten-odd cells is all but tied with folding it back
+    // (the posterior barely tells them apart), so count clusters of 20 up.
+    let (part, _) = super::fit::settle(&reads, &summary::partition(&chains), 20, sites, 2.0);
+    let post = summary::posterior(&chains, 20);
     let mode = post.k.iter().max_by(|a, b| a.1.total_cmp(&b.1)).unwrap().0;
     assert_eq!(mode, k, "K posterior {:?}", post.k);
     assert_eq!(part.k, k);
@@ -412,4 +415,19 @@ fn assignment_reads_pattern_not_level() {
     // Cluster 0's pattern (high, high, low, low), shifted down to 0.4/0.4/0.05/0.05.
     let probe = tiles.assign(&[0, 1, 2, 3], &[8, 8, 1, 1], &[12, 12, 19, 19], &[20, 20]);
     assert!(probe[0] > 0.9, "{probe:?}");
+}
+
+#[test]
+fn ari_is_one_for_relabelled_partitions_and_near_zero_for_unrelated() {
+    let draw = |z: Vec<u16>| Sample {
+        k: *z.iter().max().unwrap() as usize + 1,
+        z,
+        alpha: 1.0,
+        log_post: 0.0,
+    };
+    let a = draw(vec![0, 0, 1, 1, 2, 2]);
+    let b = draw(vec![1, 1, 2, 2, 0, 0]);
+    assert!((summary::ari(&a, &b) - 1.0).abs() < 1e-12);
+    let c = draw(vec![0, 1, 2, 0, 1, 2]);
+    assert!(summary::ari(&a, &c) < 0.1);
 }

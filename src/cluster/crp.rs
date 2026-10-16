@@ -15,6 +15,16 @@
 //! (Jain & Neal 2004), and the concentration `alpha` resampled (Escobar &
 //! West 1995) under a Gamma(1, 1) prior.
 //!
+//! Split-merge anchors: the first cell at random, the second half the time
+//! at random and half the time among the first's nearest cells in a fixed
+//! picture of the data. The choice depends on the data alone, never on the
+//! partition, so its probability is the same for a move and its reverse and
+//! cancels. The launch state is allocated one cell at a time by predictive
+//! (Dahl's sequential allocation), then refined by restricted Gibbs scans;
+//! it too depends on nothing in the current split. Chains start from k-means
+//! of that picture with a number of clusters drawn per chain, so chains
+//! begin over- and under-clustered alike.
+//!
 //! Reads can come reweighted by a logit shift `delta` per entry (a batch's
 //! offset at the site): converted reads by `exp(-delta/2)`, unconverted by
 //! `exp(delta/2)`, which cancels the shift in the odds of any sum of them.
@@ -66,6 +76,9 @@ pub struct Settings {
     pub restricted: usize,
     /// Most clusters a chain starts with (drawn from 1 up to this).
     pub start_clusters: usize,
+    /// Nearest cells offered as a split-merge anchor's partner (0: anchors
+    /// at random only).
+    pub neighbours: usize,
     /// Single-cell Gibbs passes each sweep (off only to test split-merge alone).
     pub gibbs: bool,
     /// Hold `alpha` here instead of resampling it.
@@ -131,6 +144,10 @@ pub struct Model<'a> {
     b: Vec<f64>,
     /// Each cell's predictive under the prior alone (a new cluster).
     lp_new: Vec<f64>,
+    /// Each cell's nearest cells, for split-merge anchors.
+    near: Vec<Vec<u32>>,
+    /// The picture of the cells chains start from.
+    picture: legume_numeric::matrix::dmatrix_io::DMatrix<f32>,
     settings: Settings,
 }
 
@@ -169,10 +186,18 @@ impl<'a> Model<'a> {
                 .sum()
             })
             .collect();
+        let picture = super::embed::embed(&reads.ptr, &reads.site, &on, &off, &p0);
+        let near = if settings.neighbours > 0 && reads.cells() > 1 {
+            super::embed::neighbours(&picture, settings.neighbours.min(reads.cells() - 1))
+        } else {
+            vec![Vec::new(); reads.cells()]
+        };
         Self {
             reads,
             on,
             off,
+            near,
+            picture,
             a,
             b,
             lp_new,
@@ -340,10 +365,13 @@ impl<'a> Model<'a> {
             return None;
         }
         let i = rng.random_range(0..n);
-        let mut j = rng.random_range(0..n - 1);
-        if j >= i {
-            j += 1;
-        }
+        let near = &self.near[i];
+        let j = if !near.is_empty() && rng.random::<f64>() < 0.5 {
+            near[rng.random_range(0..near.len())] as usize
+        } else {
+            let j = rng.random_range(0..n - 1);
+            j + usize::from(j >= i)
+        };
         let (ki, kj) = (st.z[i], st.z[j]);
         let mut rest: Vec<usize> = (0..n)
             .filter(|&c| c != i && c != j && (st.z[c] == ki || st.z[c] == kj))
@@ -352,9 +380,14 @@ impl<'a> Model<'a> {
         let mut sc = std::mem::replace(&mut st.scratch, Scratch::empty());
         self.put(&mut sc, i, 0, 1.0);
         self.put(&mut sc, j, 1, 1.0);
-        let mut side: Vec<usize> = rest.iter().map(|_| rng.random_range(0..2)).collect();
-        for (t, &c) in rest.iter().enumerate() {
-            self.put(&mut sc, c, side[t], 1.0);
+        // Launch: each cell in turn to the side that predicts it, as drawn.
+        let mut side: Vec<usize> = Vec::with_capacity(rest.len());
+        for &c in &rest {
+            let l0 = (sc.n[0] as f64).ln() + self.pred(c, &sc.on[0], &sc.off[0]);
+            let l1 = (sc.n[1] as f64).ln() + self.pred(c, &sc.on[1], &sc.off[1]);
+            let s1 = usize::from(rng.random::<f64>() * (1.0 + (l1 - l0).exp()) >= 1.0);
+            self.put(&mut sc, c, s1, 1.0);
+            side.push(s1);
         }
         for _ in 0..self.settings.restricted {
             self.scan(&mut sc, &rest, &mut side, None, rng);
@@ -510,10 +543,15 @@ impl McmcModel for Model<'_> {
     type Result = Chain;
 
     fn init(&self, rng: &mut SmallRng) -> State {
-        let k0 = rng.random_range(1..=self.settings.start_clusters.max(1));
-        let z: Vec<u32> = (0..self.cells())
-            .map(|_| rng.random_range(0..k0) as u32)
-            .collect();
+        let k0 = rng
+            .random_range(1..=self.settings.start_clusters.max(1))
+            .min(self.cells().max(1));
+        let z: Vec<u32> = if k0 > 1 {
+            super::embed::kmeans(&self.picture, k0, rng.random())
+        } else {
+            vec![0; self.cells()]
+        };
+        let k0 = z.iter().max().map_or(1, |&k| k as usize + 1);
         let mut clusters: Vec<Option<Cluster>> =
             (0..k0).map(|_| Some(self.empty_cluster())).collect();
         for (c, &k) in z.iter().enumerate() {
