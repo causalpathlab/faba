@@ -1,14 +1,17 @@
 //! Given the chosen partition: each cluster's reads per site, cells outside
 //! the fit assigned to a cluster, and every cell's level offset.
 
-use super::read::Reads;
+use super::crp::pooled_fraction;
+use super::read::{Reads, Weighted};
 use super::summary::Partition;
 
 /// Pseudo-reads pulling a batch's fraction at a site toward the site's pooled
 /// one, so a thinly read site is barely reweighted.
 const SHRINK: f64 = 20.0;
 
-/// Largest importance weight a read gets (truncated importance sampling).
+/// Largest density ratio a read's weight starts from (truncated importance
+/// sampling); self-normalising then scales it, so a final weight can exceed
+/// it (the largest is recorded).
 const MAX_WEIGHT: f64 = 10.0;
 
 /// Importance weights that take the batches out of the reads.
@@ -17,7 +20,7 @@ const MAX_WEIGHT: f64 = 10.0;
 /// the site's pooled fraction `p_s`; batch `b` delivers `p_sb` instead (its
 /// own fraction there, shrunk toward `p_s`). Each read is weighted by the
 /// ratio of the two, `p_s / p_sb` if converted and `(1 - p_s) / (1 - p_sb)`
-/// if not, so a batch's weighted fraction at a site is the target's. Weights
+/// if not, so a batch's weighted fraction at a site is the target's. Ratios
 /// are capped at [`MAX_WEIGHT`], then scaled per batch and site so its
 /// weighted reads add up to its raw reads (self-normalised): every batch
 /// brings the evidence it has, no more and no less.
@@ -27,8 +30,9 @@ pub struct BatchWeights {
     pub off: Vec<f64>,
     /// Per batch, Kish's effective share of its reads, `(sum w)^2 / (n sum w^2)`.
     pub effective_share: Vec<f64>,
-    /// Share of reads whose weight was capped.
+    /// Share of reads whose ratio was capped, and the largest final weight.
     pub capped_share: f64,
+    pub max_weight: f64,
 }
 
 /// [`BatchWeights`] for `reads`, `batch_of[c]` being cell `c`'s batch in `0..batches`.
@@ -52,8 +56,7 @@ pub fn batch_weights(
     let (mut capped, mut reads_n) = (0.0f64, 0.0f64);
     for s in 0..sites {
         let r = s * batches..(s + 1) * batches;
-        let p =
-            (on[r.clone()].iter().sum::<f64>() + 0.5) / (tot[r.clone()].iter().sum::<f64>() + 1.0);
+        let p = pooled_fraction(on[r.clone()].iter().sum(), tot[r.clone()].iter().sum());
         for at in r {
             if tot[at] == 0.0 {
                 continue;
@@ -75,6 +78,7 @@ pub fn batch_weights(
         off: Vec::with_capacity(reads.site.len()),
         effective_share: vec![0.0; batches],
         capped_share: capped / reads_n.max(1.0),
+        max_weight: 0.0,
     };
     let (mut sw, mut sw2, mut n) = (
         vec![0.0f64; batches],
@@ -90,6 +94,12 @@ pub fn batch_weights(
             out.on.push(wo);
             out.off.push(wf);
             let (m, u) = (m[i] as f64, u[i] as f64);
+            if m > 0.0 {
+                out.max_weight = out.max_weight.max(wo);
+            }
+            if u > 0.0 {
+                out.max_weight = out.max_weight.max(wf);
+            }
             sw[b] += wo * m + wf * u;
             sw2[b] += wo * wo * m + wf * wf * u;
             n[b] += m + u;
@@ -108,84 +118,115 @@ pub fn batch_weights(
 }
 
 /// The fit's final clusters: those of at least `min_cells` cells of the
-/// chosen partition, numbered 0.. by size; cells of smaller ones go to their
-/// most probable such cluster, its probability their confidence.
+/// chosen partition, cells of smaller ones moved to their most probable such
+/// cluster (its probability their confidence), then numbered 0.. by size,
+/// largest first. `raw` and `weighted` are the fitted cells' reads, as read
+/// and as the fit saw them.
 pub fn settle(
-    reads: &Reads,
+    raw: &Reads,
+    weighted: &Weighted,
     part: &Partition,
     min_cells: usize,
     sites: usize,
     strength: f64,
 ) -> (Partition, Tiles) {
-    let mut sizes = vec![0usize; part.k];
-    part.z.iter().for_each(|&k| sizes[k as usize] += 1);
+    let sizes = super::summary::sizes(&part.z, part.k);
     // `part` is numbered by size, so the substantial clusters come first.
     let k = sizes.iter().filter(|&&n| n >= min_cells).count().max(1);
-    let kept: Vec<u16> = part.z.iter().map(|&z| z.min(k as u16 - 1)).collect();
-    let main: Vec<usize> = (0..part.z.len())
-        .filter(|&c| (part.z[c] as usize) < k)
+    let mut z: Vec<u16> = part
+        .z
+        .iter()
+        .map(|&z| if (z as usize) < k { z } else { OUTSIDE })
         .collect();
-    let main_reads = Reads::from_cells(
-        main.iter()
-            .map(|&c| {
-                let (s, m, u) = reads.of(c);
-                (0..s.len()).map(|i| (s[i], m[i], u[i])).collect()
-            })
-            .collect(),
-    );
-    let main_z: Vec<u16> = main.iter().map(|&c| part.z[c]).collect();
-    let tiles = Tiles::new(&main_reads, &main_z, k, sites, strength);
-    let (mut z, mut confidence) = (kept, part.confidence.clone());
-    for c in (0..part.z.len()).filter(|&c| part.z[c] as usize >= k) {
-        let (s, m, u) = reads.of(c);
-        let p = tiles.assign(s, m, u, &sizes[..k]);
-        let (best, prob) = p
-            .iter()
-            .enumerate()
-            .max_by(|a, b| a.1.total_cmp(b.1))
-            .map(|(j, &v)| (j as u16, v))
-            .unwrap();
-        z[c] = best;
-        confidence[c] = prob;
+    let mut confidence = part.confidence.clone();
+    if z.contains(&OUTSIDE) {
+        let tiles = Tiles::new(raw, weighted, &z, k, sites, strength);
+        for c in 0..z.len() {
+            if z[c] == OUTSIDE {
+                let (s, m, u) = weighted.of(c);
+                let p = tiles.place(s, m, u, &sizes[..k]);
+                z[c] = p.cluster;
+                confidence[c] = p.probability;
+            }
+        }
+        // Folding the small clusters in can reorder the sizes: renumber.
+        super::summary::renumber_by_size(&mut z, k);
     }
-    let tiles = Tiles::new(reads, &z, k, sites, strength);
+    let tiles = Tiles::new(raw, weighted, &z, k, sites, strength);
     (Partition { z, k, confidence }, tiles)
 }
 
+/// A cell left out of [`Tiles::new`].
+pub const OUTSIDE: u16 = u16::MAX;
+
 /// Fitted cells' reads per site and cluster (sites x clusters, small: a
-/// pair of counts per site for each cluster).
+/// pair of counts per site for each cluster): raw, for the table, and
+/// weighted, for the posterior.
 pub struct Tiles {
     pub k: usize,
     on: Vec<u32>,
     off: Vec<u32>,
-    /// The prior `Beta(a_s, b_s)` of every site's fraction.
-    a: Vec<f64>,
-    b: Vec<f64>,
+    /// Posterior mean and standard deviation of each site's fraction per
+    /// cluster, and the mean's logit.
+    mean: Vec<f64>,
+    sd: Vec<f64>,
+    logit: Vec<f64>,
+}
+
+/// Where a cell goes: its most probable cluster, that probability, and the
+/// cell's level offset there.
+pub struct Placement {
+    pub cluster: u16,
+    pub probability: f64,
+    pub offset: f64,
 }
 
 impl Tiles {
-    /// `z[c]` is fitted cell `c`'s cluster in `0..k`.
-    pub fn new(reads: &Reads, z: &[u16], k: usize, sites: usize, strength: f64) -> Self {
+    /// `z[c]` is fitted cell `c`'s cluster in `0..k`, or [`OUTSIDE`].
+    pub fn new(
+        raw: &Reads,
+        weighted: &Weighted,
+        z: &[u16],
+        k: usize,
+        sites: usize,
+        strength: f64,
+    ) -> Self {
         let (mut on, mut off) = (vec![0u32; sites * k], vec![0u32; sites * k]);
-        for (c, &zc) in z.iter().enumerate() {
-            let (s, m, u) = reads.of(c);
+        let (mut won, mut woff) = (vec![0f64; sites * k], vec![0f64; sites * k]);
+        for (c, &zc) in z.iter().enumerate().filter(|(_, &zc)| zc != OUTSIDE) {
+            let (s, m, u) = raw.of(c);
+            let (_, wm, wu) = weighted.of(c);
             for i in 0..s.len() {
                 let at = s[i] as usize * k + zc as usize;
                 on[at] += m[i];
                 off[at] += u[i];
+                won[at] += wm[i];
+                woff[at] += wu[i];
             }
         }
-        let (a, b) = (0..sites)
-            .map(|s| {
-                let (m, n): (u64, u64) = (0..k).fold((0, 0), |(m, n), j| {
-                    let at = s * k + j;
-                    (m + on[at] as u64, n + (on[at] + off[at]) as u64)
-                });
-                let p0 = (m as f64 + 0.5) / (n as f64 + 1.0);
-                (strength * p0, strength * (1.0 - p0))
-            })
-            .unzip();
-        Tiles { k, on, off, a, b }
+        let (mut mean, mut sd, mut logit) = (Vec::new(), Vec::new(), Vec::new());
+        for s in 0..sites {
+            let r = s * k..(s + 1) * k;
+            let m: f64 = won[r.clone()].iter().sum();
+            let n: f64 = m + woff[r.clone()].iter().sum::<f64>();
+            let p0 = pooled_fraction(m, n);
+            for at in r {
+                let x = strength * p0 + won[at];
+                let y = strength * (1.0 - p0) + woff[at];
+                let t = x + y;
+                mean.push(x / t);
+                sd.push((x * y / (t * t * (t + 1.0))).sqrt());
+                logit.push((x / y).ln());
+            }
+        }
+        Tiles {
+            k,
+            on,
+            off,
+            mean,
+            sd,
+            logit,
+        }
     }
 
     pub fn on(&self, s: usize, k: usize) -> u32 {
@@ -196,57 +237,63 @@ impl Tiles {
         self.on[s * self.k + k] + self.off[s * self.k + k]
     }
 
-    /// Posterior mean and standard deviation of site `s`'s fraction in cluster `k`.
+    /// Posterior mean and standard deviation of site `s`'s fraction in
+    /// cluster `k`, from the weighted reads.
     pub fn posterior(&self, s: usize, k: usize) -> (f64, f64) {
-        let x = self.a[s] + self.on(s, k) as f64;
-        let y = self.b[s] + (self.total(s, k) - self.on(s, k)) as f64;
-        let n = x + y;
-        (x / n, (x * y / (n * n * (n + 1.0))).sqrt())
+        (self.mean[s * self.k + k], self.sd[s * self.k + k])
     }
 
-    /// A cell's cluster probabilities, each cluster scored at the cell's own
-    /// level offset there (so a cell is placed by its pattern, not its
-    /// overall level), clusters weighted by their sizes.
-    pub fn assign(&self, sites: &[u32], on: &[u32], off: &[u32], sizes: &[usize]) -> Vec<f64> {
+    /// Where a cell goes: each cluster scored at the cell's own level offset
+    /// there (so a cell is placed by its pattern, not its overall level),
+    /// clusters weighted by their sizes.
+    pub fn place<T: Copy + Into<f64>>(
+        &self,
+        sites: &[u32],
+        on: &[T],
+        off: &[T],
+        sizes: &[usize],
+    ) -> Placement {
         let total: usize = sizes.iter().sum();
-        let ll: Vec<f64> = (0..self.k)
+        let scored: Vec<(f64, f64)> = (0..self.k)
             .map(|k| {
                 let b = self.offset(sites, on, off, k);
                 let fit: f64 = (0..sites.len())
                     .map(|i| {
-                        let p = self.posterior(sites[i] as usize, k).0;
-                        let eta = (p / (1.0 - p)).ln() + b;
+                        let eta = self.logit[sites[i] as usize * self.k + k] + b;
                         // ln sigmoid(eta) and ln sigmoid(-eta), stably.
-                        let (lp, lq) = (-(-eta).exp().ln_1p(), -eta.exp().ln_1p());
-                        on[i] as f64 * lp + off[i] as f64 * lq
+                        on[i].into() * -(-eta).exp().ln_1p() + off[i].into() * -eta.exp().ln_1p()
                     })
                     .sum();
-                fit - b * b / 2.0 + (sizes[k].max(1) as f64 / total.max(1) as f64).ln()
+                let prior = (sizes[k].max(1) as f64 / total.max(1) as f64).ln();
+                (fit - b * b / 2.0 + prior, b)
             })
             .collect();
-        let mx = ll.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-        let w: Vec<f64> = ll.iter().map(|l| (l - mx).exp()).collect();
-        let sum: f64 = w.iter().sum();
-        w.into_iter().map(|x| x / sum).collect()
+        let mx = scored.iter().map(|s| s.0).fold(f64::NEG_INFINITY, f64::max);
+        let sum: f64 = scored.iter().map(|s| (s.0 - mx).exp()).sum();
+        let (k, &(score, offset)) = scored
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1 .0.total_cmp(&b.1 .0))
+            .expect("a fit has a cluster");
+        Placement {
+            cluster: k as u16,
+            probability: (score - mx).exp() / sum,
+            offset,
+        }
     }
 
     /// A cell's level offset in cluster `k`: the shift `b` of every site's
     /// logit fraction that best fits its reads, under a N(0, 1) prior.
-    pub fn offset(&self, sites: &[u32], on: &[u32], off: &[u32], k: usize) -> f64 {
-        let eta: Vec<f64> = sites
-            .iter()
-            .map(|&s| {
-                let p = self.posterior(s as usize, k).0;
-                (p / (1.0 - p)).ln()
-            })
-            .collect();
+    pub fn offset<T: Copy + Into<f64>>(&self, sites: &[u32], on: &[T], off: &[T], k: usize) -> f64 {
         let mut b = 0.0;
         for _ in 0..20 {
             let (mut g, mut h) = (-b, 1.0);
             for i in 0..sites.len() {
-                let p = 1.0 / (1.0 + (-(eta[i] + b)).exp());
-                let n = (on[i] + off[i]) as f64;
-                g += on[i] as f64 - n * p;
+                let eta = self.logit[sites[i] as usize * self.k + k] + b;
+                let p = 1.0 / (1.0 + (-eta).exp());
+                let (m, u) = (on[i].into(), off[i].into());
+                let n = m + u;
+                g += m - n * p;
                 h += n * p * (1.0 - p);
             }
             let step = (g / h).clamp(-1.0, 1.0);

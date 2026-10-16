@@ -156,7 +156,7 @@ faba <COMMAND> [OPTIONS]
 | `run` | Set up the pipeline in a view (inputs, steps, flags), preview and save the command, and run it: SNP → count → ATOI → m6A → APA |
 | **QC — choose and apply thresholds after profiling** ||
 | `qc`                      | Pick thresholds in a full-screen view, then filter a faba output directory into a new fileset |
-| **Clustering — cells by their own sites** ||
+| **Clustering: cells by their own sites** ||
 | `cluster`                 | Cluster cells by their site reads (a Chinese-restaurant-process mixture, several chains), with each cell's confidence and the posterior over the number of clusters |
 | **Inspection & reference** ||
 | `pwm`                     | Build a position weight matrix around genomic sites |

@@ -308,8 +308,16 @@ impl ToParquet for DashMap<GeneId, Vec<ConversionSite>> {
 
 /// Write one Arrow record batch as a parquet file.
 pub fn write_record_batch<P: AsRef<Path>>(batch: &RecordBatch, path: P) -> Result<()> {
+    write_record_batch_with(batch, path, WriterProperties::builder().build())
+}
+
+/// [`write_record_batch`] with these writer properties (e.g. row-group size).
+pub fn write_record_batch_with<P: AsRef<Path>>(
+    batch: &RecordBatch,
+    path: P,
+    props: WriterProperties,
+) -> Result<()> {
     let file = File::create(path)?;
-    let props = WriterProperties::builder().build();
     let mut writer = ArrowWriter::try_new(file, batch.schema(), Some(props))?;
     writer.write(batch)?;
     writer.close()?;

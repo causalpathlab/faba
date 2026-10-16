@@ -54,14 +54,43 @@ pub struct Partition {
     pub confidence: Vec<f64>,
 }
 
-/// Counts of `x` against `y` (labels below `kx`, `ky`), row-major.
-fn contingency(x: &[u16], kx: usize, y: &[u16], ky: usize) -> Vec<u32> {
-    let mut n = vec![0u32; kx * ky];
+/// Counts of `x` against `y` (labels below `kx`, `ky`), row-major, into `n`.
+fn contingency_into(n: &mut Vec<u32>, x: &[u16], kx: usize, y: &[u16], ky: usize) {
+    n.clear();
+    n.resize(kx * ky, 0);
     for (a, b) in x.iter().zip(y) {
         n[*a as usize * ky + *b as usize] += 1;
     }
+}
+
+fn contingency(x: &[u16], kx: usize, y: &[u16], ky: usize) -> Vec<u32> {
+    let mut n = Vec::new();
+    contingency_into(&mut n, x, kx, y, ky);
     n
 }
+
+/// Cells per cluster of labels below `k`.
+pub(super) fn sizes(z: &[u16], k: usize) -> Vec<usize> {
+    let mut n = vec![0usize; k];
+    z.iter().for_each(|&x| n[x as usize] += 1);
+    n
+}
+
+/// Labels below `k` renumbered by cluster size, largest first (ties by label).
+pub(super) fn renumber_by_size(z: &mut [u16], k: usize) {
+    let n = sizes(z, k);
+    let mut order: Vec<usize> = (0..k).collect();
+    order.sort_by(|&a, &b| n[b].cmp(&n[a]).then(a.cmp(&b)));
+    let mut rank = vec![0u16; k];
+    for (r, &a) in order.iter().enumerate() {
+        rank[a] = r as u16;
+    }
+    z.iter_mut().for_each(|x| *x = rank[*x as usize]);
+}
+
+/// Least-squares candidates scored: draws evenly thinned to at most this
+/// many, each scored against every draw.
+const CANDIDATES: usize = 100;
 
 fn sum_sq(n: &[u32]) -> f64 {
     n.iter().map(|&v| (v as f64) * (v as f64)).sum()
@@ -69,16 +98,24 @@ fn sum_sq(n: &[u32]) -> f64 {
 
 /// Clusters of at least `min_cells` cells in a draw.
 pub fn substantial(s: &Sample, min_cells: usize) -> usize {
-    let mut n = vec![0usize; s.k];
-    s.z.iter().for_each(|&z| n[z as usize] += 1);
-    n.iter().filter(|&&v| v >= min_cells).count()
+    sizes(&s.z, s.k).iter().filter(|&&v| v >= min_cells).count()
 }
 
 pub fn posterior(chains: &[Chain], min_cells: usize) -> Posterior {
     let draws: Vec<&Sample> = chains.iter().flat_map(|c| &c.samples).collect();
+    // Substantial clusters per draw, per chain, once for both uses.
+    let ks: Vec<Vec<f32>> = chains
+        .iter()
+        .map(|c| {
+            c.samples
+                .iter()
+                .map(|s| substantial(s, min_cells) as f32)
+                .collect()
+        })
+        .collect();
     let mut hist: std::collections::BTreeMap<usize, usize> = Default::default();
-    for s in &draws {
-        *hist.entry(substantial(s, min_cells)).or_default() += 1;
+    for &k in ks.iter().flatten() {
+        *hist.entry(k as usize).or_default() += 1;
     }
     let t = draws.len().max(1) as f64;
     let series = |f: &dyn Fn(&Sample) -> f64| -> Vec<Vec<f32>> {
@@ -91,8 +128,13 @@ pub fn posterior(chains: &[Chain], min_cells: usize) -> Posterior {
         min_cells,
         k: hist.into_iter().map(|(k, n)| (k, n as f64 / t)).collect(),
         alpha_mean: draws.iter().map(|s| s.alpha).sum::<f64>() / t,
-        rhat_k: split_rhat_chains(&series(&|s| substantial(s, min_cells) as f64)) as f64,
-        rhat_log_posterior: split_rhat_chains(&series(&|s| s.log_post)) as f64,
+        rhat_k: split_rhat_chains(&ks) as f64,
+        // Centred before the f32 cast, which would round a log posterior in
+        // the millions to whole units.
+        rhat_log_posterior: {
+            let mean = draws.iter().map(|s| s.log_post).sum::<f64>() / t;
+            split_rhat_chains(&series(&|s| s.log_post - mean)) as f64
+        },
         chains: chains.len(),
         draws: draws.len(),
         chain_log_posterior: chains
@@ -106,7 +148,7 @@ pub fn posterior(chains: &[Chain], min_cells: usize) -> Posterior {
             let mut v = Vec::new();
             for a in 0..last.len() {
                 for b in a + 1..last.len() {
-                    v.push(ari(last[a], last[b]));
+                    v.push(ari(&last[a].z, &last[b].z));
                 }
             }
             v
@@ -116,18 +158,20 @@ pub fn posterior(chains: &[Chain], min_cells: usize) -> Posterior {
     }
 }
 
-/// Adjusted Rand index of two draws' partitions.
-pub fn ari(x: &Sample, y: &Sample) -> f64 {
-    let n = contingency(&x.z, x.k, &y.z, y.k);
+/// Adjusted Rand index of two labellings of the same cells.
+pub fn ari(x: &[u16], y: &[u16]) -> f64 {
+    let k = |z: &[u16]| z.iter().map(|&v| v as usize + 1).max().unwrap_or(0);
+    let (kx, ky) = (k(x), k(y));
+    let n = contingency(x, kx, y, ky);
     let c2 = |v: f64| v * (v - 1.0) / 2.0;
     let index: f64 = n.iter().map(|&v| c2(v as f64)).sum();
-    let rows: f64 = (0..x.k)
-        .map(|a| c2(n[a * y.k..(a + 1) * y.k].iter().sum::<u32>() as f64))
+    let rows: f64 = (0..kx)
+        .map(|a| c2(n[a * ky..(a + 1) * ky].iter().sum::<u32>() as f64))
         .sum();
-    let cols: f64 = (0..y.k)
-        .map(|b| c2((0..x.k).map(|a| n[a * y.k + b]).sum::<u32>() as f64))
+    let cols: f64 = (0..ky)
+        .map(|b| c2((0..kx).map(|a| n[a * ky + b]).sum::<u32>() as f64))
         .sum();
-    let expected = rows * cols / c2(x.z.len() as f64);
+    let expected = rows * cols / c2(x.len() as f64);
     let max = (rows + cols) / 2.0;
     if max == expected {
         1.0
@@ -136,41 +180,35 @@ pub fn ari(x: &Sample, y: &Sample) -> f64 {
     }
 }
 
-/// The least-squares partition among the draws, and each cell's confidence.
+/// The least-squares partition among the draws (scored over an even
+/// thinning of them, see [`CANDIDATES`]), and each cell's confidence.
 pub fn partition(chains: &[Chain]) -> Partition {
     let draws: Vec<&Sample> = chains.iter().flat_map(|c| &c.samples).collect();
     assert!(!draws.is_empty(), "no draws to summarise");
     let t = draws.len() as f64;
+    let step = draws.len().div_ceil(CANDIDATES);
     // Cross term of each candidate against every draw.
-    let loss: Vec<f64> = draws
+    let loss: Vec<(usize, f64)> = (0..draws.len())
+        .step_by(step)
+        .collect::<Vec<_>>()
         .par_iter()
-        .map(|cand| {
-            let own = sum_sq(&contingency(&cand.z, cand.k, &cand.z, cand.k));
-            let cross: f64 = draws
-                .iter()
-                .map(|d| sum_sq(&contingency(&cand.z, cand.k, &d.z, d.k)))
-                .sum();
-            own - 2.0 * cross / t
+        .map(|&i| {
+            let cand = draws[i];
+            let mut n = Vec::new();
+            let mut cross = 0.0;
+            for d in &draws {
+                contingency_into(&mut n, &cand.z, cand.k, &d.z, d.k);
+                cross += sum_sq(&n);
+            }
+            let own: f64 = sizes(&cand.z, cand.k).iter().map(|&v| (v * v) as f64).sum();
+            (i, own - 2.0 * cross / t)
         })
         .collect();
-    let best = (0..draws.len())
-        .min_by(|&a, &b| loss[a].total_cmp(&loss[b]))
-        .unwrap();
+    let best = loss.iter().min_by(|a, b| a.1.total_cmp(&b.1)).unwrap().0;
     let chosen = draws[best];
-    // Renumber by size, largest first.
-    let mut sizes: Vec<(usize, usize)> = (0..chosen.k)
-        .map(|k| (chosen.z.iter().filter(|&&z| z as usize == k).count(), k))
-        .collect();
-    sizes.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-    let mut rank = vec![0u16; chosen.k];
-    for (r, &(_, k)) in sizes.iter().enumerate() {
-        rank[k] = r as u16;
-    }
-    let z: Vec<u16> = chosen.z.iter().map(|&k| rank[k as usize]).collect();
-    let k = chosen.k;
-    let n_own: Vec<f64> = (0..k)
-        .map(|a| z.iter().filter(|&&x| x as usize == a).count() as f64)
-        .collect();
+    let (mut z, k) = (chosen.z.clone(), chosen.k);
+    renumber_by_size(&mut z, k);
+    let n_own: Vec<f64> = sizes(&z, k).into_iter().map(|v| v as f64).collect();
     let mut confidence = vec![0.0f64; z.len()];
     for d in &draws {
         let n = contingency(&z, k, &d.z, d.k);

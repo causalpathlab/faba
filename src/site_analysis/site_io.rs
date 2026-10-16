@@ -1,3 +1,4 @@
+use data_beans::aux::feature_rows::{channels, parse_feature_row};
 use genomic_data::sam::Strand;
 use log::info;
 use rustc_hash::FxHashSet;
@@ -205,3 +206,32 @@ pub fn read_sites(site_file: &str) -> anyhow::Result<Vec<GenomicSite>> {
 #[cfg(test)]
 #[path = "tests/site_io.rs"]
 mod tests;
+
+/// A site row's `(gene, modality, chr, pos)` and whether it is the
+/// modality's first (converted) channel, `None` for rows without one.
+/// Mixture rows (a component ordinal, no chromosome) give an empty `chr`.
+/// Rows split with `parse_feature_row`, so a gene symbol may hold `/`.
+pub fn parse_row_channel(name: &str) -> Option<(&str, &str, &str, i64, Option<bool>)> {
+    let row = parse_feature_row(name)?;
+    let (detail, converted) = match row.subunit {
+        Some(detail) => {
+            let (on, off) =
+                channels(row.modality).or_else(|| channels(&row.modality.to_ascii_lowercase()))?;
+            let converted = match row.channel {
+                c if c == on => true,
+                c if c == off => false,
+                _ => return None,
+            };
+            (detail, Some(converted))
+        }
+        None => (row.channel, None),
+    };
+    if let Some((chr, pos_str)) = detail.split_once(':') {
+        let pos = pos_str.parse::<i64>().ok()?;
+        Some((row.gene, row.modality, chr, pos, converted))
+    } else {
+        // Mixture rows carry a component ordinal, not a chromosome.
+        let component = detail.parse::<i64>().ok()?;
+        Some((row.gene, row.modality, "", component, converted))
+    }
+}

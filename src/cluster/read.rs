@@ -3,7 +3,7 @@
 //! Nothing here is dense over cells x sites: each cell holds only the sites it
 //! covers, as `(site, converted, unconverted)` entries in one flat array.
 
-use crate::site_analysis::pileup::parse_row_channel;
+use crate::site_analysis::site_io::parse_row_channel;
 use data_beans::hdf5_io::resolve_backend_file;
 use data_beans::sparse_io::open_sparse_matrix;
 use log::info;
@@ -16,6 +16,8 @@ const COLUMN_BLOCK: usize = 4096;
 /// (the rest are assigned to the fitted clusters afterwards).
 pub struct Input {
     pub path: Box<str>,
+    /// The folder it came from: its output directory, else the one it sits in.
+    pub folder: Box<str>,
     pub batch: Box<str>,
     pub fit: bool,
 }
@@ -80,6 +82,62 @@ impl Reads {
         }
         reads
     }
+
+    /// The reads of cells `cells`, in that order.
+    pub fn subset(&self, cells: &[usize]) -> Self {
+        let mut out = Reads {
+            ptr: Vec::with_capacity(cells.len() + 1),
+            ..Default::default()
+        };
+        out.ptr.push(0);
+        for &c in cells {
+            let r = self.ptr[c]..self.ptr[c + 1];
+            out.site.extend_from_slice(&self.site[r.clone()]);
+            out.on.extend_from_slice(&self.on[r.clone()]);
+            out.off.extend_from_slice(&self.off[r]);
+            out.ptr.push(out.site.len());
+        }
+        out
+    }
+}
+
+/// Reads as a fit sees them: each entry's converted and unconverted counts,
+/// weighted (importance weights that take batches out) or as read.
+pub struct Weighted<'a> {
+    pub reads: &'a Reads,
+    pub on: Vec<f64>,
+    pub off: Vec<f64>,
+}
+
+impl<'a> Weighted<'a> {
+    /// `weights`: each entry's converted and unconverted reads' weights.
+    pub fn new(reads: &'a Reads, weights: Option<(&[f64], &[f64])>) -> Self {
+        let scale = |n: &[u32], w: Option<&[f64]>| -> Vec<f64> {
+            match w {
+                Some(w) => n.iter().zip(w).map(|(&n, &w)| n as f64 * w).collect(),
+                None => n.iter().map(|&n| n as f64).collect(),
+            }
+        };
+        Weighted {
+            reads,
+            on: scale(&reads.on, weights.map(|w| w.0)),
+            off: scale(&reads.off, weights.map(|w| w.1)),
+        }
+    }
+
+    pub fn cells(&self) -> usize {
+        self.reads.cells()
+    }
+
+    /// Cell `c`'s `(sites, converted, unconverted)`.
+    pub fn of(&self, c: usize) -> (&[u32], &[f64], &[f64]) {
+        let r = self.reads.ptr[c]..self.reads.ptr[c + 1];
+        (
+            &self.reads.site[r.clone()],
+            &self.on[r.clone()],
+            &self.off[r],
+        )
+    }
 }
 
 /// Sites, cells and their reads.
@@ -108,6 +166,7 @@ pub fn read_inputs(inputs: &[Input]) -> anyhow::Result<SiteData> {
         }
         // Each row: its site, and whether it is the converted channel.
         let mut rows: Vec<Option<(u32, bool)>> = Vec::new();
+        let mut other: Option<Box<str>> = None;
         for name in data.row_names()? {
             let Some((gene, m, chr, pos, channel)) = parse_row_channel(&name) else {
                 rows.push(None);
@@ -118,6 +177,7 @@ pub fn read_inputs(inputs: &[Input]) -> anyhow::Result<SiteData> {
                 continue;
             };
             if modality.get_or_insert_with(|| m.into()).as_ref() != m {
+                other.get_or_insert_with(|| m.into());
                 rows.push(None);
                 continue;
             }
@@ -132,6 +192,15 @@ pub fn read_inputs(inputs: &[Input]) -> anyhow::Result<SiteData> {
                 next
             });
             rows.push(Some((s, converted)));
+        }
+        // Inputs are clustered together only if they hold the same sites.
+        if rows.iter().all(Option::is_none) {
+            if let (Some(m), Some(o)) = (&modality, &other) {
+                anyhow::bail!(
+                    "{} holds {o} sites, not {m} like the inputs before it",
+                    input.path
+                );
+            }
         }
         let barcodes = data.column_names()?;
         let first = cells.len();
@@ -169,15 +238,15 @@ pub fn read_inputs(inputs: &[Input]) -> anyhow::Result<SiteData> {
     })
 }
 
-/// Who survived [`filter`]: kept cells, as indices into the input.
-pub struct Kept {
-    pub cells: Vec<usize>,
-}
-
 /// Drop cells covering fewer than `min_cell_sites` sites, then sites covered by
-/// fewer than `min_site_cells` of the remaining fitted cells; renumber the
-/// sites of `data` to the kept ones.
-pub fn filter(data: &SiteData, min_cell_sites: usize, min_site_cells: usize) -> (SiteData, Kept) {
+/// fewer than `min_site_cells` of the remaining fitted cells, then cells left
+/// with fewer than `min_cell_sites` of the kept sites; renumber the sites of
+/// `data` to the kept ones. Also the kept cells' indices in `data`.
+pub fn filter(
+    data: &SiteData,
+    min_cell_sites: usize,
+    min_site_cells: usize,
+) -> (SiteData, Vec<usize>) {
     let n = data.reads.cells();
     let kept_cells: Vec<usize> = (0..n)
         .filter(|&c| data.reads.ptr[c + 1] - data.reads.ptr[c] >= min_cell_sites)
@@ -195,21 +264,24 @@ pub fn filter(data: &SiteData, min_cell_sites: usize, min_site_cells: usize) -> 
     for (i, &s) in kept_sites.iter().enumerate() {
         renumber[s] = i as u32;
     }
-    let per_cell = kept_cells
-        .iter()
-        .map(|&c| {
-            let (s, on, off) = data.reads.of(c);
-            (0..s.len())
-                .filter(|&i| renumber[s[i] as usize] != u32::MAX)
-                .map(|i| (renumber[s[i] as usize], on[i], off[i]))
-                .collect()
-        })
-        .collect();
+    let entries = |c: usize| -> Vec<(u32, u32, u32)> {
+        let (s, on, off) = data.reads.of(c);
+        (0..s.len())
+            .filter(|&i| renumber[s[i] as usize] != u32::MAX)
+            .map(|i| (renumber[s[i] as usize], on[i], off[i]))
+            .collect()
+    };
+    // A cell whose sites went with the site filter has too little left.
+    let (kept_cells, per_cell): (Vec<usize>, Vec<_>) = kept_cells
+        .into_iter()
+        .map(|c| (c, entries(c)))
+        .filter(|(_, e)| e.len() >= min_cell_sites)
+        .unzip();
     let out = SiteData {
         modality: data.modality.clone(),
         sites: kept_sites.iter().map(|&s| data.sites[s].clone()).collect(),
         cells: kept_cells.iter().map(|&c| data.cells[c].clone()).collect(),
         reads: Reads::from_cells(per_cell),
     };
-    (out, Kept { cells: kept_cells })
+    (out, kept_cells)
 }

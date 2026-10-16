@@ -1,3 +1,4 @@
+use crate::common::wildcard;
 use crate::data::cell_membership::CellMembership;
 use crate::site_analysis::miami::bin::BinEdges;
 use crate::site_analysis::miami::depth::read_depth_binned;
@@ -6,10 +7,11 @@ use crate::site_analysis::miami::genemodel::{
 };
 use crate::site_analysis::miami::palette::Palette;
 use crate::site_analysis::miami::render::{render_miami, FigOpts, PanelData};
+use crate::site_analysis::site_io::parse_row_channel;
 use arrow::array::{Array, Float32Array, Int64Array, StringArray, UInt64Array};
 use clap::Args;
 use data_beans::aux::feature_names::FeatureNameKind;
-use data_beans::aux::feature_rows::{channels, parse_feature_row, ATOI, METHYLATED, UNMETHYLATED};
+use data_beans::aux::feature_rows::{ATOI, METHYLATED, UNMETHYLATED};
 use data_beans::hdf5_io::resolve_backend_file;
 use data_beans::sparse_io::open_sparse_matrix;
 use genomic_data::bed::Bed;
@@ -361,30 +363,6 @@ pub struct PileupArgs {
                      That keeps SVG/PDF size bounded; axes and areas stay vector."
     )]
     raster_threshold: usize,
-}
-
-/// Whether `text` matches `pattern`, `*` standing for any run of
-/// characters and `?` for one.
-pub(crate) fn wildcard(pattern: &str, text: &str) -> bool {
-    let (p, t): (Vec<char>, Vec<char>) = (pattern.chars().collect(), text.chars().collect());
-    let (mut pi, mut ti, mut star, mut mark) = (0, 0, None, 0);
-    while ti < t.len() {
-        if pi < p.len() && (p[pi] == '?' || p[pi] == t[ti]) {
-            pi += 1;
-            ti += 1;
-        } else if pi < p.len() && p[pi] == '*' {
-            star = Some(pi);
-            mark = ti;
-            pi += 1;
-        } else if let Some(sp) = star {
-            pi = sp + 1;
-            mark += 1;
-            ti = mark;
-        } else {
-            return false;
-        }
-    }
-    p[pi..].iter().all(|&c| c == '*')
 }
 
 /// A matrix's own track name: its batch, else its file name.
@@ -996,14 +974,10 @@ impl PileupArgs {
                 continue;
             };
             from_dir = true;
-            let sites =
-                crate::site_analysis::output_dir::output_sites(&dir, self.modality.as_deref())?;
-            anyhow::ensure!(
-                !sites.matrices.is_empty(),
-                "{} has no {}_site matrices to pile up",
-                dir.display(),
-                sites.modality
-            );
+            let sites = crate::site_analysis::output_dir::output_site_matrices(
+                &dir,
+                self.modality.as_deref(),
+            )?;
             info!(
                 "{}: {} {}_site matrices",
                 dir.display(),

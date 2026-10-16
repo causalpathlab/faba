@@ -9,6 +9,8 @@ use crate::run_record::RunRecord;
 use clap::Args;
 use legume_numeric::mcmc::engine::{run_mcmc_parallel, McmcConfig};
 use log::{info, warn};
+use rustc_hash::{FxHashMap, FxHashSet};
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
 mod crp;
@@ -58,7 +60,10 @@ pub struct ClusterArgs {
         help = "Fit only the cells of matrices whose path matches PATTERN (`*`, `?`); assign the rest",
         long_help = "Fit only the cells of matrices whose path matches PATTERN (`*` any run,\n\
                      `?` one character), e.g. `--fit '*_wt_*'`. The other matrices' cells are\n\
-                     assigned to the fitted clusters afterwards, as a control. Default: fit all."
+                     assigned to the fitted clusters afterwards, as a control, from their reads\n\
+                     as read: batch weights are not applied to them, so a control keeps its own\n\
+                     level, and its `offset` measures that level against the fitted clusters.\n\
+                     Default: fit all."
     )]
     fit: Option<Box<str>>,
 
@@ -146,13 +151,6 @@ pub struct ClusterArgs {
 
     #[arg(
         long,
-        default_value_t = 15,
-        help = "Nearest cells offered as a split-merge anchor's partner (0: random anchors only)"
-    )]
-    anchor_neighbours: usize,
-
-    #[arg(
-        long,
         default_value_t = 1,
         help = "Random seed (chain i uses seed + i)"
     )]
@@ -166,23 +164,23 @@ fn inputs(args: &ClusterArgs) -> anyhow::Result<Vec<read::Input>> {
     let fits = |path: &str| {
         args.fit
             .as_deref()
-            .is_none_or(|p| crate::site_analysis::pileup::wildcard(p, path))
+            .is_none_or(|p| crate::common::wildcard(p, path))
     };
     for f in &args.data_files {
+        let folder: Box<str> = crate::run_record::default_output_dir(f)
+            .to_string_lossy()
+            .into();
         match crate::run_record::output_dir_of(f) {
             Some(dir) => {
-                let sites =
-                    crate::site_analysis::output_dir::output_sites(&dir, args.modality.as_deref())?;
-                anyhow::ensure!(
-                    !sites.matrices.is_empty(),
-                    "{} has no {}_site matrices",
-                    dir.display(),
-                    sites.modality
-                );
+                let sites = crate::site_analysis::output_dir::output_site_matrices(
+                    &dir,
+                    args.modality.as_deref(),
+                )?;
                 for (batch, path) in sites.matrices {
                     out.push(read::Input {
                         fit: fits(&path),
                         path,
+                        folder: folder.clone(),
                         batch,
                     });
                 }
@@ -191,6 +189,7 @@ fn inputs(args: &ClusterArgs) -> anyhow::Result<Vec<read::Input>> {
                 let name = crate::qc::layout::file_name(f);
                 out.push(read::Input {
                     path: f.clone(),
+                    folder,
                     batch: crate::qc::layout::matrix_batch(&name).unwrap_or(name),
                     fit: fits(f),
                 });
@@ -202,7 +201,25 @@ fn inputs(args: &ClusterArgs) -> anyhow::Result<Vec<read::Input>> {
         "no input matrix matches --fit {}",
         args.fit.as_deref().unwrap_or("")
     );
+    qualify_batches(&mut out);
     Ok(out)
+}
+
+/// A batch name met in several folders is a different batch in each: those
+/// are named `{folder}/{batch}`.
+fn qualify_batches(inputs: &mut [read::Input]) {
+    let mut folders: FxHashMap<Box<str>, FxHashSet<Box<str>>> = FxHashMap::default();
+    for i in inputs.iter() {
+        folders
+            .entry(i.batch.clone())
+            .or_default()
+            .insert(i.folder.clone());
+    }
+    for i in inputs.iter_mut() {
+        if folders[&i.batch].len() > 1 {
+            i.batch = format!("{}/{}", i.folder, i.batch).into();
+        }
+    }
 }
 
 /// `-o`, else the first input directory, else the first matrix's directory.
@@ -210,22 +227,41 @@ fn output_dir(args: &ClusterArgs) -> PathBuf {
     if let Some(o) = &args.output {
         return PathBuf::from(o.as_ref());
     }
-    let first = &args.data_files[0];
-    crate::run_record::output_dir_of(first).unwrap_or_else(|| {
-        Path::new(first.as_ref())
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_default()
-    })
+    crate::run_record::default_output_dir(&args.data_files[0])
 }
 
-/// Bytes the fit (not the reading) will hold at its peak, roughly: the reads, a pair of counts
-/// per site for each live cluster in each chain (a guess of 32 clusters),
-/// split-merge scratch, and the kept draws.
-fn memory_estimate(entries: usize, sites: usize, cells: usize, args: &ClusterArgs) -> usize {
-    let kept = args.sweeps.saturating_sub(args.burn_in) / args.thin.max(1) + 1;
-    let per_chain = sites * 8 * 32 + sites * 17 + cells * 4 + kept * cells * 2;
-    entries * 12 + args.chains * per_chain
+/// Settings that would make the fit meaningless, refused up front.
+fn check(args: &ClusterArgs) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        args.prior_strength > 0.0 && args.prior_strength.is_finite(),
+        "--prior-strength must be positive"
+    );
+    anyhow::ensure!(args.chains >= 1, "--chains must be at least 1");
+    // Split R-hat needs at least two draws in each half of every chain.
+    anyhow::ensure!(
+        args.sweeps.saturating_sub(args.burn_in) / args.thin.max(1) >= 4,
+        "--sweeps less --burn-in must leave at least 4 draws per chain (after --thin)"
+    );
+    Ok(())
+}
+
+/// Bytes the fit (not the reading) will hold at its peak, roughly: the
+/// reads (raw, a copy of the fitted ones when some are left out, and
+/// weighted), the picture chains start from, and per chain two f64 per site
+/// for each live cluster (a guess of 32 clusters), split-merge scratch,
+/// labels and kept draws.
+fn memory_estimate(
+    entries: usize,
+    copied: bool,
+    sites: usize,
+    cells: usize,
+    kept: usize,
+    args: &ClusterArgs,
+) -> usize {
+    let reads = entries * (12 + 16 + if copied { 12 } else { 0 });
+    let picture = sites * 32 * 4 + cells * 32 * 4;
+    let chain = sites * 16 * 32 + sites * 33 + cells * 4 + kept * cells * 2;
+    reads + picture + args.chains * chain
 }
 
 pub fn run_cluster(args: &ClusterArgs) -> anyhow::Result<()> {
@@ -243,12 +279,15 @@ pub fn run_cluster(args: &ClusterArgs) -> anyhow::Result<()> {
 
 /// Fit, summarise and write; the run record's file name.
 fn cluster(args: &ClusterArgs, dir: &Path, record: &mut RunRecord) -> anyhow::Result<String> {
+    check(args)?;
     let inputs = inputs(args)?;
     let all = read::read_inputs(&inputs)?;
     let (data, kept) = read::filter(&all, args.min_cell_sites, args.min_site_cells);
     // Only the input cells are needed from here: let their reads go.
     let read_sites = all.sites.len();
-    let all_cells = all.cells;
+    let read::SiteData {
+        cells: all_cells, ..
+    } = all;
     let fitted: Vec<usize> = (0..data.cells.len())
         .filter(|&c| data.cells[c].fit)
         .collect();
@@ -267,27 +306,24 @@ fn cluster(args: &ClusterArgs, dir: &Path, record: &mut RunRecord) -> anyhow::Re
         data.sites.len(),
         read_sites
     );
-    let fit_reads = read::Reads::from_cells(
-        fitted
-            .iter()
-            .map(|&c| {
-                let (s, m, u) = data.reads.of(c);
-                (0..s.len()).map(|i| (s[i], m[i], u[i])).collect()
-            })
-            .collect(),
+    // The fitted cells' reads: all of them, or a copy of those fitted.
+    let fit_reads: Cow<read::Reads> = if fitted.len() < data.cells.len() {
+        Cow::Owned(data.reads.subset(&fitted))
+    } else {
+        Cow::Borrowed(&data.reads)
+    };
+    let kept_draws = (args.sweeps - args.burn_in) / args.thin.max(1);
+    let memory = memory_estimate(
+        fit_reads.site.len(),
+        matches!(fit_reads, Cow::Owned(_)),
+        data.sites.len(),
+        fitted.len(),
+        kept_draws,
+        args,
     );
-    let memory = memory_estimate(fit_reads.site.len(), data.sites.len(), fitted.len(), args);
     info!("about {} MB at the peak of the fit", memory >> 20);
 
-    let settings = crp::Settings {
-        strength: args.prior_strength,
-        split_merge: args.split_merge,
-        restricted: args.restricted_scans,
-        start_clusters: args.start_clusters,
-        neighbours: args.anchor_neighbours,
-        gibbs: true,
-        fixed_alpha: None,
-    };
+    // Batches taken out of the fitted reads by importance weights.
     let batches: Vec<&str> = {
         let mut b: Vec<&str> = fitted
             .iter()
@@ -297,94 +333,105 @@ fn cluster(args: &ClusterArgs, dir: &Path, record: &mut RunRecord) -> anyhow::Re
         b.dedup();
         b
     };
-    let weights = (!args.no_batch_correction && batches.len() > 1).then(|| {
-        let batch_of: Vec<u16> = fitted
-            .iter()
-            .map(|&c| {
-                batches
-                    .binary_search(&data.cells[c].batch.as_ref())
-                    .unwrap() as u16
-            })
-            .collect();
-        let w = fit::batch_weights(&fit_reads, &batch_of, batches.len(), data.sites.len());
-        info!(
+    let (weighted, batch_stats) =
+        if !args.no_batch_correction && batches.len() > 1 {
+            let batch_of: Vec<u16> = fitted
+                .iter()
+                .map(|&c| {
+                    batches
+                        .binary_search(&data.cells[c].batch.as_ref())
+                        .unwrap() as u16
+                })
+                .collect();
+            let w = fit::batch_weights(&fit_reads, &batch_of, batches.len(), data.sites.len());
+            info!(
             "importance weights take out {} batches: effective share of reads {:?}, {:.2}% capped",
             batches.len(),
-            w.effective_share
-                .iter()
-                .map(|e| format!("{e:.2}"))
-                .collect::<Vec<_>>(),
+            w.effective_share.iter().map(|e| format!("{e:.2}")).collect::<Vec<_>>(),
             100.0 * w.capped_share
         );
-        w
-    });
-    let model = crp::Model::new(
-        &fit_reads,
-        data.sites.len(),
-        settings,
-        weights
-            .as_ref()
-            .map(|w| (w.on.as_slice(), w.off.as_slice())),
-    );
-    let kept_draws = args.sweeps.saturating_sub(args.burn_in) / args.thin.max(1);
+            let stats = serde_json::json!({
+                "batches": batches,
+                "effective_share": w.effective_share,
+                "capped_share": w.capped_share,
+            "max_weight": w.max_weight,
+            });
+            (
+                read::Weighted::new(&fit_reads, Some((&w.on, &w.off))),
+                Some(stats),
+            )
+        } else {
+            (read::Weighted::new(&fit_reads, None), None)
+        };
+
+    let settings = crp::Settings {
+        strength: args.prior_strength,
+        split_merge: args.split_merge,
+        restricted: args.restricted_scans,
+        start_clusters: args.start_clusters,
+        gibbs: true,
+        fixed_alpha: None,
+    };
+    let model = crp::Model::new(&weighted, data.sites.len(), settings);
     let config = McmcConfig {
         n_samples: kept_draws.max(1),
         warmup: args.burn_in,
         thin: args.thin,
         seed: args.seed,
     };
-    let chains = run_mcmc_parallel(&model, &config, args.chains.max(1));
+    let chains = run_mcmc_parallel(&model, &config, args.chains);
     let posterior = summary::posterior(&chains, args.min_cluster_cells);
-    let draws_part = summary::partition(&chains);
     if posterior.rhat_k > RHAT_OK || posterior.rhat_log_posterior > RHAT_OK {
         warn!(
             "chains disagree (split R-hat: K {:.2}, log posterior {:.2}): run more --sweeps or --chains",
             posterior.rhat_k, posterior.rhat_log_posterior
         );
     }
-
-    // Clusters' reads from the fitted cells; every kept cell's cluster and offset.
     let (part, tiles) = fit::settle(
         &fit_reads,
-        &draws_part,
+        &weighted,
+        &summary::partition(&chains),
         args.min_cluster_cells,
         data.sites.len(),
         args.prior_strength,
     );
-    let mut sizes = vec![0usize; part.k];
-    part.z.iter().for_each(|&k| sizes[k as usize] += 1);
-    let mut cluster_of: Vec<Option<(u16, f64)>> = vec![None; data.cells.len()];
+    let sizes = summary::sizes(&part.z, part.k);
+
+    // Every kept cell's cluster, confidence and offset: a fitted cell's from
+    // the fit (its offset from its reads as the fit saw them), any other
+    // placed by its own reads.
+    let mut fit_index = vec![None; data.cells.len()];
     for (i, &c) in fitted.iter().enumerate() {
-        cluster_of[c] = Some((part.z[i], part.confidence[i]));
+        fit_index[c] = Some(i);
     }
-    for c in (0..data.cells.len()).filter(|&c| !data.cells[c].fit) {
-        let (s, m, u) = data.reads.of(c);
-        let p = tiles.assign(s, m, u, &sizes);
-        let (k, conf) = p
-            .iter()
-            .enumerate()
-            .max_by(|a, b| a.1.total_cmp(b.1))
-            .map(|(k, &v)| (k as u16, v))
-            .unwrap();
-        cluster_of[c] = Some((k, conf));
-    }
+    let placed: Vec<fit::Placement> = {
+        use rayon::prelude::*;
+        (0..data.cells.len())
+            .into_par_iter()
+            .map(|c| match fit_index[c] {
+                Some(i) => {
+                    let (s, m, u) = weighted.of(i);
+                    let k = part.z[i];
+                    fit::Placement {
+                        cluster: k,
+                        probability: part.confidence[i],
+                        offset: tiles.offset(s, m, u, k as usize),
+                    }
+                }
+                None => {
+                    // A control cell, from its reads as read.
+                    let (s, m, u) = data.reads.of(c);
+                    tiles.place(s, m, u, &sizes)
+                }
+            })
+            .collect()
+    };
     let mut rows: Vec<write::CellRow> = all_cells
         .iter()
-        .map(|cell| write::CellRow {
-            cell,
-            kept: false,
-            cluster: None,
-            confidence: None,
-            offset: None,
-        })
+        .map(|cell| write::CellRow { cell, placed: None })
         .collect();
-    for (c, &orig) in kept.cells.iter().enumerate() {
-        let (k, conf) = cluster_of[c].unwrap();
-        let (s, m, u) = data.reads.of(c);
-        rows[orig].kept = true;
-        rows[orig].cluster = Some(k);
-        rows[orig].confidence = Some(conf);
-        rows[orig].offset = Some(tiles.offset(s, m, u, k as usize));
+    for (p, &orig) in placed.iter().zip(&kept) {
+        rows[orig].placed = Some(p);
     }
 
     std::fs::create_dir_all(dir)?;
@@ -416,16 +463,7 @@ fn cluster(args: &ClusterArgs, dir: &Path, record: &mut RunRecord) -> anyhow::Re
         &(posterior.rhat_k <= RHAT_OK && posterior.rhat_log_posterior <= RHAT_OK),
     );
     record.set_result("fit_memory_estimate_bytes", &memory);
-    record.set_result(
-        "batch_weights",
-        &weights.as_ref().map(|w| {
-            serde_json::json!({
-                "batches": batches,
-                "effective_share": w.effective_share,
-                "capped_share": w.capped_share,
-            })
-        }),
-    );
+    record.set_result("batch_weights", &batch_stats);
     info!(
         "{} clusters (sizes {:?}); K posterior {:?}; split R-hat K {:.2}, log posterior {:.2}",
         part.k, sizes, posterior.k, posterior.rhat_k, posterior.rhat_log_posterior

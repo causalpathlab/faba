@@ -333,6 +333,14 @@ fn folder_of(p: &Path) -> Option<PathBuf> {
     })
 }
 
+/// Where outputs about `input` go when no `-o` says: its output directory
+/// when it is (or is a run record in) one, else the folder it sits in.
+pub fn default_output_dir(input: &str) -> PathBuf {
+    output_dir_of(input)
+        .or_else(|| folder_of(Path::new(input)))
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
 /// A zarr store is a directory, but it is one output, not an output directory.
 fn is_matrix_dir(p: &Path) -> bool {
     p.extension().is_some_and(|e| e == "zarr")

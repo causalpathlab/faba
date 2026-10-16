@@ -48,3 +48,19 @@ fn the_default_output_and_title_follow_the_site_tables() {
     );
     assert_eq!(title(&two), "m6a_sites.parquet + atoi_sites.parquet");
 }
+
+#[test]
+fn site_matrices_come_from_the_first_modality_that_has_them() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    // m6A has only a site table; A-to-I has a matrix.
+    for f in ["m6a_sites.parquet", "b1_atoi_site.zarr.zip"] {
+        touch(dir, f);
+    }
+    assert_eq!(&*output_sites(dir, None).unwrap().modality, "m6a");
+    let sites = output_site_matrices(dir, None).unwrap();
+    assert_eq!(&*sites.modality, "atoi");
+    assert_eq!(sites.matrices.len(), 1);
+    // Asked for by name, a modality without matrices is an error.
+    assert!(output_site_matrices(dir, Some("m6a")).is_err());
+}
