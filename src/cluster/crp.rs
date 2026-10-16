@@ -15,21 +15,22 @@
 //! (Jain & Neal 2004), and the concentration `alpha` resampled (Escobar &
 //! West 1995) under a Gamma(1, 1) prior.
 //!
-//! Split-merge anchors: the first cell at random, the second half the time
-//! at random and half the time among the first's nearest cells in a fixed
-//! picture of the data. The choice depends on the data alone, never on the
-//! partition, so its probability is the same for a move and its reverse and
-//! cancels. The launch state is allocated one cell at a time by predictive
+//! Split-merge anchors: the first cell at random; the second, a third of the
+//! time each, at random, among the first's nearest cells in a fixed picture
+//! of the data (likely merges), or from another region of that picture
+//! (likely splits of a mixed cluster). The choice depends on the data alone,
+//! never on the partition, so its probability is the same for a move and its
+//! reverse and cancels: every move keeps detailed balance. The launch state is allocated one cell at a time by predictive
 //! (Dahl's sequential allocation), then refined by restricted Gibbs scans;
 //! it too depends on nothing in the current split. Chains start from k-means
 //! of that picture with a number of clusters drawn per chain, so chains
 //! begin over- and under-clustered alike.
 //!
-//! Reads can come reweighted by a logit shift `delta` per entry (a batch's
-//! offset at the site): converted reads by `exp(-delta/2)`, unconverted by
-//! `exp(delta/2)`, which cancels the shift in the odds of any sum of them.
-//! The counts are then not whole, and the Beta-binomial is taken through
-//! Beta functions.
+//! Reads can come weighted (importance weights that take batches out, see
+//! `fit::batch_weights`): the likelihood is then a weighted one, each read's
+//! term raised to its weight, which stays conjugate. The counts are no longer
+//! whole and the Beta-binomial is taken through Beta functions. The sampler
+//! is exact for that weighted target.
 
 use super::read::Reads;
 use legume_numeric::mcmc::engine::McmcModel;
@@ -146,20 +147,27 @@ pub struct Model<'a> {
     lp_new: Vec<f64>,
     /// Each cell's nearest cells, for split-merge anchors.
     near: Vec<Vec<u32>>,
+    /// Each cell's region of the picture, and the cells of each region.
+    region: Vec<u32>,
+    regions: Vec<Vec<u32>>,
     /// The picture of the cells chains start from.
     picture: legume_numeric::matrix::dmatrix_io::DMatrix<f32>,
     settings: Settings,
 }
 
 impl<'a> Model<'a> {
-    /// `shift`: each entry's logit shift to cancel, when reads are reweighted.
-    pub fn new(reads: &'a Reads, sites: usize, settings: Settings, shift: Option<&[f64]>) -> Self {
-        let weight = |i: usize, sign: f64| shift.map_or(1.0, |d| (sign * d[i] / 2.0).exp());
+    /// `weights`: each entry's converted and unconverted reads' weights.
+    pub fn new(
+        reads: &'a Reads,
+        sites: usize,
+        settings: Settings,
+        weights: Option<(&[f64], &[f64])>,
+    ) -> Self {
         let on: Vec<f64> = (0..reads.site.len())
-            .map(|i| reads.on[i] as f64 * weight(i, -1.0))
+            .map(|i| reads.on[i] as f64 * weights.map_or(1.0, |w| w.0[i]))
             .collect();
         let off: Vec<f64> = (0..reads.site.len())
-            .map(|i| reads.off[i] as f64 * weight(i, 1.0))
+            .map(|i| reads.off[i] as f64 * weights.map_or(1.0, |w| w.1[i]))
             .collect();
         let (mut pon, mut tot) = (vec![0.0f64; sites], vec![0.0f64; sites]);
         for i in 0..reads.site.len() {
@@ -192,11 +200,32 @@ impl<'a> Model<'a> {
         } else {
             vec![Vec::new(); reads.cells()]
         };
+        let region = if reads.cells() > REGIONS {
+            super::embed::kmeans(&picture, REGIONS, REGION_SEED)
+        } else {
+            (0..reads.cells() as u32).collect()
+        };
+        let mut regions = vec![Vec::new(); region.iter().max().map_or(0, |&r| r as usize + 1)];
+        for (c, &r) in region.iter().enumerate() {
+            regions[r as usize].push(c as u32);
+        }
+        regions.retain(|r| !r.is_empty());
+        let region = {
+            let mut out = vec![0u32; reads.cells()];
+            for (r, cells) in regions.iter().enumerate() {
+                for &c in cells {
+                    out[c as usize] = r as u32;
+                }
+            }
+            out
+        };
         Self {
             reads,
             on,
             off,
             near,
+            region,
+            regions,
             picture,
             a,
             b,
@@ -358,6 +387,25 @@ impl<'a> Model<'a> {
         logq
     }
 
+    /// A split-merge anchor's partner, by a rule that looks at the data only:
+    /// at random, a near cell, or a cell of another region, a third each.
+    fn partner(&self, i: usize, rng: &mut SmallRng) -> usize {
+        let n = self.cells();
+        let near = &self.near[i];
+        let u = rng.random::<f64>();
+        if u < 1.0 / 3.0 && !near.is_empty() {
+            return near[rng.random_range(0..near.len())] as usize;
+        }
+        if u < 2.0 / 3.0 && self.regions.len() > 1 {
+            let mut r = rng.random_range(0..self.regions.len() - 1);
+            r += usize::from(r >= self.region[i] as usize);
+            let cells = &self.regions[r];
+            return cells[rng.random_range(0..cells.len())] as usize;
+        }
+        let j = rng.random_range(0..n - 1);
+        j + usize::from(j >= i)
+    }
+
     /// One split-merge proposal; whether it was a split or a merge, if accepted.
     fn split_merge(&self, st: &mut State, rng: &mut SmallRng) -> Option<bool> {
         let n = self.cells();
@@ -365,13 +413,7 @@ impl<'a> Model<'a> {
             return None;
         }
         let i = rng.random_range(0..n);
-        let near = &self.near[i];
-        let j = if !near.is_empty() && rng.random::<f64>() < 0.5 {
-            near[rng.random_range(0..near.len())] as usize
-        } else {
-            let j = rng.random_range(0..n - 1);
-            j + usize::from(j >= i)
-        };
+        let j = self.partner(i, rng);
         let (ki, kj) = (st.z[i], st.z[j]);
         let mut rest: Vec<usize> = (0..n)
             .filter(|&c| c != i && c != j && (st.z[c] == ki || st.z[c] == kj))
@@ -502,6 +544,12 @@ impl Scratch {
         self.n = [0, 0];
     }
 }
+
+/// Regions of the picture for far split-merge partners.
+const REGIONS: usize = 16;
+
+/// Fixed, so regions are the same for every chain and seed.
+const REGION_SEED: u64 = 0x7e61_0105;
 
 /// Fisher-Yates.
 fn shuffle<T>(v: &mut [T], rng: &mut SmallRng) {

@@ -336,7 +336,7 @@ fn a_sites_two_channels_merge_into_one_entry() {
 }
 
 /// Cells drawn alike in two batches, one batch shifted at every site: the
-/// shift alone makes two clusters; cancelled, one.
+/// shift alone makes two clusters; weighted out, one.
 #[test]
 fn batch_shifts_are_cancelled() {
     let (cells, sites) = (240usize, 300usize);
@@ -371,8 +371,8 @@ fn batch_shifts_are_cancelled() {
         thin: 1,
         seed: 13,
     };
-    let clusters = |shift: Option<&[f64]>| {
-        let model = Model::new(&reads, sites, settings(true, 5, None), shift);
+    let clusters = |weights: Option<(&[f64], &[f64])>| {
+        let model = Model::new(&reads, sites, settings(true, 5, None), weights);
         let chains = run_mcmc_parallel(&model, &config, 2);
         super::fit::settle(&reads, &summary::partition(&chains), 10, sites, 2.0).0
     };
@@ -383,8 +383,8 @@ fn batch_shifts_are_cancelled() {
         raw.k,
         ari(&raw.z, &batch_of)
     );
-    let delta = super::fit::batch_shifts(&reads, &batch_of, 2, sites);
-    let fixed = clusters(Some(&delta));
+    let w = super::fit::batch_weights(&reads, &batch_of, 2, sites);
+    let fixed = clusters(Some((&w.on, &w.off)));
     assert_eq!(fixed.k, 1, "corrected: K {}", fixed.k);
 }
 
@@ -430,4 +430,137 @@ fn ari_is_one_for_relabelled_partitions_and_near_zero_for_unrelated() {
     assert!((summary::ari(&a, &b) - 1.0).abs() < 1e-12);
     let c = draw(vec![0, 1, 2, 0, 1, 2]);
     assert!(summary::ari(&a, &c) < 0.1);
+}
+
+/// The exact posterior over every partition of `reads`' cells (two sites),
+/// `alpha` fixed or, `None`, integrated out under its Gamma(1, 1) prior.
+fn exact_posterior(reads: &Reads, strength: f64, alpha: Option<f64>) -> Vec<(Vec<u16>, f64)> {
+    let n = reads.cells();
+    let (a, b) = model_prior(reads, strength);
+    let ln_gamma = statrs::function::gamma::ln_gamma;
+    let parts = partitions(n);
+    let logp: Vec<f64> = parts
+        .iter()
+        .map(|p| {
+            let k = *p.iter().max().unwrap() as usize + 1;
+            let mut v = 0.0;
+            for l in 0..k {
+                let members: Vec<usize> = (0..n).filter(|&c| p[c] as usize == l).collect();
+                v += ln_gamma(members.len() as f64);
+                for s in 0..2 {
+                    let (mut m, mut u) = (0u32, 0u32);
+                    for &c in &members {
+                        let (ss, on, off) = reads.of(c);
+                        for i in 0..ss.len() {
+                            if ss[i] as usize == s {
+                                m += on[i];
+                                u += off[i];
+                            }
+                        }
+                    }
+                    v += ln_beta(a[s] + m as f64, b[s] + u as f64) - ln_beta(a[s], b[s]);
+                }
+            }
+            // The CRP's alpha^K Gamma(alpha) / Gamma(alpha + n), at alpha or
+            // integrated against exp(-alpha) on a fine grid.
+            let crp = |al: f64| k as f64 * al.ln() + ln_gamma(al) - ln_gamma(al + n as f64);
+            v + match alpha {
+                Some(al) => crp(al),
+                None => {
+                    let h = 1e-3;
+                    let terms: Vec<f64> = (1..60_000)
+                        .map(|t| t as f64 * h)
+                        .map(|al| crp(al) - al)
+                        .collect();
+                    let mx = terms.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                    mx + (terms.iter().map(|t| (t - mx).exp()).sum::<f64>() * h).ln()
+                }
+            }
+        })
+        .collect();
+    let mx = logp.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let z: f64 = logp.iter().map(|l| (l - mx).exp()).sum();
+    parts
+        .into_iter()
+        .zip(logp.iter().map(|l| (l - mx).exp() / z))
+        .collect()
+}
+
+/// Every move together, alpha resampled, against the exact posterior over
+/// all 203 partitions of six cells: the chain leaves the posterior invariant
+/// (detailed balance of each move) and reaches it.
+#[test]
+fn all_moves_with_alpha_resampled_match_the_exact_posterior() {
+    let reads = Reads::from_cells(vec![
+        vec![(0, 3, 0), (1, 1, 1)],
+        vec![(0, 2, 1), (1, 0, 2)],
+        vec![(0, 0, 3), (1, 2, 0)],
+        vec![(0, 1, 2), (1, 1, 1)],
+        vec![(0, 2, 0), (1, 0, 1)],
+        vec![(0, 0, 2), (1, 2, 1)],
+    ]);
+    let exact = exact_posterior(&reads, 2.0, None);
+    let model = Model::new(&reads, 2, settings(true, 2, None), None);
+    let config = McmcConfig {
+        n_samples: 40_000,
+        warmup: 500,
+        thin: 1,
+        seed: 21,
+    };
+    let chains = run_mcmc_parallel(&model, &config, 2);
+    let total = chains.iter().map(|c| c.samples.len()).sum::<usize>() as f64;
+    let mut freq: FxHashMap<Vec<u16>, f64> = FxHashMap::default();
+    for s in chains.iter().flat_map(|c| &c.samples) {
+        *freq.entry(s.z.clone()).or_default() += 1.0 / total;
+    }
+    let tv: f64 = exact
+        .iter()
+        .map(|(p, e)| (freq.get(p).copied().unwrap_or(0.0) - e).abs())
+        .sum::<f64>()
+        / 2.0;
+    assert!(
+        tv < 0.03,
+        "total variation {tv:.4} from the exact posterior"
+    );
+}
+
+/// Weighted, each batch's reads at a site keep their total and take the
+/// site's pooled fraction (up to the shrinkage of thinly read batches).
+#[test]
+fn batch_weights_keep_totals_and_match_the_pooled_fraction() {
+    // One site; batch 0: 80 of 100 converted; batch 1: 20 of 100.
+    let mut cells = Vec::new();
+    for (b, m) in [(0u16, 80u32), (1, 20)] {
+        for _ in 0..10 {
+            cells.push((b, vec![(0u32, m / 10, 10 - m / 10)]));
+        }
+    }
+    let batch_of: Vec<u16> = cells.iter().map(|c| c.0).collect();
+    let reads = Reads::from_cells(cells.into_iter().map(|c| c.1).collect());
+    let w = super::fit::batch_weights(&reads, &batch_of, 2, 1);
+    let p = (100.0 + 0.5) / (200.0 + 1.0);
+    for b in 0..2u16 {
+        let (mut won, mut wtot) = (0.0, 0.0);
+        for (c, &bc) in batch_of.iter().enumerate().filter(|(_, &x)| x == b) {
+            let (_, m, u) = reads.of(c);
+            won += w.on[c] * m[0] as f64;
+            wtot += w.on[c] * m[0] as f64 + w.off[c] * u[0] as f64;
+            assert_eq!(bc, b);
+        }
+        assert!((wtot - 100.0).abs() < 1e-9, "batch {b} total {wtot}");
+        // The batch's fraction, shrunk by 20 pseudo-reads toward p, is what
+        // the weights take out: most of the gap to p closes, not all.
+        let (m, n) = (if b == 0 { 80.0 } else { 20.0 }, 100.0);
+        let pb = (m + 20.0 * p) / (n + 20.0);
+        let expect = m * p / pb / (m * p / pb + (n - m) * (1.0 - p) / (1.0 - pb));
+        let got = won / wtot;
+        assert!((got - expect).abs() < 1e-9, "batch {b} fraction {got:.4}");
+        assert!((got - p).abs() < 0.08 && (m / n - p).abs() > 0.25);
+    }
+    assert!(
+        w.effective_share.iter().all(|&e| e > 0.5 && e <= 1.0),
+        "{:?}",
+        w.effective_share
+    );
+    assert_eq!(w.capped_share, 0.0);
 }

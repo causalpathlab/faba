@@ -65,12 +65,13 @@ pub struct ClusterArgs {
     #[arg(
         long,
         default_value_t = false,
-        help = "Do not cancel each fitted batch's shift at each site",
-        long_help = "Do not cancel each fitted batch's shift at each site. By default, with\n\
-                     more than one fitted batch, each batch's logit offset from the site's\n\
-                     pooled fraction is cancelled by reweighting its reads before clustering,\n\
-                     so clusters cannot be made of batches. That also removes a site's\n\
-                     difference between batches that differ in their cells."
+        help = "Do not weight reads to take the fitted batches out",
+        long_help = "Do not weight reads to take the fitted batches out. By default, with more\n\
+                     than one fitted batch, each read is weighted by the ratio of its site's\n\
+                     pooled fraction to its batch's there (importance weights, capped and\n\
+                     self-normalised per batch and site), so clusters cannot be made of\n\
+                     batches. That also removes a site's difference between batches that\n\
+                     differ in their cells."
     )]
     no_batch_correction: bool,
 
@@ -296,7 +297,7 @@ fn cluster(args: &ClusterArgs, dir: &Path, record: &mut RunRecord) -> anyhow::Re
         b.dedup();
         b
     };
-    let shift = (!args.no_batch_correction && batches.len() > 1).then(|| {
+    let weights = (!args.no_batch_correction && batches.len() > 1).then(|| {
         let batch_of: Vec<u16> = fitted
             .iter()
             .map(|&c| {
@@ -305,13 +306,26 @@ fn cluster(args: &ClusterArgs, dir: &Path, record: &mut RunRecord) -> anyhow::Re
                     .unwrap() as u16
             })
             .collect();
+        let w = fit::batch_weights(&fit_reads, &batch_of, batches.len(), data.sites.len());
         info!(
-            "cancelling the shifts of {} batches at each site",
-            batches.len()
+            "importance weights take out {} batches: effective share of reads {:?}, {:.2}% capped",
+            batches.len(),
+            w.effective_share
+                .iter()
+                .map(|e| format!("{e:.2}"))
+                .collect::<Vec<_>>(),
+            100.0 * w.capped_share
         );
-        fit::batch_shifts(&fit_reads, &batch_of, batches.len(), data.sites.len())
+        w
     });
-    let model = crp::Model::new(&fit_reads, data.sites.len(), settings, shift.as_deref());
+    let model = crp::Model::new(
+        &fit_reads,
+        data.sites.len(),
+        settings,
+        weights
+            .as_ref()
+            .map(|w| (w.on.as_slice(), w.off.as_slice())),
+    );
     let kept_draws = args.sweeps.saturating_sub(args.burn_in) / args.thin.max(1);
     let config = McmcConfig {
         n_samples: kept_draws.max(1),
@@ -403,8 +417,14 @@ fn cluster(args: &ClusterArgs, dir: &Path, record: &mut RunRecord) -> anyhow::Re
     );
     record.set_result("fit_memory_estimate_bytes", &memory);
     record.set_result(
-        "batches_corrected",
-        &shift.as_ref().map_or(0, |_| batches.len()),
+        "batch_weights",
+        &weights.as_ref().map(|w| {
+            serde_json::json!({
+                "batches": batches,
+                "effective_share": w.effective_share,
+                "capped_share": w.capped_share,
+            })
+        }),
     );
     info!(
         "{} clusters (sizes {:?}); K posterior {:?}; split R-hat K {:.2}, log posterior {:.2}",
