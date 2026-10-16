@@ -36,6 +36,8 @@ pub struct RunRecord {
     before: FxHashMap<String, Option<SystemTime>>,
     inputs: Map<String, Value>,
     options: Value,
+    /// What the run found, for a reader of the record (written when any).
+    results: Map<String, Value>,
 }
 
 impl RunRecord {
@@ -51,6 +53,7 @@ impl RunRecord {
             clock: Instant::now(),
             inputs: Map::new(),
             options: Value::Null,
+            results: Map::new(),
         }
     }
 
@@ -90,6 +93,11 @@ impl RunRecord {
         }
     }
 
+    /// Record one of the run's findings under `key`, in the record's `results`.
+    pub fn set_result<T: Serialize>(&mut self, key: &str, value: &T) {
+        self.results.insert(key.into(), to_value(value));
+    }
+
     /// Write the record with the outcome of the run. A failure to write is
     /// logged, not raised: it must never cost the run's own outputs.
     pub fn finish<R>(self, outcome: &anyhow::Result<R>) -> Option<PathBuf> {
@@ -111,7 +119,7 @@ impl RunRecord {
             t.duration_since(SystemTime::UNIX_EPOCH)
                 .map_or(0, |d| d.as_secs())
         };
-        let record = json!({
+        let mut record = json!({
             "faba_version": env!("CARGO_PKG_VERSION"),
             "job": self.job,
             "status": status,
@@ -124,6 +132,9 @@ impl RunRecord {
             "outputs": outputs,
             "options": self.options,
         });
+        if !self.results.is_empty() {
+            record["results"] = Value::Object(self.results);
+        }
         std::fs::create_dir_all(&self.dir)?;
         let path = self.dir.join(&self.file_name);
         std::fs::write(&path, serde_json::to_string_pretty(&record)?)

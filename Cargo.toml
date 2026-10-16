@@ -57,7 +57,7 @@ svg2pdf = { version = "0.13", default-features = false, features = ["text"] }
 ratatui-image = { version = "11.1", default-features = false, features = ["crossterm"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 legume-genomic-types = "0.6"
-legume-numeric = { version = "0.9", default-features = false, features = ["matrix", "param"] }
+legume-numeric = { version = "0.9", default-features = false, features = ["matrix", "param", "mcmc"] }
 
 anyhow = "1.0"
 clap = { version = "4.5.20", features = ["derive"] }

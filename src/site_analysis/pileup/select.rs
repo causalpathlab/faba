@@ -24,7 +24,7 @@ pub(super) fn parse_row_name_full(name: &str) -> Option<(&str, &str, &str, i64)>
 /// [`parse_row_name_full`] for either channel: whether the row is the
 /// modality's first (converted) channel, `None` for rows without one.
 /// Rows split with [`parse_feature_row`], so a gene symbol may hold `/`.
-pub(super) fn parse_row_channel(name: &str) -> Option<(&str, &str, &str, i64, Option<bool>)> {
+pub(crate) fn parse_row_channel(name: &str) -> Option<(&str, &str, &str, i64, Option<bool>)> {
     let row = parse_feature_row(name)?;
     let (detail, converted) = match row.subunit {
         Some(detail) => {

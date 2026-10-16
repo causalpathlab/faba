@@ -365,7 +365,7 @@ pub struct PileupArgs {
 
 /// Whether `text` matches `pattern`, `*` standing for any run of
 /// characters and `?` for one.
-fn wildcard(pattern: &str, text: &str) -> bool {
+pub(crate) fn wildcard(pattern: &str, text: &str) -> bool {
     let (p, t): (Vec<char>, Vec<char>) = (pattern.chars().collect(), text.chars().collect());
     let (mut pi, mut ti, mut star, mut mark) = (0, 0, None, 0);
     while ti < t.len() {
