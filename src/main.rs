@@ -265,23 +265,37 @@ Example:\n  \
 
     #[command(
         name = "cluster",
-        about = "Cluster cells by their own site reads (a Chinese-restaurant-process mixture)",
+        about = "Cluster cells by their own site reads: link communities (default), cell and gene modules (blocks), or a CRP mixture",
         long_about = "Cluster cells by their own site reads\n\n\
-            A Chinese-restaurant-process mixture over cells: at each site a cluster has its own\n\
-            converted fraction, integrated out under a Beta prior toward the site's pooled\n\
-            fraction, so the number of clusters is learned. Several chains run in parallel\n\
-            (single-cell Gibbs and split-merge moves); the reported partition is the\n\
-            least-squares summary of their draws, with each cell's confidence in it.\n\n\
-            Outputs, in the output directory:\n\
-            - {modality}_cell_clusters.parquet: every input cell's cluster, confidence and\n\
-              level offset (null for cells dropped by the filters)\n\
-            - {modality}_site_clusters.parquet: each site's reads and posterior fraction per cluster\n\
-            - {modality}_cluster.run.json: the run record, with the posterior over the number of\n\
-              clusters and split R-hat across chains",
+            Link communities (--model link, the default): a cell's reads at one gene's sites\n\
+            form a link, and each link belongs to one of --communities communities. A\n\
+            community is a methylation profile over sites; a cell has membership weights over\n\
+            the communities, sharing global weights so popular communities draw reads.\n\
+            Site fractions and memberships are integrated out; several chains of collapsed\n\
+            Gibbs and whole-cell swaps run in parallel, each move exact. Cells left out of\n\
+            the fit are placed against the fitted communities.\n\n\
+            Cell and gene modules (--model blocks): each link takes a cell role and a gene\n\
+            role; a (cell role, gene role) block shifts its sites' methylation on top of\n\
+            each site's baseline and each cell's own level, so gene roles are gene modules.\n\n\
+            A Chinese-restaurant-process mixture (--model crp): each cell in one cluster,\n\
+            the number of clusters learned, with split-merge moves and each cell's confidence.\n\n\
+            Outputs, in the output directory (link / crp):\n\
+            - {modality}_cell_communities.parquet / {modality}_cell_clusters.parquet: every input\n\
+              cell's community and memberships / cluster and confidence\n\
+            - {modality}_community_sites.parquet / {modality}_site_clusters.parquet: each site's\n\
+              reads and posterior fraction per community / cluster\n\
+            - {modality}_gene_communities.parquet (link): each gene's links per community\n\
+            - blocks: {modality}_cell_roles.parquet (each cell's roles and level),\n\
+              _gene_roles (each gene's roles), _blocks (each block's shift), and\n\
+              _block_genes, _block_cells, _block_sites (what each block holds, most\n\
+              enriched first)\n\
+            - {modality}_cluster.run.json: the run record, with split R-hat across chains\n\
+              and, with --holdout, held-out reads",
         after_long_help = "\
 Example:\n  \
-  faba cluster out/\n  \
-  faba cluster out/ --fit '*_wt_*' --chains 4 --sweeps 200"
+  faba cluster out/ --fit '*_wt_*' --communities 8\n  \
+  faba cluster out/ --fit '*_wt_*' --model blocks --cell-roles 8 --gene-roles 8\n  \
+  faba cluster out/ --model crp --chains 4 --sweeps 200"
     )]
     Cluster(ClusterArgs),
 

@@ -293,6 +293,7 @@ fn summaries_match_an_explicit_similarity_matrix() {
             z,
             alpha: 1.0,
             log_post: 0.0,
+            heldout: (0.0, 0.0),
         }
     };
     let chains: Vec<Chain> = (0..2)
@@ -612,4 +613,843 @@ fn settings_that_cannot_judge_or_fit_are_refused() {
     assert!(super::check(&few).is_err());
     let flat = parse(&["cluster", "x.zarr", "--prior-strength", "0"]);
     assert!(super::check(&flat).is_err());
+    for (flag, value) in [
+        ("--communities", "0"),
+        ("--communities", "65535"),
+        ("--membership-alpha", "0"),
+        ("--community-gamma", "-1"),
+        ("--holdout", "1"),
+        ("--holdout", "-0.1"),
+    ] {
+        let arg = format!("{flag}={value}");
+        let bad = parse(&["cluster", "x.zarr", &arg]);
+        assert!(super::check(&bad).is_err(), "{flag} {value} accepted");
+    }
+}
+
+// ---------------------------------------------------------------- links
+
+use super::link;
+
+/// Every labelling of two-community `links` with its exact posterior
+/// probability: memberships and site fractions integrated out in closed
+/// form, the global weight `beta_1 ~ Beta(gamma/2, gamma/2)` numerically.
+/// Also the posterior mean of the weight of the first link's community,
+/// `E[beta_(z_0)]`, which checks the global weights' updates.
+fn exact_link_posterior(
+    links: &link::Links,
+    sites: usize,
+    s: &link::Settings,
+) -> (Vec<(Vec<u16>, f64)>, f64) {
+    assert_eq!(s.k, 2);
+    let model = link::Model::new(links, sites, s.clone());
+    let n = links.len();
+    let half = s.gamma / 2.0;
+    let ln_prior = |b: f64| (half - 1.0) * (b.ln() + (1.0 - b).ln()) - ln_beta(half, half);
+    let grid: Vec<f64> = (0..2000).map(|i| (i as f64 + 0.5) / 2000.0).collect();
+    let mut out = Vec::new();
+    let mut weight_mean = Vec::new();
+    for code in 0..1usize << n {
+        let z: Vec<u16> = (0..n).map(|l| ((code >> l) & 1) as u16).collect();
+        let terms: Vec<f64> = grid
+            .iter()
+            .map(|&b| model.log_joint_of(&z, &[b, 1.0 - b]) + ln_prior(b))
+            .collect();
+        let mx = terms.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let w: Vec<f64> = terms.iter().map(|t| (t - mx).exp()).collect();
+        let mass: f64 = w.iter().sum();
+        let own = |b: f64| if z[0] == 0 { b } else { 1.0 - b };
+        weight_mean.push(grid.iter().zip(&w).map(|(&b, &x)| own(b) * x).sum::<f64>() / mass);
+        out.push((z, mx + mass.ln()));
+    }
+    let mx = out.iter().map(|x| x.1).fold(f64::NEG_INFINITY, f64::max);
+    let total: f64 = out.iter().map(|x| (x.1 - mx).exp()).sum();
+    let probs: Vec<(Vec<u16>, f64)> = out
+        .into_iter()
+        .map(|(z, l)| (z, (l - mx).exp() / total))
+        .collect();
+    let mean = probs
+        .iter()
+        .zip(&weight_mean)
+        .map(|((_, p), m)| p * m)
+        .sum();
+    (probs, mean)
+}
+
+/// Two cells, two genes (sites 0-1 and site 2): four links over two
+/// communities, every labelling enumerated.
+#[test]
+fn link_sampler_matches_the_exact_posterior() {
+    let reads = Reads::from_cells(vec![
+        vec![(0, 3, 0), (1, 0, 2), (2, 1, 1)],
+        vec![(0, 0, 3), (1, 2, 0), (2, 2, 0)],
+    ]);
+    let weighted = Weighted::new(&reads, None);
+    let links = link::Links::new(&weighted, &[0, 0, 1]);
+    assert_eq!(links.len(), 4);
+    let s = link::Settings {
+        k: 2,
+        alpha: 0.7,
+        gamma: 2.0,
+        strength: 2.0,
+    };
+    let (exact, own_weight) = exact_link_posterior(&links, 3, &s);
+    let model = link::Model::new(&links, 3, s);
+    let chains = run_mcmc_parallel(&model, &config(40_000, 500, 61), 2);
+    let total = chains.iter().map(Vec::len).sum::<usize>() as f64;
+    let mut freq: FxHashMap<&[u16], f64> = FxHashMap::default();
+    for d in chains.iter().flatten() {
+        *freq.entry(&d.z).or_default() += 1.0 / total;
+    }
+    let tv: f64 = exact
+        .iter()
+        .map(|(z, p)| (freq.get(z.as_slice()).copied().unwrap_or(0.0) - p).abs())
+        .sum::<f64>()
+        / 2.0;
+    assert!(
+        tv < 0.02,
+        "total variation {tv:.4} from the exact posterior"
+    );
+    let draws: Vec<&link::Draw> = chains.iter().flatten().collect();
+    let sampled = draws
+        .iter()
+        .map(|d| d.beta.get(d.z[0] as usize).copied().unwrap_or(0.0))
+        .sum::<f64>()
+        / draws.len() as f64;
+    assert!(
+        (sampled - own_weight).abs() < 0.01,
+        "E[beta of link 0's community]: sampled {sampled:.4}, exact {own_weight:.4}"
+    );
+}
+
+/// The cell swap's Metropolis-Hastings ratio is exactly the change in log
+/// joint, for every labelling, cell and pair of communities: checked
+/// directly, so an error too small to move the sampled frequencies still
+/// shows.
+#[test]
+fn link_swap_ratio_is_the_change_in_log_joint() {
+    let reads = Reads::from_cells(vec![
+        vec![(0, 3, 0), (1, 0, 2), (2, 1, 1), (3, 2, 2)],
+        vec![(0, 0, 3), (1, 2, 0), (2, 2, 0), (3, 0, 1)],
+        vec![(0, 1, 1), (2, 3, 1), (3, 1, 0)],
+    ]);
+    let weighted = Weighted::new(&reads, None);
+    let gene_of = [0, 0, 1, 2];
+    let links = link::Links::new(&weighted, &gene_of);
+    let s = link::Settings {
+        k: 3,
+        alpha: 0.7,
+        gamma: 2.0,
+        strength: 2.0,
+    };
+    let model = link::Model::new(&links, 4, s);
+    let beta = [0.5, 0.3, 0.2];
+    let n = links.len();
+    let mut checked = 0;
+    for code in 0..3usize.pow(n as u32) {
+        let z: Vec<u16> = (0..n)
+            .map(|l| ((code / 3usize.pow(l as u32)) % 3) as u16)
+            .collect();
+        for c in 0..3 {
+            for (k, k2) in [(0, 1), (0, 2), (1, 2)] {
+                if let Some((delta, exact)) = model.swap_check(&z, &beta, c, k, k2) {
+                    assert!(
+                        (delta - exact).abs() < 1e-9,
+                        "z {z:?} cell {c} swap {k}<->{k2}: {delta} vs {exact}"
+                    );
+                    checked += 1;
+                }
+            }
+        }
+    }
+    assert!(checked > 1000, "{checked} swaps checked");
+}
+
+/// Cells of three planted within-gene patterns, genes of four sites each.
+fn planted_links(cells: usize, genes: usize, seed: u64) -> (Reads, Vec<u32>, Vec<u16>) {
+    let sites = genes * 4;
+    let mut rng = SmallRng::seed_from_u64(seed);
+    let base: Vec<f64> = (0..sites).map(|_| rng.random_range(0.1..0.4)).collect();
+    let frac: Vec<Vec<f64>> = (0..3)
+        .map(|_| {
+            base.iter()
+                .map(|&p| {
+                    if rng.random::<f64>() < 0.4 {
+                        rng.random_range(0.0..0.9)
+                    } else {
+                        p
+                    }
+                })
+                .collect()
+        })
+        .collect();
+    let truth: Vec<u16> = (0..cells).map(|c| (c % 3) as u16).collect();
+    let fracs: Vec<&[f64]> = truth.iter().map(|&t| frac[t as usize].as_slice()).collect();
+    let gene_of: Vec<u32> = (0..sites as u32).map(|s| s / 4).collect();
+    (draw_cells(&fracs, 0.3, &mut rng), gene_of, truth)
+}
+
+/// Each cell's most probable community: its chain's posterior-mean
+/// membership.
+fn main_community(d: &link::Draw, k: usize) -> Vec<u16> {
+    summary::main_labels(&d.means().membership, k)
+}
+
+#[test]
+fn links_recover_planted_cell_patterns() {
+    let (reads, gene_of, truth) = planted_links(240, 60, 71);
+    let weighted = Weighted::new(&reads, None);
+    let links = link::Links::new(&weighted, &gene_of);
+    let s = link::Settings {
+        k: 3,
+        alpha: 0.5,
+        gamma: 1.0,
+        strength: 2.0,
+    };
+    let model = link::Model::new(&links, gene_of.len(), s);
+    let chains = run_mcmc_parallel(&model, &config(20, 80, 73), 2);
+    for c in &chains {
+        let z = main_community(c.last().unwrap(), 3);
+        let score = ari(&z, &truth);
+        assert!(score > 0.9, "ARI {score:.3}");
+    }
+}
+
+/// Cells left out of the fit, placed against the fitted communities, fall
+/// with the fitted cells of their own pattern.
+#[test]
+fn control_cells_are_placed_by_their_pattern() {
+    let (reads, gene_of, truth) = planted_links(360, 60, 109);
+    let fit: Vec<usize> = (0..240).collect();
+    let rest: Vec<usize> = (240..360).collect();
+    let (fit_reads, rest_reads) = (reads.subset(&fit), reads.subset(&rest));
+    let weighted = Weighted::new(&fit_reads, None);
+    let links = link::Links::new(&weighted, &gene_of);
+    let s = link::Settings {
+        k: 3,
+        alpha: 0.5,
+        gamma: 1.0,
+        strength: 2.0,
+    };
+    let model = link::Model::new(&links, gene_of.len(), s);
+    let chains = run_mcmc_parallel(&model, &config(20, 80, 111), 1);
+    let last = chains[0].last().unwrap();
+    let means = last.means();
+    let profile = model.profile(&means.z);
+    let rest_weighted = Weighted::new(&rest_reads, None);
+    let rest_links = link::Links::new(&rest_weighted, &gene_of);
+    let placed = model.place(&rest_links, &profile, &last.beta, 113);
+    let fitted = summary::main_labels(&means.membership, 3);
+    let placed = summary::main_labels(&placed, 3);
+    // Placed cells and fitted cells of one pattern share a community.
+    let all: Vec<u16> = fitted.iter().chain(&placed).copied().collect();
+    let score = ari(&all, &truth);
+    assert!(score > 0.9, "ARI {score:.3} over fitted and placed cells");
+}
+
+/// Every cell alike: the reads condense into one community instead of
+/// being split by their own outcomes.
+#[test]
+fn links_condense_without_structure() {
+    let (reads, gene_of, _) = planted_links(240, 60, 79);
+    // Re-draw every cell from the first pattern only.
+    let mut rng = SmallRng::seed_from_u64(80);
+    let same: Vec<f64> = (0..gene_of.len())
+        .map(|_| rng.random_range(0.1..0.6))
+        .collect();
+    let fracs: Vec<&[f64]> = (0..reads.cells()).map(|_| same.as_slice()).collect();
+    let reads = draw_cells(&fracs, 0.3, &mut rng);
+    let weighted = Weighted::new(&reads, None);
+    let links = link::Links::new(&weighted, &gene_of);
+    let s = link::Settings {
+        k: 4,
+        alpha: 0.5,
+        gamma: 1.0,
+        strength: 2.0,
+    };
+    let model = link::Model::new(&links, gene_of.len(), s);
+    let chains = run_mcmc_parallel(&model, &config(20, 150, 81), 2);
+    for c in &chains {
+        let share = link::read_shares(&links, &c.last().unwrap().z, 4);
+        let top = share.iter().cloned().fold(0.0, f64::max);
+        assert!(top > 0.9, "read shares {share:?}");
+    }
+}
+
+/// A smaller Dirichlet concentration gives cells more concentrated
+/// memberships (the per-cell urn condenses harder).
+#[test]
+fn smaller_alpha_concentrates_memberships() {
+    let (reads, gene_of, _) = planted_links(150, 40, 83);
+    let weighted = Weighted::new(&reads, None);
+    let links = link::Links::new(&weighted, &gene_of);
+    let top = |alpha: f64| {
+        let s = link::Settings {
+            k: 3,
+            alpha,
+            gamma: 1.0,
+            strength: 2.0,
+        };
+        let model = link::Model::new(&links, gene_of.len(), s);
+        let chains = run_mcmc_parallel(&model, &config(10, 40, 85), 1);
+        let m = &chains[0].last().unwrap().means().membership;
+        m.chunks(3)
+            .map(|row| row.iter().cloned().fold(0.0f32, f32::max) as f64)
+            .sum::<f64>()
+            / 150.0
+    };
+    let (sharp, flat) = (top(0.1), top(5.0));
+    assert!(
+        sharp > flat + 0.1,
+        "mean top membership: alpha 0.1 {sharp:.3}, alpha 5 {flat:.3}"
+    );
+}
+
+/// The global weights' update, labels held fixed, leaves `p(beta | z)`
+/// invariant: draws of `beta_1` match its exact conditional mean
+/// (numerical integral) for a large labelling, where a wrong table count
+/// would show.
+#[test]
+fn global_weights_follow_their_conditional() {
+    let (reads, gene_of, truth) = planted_links(300, 40, 91);
+    let weighted = Weighted::new(&reads, None);
+    let links = link::Links::new(&weighted, &gene_of);
+    let s = link::Settings {
+        k: 2,
+        alpha: 0.5,
+        gamma: 2.0,
+        strength: 2.0,
+    };
+    let model = link::Model::new(&links, gene_of.len(), s);
+    // Cells of pattern 0 in community 0, the rest in 1: unequal sizes.
+    let z: Vec<u16> = links
+        .cell
+        .iter()
+        .map(|&c| u16::from(truth[c as usize] != 0))
+        .collect();
+    let grid: Vec<f64> = (1..4000).map(|i| i as f64 / 4000.0).collect();
+    let terms: Vec<f64> = grid
+        .iter()
+        .map(|&b| model.log_joint_of(&z, &[b, 1.0 - b]))
+        .collect();
+    let mx = terms.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let w: Vec<f64> = terms.iter().map(|t| (t - mx).exp()).collect();
+    let mass: f64 = w.iter().sum();
+    let exact = grid.iter().zip(&w).map(|(b, x)| b * x).sum::<f64>() / mass;
+    let exact_sd = (grid
+        .iter()
+        .zip(&w)
+        .map(|(b, x)| (b - exact).powi(2) * x)
+        .sum::<f64>()
+        / mass)
+        .sqrt();
+    let draws: Vec<f64> = model
+        .beta_draws(&z, 4000, 93)
+        .into_iter()
+        .skip(200)
+        .collect();
+    let sampled = draws.iter().sum::<f64>() / draws.len() as f64;
+    let sd = (draws.iter().map(|b| (b - sampled).powi(2)).sum::<f64>() / draws.len() as f64).sqrt();
+    // The mean alone misses an update off by a common factor: the spread
+    // shows it.
+    assert!(
+        (sampled - exact).abs() < 0.01 && (sd / exact_sd - 1.0).abs() < 0.15,
+        "beta_1 | z: sampled mean {sampled:.4} sd {sd:.4}, exact mean {exact:.4} sd {exact_sd:.4}"
+    );
+}
+
+/// A cell's reads are grouped by gene into links, and each link knows its
+/// gene.
+#[test]
+fn links_group_a_cells_reads_by_gene() {
+    // Sites 0 and 2 in gene 0, site 1 in gene 1.
+    let reads = Reads::from_cells(vec![vec![(0, 1, 0), (1, 0, 1), (2, 2, 0)], vec![(1, 1, 1)]]);
+    let weighted = Weighted::new(&reads, None);
+    let gene_of = [0, 1, 0];
+    let links = link::Links::new(&weighted, &gene_of);
+    assert_eq!(links.len(), 3);
+    assert_eq!(links.cell, vec![0, 0, 1]);
+    assert_eq!(links.genes_of(&gene_of), vec![0, 1, 1]);
+    assert_eq!(links.cell_ptr, vec![0, 2, 3]);
+    // Cell 0's gene-0 link holds both of its gene-0 sites.
+    assert_eq!(&links.site[links.ptr[0]..links.ptr[1]], &[0, 2]);
+}
+
+use super::blocks;
+
+fn sigmoid(x: f64) -> f64 {
+    1.0 / (1.0 + (-x).exp())
+}
+
+/// A link labelling under the block model: cell roles and gene roles.
+type Labels = (Vec<u16>, Vec<u16>);
+
+/// Two cells, two genes (sites 0-1 and site 2): four links, two cell roles
+/// and two gene roles, the block shifts and cell baselines held fixed.
+/// Every labelling's probability is computed here from the model's
+/// definition (Dirichlet-multinomial urns for cells and genes, Binomial
+/// reads at `logit p = site baseline + cell baseline + shift`), not from
+/// the sampler's own log joint.
+#[test]
+fn block_labels_match_the_exact_posterior_given_shifts() {
+    let reads = Reads::from_cells(vec![
+        vec![(0, 3, 0), (1, 0, 2), (2, 1, 1)],
+        vec![(0, 0, 3), (1, 2, 0), (2, 2, 0)],
+    ]);
+    let weighted = Weighted::new(&reads, None);
+    let gene_of = [0, 0, 1];
+    let links = link::Links::new(&weighted, &gene_of);
+    let shifts = vec![1.2, -0.4, -1.0, 0.7];
+    let cell_base = vec![0.5, -0.3];
+    let s = blocks::Settings {
+        cell_roles: 2,
+        gene_roles: 2,
+        alpha: 0.8,
+        gene_alpha: 1.3,
+        shift_sd: 1.0,
+        cell_sd: 1.0,
+    };
+    let model = blocks::Model::new(&links, &gene_of, 3, s.clone());
+    let mu = model.baseline().to_vec();
+    let link_gene = links.genes_of(&gene_of);
+    let n = links.len();
+    let urn = |counts: &[f64], conc: f64| {
+        let r = counts.len() as f64;
+        ln_gamma(conc) - ln_gamma(conc + counts.iter().sum::<f64>())
+            + counts
+                .iter()
+                .map(|&x| ln_gamma(x + conc / r) - ln_gamma(conc / r))
+                .sum::<f64>()
+    };
+    // Each labelling, (cell roles, gene roles), with its log probability.
+    let mut exact: Vec<(Labels, f64)> = Vec::new();
+    for code in 0..1usize << (2 * n) {
+        let a: Vec<u16> = (0..n).map(|l| ((code >> (2 * l)) & 1) as u16).collect();
+        let b: Vec<u16> = (0..n).map(|l| ((code >> (2 * l + 1)) & 1) as u16).collect();
+        let mut v = 0.0;
+        for c in 0..2 {
+            let mut counts = [0.0; 2];
+            (0..n)
+                .filter(|&l| links.cell[l] as usize == c)
+                .for_each(|l| counts[a[l] as usize] += 1.0);
+            v += urn(&counts, s.alpha);
+        }
+        for g in 0..2 {
+            let mut counts = [0.0; 2];
+            (0..n)
+                .filter(|&l| link_gene[l] as usize == g)
+                .for_each(|l| counts[b[l] as usize] += 1.0);
+            v += urn(&counts, s.gene_alpha);
+        }
+        for l in 0..n {
+            let shift =
+                shifts[a[l] as usize * 2 + b[l] as usize] + cell_base[links.cell[l] as usize];
+            let (sites, m, u) = links.of(l);
+            for i in 0..sites.len() {
+                let p = sigmoid(mu[sites[i] as usize] + shift);
+                v += m[i] * p.ln() + u[i] * (1.0 - p).ln();
+            }
+        }
+        exact.push(((a, b), v));
+    }
+    let mx = exact.iter().map(|e| e.1).fold(f64::NEG_INFINITY, f64::max);
+    let total: f64 = exact.iter().map(|e| (e.1 - mx).exp()).sum();
+    let labels: Vec<Labels> = [115, 116]
+        .iter()
+        .flat_map(|&seed| model.label_draws(&shifts, &cell_base, 500, 60_000, seed))
+        .collect();
+    let draws = labels.len() as f64;
+    let mut freq: FxHashMap<Labels, f64> = FxHashMap::default();
+    for z in labels {
+        *freq.entry(z).or_default() += 1.0 / draws;
+    }
+    let tv: f64 = exact
+        .iter()
+        .map(|(z, l)| (freq.get(z).copied().unwrap_or(0.0) - (l - mx).exp() / total).abs())
+        .sum::<f64>()
+        / 2.0;
+    assert!(
+        tv < 0.02,
+        "total variation {tv:.4} from the exact posterior"
+    );
+}
+
+/// Cells of three planted cell roles, genes of two planted gene roles,
+/// each (cell role, gene role) block shifting its sites' methylation.
+fn planted_blocks(
+    cells: usize,
+    genes: usize,
+    seed: u64,
+) -> (Reads, Vec<u32>, Vec<u16>, Vec<u16>, Vec<f64>) {
+    let mut rng = SmallRng::seed_from_u64(seed);
+    let sites = genes * 4;
+    let gene_of: Vec<u32> = (0..sites as u32).map(|s| s / 4).collect();
+    let mu: Vec<f64> = (0..sites).map(|_| rng.random_range(-1.5..0.5)).collect();
+    let shift = [[1.5, -1.5], [-1.5, 1.5], [0.0, 0.0]];
+    let cell_role: Vec<u16> = (0..cells).map(|c| (c % 3) as u16).collect();
+    let gene_role: Vec<u16> = (0..genes).map(|g| (g % 2) as u16).collect();
+    // Each cell's own level, whatever its role.
+    let level: Vec<f64> = (0..cells).map(|_| rng.random_range(-1.0..1.0)).collect();
+    let fracs: Vec<Vec<f64>> = cell_role
+        .iter()
+        .zip(&level)
+        .map(|(&r, &v)| {
+            (0..sites)
+                .map(|s| {
+                    sigmoid(mu[s] + v + shift[r as usize][gene_role[gene_of[s] as usize] as usize])
+                })
+                .collect()
+        })
+        .collect();
+    let refs: Vec<&[f64]> = fracs.iter().map(Vec::as_slice).collect();
+    (
+        draw_cells(&refs, 0.5, &mut rng),
+        gene_of,
+        cell_role,
+        gene_role,
+        level,
+    )
+}
+
+/// The shift update, labels held fixed, leaves its conditional invariant:
+/// draws of `delta[0][0]` match the exact conditional's mean and spread
+/// (numerical integral of its prior times its block's Binomial reads),
+/// with many reads in the block and with few, where the prior counts.
+#[test]
+fn block_shifts_follow_their_conditional() {
+    check_shift_conditional(90, 20, 1.0);
+    check_shift_conditional(6, 2, 0.5);
+}
+
+fn check_shift_conditional(cells: usize, genes: usize, shift_sd: f64) {
+    let (reads, gene_of, cell_role, gene_role, _) = planted_blocks(cells, genes, 117);
+    let weighted = Weighted::new(&reads, None);
+    let links = link::Links::new(&weighted, &gene_of);
+    let s = blocks::Settings {
+        cell_roles: 3,
+        gene_roles: 2,
+        alpha: 1.0,
+        gene_alpha: 1.0,
+        shift_sd,
+        cell_sd: 1.0,
+    };
+    let model = blocks::Model::new(&links, &gene_of, gene_of.len(), s.clone());
+    let mu = model.baseline().to_vec();
+    let link_gene = links.genes_of(&gene_of);
+    let a: Vec<u16> = links.cell.iter().map(|&c| cell_role[c as usize]).collect();
+    let b: Vec<u16> = link_gene.iter().map(|&g| gene_role[g as usize]).collect();
+    let entries: Vec<(f64, f64, f64)> = (0..links.len())
+        .filter(|&l| a[l] == 0 && b[l] == 0)
+        .flat_map(|l| {
+            let (sites, m, u) = links.of(l);
+            (0..sites.len())
+                .map(|i| (mu[sites[i] as usize], m[i], u[i]))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    let grid: Vec<f64> = (0..8000)
+        .map(|i| -4.0 + 8.0 * (i as f64 + 0.5) / 8000.0)
+        .collect();
+    let terms: Vec<f64> = grid
+        .iter()
+        .map(|&d| {
+            -d * d / (2.0 * s.shift_sd * s.shift_sd)
+                + entries
+                    .iter()
+                    .map(|&(mu, m, u)| {
+                        let p = sigmoid(mu + d);
+                        m * p.ln() + u * (1.0 - p).ln()
+                    })
+                    .sum::<f64>()
+        })
+        .collect();
+    let mx = terms.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let w: Vec<f64> = terms.iter().map(|t| (t - mx).exp()).collect();
+    let mass: f64 = w.iter().sum();
+    let exact = grid.iter().zip(&w).map(|(d, x)| d * x).sum::<f64>() / mass;
+    let exact_sd = (grid
+        .iter()
+        .zip(&w)
+        .map(|(d, x)| (d - exact).powi(2) * x)
+        .sum::<f64>()
+        / mass)
+        .sqrt();
+    let draws: Vec<f64> = model
+        .shift_draws(&a, &b, 4000, 119)
+        .into_iter()
+        .skip(200)
+        .collect();
+    let sampled = draws.iter().sum::<f64>() / draws.len() as f64;
+    let sd = (draws.iter().map(|d| (d - sampled).powi(2)).sum::<f64>() / draws.len() as f64).sqrt();
+    assert!(
+        (sampled - exact).abs() < 0.1 * exact_sd && (sd / exact_sd - 1.0).abs() < 0.1,
+        "{cells} cells: delta[0][0] | labels: sampled mean {sampled:.4} sd {sd:.4}, exact mean {exact:.4} sd {exact_sd:.4}"
+    );
+}
+
+/// Planted cell roles and gene roles are both recovered (cells by their
+/// main cell role, genes by their main gene role) though every cell has its
+/// own level, which its baseline takes.
+#[test]
+fn blocks_recover_planted_cell_and_gene_roles() {
+    let (reads, gene_of, cell_role, gene_role, level) = planted_blocks(240, 40, 121);
+    let weighted = Weighted::new(&reads, None);
+    let links = link::Links::new(&weighted, &gene_of);
+    let s = blocks::Settings {
+        cell_roles: 3,
+        gene_roles: 2,
+        alpha: 0.5,
+        gene_alpha: 0.5,
+        shift_sd: 1.5,
+        cell_sd: 1.0,
+    };
+    let model = blocks::Model::new(&links, &gene_of, gene_of.len(), s);
+    let chains = run_mcmc_parallel(&model, &config(20, 100, 123), 2);
+    // Both planted gene roles shift strongly, and both chains name the same
+    // genes as each one's most enriched.
+    let summary = blocks::summarize(&model, &chains);
+    assert_eq!(summary.strong_gene_roles, vec![2, 2]);
+    assert!(
+        summary.top_gene_overlap.iter().all(|&o| o > 0.9),
+        "top-gene overlap between chains {:?}",
+        summary.top_gene_overlap
+    );
+    for c in &chains {
+        let means = c.last().unwrap().means(false);
+        let cells = summary::main_labels(&means.cell, 3);
+        let genes = summary::main_labels(&means.gene, 2);
+        let (ac, ag) = (ari(&cells, &cell_role), ari(&genes, &gene_role));
+        assert!(ac > 0.9 && ag > 0.9, "ARI cells {ac:.3}, genes {ag:.3}");
+        // Each cell's level is recovered as its baseline, not as a role.
+        let r = correlation(&means.cell_base, &level);
+        assert!(r > 0.8, "baseline vs planted level: r {r:.3}");
+    }
+}
+
+fn correlation(x: &[f64], y: &[f64]) -> f64 {
+    let n = x.len() as f64;
+    let (mx, my) = (x.iter().sum::<f64>() / n, y.iter().sum::<f64>() / n);
+    let cov: f64 = x.iter().zip(y).map(|(a, b)| (a - mx) * (b - my)).sum();
+    let vx: f64 = x.iter().map(|a| (a - mx).powi(2)).sum();
+    let vy: f64 = y.iter().map(|b| (b - my).powi(2)).sum();
+    cov / (vx * vy).sqrt()
+}
+
+/// A cell baseline's update, labels and shifts held fixed, leaves its
+/// conditional invariant: draws of cell 0's baseline match the exact
+/// conditional's mean and spread (its Normal prior times its links'
+/// Binomial reads at their blocks' shifts), with many reads and with few.
+#[test]
+fn cell_baselines_follow_their_conditional() {
+    check_baseline_conditional(0.5, 1.0);
+    check_baseline_conditional(0.05, 0.5);
+}
+
+fn check_baseline_conditional(cover: f64, cell_sd: f64) {
+    let mut rng = SmallRng::seed_from_u64(125);
+    let fracs: Vec<Vec<f64>> = (0..4)
+        .map(|_| (0..40).map(|_| rng.random_range(0.1..0.6)).collect())
+        .collect();
+    let refs: Vec<&[f64]> = fracs.iter().map(Vec::as_slice).collect();
+    let reads = draw_cells(&refs, cover, &mut rng);
+    let gene_of: Vec<u32> = (0..40u32).map(|s| s / 4).collect();
+    let weighted = Weighted::new(&reads, None);
+    let links = link::Links::new(&weighted, &gene_of);
+    let shifts = vec![0.8, -0.5, 0.3, -1.1];
+    let s = blocks::Settings {
+        cell_roles: 2,
+        gene_roles: 2,
+        alpha: 1.0,
+        gene_alpha: 1.0,
+        shift_sd: 1.0,
+        cell_sd,
+    };
+    let model = blocks::Model::new(&links, &gene_of, 40, s);
+    let mu = model.baseline().to_vec();
+    let link_gene = links.genes_of(&gene_of);
+    let a: Vec<u16> = (0..links.len()).map(|l| (l % 2) as u16).collect();
+    let b: Vec<u16> = link_gene.iter().map(|&g| (g % 2) as u16).collect();
+    let entries: Vec<(f64, f64, f64)> = (0..links.len())
+        .filter(|&l| links.cell[l] == 0)
+        .flat_map(|l| {
+            let shift = shifts[a[l] as usize * 2 + b[l] as usize];
+            let (sites, m, u) = links.of(l);
+            (0..sites.len())
+                .map(|i| (mu[sites[i] as usize] + shift, m[i], u[i]))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    let grid: Vec<f64> = (0..8000)
+        .map(|i| -4.0 + 8.0 * (i as f64 + 0.5) / 8000.0)
+        .collect();
+    let terms: Vec<f64> = grid
+        .iter()
+        .map(|&v| {
+            -v * v / (2.0 * cell_sd * cell_sd)
+                + entries
+                    .iter()
+                    .map(|&(x, m, u)| {
+                        let p = sigmoid(x + v);
+                        m * p.ln() + u * (1.0 - p).ln()
+                    })
+                    .sum::<f64>()
+        })
+        .collect();
+    let mx = terms.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let w: Vec<f64> = terms.iter().map(|t| (t - mx).exp()).collect();
+    let mass: f64 = w.iter().sum();
+    let exact = grid.iter().zip(&w).map(|(v, x)| v * x).sum::<f64>() / mass;
+    let exact_sd = (grid
+        .iter()
+        .zip(&w)
+        .map(|(v, x)| (v - exact).powi(2) * x)
+        .sum::<f64>()
+        / mass)
+        .sqrt();
+    let draws: Vec<f64> = model
+        .baseline_draws(&a, &b, &shifts, 4000, 127)
+        .into_iter()
+        .skip(200)
+        .collect();
+    let sampled = draws.iter().sum::<f64>() / draws.len() as f64;
+    let sd = (draws.iter().map(|v| (v - sampled).powi(2)).sum::<f64>() / draws.len() as f64).sqrt();
+    assert!(
+        (sampled - exact).abs() < 0.1 * exact_sd && (sd / exact_sd - 1.0).abs() < 0.1,
+        "cover {cover}: cell 0 baseline | rest: sampled mean {sampled:.4} sd {sd:.4}, exact mean {exact:.4} sd {exact_sd:.4}"
+    );
+}
+
+/// Each block's enriched genes and cells are the planted ones: a gene's
+/// most enriched block lies in its planted gene role, a cell's in its
+/// planted cell role, and a planted block's sites carry its shift.
+#[test]
+fn blocks_report_what_is_enriched_in_each_block() {
+    let (reads, gene_of, cell_role, gene_role, _) = planted_blocks(240, 40, 129);
+    let weighted = Weighted::new(&reads, None);
+    let links = link::Links::new(&weighted, &gene_of);
+    let s = blocks::Settings {
+        cell_roles: 3,
+        gene_roles: 2,
+        alpha: 0.5,
+        gene_alpha: 0.5,
+        shift_sd: 1.5,
+        cell_sd: 1.0,
+    };
+    let model = blocks::Model::new(&links, &gene_of, gene_of.len(), s);
+    let chains = run_mcmc_parallel(&model, &config(20, 100, 131), 1);
+    let means = chains[0].last().unwrap().means(true);
+    let blocks = 6;
+    let top = |enrichment: &[f64]| -> Vec<u16> {
+        enrichment
+            .chunks(blocks)
+            .map(|row| {
+                (0..blocks)
+                    .max_by(|&a, &b| row[a].total_cmp(&row[b]))
+                    .unwrap() as u16
+            })
+            .collect()
+    };
+    // A gene's top block names its gene role, a cell's its cell role.
+    let genes: Vec<u16> = top(&means.gene_enrichment())
+        .iter()
+        .map(|k| k % 2)
+        .collect();
+    let cells: Vec<u16> = top(&means.cell_enrichment())
+        .iter()
+        .map(|k| k / 2)
+        .collect();
+    let (ag, ac) = (ari(&genes, &gene_role), ari(&cells, &cell_role));
+    assert!(
+        ag > 0.9 && ac > 0.9,
+        "top-block ARI: genes {ag:.3}, cells {ac:.3}"
+    );
+    // Sites' lift in a block follows the block's shift, where the block
+    // holds enough of the site's reads to say.
+    let lift = means.site_lift(model.baseline());
+    let (mut x, mut y) = (Vec::new(), Vec::new());
+    for (at, &l) in lift.iter().enumerate() {
+        if means.site_on[at] + means.site_off[at] >= 20.0 {
+            x.push(l);
+            y.push(means.shift[at % blocks]);
+        }
+    }
+    let r = correlation(&x, &y);
+    assert!(r > 0.8, "site lift vs block shift: r {r:.3}");
+}
+
+/// The held-out split: fit and held reads partition the input entry by
+/// entry, the held share is near the fraction asked, and a seed gives the
+/// same split every time (another seed, another split).
+#[test]
+fn hold_out_partitions_the_entries_by_seed() {
+    let mut rng = SmallRng::seed_from_u64(133);
+    let fracs: Vec<Vec<f64>> = (0..200).map(|_| vec![0.4; 100]).collect();
+    let refs: Vec<&[f64]> = fracs.iter().map(Vec::as_slice).collect();
+    let reads = draw_cells(&refs, 0.5, &mut rng);
+    let (fit, held) = read::hold_out(&reads, 0.2, 9);
+    assert_eq!((fit.cells(), held.cells()), (reads.cells(), reads.cells()));
+    for c in 0..reads.cells() {
+        let mut both: Vec<(u32, u32, u32)> = [fit.of(c), held.of(c)]
+            .iter()
+            .flat_map(|(s, m, u)| (0..s.len()).map(|i| (s[i], m[i], u[i])).collect::<Vec<_>>())
+            .collect();
+        both.sort_unstable();
+        let (s, m, u) = reads.of(c);
+        let all: Vec<(u32, u32, u32)> = (0..s.len()).map(|i| (s[i], m[i], u[i])).collect();
+        assert_eq!(
+            both, all,
+            "cell {c}: fit and held do not partition its entries"
+        );
+    }
+    let share = held.site.len() as f64 / reads.site.len() as f64;
+    assert!((share - 0.2).abs() < 0.02, "held share {share:.3}");
+    let again = read::hold_out(&reads, 0.2, 9).1;
+    assert_eq!(again.site, held.site);
+    assert_ne!(read::hold_out(&reads, 0.2, 10).1.site, held.site);
+}
+
+/// Held-out reads are scored as finite log-likelihoods by every model,
+/// even at a site so deeply read and so fully converted that its fraction
+/// rounds against 1.
+#[test]
+fn held_out_scores_are_finite_at_extreme_sites() {
+    // Site 0: thousands of reads, all converted; sites 1-3 ordinary.
+    let cells: Vec<Vec<(u32, u32, u32)>> = (0..12)
+        .map(|c| vec![(0, 5000, 0), (1, 2, 1), (2, (c % 3) as u32, 2), (3, 1, 1)])
+        .collect();
+    let reads = Reads::from_cells(cells);
+    let (fit, held) = read::hold_out(&reads, 0.5, 3);
+    let gene_of = vec![0u32, 0, 1, 1];
+    let weighted = Weighted::new(&fit, None);
+    let links = link::Links::new(&weighted, &gene_of);
+    let s = blocks::Settings {
+        cell_roles: 2,
+        gene_roles: 2,
+        alpha: 1.0,
+        gene_alpha: 1.0,
+        shift_sd: 3.0,
+        cell_sd: 3.0,
+    };
+    let model = blocks::Model::new(&links, &gene_of, 4, s).with_heldout(&held, &gene_of);
+    let chains = run_mcmc_parallel(&model, &config(30, 20, 135), 1);
+    let summary = blocks::summarize(&model, &chains);
+    assert!(
+        summary.heldout_per_read.is_some_and(f64::is_finite),
+        "blocks held-out {:?}",
+        summary.heldout_per_read
+    );
+    let s = link::Settings {
+        k: 2,
+        alpha: 0.5,
+        gamma: 1.0,
+        strength: 2.0,
+    };
+    let model = link::Model::new(&links, 4, s).with_heldout(&held);
+    let chains = run_mcmc_parallel(&model, &config(30, 20, 137), 1);
+    let summary = link::summarize(&model, &links, &chains);
+    assert!(
+        summary.heldout_per_read.is_some_and(f64::is_finite),
+        "link held-out {:?}",
+        summary.heldout_per_read
+    );
 }

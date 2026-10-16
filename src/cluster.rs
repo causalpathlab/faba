@@ -13,9 +13,11 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 
+mod blocks;
 mod crp;
 mod embed;
 mod fit;
+mod link;
 mod read;
 mod summary;
 mod write;
@@ -99,6 +101,69 @@ pub struct ClusterArgs {
 
     #[arg(
         long,
+        value_enum,
+        default_value = "link",
+        help = "link: each (cell, gene) link in a community, cells with memberships; blocks: cell roles and gene roles (gene modules) with a methylation shift per pair; crp: each cell in one cluster"
+    )]
+    model: ModelKind,
+
+    #[arg(long, default_value_t = 8, help = "Communities, with --model link")]
+    communities: usize,
+
+    #[arg(
+        long,
+        default_value_t = 0.5,
+        help = "With --model link or blocks: concentration of each cell's membership (smaller: cells condense onto fewer communities or roles)"
+    )]
+    membership_alpha: f64,
+
+    #[arg(
+        long,
+        default_value_t = 1.0,
+        help = "With --model link: concentration of the communities' global weights"
+    )]
+    community_gamma: f64,
+
+    #[arg(long, default_value_t = 8, help = "Cell roles, with --model blocks")]
+    cell_roles: usize,
+
+    #[arg(
+        long,
+        default_value_t = 8,
+        help = "Gene roles (gene modules), with --model blocks"
+    )]
+    gene_roles: usize,
+
+    #[arg(
+        long,
+        default_value_t = 0.5,
+        help = "With --model blocks: concentration of each gene's role weights"
+    )]
+    gene_alpha: f64,
+
+    #[arg(
+        long,
+        default_value_t = 1.0,
+        help = "With --model blocks: prior sd of each (cell role, gene role) block's methylation shift, on the logit scale"
+    )]
+    shift_sd: f64,
+
+    #[arg(
+        long,
+        default_value_t = 1.0,
+        help = "With --model blocks: prior sd of each cell's own methylation level, on the logit scale"
+    )]
+    cell_sd: f64,
+
+    #[arg(
+        long,
+        default_value_t = 0.0,
+        help = "Share of (cell, site) entries held out of the fit and scored at every kept draw, to compare models; the written tables then hold only the fitted share of the reads"
+    )]
+    holdout: f64,
+
+    #[arg(
+        long,
         default_value_t = 10,
         help = "Smallest cluster reported: smaller ones' cells go to their most probable larger cluster"
     )]
@@ -155,6 +220,14 @@ pub struct ClusterArgs {
         help = "Random seed (chain i uses seed + i)"
     )]
     seed: u64,
+}
+
+/// Which mixture `faba cluster` fits.
+#[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub enum ModelKind {
+    Crp,
+    Link,
+    Blocks,
 }
 
 /// The matrices to read: each with its batch and whether it is fitted; and
@@ -242,14 +315,40 @@ fn check(args: &ClusterArgs) -> anyhow::Result<()> {
         args.sweeps.saturating_sub(args.burn_in) / args.thin.max(1) >= 4,
         "--sweeps less --burn-in must leave at least 4 draws per chain (after --thin)"
     );
+    // Labels are stored as u16.
+    anyhow::ensure!(
+        (1..u16::MAX as usize).contains(&args.communities),
+        "--communities must be between 1 and {}",
+        u16::MAX - 1
+    );
+    anyhow::ensure!(
+        (1..u16::MAX as usize).contains(&args.cell_roles)
+            && (1..u16::MAX as usize).contains(&args.gene_roles),
+        "--cell-roles and --gene-roles must be between 1 and {}",
+        u16::MAX - 1
+    );
+    let positive = |x: f64| x > 0.0 && x.is_finite();
+    anyhow::ensure!(positive(args.gene_alpha), "--gene-alpha must be positive");
+    anyhow::ensure!(positive(args.shift_sd), "--shift-sd must be positive");
+    anyhow::ensure!(positive(args.cell_sd), "--cell-sd must be positive");
+    anyhow::ensure!(
+        positive(args.membership_alpha),
+        "--membership-alpha must be positive"
+    );
+    anyhow::ensure!(
+        positive(args.community_gamma),
+        "--community-gamma must be positive"
+    );
+    anyhow::ensure!(
+        (0.0..1.0).contains(&args.holdout),
+        "--holdout must be at least 0 and less than 1"
+    );
     Ok(())
 }
 
 /// Bytes the fit (not the reading) will hold at its peak, roughly: the
 /// reads (raw, a copy of the fitted ones when some are left out, and
-/// weighted), the picture chains start from, and per chain two f64 per site
-/// for each live cluster (a guess of 32 clusters), split-merge scratch,
-/// labels and kept draws.
+/// weighted), then the model's own per-chain state.
 fn memory_estimate(
     entries: usize,
     copied: bool,
@@ -259,9 +358,38 @@ fn memory_estimate(
     args: &ClusterArgs,
 ) -> usize {
     let reads = entries * (12 + 16 + if copied { 12 } else { 0 });
-    let picture = sites * 32 * 4 + cells * 32 * 4;
-    let chain = sites * 16 * 32 + sites * 33 + cells * 4 + kept * cells * 2;
-    reads + picture + args.chains * chain
+    // Links hold their own copy of the weighted reads.
+    let links = entries * 20;
+    let (shared, chain) = match args.model {
+        // The picture chains start from; per chain two f64 per site for
+        // each live cluster (a guess of 32), split-merge scratch, labels
+        // and kept draws.
+        ModelKind::Crp => (
+            sites * 32 * 4 + cells * 32 * 4,
+            sites * 16 * 32 + sites * 33 + cells * 4 + kept * cells * 2,
+        ),
+        // Per chain: two f64 per site and community, a u32 and an f64 sum
+        // per cell and community, and each entry's link label twice (the
+        // chain's and its tally's).
+        ModelKind::Link => {
+            let k = args.communities;
+            (links, sites * k * 16 + cells * k * 12 + entries * 4)
+        }
+        // Per chain: role counts (u32) and their sums (f64) for cells and
+        // genes (at most one gene per site), two labels per link, and the
+        // tally's links per cell and gene and reads per site in each block.
+        ModelKind::Blocks => {
+            let (a, b) = (args.cell_roles, args.gene_roles);
+            (
+                links,
+                (cells * a + sites * b) * 12
+                    + entries * 4
+                    + (cells + sites) * a * b * 8
+                    + sites * a * b * 16,
+            )
+        }
+    };
+    reads + shared + args.chains * chain
 }
 
 pub fn run_cluster(args: &ClusterArgs) -> anyhow::Result<()> {
@@ -311,6 +439,13 @@ fn cluster(args: &ClusterArgs, dir: &Path, record: &mut RunRecord) -> anyhow::Re
         Cow::Owned(data.reads.subset(&fitted))
     } else {
         Cow::Borrowed(&data.reads)
+    };
+    // Entries held out of the fit, the same for either model.
+    let (fit_reads, held): (Cow<read::Reads>, Option<read::Reads>) = if args.holdout > 0.0 {
+        let (fit, held) = read::hold_out(&fit_reads, args.holdout, args.seed);
+        (Cow::Owned(fit), Some(held))
+    } else {
+        (fit_reads, None)
     };
     let kept_draws = (args.sweeps - args.burn_in) / args.thin.max(1);
     let memory = memory_estimate(
@@ -372,13 +507,46 @@ fn cluster(args: &ClusterArgs, dir: &Path, record: &mut RunRecord) -> anyhow::Re
         gibbs: true,
         fixed_alpha: None,
     };
-    let model = crp::Model::new(&weighted, data.sites.len(), settings);
     let config = McmcConfig {
         n_samples: kept_draws.max(1),
         warmup: args.burn_in,
         thin: args.thin,
         seed: args.seed,
     };
+    record.set_result(
+        "cells",
+        &serde_json::json!({
+            "read": all_cells.len(),
+            "kept": data.cells.len(),
+            "fitted": fitted.len(),
+            "assigned": data.cells.len() - fitted.len(),
+        }),
+    );
+    record.set_result(
+        "sites",
+        &serde_json::json!({"read": read_sites, "kept": data.sites.len()}),
+    );
+    record.set_result("batch_weights", &batch_stats);
+    record.set_result("fit_memory_estimate_bytes", &memory);
+    if args.model != ModelKind::Crp {
+        let fit = LinkFit {
+            data: &data,
+            fitted: &fitted,
+            weighted: &weighted,
+            held: held.as_ref(),
+            all_cells: &all_cells,
+            kept: &kept,
+        };
+        return if args.model == ModelKind::Blocks {
+            blocks_fit(args, &config, dir, record, fit)
+        } else {
+            link_fit(args, &config, dir, record, fit)
+        };
+    }
+    let mut model = crp::Model::new(&weighted, data.sites.len(), settings);
+    if let Some(h) = &held {
+        model = model.with_heldout(h);
+    }
     let chains = run_mcmc_parallel(&model, &config, args.chains);
     let posterior = summary::posterior(&chains, args.min_cluster_cells);
     if posterior.rhat_k > RHAT_OK || posterior.rhat_log_posterior > RHAT_OK {
@@ -446,27 +614,276 @@ fn cluster(args: &ClusterArgs, dir: &Path, record: &mut RunRecord) -> anyhow::Re
     record.set_result("posterior", &posterior);
     record.set_result("cluster_sizes", &sizes);
     record.set_result(
-        "cells",
-        &serde_json::json!({
-            "read": all_cells.len(),
-            "kept": data.cells.len(),
-            "fitted": fitted.len(),
-            "assigned": data.cells.len() - fitted.len(),
-        }),
-    );
-    record.set_result(
-        "sites",
-        &serde_json::json!({"read": read_sites, "kept": data.sites.len()}),
-    );
-    record.set_result(
         "converged",
         &(posterior.rhat_k <= RHAT_OK && posterior.rhat_log_posterior <= RHAT_OK),
     );
-    record.set_result("fit_memory_estimate_bytes", &memory);
-    record.set_result("batch_weights", &batch_stats);
     info!(
         "{} clusters (sizes {:?}); K posterior {:?}; split R-hat K {:.2}, log posterior {:.2}",
         part.k, sizes, posterior.k, posterior.rhat_k, posterior.rhat_log_posterior
+    );
+    Ok(format!("{m}_cluster.run.json"))
+}
+
+/// What the link and block models need from the read and filtered input.
+struct LinkFit<'a> {
+    data: &'a read::SiteData,
+    fitted: &'a [usize],
+    weighted: &'a read::Weighted<'a>,
+    held: Option<&'a read::Reads>,
+    all_cells: &'a [read::Cell],
+    kept: &'a [usize],
+}
+
+impl<'a> LinkFit<'a> {
+    /// Every input cell's row: the fitted cells' memberships (and levels)
+    /// from `fitted`, the placed ones' from `placed` (`k` per cell, in the
+    /// order of [`controls`]), and none for cells not kept.
+    fn rows<'b>(
+        &self,
+        k: usize,
+        fitted: (&'b [f32], Option<&[f64]>),
+        placed: (&'b [f32], Option<&[f64]>),
+    ) -> Vec<write::CommunityRow<'a>>
+    where
+        'b: 'a,
+    {
+        let mut rows: Vec<write::CommunityRow> = self
+            .all_cells
+            .iter()
+            .map(|cell| write::CommunityRow {
+                cell,
+                membership: None,
+                level: None,
+            })
+            .collect();
+        let controls: Vec<usize> = (0..self.data.cells.len())
+            .filter(|&c| !self.data.cells[c].fit)
+            .collect();
+        for (cells, (weights, levels)) in [(self.fitted, fitted), (&controls[..], placed)] {
+            for (i, &c) in cells.iter().enumerate() {
+                let row = &mut rows[self.kept[c]];
+                row.membership = Some(&weights[i * k..(i + 1) * k]);
+                row.level = levels.map(|v| v[i] as f32);
+            }
+        }
+        rows
+    }
+}
+
+/// A warning when the chains disagree.
+fn warn_unconverged(rhat: f64) {
+    if rhat > RHAT_OK {
+        warn!("chains disagree (split R-hat of the log joint {rhat:.2}): run more --sweeps or --chains");
+    }
+}
+
+/// Fit the link-community model, write its tables, and fill the record;
+/// the run record's file name.
+fn link_fit(
+    args: &ClusterArgs,
+    config: &McmcConfig,
+    dir: &Path,
+    record: &mut RunRecord,
+    fit: LinkFit,
+) -> anyhow::Result<String> {
+    let data = fit.data;
+    let (gene_of, names) = number_genes(&data.sites);
+    let links = link::Links::new(fit.weighted, &gene_of);
+    info!(
+        "{} (cell, gene) links over {} genes",
+        links.len(),
+        names.len()
+    );
+    let settings = link::Settings {
+        k: args.communities,
+        alpha: args.membership_alpha,
+        gamma: args.community_gamma,
+        strength: args.prior_strength,
+    };
+    let mut model = link::Model::new(&links, data.sites.len(), settings);
+    if let Some(h) = fit.held {
+        model = model.with_heldout(h);
+    }
+    let chains = run_mcmc_parallel(&model, config, args.chains);
+    let summary = link::summarize(&model, &links, &chains);
+    warn_unconverged(summary.rhat_log_joint);
+    let best = chains[summary.best_chain]
+        .last()
+        .expect("a chain has draws")
+        .means();
+    let k = args.communities;
+    // Cells kept but not fitted, placed against the best chain's communities.
+    let profile = model.profile(&best.z);
+    let control_reads = controls(data);
+    let control_weighted = read::Weighted::new(&control_reads, None);
+    let control_links = link::Links::new(&control_weighted, &gene_of);
+    let placed = model.place(&control_links, &profile, &summary.global_weights, args.seed);
+    let rows = fit.rows(k, (&best.membership, None), (&placed, None));
+    std::fs::create_dir_all(dir)?;
+    let m = &data.modality.to_ascii_lowercase();
+    write::communities(
+        &rows,
+        k,
+        "community",
+        &dir.join(format!("{m}_cell_communities.parquet")),
+    )?;
+    write::gene_communities(
+        &links.genes_of(&gene_of),
+        &names,
+        &best.z,
+        k,
+        &dir.join(format!("{m}_gene_communities.parquet")),
+    )?;
+    write::community_sites(
+        &data.sites,
+        &profile,
+        &dir.join(format!("{m}_community_sites.parquet")),
+    )?;
+    record.set_result("link", &summary);
+    record.set_result("converged", &(summary.rhat_log_joint <= RHAT_OK));
+    info!(
+        "link communities: read shares {:?}; split R-hat of the log joint {:.2}; held-out {:?} per read",
+        summary.read_shares, summary.rhat_log_joint, summary.heldout_per_read
+    );
+    Ok(format!("{m}_cluster.run.json"))
+}
+/// The reads, as read, of the kept cells left out of the fit, in order.
+fn controls(data: &read::SiteData) -> read::Reads {
+    let cells: Vec<usize> = (0..data.cells.len())
+        .filter(|&c| !data.cells[c].fit)
+        .collect();
+    data.reads.subset(&cells)
+}
+
+/// Each site's gene, numbered in order of first appearance, and the genes'
+/// names in that order.
+fn number_genes(sites: &[read::Site]) -> (Vec<u32>, Vec<&str>) {
+    let mut index: FxHashMap<&str, u32> = FxHashMap::default();
+    let mut names = Vec::new();
+    let gene_of = sites
+        .iter()
+        .map(|s| {
+            *index.entry(s.gene.as_ref()).or_insert_with(|| {
+                names.push(s.gene.as_ref());
+                names.len() as u32 - 1
+            })
+        })
+        .collect();
+    (gene_of, names)
+}
+
+/// Fit the two-role blockmodel, write its tables, and fill the record; the
+/// run record's file name.
+fn blocks_fit(
+    args: &ClusterArgs,
+    config: &McmcConfig,
+    dir: &Path,
+    record: &mut RunRecord,
+    fit: LinkFit,
+) -> anyhow::Result<String> {
+    let data = fit.data;
+    let (gene_of, names) = number_genes(&data.sites);
+    let links = link::Links::new(fit.weighted, &gene_of);
+    info!(
+        "{} (cell, gene) links over {} genes",
+        links.len(),
+        names.len()
+    );
+    let settings = blocks::Settings {
+        cell_roles: args.cell_roles,
+        gene_roles: args.gene_roles,
+        alpha: args.membership_alpha,
+        gene_alpha: args.gene_alpha,
+        shift_sd: args.shift_sd,
+        cell_sd: args.cell_sd,
+    };
+    let mut model = blocks::Model::new(&links, &gene_of, data.sites.len(), settings);
+    if let Some(h) = fit.held {
+        model = model.with_heldout(h, &gene_of);
+    }
+    let chains = run_mcmc_parallel(&model, config, args.chains);
+    let summary = blocks::summarize(&model, &chains);
+    warn_unconverged(summary.rhat_log_joint);
+    let best = chains[summary.best_chain]
+        .last()
+        .expect("a chain has draws")
+        .means(true);
+    let a = args.cell_roles;
+    // Cells kept but not fitted, placed against the best chain.
+    let control_reads = controls(data);
+    let control_weighted = read::Weighted::new(&control_reads, None);
+    let control_links = link::Links::new(&control_weighted, &gene_of);
+    let (placed, levels) = model.place(&control_links, &gene_of, &best, args.seed);
+    let rows = fit.rows(
+        a,
+        (&best.cell, Some(&best.cell_base)),
+        (&placed, Some(&levels)),
+    );
+    std::fs::create_dir_all(dir)?;
+    let m = &data.modality.to_ascii_lowercase();
+    write::communities(
+        &rows,
+        a,
+        "role",
+        &dir.join(format!("{m}_cell_roles.parquet")),
+    )?;
+    write::gene_roles(
+        &names,
+        &best.gene,
+        args.gene_roles,
+        &dir.join(format!("{m}_gene_roles.parquet")),
+    )?;
+    let (k, b) = (best.blocks(), args.gene_roles);
+    let block_links: Vec<f64> = (0..k)
+        .map(|j| best.gene_block.iter().skip(j).step_by(k).sum())
+        .collect();
+    write::blocks(
+        &summary.shifts,
+        &summary.shift_sd,
+        &block_links,
+        b,
+        &dir.join(format!("{m}_blocks.parquet")),
+    )?;
+    write::block_members(
+        &[("gene", names.clone())],
+        &best.gene_block,
+        &best.gene_enrichment(),
+        k,
+        b,
+        &dir.join(format!("{m}_block_genes.parquet")),
+    )?;
+    let fitted_cells: Vec<&read::Cell> = fit.fitted.iter().map(|&c| &data.cells[c]).collect();
+    write::block_members(
+        &[
+            (
+                "barcode",
+                fitted_cells.iter().map(|c| c.barcode.as_ref()).collect(),
+            ),
+            (
+                "batch",
+                fitted_cells.iter().map(|c| c.batch.as_ref()).collect(),
+            ),
+        ],
+        &best.cell_block,
+        &best.cell_enrichment(),
+        k,
+        b,
+        &dir.join(format!("{m}_block_cells.parquet")),
+    )?;
+    write::block_sites(
+        &data.sites,
+        &best.site_on,
+        &best.site_off,
+        &best.site_lift(model.baseline()),
+        k,
+        b,
+        &dir.join(format!("{m}_block_sites.parquet")),
+    )?;
+    record.set_result("blocks", &summary);
+    record.set_result("converged", &(summary.rhat_log_joint <= RHAT_OK));
+    info!(
+        "blocks: split R-hat of the log joint {:.2}; chain agreement cells {:?}, genes {:?}; strong gene roles {:?}, top-gene overlap {:?}; held-out {:?} per read",
+        summary.rhat_log_joint, summary.cell_agreement, summary.gene_agreement, summary.strong_gene_roles, summary.top_gene_overlap, summary.heldout_per_read
     );
     Ok(format!("{m}_cluster.run.json"))
 }

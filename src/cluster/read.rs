@@ -101,6 +101,51 @@ impl Reads {
     }
 }
 
+/// `reads` split into the fit's share and `fraction` held out: each (cell,
+/// site) entry goes one way by a hash of the two and `seed`, so the split is
+/// the same whatever the model.
+pub fn hold_out(reads: &Reads, fraction: f64, seed: u64) -> (Reads, Reads) {
+    let mix = |mut x: u64| {
+        x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        x ^ (x >> 31)
+    };
+    let (mut fit, mut held) = (Vec::new(), Vec::new());
+    for c in 0..reads.cells() {
+        let (s, m, u) = reads.of(c);
+        let (mut f, mut h) = (Vec::new(), Vec::new());
+        for i in 0..s.len() {
+            let key = mix(((c as u64) << 32 | s[i] as u64) ^ mix(seed));
+            let entry = (s[i], m[i], u[i]);
+            let unit = (key >> 11) as f64 / (1u64 << 53) as f64;
+            if unit < fraction {
+                h.push(entry);
+            } else {
+                f.push(entry);
+            }
+        }
+        fit.push(f);
+        held.push(h);
+    }
+    (Reads::from_cells(fit), Reads::from_cells(held))
+}
+
+/// Held-out reads' log-likelihood and read count: each cell `c`'s entry at
+/// site `j` scored at `ln_p(c, j)`, the log probabilities of a converted and
+/// of an unconverted read.
+pub fn score(held: &Reads, ln_p: impl Fn(usize, usize) -> (f64, f64)) -> (f64, f64) {
+    let (mut ll, mut n) = (0.0, 0.0);
+    for c in 0..held.cells() {
+        let (s, m, u) = held.of(c);
+        for i in 0..s.len() {
+            let (lp, lq) = ln_p(c, s[i] as usize);
+            ll += m[i] as f64 * lp + u[i] as f64 * lq;
+            n += (m[i] + u[i]) as f64;
+        }
+    }
+    (ll, n)
+}
+
 /// Reads as a fit sees them: each entry's converted and unconverted counts,
 /// weighted (importance weights that take batches out) or as read.
 pub struct Weighted<'a> {
