@@ -21,34 +21,6 @@ pub(super) fn parse_row_name_full(name: &str) -> Option<(&str, &str, &str, i64)>
         .map(|(gene, modality, chr, pos, _)| (gene, modality, chr, pos))
 }
 
-/// [`parse_row_name_full`] for either channel: whether the row is the
-/// modality's first (converted) channel, `None` for rows without one.
-/// Rows split with [`parse_feature_row`], so a gene symbol may hold `/`.
-pub(super) fn parse_row_channel(name: &str) -> Option<(&str, &str, &str, i64, Option<bool>)> {
-    let row = parse_feature_row(name)?;
-    let (detail, converted) = match row.subunit {
-        Some(detail) => {
-            let (on, off) =
-                channels(row.modality).or_else(|| channels(&row.modality.to_ascii_lowercase()))?;
-            let converted = match row.channel {
-                c if c == on => true,
-                c if c == off => false,
-                _ => return None,
-            };
-            (detail, Some(converted))
-        }
-        None => (row.channel, None),
-    };
-    if let Some((chr, pos_str)) = detail.split_once(':') {
-        let pos = pos_str.parse::<i64>().ok()?;
-        Some((row.gene, row.modality, chr, pos, converted))
-    } else {
-        // Mixture rows carry a component ordinal, not a chromosome.
-        let component = detail.parse::<i64>().ok()?;
-        Some((row.gene, row.modality, "", component, converted))
-    }
-}
-
 /// Relaxed gene matching, consistent with the data_beans::aux
 /// `FeatureNameKind::Gene` canonicalization used for cross-file row
 /// alignment. A row matches when its `gene_part` shares any `_`-split

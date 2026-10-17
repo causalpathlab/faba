@@ -1,6 +1,7 @@
 mod apa;
 mod atoi;
 mod cell_qc;
+mod cluster;
 mod common;
 mod data;
 mod docs;
@@ -23,6 +24,7 @@ use crate::qc::{run_qc, QcArgs};
 use apa::run::*;
 use atoi::run::*;
 use clap::{CommandFactory, FromArgMatches};
+use cluster::{run_cluster, ClusterArgs};
 use docs::*;
 use gene_count::run::*;
 use m6a::run::*;
@@ -262,6 +264,28 @@ Example:\n  \
     Pileup(PileupArgs),
 
     #[command(
+        name = "cluster",
+        about = "Cluster cells by their own site reads (a Chinese-restaurant-process mixture)",
+        long_about = "Cluster cells by their own site reads\n\n\
+            A Chinese-restaurant-process mixture over cells: at each site a cluster has its own\n\
+            converted fraction, integrated out under a Beta prior toward the site's pooled\n\
+            fraction, so the number of clusters is learned. Several chains run in parallel\n\
+            (single-cell Gibbs and split-merge moves); the reported partition is the\n\
+            least-squares summary of their draws, with each cell's confidence in it.\n\n\
+            Outputs, in the output directory:\n\
+            - {modality}_cell_clusters.parquet: every input cell's cluster, confidence and\n\
+              level offset (null for cells dropped by the filters)\n\
+            - {modality}_site_clusters.parquet: each site's reads and posterior fraction per cluster\n\
+            - {modality}_cluster.run.json: the run record, with the posterior over the number of\n\
+              clusters and split R-hat across chains",
+        after_long_help = "\
+Example:\n  \
+  faba cluster out/\n  \
+  faba cluster out/ --fit '*_wt_*' --chains 4 --sweeps 200"
+    )]
+    Cluster(ClusterArgs),
+
+    #[command(
         name = "metagene",
         alias = "mg",
         about = "Metagene histogram of site positions across gene features",
@@ -489,6 +513,7 @@ fn main() -> anyhow::Result<()> {
         Commands::Depth(ref args) => recorded(args.run_record(), || run_read_depth(args))?,
         Commands::Pwm(ref args) => run_scan_pwm(args)?,
         Commands::Pileup(ref args) => run_pileup(args)?,
+        Commands::Cluster(ref args) => run_cluster(args)?,
         Commands::Metagene(ref args) => run_metagene(args)?,
         Commands::Snp(ref args) => recorded(args.run_record(), || run_snp(args))?,
         Commands::Qc(ref args) => run_qc(args)?,

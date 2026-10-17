@@ -57,6 +57,28 @@ pub fn output_sites(dir: &Path, modality: Option<&str>) -> anyhow::Result<Output
         })
 }
 
+/// `modality`'s site matrices in `dir`, or (without one) those of the first
+/// of [`SITE_MODALITIES`] that has any: unlike [`output_sites`], a modality
+/// with only a site table does not count.
+pub fn output_site_matrices(dir: &Path, modality: Option<&str>) -> anyhow::Result<OutputSites> {
+    let found = match modality {
+        Some(m) => Some(output_sites(dir, Some(m))?),
+        None => SITE_MODALITIES
+            .iter()
+            .filter_map(|m| output_sites(dir, Some(m)).ok())
+            .find(|s| !s.matrices.is_empty()),
+    };
+    match found {
+        Some(s) if !s.matrices.is_empty() => Ok(s),
+        Some(s) => anyhow::bail!("{} has no {}_site matrices", dir.display(), s.modality),
+        None => anyhow::bail!(
+            "{} has no site matrices ({})",
+            dir.display(),
+            SITE_MODALITIES.join(", ")
+        ),
+    }
+}
+
 /// The output written without `-o` in batch: `{sites}{suffix}` in the
 /// current directory after the first site table, `_combined` for several.
 pub fn default_output(site_files: &[Box<str>], suffix: &str) -> Box<str> {
