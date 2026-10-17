@@ -2,8 +2,72 @@
 //! (`faba_run.cmd.sh`, `{modality}_cluster.cmd.sh`), so it can be read,
 //! edited and run again.
 
+use clap::{Arg, ArgAction, ArgMatches};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+
+/// How several values of one flag reach the command line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Many {
+    One,
+    /// Joined into one argument: `--flag a,b`.
+    Joined(char),
+    /// Listed after one flag: `--flag a b`.
+    Listed,
+    /// The flag repeated: `--flag a --flag b`.
+    Repeated,
+}
+
+/// How `a` takes several values, by its clap definition.
+pub(crate) fn many_of(a: &Arg) -> Many {
+    if let Some(c) = a.get_value_delimiter() {
+        Many::Joined(c)
+    } else if a.get_num_args().is_some_and(|r| r.max_values() > 1) {
+        Many::Listed
+    } else if matches!(a.get_action(), ArgAction::Append) {
+        Many::Repeated
+    } else {
+        Many::One
+    }
+}
+
+/// `flag` with values `vs`, laid out the way the flag takes them. A value
+/// that starts like a flag goes in its flag's word: `--flag=-1`.
+pub(crate) fn emit(flag: &str, many: Many, vs: Vec<String>) -> Vec<String> {
+    let one = |v: String| {
+        if v.starts_with('-') {
+            vec![format!("{flag}={v}")]
+        } else {
+            vec![flag.to_string(), v]
+        }
+    };
+    let Some(first) = vs.first() else {
+        return Vec::new();
+    };
+    match many {
+        Many::One => one(first.clone()),
+        Many::Joined(c) => one(vs.join(&c.to_string())),
+        Many::Listed => std::iter::once(flag.to_string()).chain(vs).collect(),
+        Many::Repeated => vs.into_iter().flat_map(one).collect(),
+    }
+}
+
+/// The words `id` was given in `m`, as typed, when it was given on the
+/// command line or by the environment; none when clap took its default.
+pub(crate) fn given_words(m: &ArgMatches, id: &str) -> Option<Vec<String>> {
+    use clap::parser::ValueSource;
+    let given = matches!(
+        m.value_source(id),
+        Some(ValueSource::CommandLine | ValueSource::EnvVariable)
+    );
+    given.then(|| {
+        m.get_raw(id)
+            .into_iter()
+            .flatten()
+            .map(|v| v.to_string_lossy().into_owned())
+            .collect()
+    })
+}
 
 /// How a script is made: its file name, the command that made it, the
 /// output whose presence means the run finished (it then refuses to run),

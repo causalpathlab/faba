@@ -44,7 +44,8 @@ impl Count {
     }
 }
 
-/// One site of a gene module, with its reads in each cell module.
+/// One site of a gene module, with its reads in each cell module, in the
+/// panes' column order (see [`Modules::columns`]).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Member {
     pub site: usize,
@@ -75,14 +76,17 @@ pub struct Modules {
     pub members: Vec<Vec<Member>>,
     /// Per gene role, each gene's span of its members.
     genes: Vec<Vec<Range<usize>>>,
-    /// Per gene role, its reads in each cell module: its members' summed.
+    /// Per gene role, its reads in each cell module (in column order): its
+    /// members' summed.
     blocks: Vec<Vec<Count>>,
     /// Gene roles with sites, by the range of their shifts across the cell
     /// roles, widest first.
     pub order: Vec<usize>,
     /// The same gene roles in diagonal order (see [`diagonal`]).
     pub diagonal: Vec<usize>,
-    /// The cell roles in diagonal order, the order every pane shows them in.
+    /// The cell roles in diagonal order, the order every pane shows them in:
+    /// column `k` is cell role `columns[k]`, and every member's and block's
+    /// reads are in this order.
     pub columns: Vec<usize>,
     /// Every cell with a main role, placed cells too.
     pub cells: FxHashMap<CellKey, usize>,
@@ -179,7 +183,22 @@ impl Modules {
             stats,
         };
         modules.set_orders();
+        modules.put_in_columns();
         Ok(modules)
+    }
+
+    /// Every member's and block's reads put in column order, once, so
+    /// read `k` is column `k`'s.
+    fn put_in_columns(&mut self) {
+        let columns = &self.columns;
+        let permute = |reads: &mut Vec<Count>| {
+            *reads = columns.iter().map(|&c| reads[c]).collect();
+        };
+        self.members
+            .iter_mut()
+            .flatten()
+            .for_each(|m| permute(&mut m.reads));
+        self.blocks.iter_mut().for_each(permute);
     }
 
     /// The gene roles with sites by shift range, and the diagonal orders.
@@ -201,7 +220,16 @@ impl Modules {
         self.order = order;
     }
 
-    /// Gene role `g`'s reads in each cell module.
+    /// Each cell role's column: the inverse of [`Modules::columns`].
+    pub fn role_columns(&self) -> Vec<usize> {
+        let mut column = vec![0; self.columns.len()];
+        for (k, &c) in self.columns.iter().enumerate() {
+            column[c] = k;
+        }
+        column
+    }
+
+    /// Gene role `g`'s reads in each cell module, in column order.
     pub fn block(&self, g: usize) -> &[Count] {
         &self.blocks[g]
     }

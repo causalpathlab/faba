@@ -23,7 +23,7 @@ impl ModulesView<'_> {
             let s = members[i].site;
             match self.sort {
                 Sort::Module => Some(i as f64),
-                Sort::Column(k) => members[i].reads[self.m.columns[k]].fraction(),
+                Sort::Column(k) => members[i].reads[k].fraction(),
                 Sort::Reads => Some(stats.map_or_else(
                     || members[i].reads.iter().map(|r| r.total).sum(),
                     |t| (t.on[s] + t.off[s]) as f64,

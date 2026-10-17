@@ -519,6 +519,27 @@ fn faba_command() -> clap::Command {
     cmd
 }
 
+/// Notes what was given to `faba cluster`'s options (also under `faba
+/// modules`), for the command it saves.
+fn record_given(cli: &mut Cli, matches: &clap::ArgMatches) {
+    let Some((_, m)) = matches.subcommand() else {
+        return;
+    };
+    match &mut cli.commands {
+        Commands::Cluster(args) => args.record_given(m),
+        Commands::Modules(args) => args.record_given(m),
+        _ => {}
+    }
+}
+
+/// Builds `faba`'s arguments from one parse of the command line, noting what
+/// was given, so `main` and the tests take the same path.
+fn parse(matches: &clap::ArgMatches) -> Result<Cli, clap::Error> {
+    let mut cli = Cli::from_arg_matches(matches)?;
+    record_given(&mut cli, matches);
+    Ok(cli)
+}
+
 fn main() -> anyhow::Result<()> {
     if std::env::args().any(|arg| arg == "--help" || arg == "-h") {
         print_logo();
@@ -527,7 +548,7 @@ fn main() -> anyhow::Result<()> {
     // One parse of the command line: `faba run`'s view takes its matches.
     let mut cmd = faba_command();
     let matches = cmd.get_matches_mut();
-    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.format(&mut cmd).exit());
+    let cli = parse(&matches).unwrap_or_else(|e| e.format(&mut cmd).exit());
 
     data_beans::aux::logging::init_logger(cli.verbose);
 
@@ -574,6 +595,19 @@ fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn what_is_given_to_cluster_is_noted_at_parse_time() {
+        for command in ["cluster", "modules"] {
+            let m = faba_command()
+                .try_get_matches_from(["faba", command, "/x.zarr", "--chains", "2"])
+                .unwrap();
+            let cli = parse(&m).unwrap();
+            let noted = format!("{:?}", cli.commands);
+            // Only the set of given ids quotes a name.
+            assert!(noted.contains(r#""chains""#), "{noted}");
+        }
+    }
 
     #[test]
     fn verbose_is_taken_on_either_side_of_run() {

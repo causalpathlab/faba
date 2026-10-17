@@ -10,21 +10,21 @@ use serde::Serialize;
 use std::path::Path;
 
 /// The page's own markup, styles and code.
-const FRAGMENT: &str = include_str!("report.html");
+pub(super) const FRAGMENT: &str = include_str!("report.html");
 
 /// What the page reads from `#data`.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct Data {
+pub(super) struct Data {
     title: String,
     modality: String,
     on: &'static str,
     off: &'static str,
+    /// The cell modules' names and sizes, in the panes' column order, as
+    /// the terminal shows them.
     cell_names: Vec<String>,
     cell_sizes: Vec<usize>,
-    /// The cell modules' order in every pane, and the modules' diagonal
-    /// order for the heatmaps, as the terminal shows them.
-    columns: Vec<usize>,
+    /// The modules' diagonal order for the heatmaps.
     diagonal: Vec<String>,
     modules: Vec<Module>,
 }
@@ -52,7 +52,7 @@ struct Gene {
 
 /// A site at `pos` within its gene (the page adds the gene's `lo` for its
 /// place on the chromosome): each cell module's `[converted, all]` reads
-/// (`c`) and its counts over every cell read, `[converted, unconverted,
+/// (`c`), in column order, and its counts over every cell read, `[converted, unconverted,
 /// cells]` (`s`), when the tables have them.
 #[derive(Serialize)]
 struct Site {
@@ -72,7 +72,7 @@ fn thousandth(x: f64) -> f64 {
 }
 
 /// The page's data: the modules in their order, as the browser shows them.
-fn data(m: &Modules, models: &FxHashMap<Box<str>, GeneModel>) -> Data {
+pub(super) fn data(m: &Modules, models: &FxHashMap<Box<str>, GeneModel>) -> Data {
     let modules = m
         .order
         .iter()
@@ -93,16 +93,16 @@ fn data(m: &Modules, models: &FxHashMap<Box<str>, GeneModel>) -> Data {
         modality: m.modality.clone(),
         on,
         off,
-        cell_names: (1..=m.cell_roles).map(|c| format!("C{c}")).collect(),
-        cell_sizes: m.cell_sizes.clone(),
-        columns: m.columns.clone(),
+        cell_names: m.columns.iter().map(|c| format!("C{}", c + 1)).collect(),
+        cell_sizes: m.columns.iter().map(|&c| m.cell_sizes[c]).collect(),
         diagonal: m.diagonal.iter().map(|g| format!("M{}", g + 1)).collect(),
         modules,
     }
 }
 
 /// The sites `span` of gene module `g` (one gene's run of its members), on
-/// that gene's model in `models` when it has one.
+/// that gene's model in `models` when it has one, their reads in column
+/// order.
 fn gene(
     m: &Modules,
     g: usize,
@@ -159,7 +159,11 @@ pub fn write(
     models: &FxHashMap<Box<str>, GeneModel>,
     path: &Path,
 ) -> anyhow::Result<()> {
-    let data = data(m, models);
-    let page = crate::report::page(&format!("faba modules · {}", m.modality), FRAGMENT, &data)?;
-    crate::report::write(path, &page)
+    save(&data(m, models), path)
+}
+
+/// The page of `data` (see [`data`]), streamed to `path`.
+pub(super) fn save(data: &Data, path: &Path) -> anyhow::Result<()> {
+    let title = format!("faba modules · {}", data.modality);
+    crate::report::write(path, &title, FRAGMENT, data)
 }

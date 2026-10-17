@@ -30,8 +30,11 @@ impl ModulesView<'_> {
                 DIM,
             ));
         }
-        for &c in &self.m.columns[self.col_from.min(self.m.columns.len())..] {
-            let r = member.reads[c];
+        let shown = self.col_from.min(self.m.columns.len())..;
+        for (&c, r) in self.m.columns[shown.clone()]
+            .iter()
+            .zip(&member.reads[shown])
+        {
             spans.push(Span::styled(format!("  C{} ", c + 1), DIM));
             spans.push(Span::raw(format!("{} of {}", r.pct(), compact(r.total))));
         }

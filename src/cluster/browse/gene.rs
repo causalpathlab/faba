@@ -58,19 +58,14 @@ impl Matrices {
     /// Index `inputs` for `m` in the background.
     pub(super) fn start(inputs: Vec<Input>, m: &Modules) -> Self {
         let inputs = Arc::new(inputs);
-        let group_of_role: FxHashMap<usize, usize> = m
-            .columns
-            .iter()
-            .enumerate()
-            .map(|(k, &c)| (c, k + 1))
-            .collect();
+        let column = m.role_columns();
         let mut groups: Groups = FxHashMap::default();
-        for ((batch, barcode), r) in &m.cells {
-            if let Some(&k) = group_of_role.get(r) {
+        for ((batch, barcode), &r) in &m.cells {
+            if let Some(&k) = column.get(r) {
                 groups
                     .entry(batch.clone())
                     .or_default()
-                    .insert(barcode.clone(), k);
+                    .insert(barcode.clone(), k + 1);
             }
         }
         let (files, modality) = (inputs.clone(), m.modality.clone());
@@ -221,9 +216,6 @@ pub(super) fn show(
     let reads = crate::tui::busy(true, "modules", &what, || matrices.read(m, gene))?;
     let (on, off) = channel_names(&m.modality);
     let labels = track_labels(m, on, off);
-    let pairs: Vec<(usize, usize)> = (0..reads.groups.len())
-        .map(|k| (2 * k, 2 * k + 1))
-        .collect();
     let mut extent = extent(&reads);
     let (mut cursor, mut status) = (None, None);
     let keys = [Box::<str>::from(gene)];
@@ -238,7 +230,6 @@ pub(super) fn show(
             genes: models.cloned(),
             cursor,
             switchable: false,
-            pairs: &pairs,
         };
         match show_pileup(view, tracks(&reads, &labels), status.take(), settings)? {
             Exit::Quit => return Ok(true),
@@ -254,7 +245,8 @@ pub(super) fn show(
     }
 }
 
-/// Each group's converted and unconverted tracks, under `labels`.
+/// Each group's converted and unconverted tracks, under `labels`, mirrored
+/// in one row: converted above, in the accent.
 fn tracks<'a>(reads: &'a GeneReads, labels: &'a [String]) -> Vec<Track<'a>> {
     reads
         .groups
@@ -270,7 +262,8 @@ fn tracks<'a>(reads: &'a GeneReads, labels: &'a [String]) -> Vec<Track<'a>> {
                     t
                 }
             };
-            [track(&labels[2 * k], up), track(&labels[2 * k + 1], down)]
+            let up = track(&labels[2 * k], up).converted_above();
+            [up, track(&labels[2 * k + 1], down)]
         })
         .collect()
 }

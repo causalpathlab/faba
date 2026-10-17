@@ -72,6 +72,21 @@ pub struct ModulesArgs {
     batch_process: bool,
 }
 
+impl ModulesArgs {
+    /// Notes which clustering options `matches` were given, for the
+    /// command `faba cluster` saves.
+    pub fn record_given(&mut self, matches: &clap::ArgMatches) {
+        self.cluster.record_given(matches);
+    }
+
+    /// The clustering options, with the blockmodel these tables come from.
+    pub(super) fn blocks(&self) -> ClusterArgs {
+        let mut cluster = self.cluster.clone();
+        cluster.model = ModelKind::Blocks;
+        cluster
+    }
+}
+
 /// The modality whose block tables `dir` holds: the one asked for, else
 /// m6a, else atoi; none when there are none.
 fn tables(dir: &Path, asked: Option<&str>) -> Option<String> {
@@ -100,8 +115,7 @@ fn print(m: &Modules) {
             m.gene_sizes[g],
             m.shift_range(g)
         );
-        for &c in &m.columns {
-            let r = m.block(g)[c];
+        for r in m.block(g) {
             line.push_str(&format!("{:>14}", format!("{}/{:.0}", r.pct(), r.total)));
         }
         println!("{line}");
@@ -120,7 +134,8 @@ pub fn run_modules(args: &ModulesArgs) -> anyhow::Result<()> {
     };
     let dir = super::output_dir(&args.cluster);
     let modality = ensure_tables(args, &dir)?;
-    let modules = Modules::load(&dir, &modality)?;
+    // Shared with the thread that writes the report on `e`.
+    let modules = std::sync::Arc::new(Modules::load(&dir, &modality)?);
     let gtf = crate::run_record::explicit_or_recorded(
         args.gtf.as_deref(),
         &dir.to_string_lossy(),
@@ -152,10 +167,8 @@ fn ensure_tables(args: &ModulesArgs, dir: &Path) -> anyhow::Result<String> {
         "running `faba cluster --model blocks` in {} first",
         dir.display()
     );
-    let mut cluster = args.cluster.clone();
-    cluster.model = ModelKind::Blocks;
     // The tables of the modality just fitted, not older ones beside them.
-    super::run_cluster(&cluster)?
+    super::run_cluster(&args.blocks())?
         .and_then(|m| tables(dir, Some(&m)))
         .ok_or_else(|| anyhow::anyhow!("`faba cluster` wrote no block tables in {}", dir.display()))
 }
@@ -176,7 +189,7 @@ fn write_html(modules: &Modules, gtf: Option<&str>, path: &str) -> anyhow::Resul
 fn browse(
     args: &ModulesArgs,
     dir: &Path,
-    modules: &Modules,
+    modules: &std::sync::Arc<Modules>,
     gtf: Option<Box<str>>,
 ) -> anyhow::Result<()> {
     // The matrices are indexed while the browser opens and the annotation
@@ -196,7 +209,10 @@ fn browse(
     let title = format!("{} · {}", dir.display(), modules.modality);
     let mut view = ModulesView::new(&title, modules)
         .with_genes(models.clone())
-        .with_report(dir.join(format!("{}_modules.html", modules.modality)));
+        .with_report(
+            dir.join(format!("{}_modules.html", modules.modality)),
+            modules.clone(),
+        );
     let mut settings = Default::default();
     loop {
         crate::tui::run_view(&mut view)?;

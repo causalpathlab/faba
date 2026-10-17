@@ -176,9 +176,9 @@ impl ModulesView<'_> {
         let mut pointer = None;
         for (j, (member, col)) in members.iter().zip(columns(&pos, extent, w)).enumerate() {
             let col = col as usize;
-            for (t, &c) in m.columns.iter().enumerate() {
-                cols[col][0].add(member.reads[c]);
-                cols[col][t + 1].add(member.reads[c]);
+            for (t, &r) in member.reads.iter().enumerate() {
+                cols[col][0].add(r);
+                cols[col][t + 1].add(r);
             }
             first[col].get_or_insert(span.start + j);
             if span.start + j == self.pin_site && focused {

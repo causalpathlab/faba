@@ -610,7 +610,7 @@ fn stacked_name(args: &PileupArgs, loaded: &Loaded) -> String {
 }
 
 /// `loaded`'s tracks as the browser draws them, those with a total titled
-/// `stacked_name`, and its depth.
+/// `stacked_name`, the first two in one row when alike, and its depth.
 fn tracks_of<'a>(
     args: &'a PileupArgs,
     loaded: &'a Loaded,
@@ -632,10 +632,22 @@ fn tracks_of<'a>(
             }
         })
         .collect();
+    if alike(&tracks) {
+        tracks[0].mirror_with_next = true;
+    }
     if !args.depth_files.is_empty() {
         tracks.push(tui::Track::depth("depth", &loaded.depth));
     }
     tracks
+}
+
+/// The first two tracks are read tracks of the same measure, so they share
+/// a row.
+fn alike(tracks: &[tui::Track]) -> bool {
+    match tracks {
+        [a, b, ..] => a.is_reads() && b.is_reads() && a.name == b.name,
+        _ => false,
+    }
 }
 
 /// What the browser shows of `loaded` besides its tracks.
@@ -655,7 +667,6 @@ fn view_of<'a>(
         genes: genes.cloned(),
         cursor: loaded.cursor,
         switchable,
-        pairs: &[],
     }
 }
 

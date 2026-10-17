@@ -258,3 +258,23 @@ fn figures_tile_in_rows_of_the_given_width() {
     assert_eq!(size(&tile_svgs(&figs, 2)), (200.0, 110.0), "two to a row");
     assert!(tile_svgs(&figs, 2).contains(r#"<svg x="100" y="0" "#));
 }
+
+#[test]
+fn panels_fit_at_their_least_and_share_a_taller_page_in_proportion() {
+    let panels = Panels {
+        fixed: 60.0,
+        least: &[280.0, 210.0],
+    };
+    assert_eq!(panels.height(), 550.0);
+    assert_eq!(panels.heights(550.0), vec![280.0, 210.0]);
+    let tall = panels.heights(1040.0 + 60.0);
+    assert!((tall.iter().sum::<f64>() - 1040.0).abs() < 1e-9, "{tall:?}");
+    assert!((tall[0] / tall[1] - 280.0 / 210.0).abs() < 1e-9, "{tall:?}");
+    // Equal panels share alike.
+    let even = Panels {
+        fixed: 50.0,
+        least: &[100.0; 3],
+    };
+    assert_eq!(even.heights(350.0), vec![100.0; 3]);
+    assert_eq!(even.heights(650.0), vec![200.0; 3]);
+}

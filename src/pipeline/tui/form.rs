@@ -5,6 +5,7 @@
 //! [`OWNED_HEADINGS`]: every row comes from the command's `Arg`s, so a flag
 //! added later shows up on its own.
 
+use crate::script::{emit, many_of, Many};
 use clap::{Arg, ArgAction, Command};
 
 /// Flags with no help heading that are never passed. The Inputs and Steps
@@ -23,18 +24,6 @@ pub enum Kind {
     Choice(Vec<String>),
     /// Free text.
     Text,
-}
-
-/// How several values reach the command line.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Many {
-    One,
-    /// Joined into one argument: `--flag a,b`.
-    Joined(char),
-    /// Listed after one flag: `--flag a b`.
-    Listed,
-    /// The flag repeated: `--flag a --flag b`.
-    Repeated,
 }
 
 /// One flag of the command.
@@ -191,18 +180,6 @@ impl Field {
     }
 }
 
-fn many_of(a: &Arg) -> Many {
-    if let Some(c) = a.get_value_delimiter() {
-        Many::Joined(c)
-    } else if a.get_num_args().is_some_and(|r| r.max_values() > 1) {
-        Many::Listed
-    } else if matches!(a.get_action(), ArgAction::Append) {
-        Many::Repeated
-    } else {
-        Many::One
-    }
-}
-
 /// The values typed into a row: split on commas and spaces when the flag
 /// takes several, else the whole text.
 fn values(many: Many, text: &str) -> Vec<String> {
@@ -217,19 +194,6 @@ fn values(many: Many, text: &str) -> Vec<String> {
             .filter(|v| !v.is_empty())
             .map(str::to_string)
             .collect(),
-    }
-}
-
-/// `flag` with values `vs`, laid out the way the flag takes them.
-fn emit(flag: &str, many: Many, vs: Vec<String>) -> Vec<String> {
-    if vs.is_empty() {
-        return Vec::new();
-    }
-    match many {
-        Many::One => vec![flag.to_string(), vs[0].clone()],
-        Many::Joined(c) => vec![flag.to_string(), vs.join(&c.to_string())],
-        Many::Listed => std::iter::once(flag.to_string()).chain(vs).collect(),
-        Many::Repeated => vs.into_iter().flat_map(|v| [flag.to_string(), v]).collect(),
     }
 }
 
@@ -285,27 +249,17 @@ impl Form {
         out
     }
 
-    /// Take the values the command line gave.
+    /// Take the values the command line (or the environment) gave.
     pub fn prefill(&mut self, m: &clap::ArgMatches) {
         for f in &mut self.fields {
-            if m.value_source(&f.id) != Some(clap::parser::ValueSource::CommandLine) {
+            let Some(raw) = crate::script::given_words(m, &f.id) else {
                 continue;
-            }
-            match f.kind {
+            };
+            f.value = match f.kind {
                 // A switch given on the line is the non-default side.
-                Kind::Flag { .. } => {
-                    f.value = if f.default == "true" { "false" } else { "true" }.into();
-                }
-                _ => {
-                    let raw: Vec<String> = m
-                        .get_raw(&f.id)
-                        .into_iter()
-                        .flatten()
-                        .map(|v| v.to_string_lossy().into_owned())
-                        .collect();
-                    f.value = raw.join(",");
-                }
-            }
+                Kind::Flag { .. } => if f.default == "true" { "false" } else { "true" }.into(),
+                _ => raw.join(","),
+            };
         }
     }
 }

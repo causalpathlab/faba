@@ -281,6 +281,38 @@ impl BackendQc for Box<dyn SparseIo<IndexIter = Vec<usize>>> {
 #[cfg(test)]
 mod tests;
 
+/// `path` with `.part` added: where a file is written before it takes
+/// `path`'s place.
+pub fn part_of(path: &Path) -> std::path::PathBuf {
+    let mut part = path.as_os_str().to_owned();
+    part.push(".part");
+    part.into()
+}
+
+/// Write `path` by `write`, to its [`part_of`] file first, put in its place
+/// only once whole: a write that fails leaves what was at `path`, and no
+/// part file.
+pub fn write_replacing(
+    path: &Path,
+    write: impl FnOnce(&mut std::io::BufWriter<std::fs::File>) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    use std::io::Write;
+    let part = part_of(path);
+    let written = std::fs::File::create(&part)
+        .map_err(anyhow::Error::from)
+        .and_then(|f| {
+            let mut w = std::io::BufWriter::new(f);
+            write(&mut w)?;
+            w.flush()?;
+            Ok(())
+        })
+        .and_then(|()| Ok(std::fs::rename(&part, path)?));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&part);
+    }
+    written
+}
+
 /// Whether `text` matches `pattern`, `*` standing for any run of
 /// characters and `?` for one.
 pub fn wildcard(pattern: &str, text: &str) -> bool {

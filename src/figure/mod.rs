@@ -233,6 +233,28 @@ pub fn page(area: Rect, min: (f64, f64), (cw, ch): (f64, f64)) -> Option<(f64, f
     })
 }
 
+/// A figure's panels top to bottom: room that never stretches (title,
+/// gaps, fixed rows), and panels each at least its `least` height, which
+/// share what a taller page adds in proportion to those.
+pub struct Panels<'a> {
+    pub fixed: f64,
+    pub least: &'a [f64],
+}
+
+impl Panels<'_> {
+    /// The least page height: the fixed room and every panel at its least,
+    /// for [`page`].
+    pub fn height(&self) -> f64 {
+        self.fixed + self.least.iter().sum::<f64>()
+    }
+
+    /// Each panel's height on a page `height` tall.
+    pub fn heights(&self, height: f64) -> Vec<f64> {
+        let grow = (height - self.fixed) / self.least.iter().sum::<f64>();
+        self.least.iter().map(|m| m * grow).collect()
+    }
+}
+
 /// Points per cell for a terminal font `font` pixels a cell: as high as
 /// [`CELL`], as wide for that as the font; [`CELL`] for a font of no size.
 pub fn font_cell(font: ratatui_image::FontSize) -> (f64, f64) {

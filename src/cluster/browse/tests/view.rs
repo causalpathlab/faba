@@ -152,8 +152,7 @@ fn o_sorts_the_sites_by_each_column_then_reads_then_cells() {
     press(&mut v, KeyCode::Char('o'));
     assert_eq!(v.sort, Sort::Column(0));
     // The first column shown, high % first.
-    let c = m.columns[0];
-    let f = |i: usize| m.members[0][i].reads[c].fraction().unwrap_or(-1.0);
+    let f = |i: usize| m.members[0][i].reads[0].fraction().unwrap_or(-1.0);
     let list = v.listing();
     assert!(list.windows(2).all(|w| f(w[0]) >= f(w[1])), "{list:?}");
     press(&mut v, KeyCode::Char('O'));
@@ -370,4 +369,169 @@ fn pinned_genes_wrap_into_rows_in_a_narrow_strip() {
     let row = |name: &str| s.lines().position(|l| l.contains(name)).unwrap();
     assert_eq!(row("GENE3 M2"), row("GENE1 M1"), "{s}");
     assert!(row("GENE2 M1") > row("GENE1 M1"), "{s}");
+}
+
+/// Each heatmap box's cell and colour, in reading order.
+fn boxes(buf: &ratatui::buffer::Buffer) -> Vec<(u16, u16, ratatui::style::Color)> {
+    let area = buf.area;
+    (area.top()..area.bottom())
+        .flat_map(|y| (area.left()..area.right()).map(move |x| (x, y)))
+        .filter_map(|(x, y)| match buf[(x, y)].bg {
+            c @ ratatui::style::Color::Rgb(..) => Some((x, y, c)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The grays of a frame's % boxes in reading order, each line's run of
+/// one box's cells once.
+fn grays(buf: &ratatui::buffer::Buffer) -> Vec<u8> {
+    let mut out: Vec<u8> = boxes(buf)
+        .into_iter()
+        .filter_map(|(_, _, c)| match c {
+            ratatui::style::Color::Rgb(g, _, _) => Some(g),
+            _ => None,
+        })
+        .collect();
+    out.dedup();
+    out
+}
+
+#[test]
+fn the_modules_heatmaps_colours_are_worked_out_once_per_scale() {
+    let m = loaded();
+    let mut v = ModulesView::new("test", &m);
+    let kept = |v: &ModulesView| v.module_stretch.key();
+    super::drawn(&mut v, 180, 40);
+    assert_eq!(kept(&v), None, "bars need no colours");
+    press(&mut v, KeyCode::Char('v'));
+    let first = super::drawn(&mut v, 180, 40);
+    assert_eq!(kept(&v), Some(Ramp::Sqrt));
+    let again = super::drawn(&mut v, 180, 40);
+    assert_eq!(first, again, "kept across frames");
+    // Each scale's grays as before the colours were kept.
+    assert_eq!(grays(&first), vec![255, 85, 255, 85, 223, 0, 223, 0]);
+    press(&mut v, KeyCode::Char('y'));
+    assert_eq!(
+        grays(&super::drawn(&mut v, 180, 40)),
+        vec![255, 59, 255, 59, 210, 0, 210, 0]
+    );
+    assert_eq!(
+        kept(&v),
+        Some(Ramp::Linear),
+        "worked out anew for a new scale"
+    );
+    press(&mut v, KeyCode::Char('y'));
+    assert_eq!(
+        grays(&super::drawn(&mut v, 180, 40)),
+        vec![255, 116, 255, 116, 234, 0, 234, 0]
+    );
+    press(&mut v, KeyCode::Char('y'));
+    assert_eq!(super::drawn(&mut v, 180, 40), first, "back where it was");
+    assert_eq!(kept(&v), Some(Ramp::Sqrt));
+    // The z heatmap on the same ranges: full red and full blue.
+    press(&mut v, KeyCode::Char('v'));
+    let z = boxes(&super::drawn(&mut v, 180, 40));
+    assert_eq!(kept(&v), Some(Ramp::Sqrt), "the z heatmap shares them");
+    use ratatui::style::Color::Rgb;
+    assert!(z
+        .iter()
+        .all(|b| [Rgb(255, 0, 0), Rgb(0, 0, 255)].contains(&b.2)));
+}
+
+#[test]
+fn cell_modules_in_the_other_order_keep_their_own_reads_names_and_sizes() {
+    let m = super::swapped();
+    assert_eq!(m.columns, vec![1, 0], "the second cell role first");
+    let mut v = ModulesView::new("test", &m);
+    press(&mut v, KeyCode::Down);
+    press(&mut v, KeyCode::Enter);
+    press(&mut v, KeyCode::Char(' '));
+    press(&mut v, KeyCode::Char('o'));
+    assert_eq!(v.sort, Sort::Column(0));
+    let s = screen(&mut v, 180, 40);
+    let line = |text: &str| -> String {
+        let l = s.lines().find(|l| l.contains(text)).unwrap();
+        l.trim_end().to_string()
+    };
+    assert!(line("C2 % ").contains("sites · M1 · 1/3 · C2 % ↓"), "{s}");
+    assert!(heads(&s)
+        .starts_with("│                 C2    C1            ││            C2    C1     reads"));
+    assert!(line("M2      1 genes")
+        .starts_with("│M2      1 genes  ▇▇ 75 ▂▂ 25 Δ1.50   ││• GENE1 100 ▆▆ 80 ▁▁ 10     40"));
+    assert!(line("M1      2 genes")
+        .starts_with("│M1      2 genes  ▇▇ 64 ▁▁ 10 Δ0.20   ││• GENE1 300 ▇▇ 50           20"));
+    assert!(line("GENE2 50").contains("││GENE2 50    ▇▇ 50            6"));
+    assert!(
+        line("C2       2").starts_with("│C2       2   █      █"),
+        "{s}"
+    );
+    assert!(line("C1       1").starts_with("│C1       1   ▂"), "{s}");
+    assert_eq!(
+        line("chr1:100"),
+        " GENE1  chr1:100   of M1    C2 80% of 10  C1 10% of 10"
+    );
+}
+
+#[test]
+fn e_again_while_writing_writes_the_report_anew_after() {
+    let m = std::sync::Arc::new(loaded());
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("r.html");
+    let mut v = ModulesView::new("test", &m).with_report(path.clone(), m.clone());
+    let done = |v: &mut ModulesView| {
+        let start = std::time::Instant::now();
+        while !v.tick() {
+            assert!(start.elapsed().as_secs() < 30, "the report never finished");
+            std::thread::yield_now();
+        }
+    };
+    press(&mut v, KeyCode::Char('e'));
+    // Not taken until a tick: the first is still being written.
+    press(&mut v, KeyCode::Char('e'));
+    assert!(screen(&mut v, 180, 40).contains("then again"));
+    done(&mut v);
+    let s = screen(&mut v, 180, 40);
+    assert!(
+        s.contains(&format!("writing {}", path.display())),
+        "the second: {s}"
+    );
+    done(&mut v);
+    let s = screen(&mut v, 180, 40);
+    assert!(s.contains(&format!("wrote {}", path.display())), "{s}");
+    assert!(!v.tick(), "and no third");
+}
+
+#[test]
+fn e_writes_the_report_off_the_ui_thread_and_says_so_when_done() {
+    let m = std::sync::Arc::new(loaded());
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("r.html");
+    let mut v = ModulesView::new("test", &m).with_report(path.clone(), m.clone());
+    press(&mut v, KeyCode::Char('e'));
+    let s = screen(&mut v, 180, 40);
+    assert!(s.contains(&format!("writing {}", path.display())), "{s}");
+    let start = std::time::Instant::now();
+    while !v.tick() {
+        assert!(start.elapsed().as_secs() < 30, "the report never finished");
+        std::thread::yield_now();
+    }
+    let s = screen(&mut v, 180, 40);
+    assert!(s.contains(&format!("wrote {}", path.display())), "{s}");
+    let html = std::fs::read_to_string(&path).unwrap();
+    assert!(html.starts_with("<!doctype html>") && html.ends_with("</html>\n"));
+    assert!(!v.tick(), "said once");
+    // Where it cannot be written, why not.
+    let path = tmp.path().join("missing").join("r.html");
+    let mut v = ModulesView::new("test", &m).with_report(path.clone(), m.clone());
+    press(&mut v, KeyCode::Char('e'));
+    while !v.tick() {
+        assert!(start.elapsed().as_secs() < 30, "the report never finished");
+        std::thread::yield_now();
+    }
+    let s = screen(&mut v, 180, 40);
+    assert!(
+        s.contains(&path.display().to_string()) && !s.contains("wrote"),
+        "{s}"
+    );
 }

@@ -7,6 +7,7 @@ use crate::cluster::read::{Cell, Site, SiteStats};
 use crate::cluster::write;
 use data_beans::interactive::ui::Screen;
 use ratatui::backend::TestBackend;
+use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use ratatui::Terminal;
 
@@ -34,6 +35,13 @@ fn site(gene: &str, pos: i64) -> Site {
 /// Cells B0..B4: B0, B1 and B2 in cell role 1, B3 in role 2, B4 dropped;
 /// B2 was placed, not fitted.
 fn tables(dir: &Path) {
+    tables_with(dir, false)
+}
+
+/// [`tables`], or with the two cell roles swapped, so the panes show them
+/// in the other order.
+fn tables_with(dir: &Path, swap: bool) {
+    let cell = |c: usize| if swap { 1 - c } else { c };
     let sites = vec![
         site("GENE1", 100),
         site("GENE1", 300),
@@ -45,6 +53,7 @@ fn tables(dir: &Path) {
     let mut on = vec![0.0; sites.len() * blocks];
     let mut off = vec![0.0; sites.len() * blocks];
     let mut put = |s: usize, c: usize, g: usize, m: f64, u: f64| {
+        let c = cell(c);
         on[s * blocks + c * roles + g] = m;
         off[s * blocks + c * roles + g] = u;
     };
@@ -67,7 +76,10 @@ fn tables(dir: &Path) {
         &path("block_sites"),
     )
     .unwrap();
-    let shift = [0.1, -1.0, 0.0, 0.3, 0.5, 0.0];
+    let mut shift = [0.1, -1.0, 0.0, 0.3, 0.5, 0.0];
+    if swap {
+        shift.rotate_left(roles);
+    }
     write::blocks(&shift, &[0.1; 6], &[1.0; 6], roles, &path("blocks")).unwrap();
     let weights = [0.9, 0.1, 0.0, 0.6, 0.4, 0.0, 0.0, 1.0, 0.0];
     let genes = ["GENE1", "GENE2", "GENE3"];
@@ -79,7 +91,10 @@ fn tables(dir: &Path) {
             fit: true,
         })
         .collect();
-    let member = [[0.8f32, 0.2], [0.7, 0.3], [0.6, 0.4], [0.1, 0.9]];
+    let mut member = [[0.8f32, 0.2], [0.7, 0.3], [0.6, 0.4], [0.1, 0.9]];
+    if swap {
+        member.iter_mut().for_each(|m| m.reverse());
+    }
     let rows: Vec<write::CommunityRow> = cells
         .iter()
         .enumerate()
@@ -127,6 +142,13 @@ fn loaded() -> Modules {
     Modules::load(tmp.path(), "m6a").unwrap()
 }
 
+/// The modules of [`tables_with`] the cell roles swapped.
+fn swapped() -> Modules {
+    let tmp = tempfile::tempdir().unwrap();
+    tables_with(tmp.path(), true);
+    Modules::load(tmp.path(), "m6a").unwrap()
+}
+
 fn count(on: f64, total: f64) -> Count {
     Count { on, total }
 }
@@ -141,10 +163,15 @@ fn typed(v: &mut ModulesView, text: &str) {
     }
 }
 
-fn screen(v: &mut ModulesView, w: u16, h: u16) -> String {
+/// One frame of `v` on a `w` by `h` terminal, its styles too.
+fn drawn(v: &mut ModulesView, w: u16, h: u16) -> Buffer {
     let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
     term.draw(|f| v.render(f)).unwrap();
-    let buf = term.backend().buffer().clone();
+    term.backend().buffer().clone()
+}
+
+fn screen(v: &mut ModulesView, w: u16, h: u16) -> String {
+    let buf = drawn(v, w, h);
     (0..h)
         .map(|y| (0..w).map(|x| buf[(x, y)].symbol()).collect::<String>())
         .collect::<Vec<_>>()

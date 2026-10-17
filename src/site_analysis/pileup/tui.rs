@@ -61,10 +61,6 @@ pub struct View<'a> {
     pub cursor: Option<i64>,
     /// Whether `M` switches to the other modality's sites.
     pub switchable: bool,
-    /// Tracks drawn in pairs, each a mirrored row: the first above (in the
-    /// accent, as converted reads), the second below. Empty: the first two
-    /// tracks share a row when they are alike.
-    pub pairs: &'a [(usize, usize)],
 }
 
 /// Minimum gap between genes in one lane, as a share of the window, so labels stay apart.
@@ -132,10 +128,8 @@ pub struct PileupView<'a> {
     show: Show,
     /// The genes whose models to draw; `None` (searched locus) draws every gene in view.
     keys: Option<Vec<Box<str>>>,
-    /// The first two tracks share one mirrored row (`m` splits them).
+    /// Tracks flagged [`Track::mirror_with_next`] share a row (`v` splits them).
     mirror: bool,
-    /// Tracks drawn in pairs, each a mirrored row (see [`View::pairs`]).
-    pairs: &'a [(usize, usize)],
     /// The genes to draw, once the annotation has arrived.
     genes: Vec<GeneModel>,
     /// The annotation while it is still loading.
@@ -171,7 +165,12 @@ pub struct Settings {
 }
 
 impl<'a> PileupView<'a> {
-    pub fn new(title: &str, chr: &str, tracks: Vec<Track<'a>>, extent: (i64, i64)) -> Self {
+    /// The browser over `tracks`, each sharing a row with the next as it
+    /// is flagged to; the last has none to share one with.
+    pub fn new(title: &str, chr: &str, mut tracks: Vec<Track<'a>>, extent: (i64, i64)) -> Self {
+        if let Some(last) = tracks.last_mut() {
+            last.mirror_with_next = false;
+        }
         let mut sites: Vec<i64> = tracks
             .iter()
             .flat_map(|t| t.front().iter().map(|p| p.0))
@@ -209,7 +208,6 @@ impl<'a> PileupView<'a> {
             show: Show::default(),
             keys: Some(vec![title.into()]),
             mirror: true,
-            pairs: &[],
             genes: Vec::new(),
             pending_genes: None,
             switchable: false,
@@ -305,35 +303,22 @@ impl<'a> PileupView<'a> {
         self.plots.iter_mut().for_each(PlotImage::invalidate);
     }
 
-    /// The rows top to bottom: contrast, tracks, then genes.
+    /// The rows top to bottom: contrast, tracks, then genes; a track
+    /// flagged to mirror takes the next into its row, unless split.
     fn rows(&self) -> Vec<Row> {
-        let pairs = self.mirror_pairs();
-        let paired = |k: usize| pairs.iter().any(|&(a, b)| k == a || k == b);
         let mut rows: Vec<Row> = self.contrast.map(Row::Contrast).into_iter().collect();
-        // A pair's row where its first track is; the rest as they are.
-        for k in 0..self.tracks.len() {
-            match pairs.iter().find(|p| p.0 == k) {
-                Some(&(a, b)) => rows.push(Row::Mirror(a, b)),
-                None if !paired(k) => rows.push(Row::Track(k)),
-                None => {}
+        let mut k = 0;
+        while k < self.tracks.len() {
+            if self.mirror && self.tracks[k].mirror_with_next {
+                rows.push(Row::Mirror(k, k + 1));
+                k += 2;
+            } else {
+                rows.push(Row::Track(k));
+                k += 1;
             }
         }
         rows.extend((!self.genes.is_empty()).then_some(Row::Genes));
         rows
-    }
-
-    /// The tracks drawn in pairs: the view's, else the first two when they
-    /// are alike; none when split (`m`).
-    fn mirror_pairs(&self) -> Vec<(usize, usize)> {
-        if !self.mirror {
-            Vec::new()
-        } else if !self.pairs.is_empty() {
-            self.pairs.to_vec()
-        } else if self.mirrorable() {
-            vec![(0, 1)]
-        } else {
-            Vec::new()
-        }
     }
 
     /// The top of `row`'s scale: the shared one, but for a track on its own
@@ -345,12 +330,9 @@ impl<'a> PileupView<'a> {
         }
     }
 
-    /// The first two tracks are read tracks of the same measure.
+    /// Whether some track shares a row with the next (`v` toggles it).
     fn mirrorable(&self) -> bool {
-        match &self.tracks[..] {
-            [a, b, ..] => a.is_reads() && b.is_reads() && a.name == b.name,
-            _ => false,
-        }
+        self.tracks.iter().any(|t| t.mirror_with_next)
     }
 
     fn row_title(&self, row: Row) -> String {
@@ -426,12 +408,10 @@ impl<'a> PileupView<'a> {
     /// mode needs beyond the binned reads is binned only in that mode.
     fn shown(&self, k: usize, edges: &BinEdges, (front, behind): &Binned) -> Shown {
         let t = &self.tracks[k];
-        // The upper half of a given pair is converted reads: the accent.
-        let top = self.pairs.iter().any(|&(a, _)| a == k);
         let shown = |values: Vec<f64>, front: Option<Vec<f64>>, accent: bool| Shown {
             values,
             front,
-            accent: accent || top,
+            accent: accent || t.accent,
         };
         match (self.show, behind) {
             (Show::Sites, _) if t.is_reads() => {
@@ -930,7 +910,6 @@ fn browser<'a>(view: View<'a>, tracks: Vec<Track<'a>>, status: Option<String>) -
     browser.pending_genes = view.genes;
     browser.take_genes();
     browser.switchable = view.switchable;
-    browser.pairs = view.pairs;
     if let Some(at) = view.cursor {
         browser.cursor = at.clamp(browser.extent.0, browser.extent.1);
     }

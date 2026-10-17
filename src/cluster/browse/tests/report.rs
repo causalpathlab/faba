@@ -47,3 +47,60 @@ fn the_report_holds_the_modules_and_loads_nothing() {
     assert_eq!(site["s"], serde_json::json!([20, 20, 9]));
     assert_eq!(data["on"], "methylated");
 }
+
+/// The page's data for `m`, GENE1 on a model.
+fn data_json(m: &crate::cluster::browse::Modules) -> String {
+    let model = crate::site_analysis::miami::genemodel::GeneModel {
+        chr: "chr1".into(),
+        lo: 50,
+        hi: 401,
+        forward: true,
+        exons: vec![(50, 120), (280, 401)],
+        symbol: "GENE1".into(),
+        key: "GENE1".into(),
+    };
+    let models = gene_models(m, &[model]);
+    serde_json::to_string(&report::data(m, &models)).unwrap()
+}
+
+/// The page's data is in the panes' column order: the same tables with
+/// their cell roles numbered the other way give the same data, only the
+/// cell modules' names following their roles.
+#[test]
+fn the_reports_data_is_in_column_order() {
+    let head = r#"{"title":"gene modules × cell modules · m6a","modality":"m6a","on":"methylated","off":"unmethylated","cellNames":"#;
+    let tail = r#","cellSizes":[2,1],"diagonal":["M2","M1"],"modules":[{"name":"M2","size":1,"range":1.5,"genes":[{"name":"GENE3","chr":"chr1","lo":-40,"len":100,"exons":[],"sites":[{"pos":50,"c":[[30.0,40.0],[10.0,40.0]],"s":[40,40,12]}]}]},{"name":"M1","size":2,"range":0.2,"genes":[{"name":"GENE1","chr":"chr1","lo":50,"len":350,"exons":[[0,70],[230,351]],"sites":[{"pos":50,"c":[[8.0,10.0],[1.0,10.0]],"s":[20,20,9]},{"pos":250,"c":[[5.0,10.0],[0.0,0.0]],"s":[10,10,4]}]},{"name":"GENE2","chr":"chr1","lo":0,"len":100,"exons":[],"sites":[{"pos":50,"c":[[1.0,2.0],[0.0,0.0]],"s":[4,2,3]}]}]}]}"#;
+    for (m, names) in [loaded(), super::swapped()]
+        .iter()
+        .zip([r#"["C1","C2"]"#, r#"["C2","C1"]"#])
+    {
+        assert_eq!(data_json(m), format!("{head}{names}{tail}"));
+    }
+}
+
+/// The page written holds its title, the browser's fragment, and the data
+/// as [`report::data`] makes it.
+#[test]
+fn the_page_holds_its_title_fragment_and_data() {
+    for m in [loaded(), super::swapped()] {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("report.html");
+        let models = Default::default();
+        report::write(&m, &models, &path).unwrap();
+        let html = std::fs::read_to_string(&path).unwrap();
+        assert!(html.contains(&format!("<title>faba modules · {}</title>", m.modality)));
+        let script = report::FRAGMENT
+            .rsplit_once("<script>")
+            .map(|(_, code)| code)
+            .unwrap();
+        assert!(html.contains(script), "the fragment's code as it is");
+        let at = html
+            .find(r#"<script id="data" type="application/json">"#)
+            .unwrap();
+        let json = &html[at..];
+        let json = &json[json.find('>').unwrap() + 1..json.find("</script>").unwrap()];
+        let back: serde_json::Value = serde_json::from_str(json).unwrap();
+        let data = serde_json::to_value(report::data(&m, &models)).unwrap();
+        assert_eq!(back, data);
+    }
+}

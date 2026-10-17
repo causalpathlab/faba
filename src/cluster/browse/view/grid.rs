@@ -140,6 +140,40 @@ impl Stretch {
     }
 }
 
+/// A grid's colour ranges, kept with the key they were worked out for (the
+/// scale, and for the sites grid the gene role too), so a frame works them
+/// out only when the key changes.
+pub(in crate::cluster::browse) struct Kept<K>(Option<(K, Stretch)>);
+
+impl<K> Default for Kept<K> {
+    fn default() -> Self {
+        Self(None)
+    }
+}
+
+impl<K: Copy + PartialEq> Kept<K> {
+    /// The key the ranges were worked out for; none before any heatmap.
+    pub(in crate::cluster::browse) fn key(&self) -> Option<K> {
+        self.0.as_ref().map(|&(k, _)| k)
+    }
+
+    /// The ranges worked out by `make` for `key` when `look` is a heatmap
+    /// and they were worked out for another key; bars need none.
+    fn update(&mut self, look: Look, key: K, make: impl FnOnce() -> Stretch) {
+        if look != Look::Bars && self.key() != Some(key) {
+            self.0 = Some((key, make()));
+        }
+    }
+
+    /// The ranges `look` draws with: none for bars.
+    fn get(&self, look: Look) -> Option<&Stretch> {
+        self.0
+            .as_ref()
+            .filter(|_| look != Look::Bars)
+            .map(|(_, s)| s)
+    }
+}
+
 /// The rows a grid shows, from row `first` of all of them, and how: the
 /// label column's width, the row highlighted, the look, and the colour
 /// ranges over all the rows (for a heatmap).
@@ -154,44 +188,43 @@ struct Placing<'s> {
 }
 
 /// One row of a grid, its reads in the panes' column order.
-struct Row {
+struct Row<'r> {
     label: String,
-    reads: Vec<Count>,
+    reads: &'r [Count],
     extra: String,
     spot: Spot,
 }
 
 impl ModulesView<'_> {
     /// The modules grid: each gene module's reads in each cell module.
-    pub(super) fn draw_modules(&self, buf: &mut Buffer, area: Rect) {
+    pub(super) fn draw_modules(&mut self, buf: &mut Buffer, area: Rect) {
         let m = self.m;
+        let look = self.looks[0];
+        // Colours over every module's blocks, worked out once per scale.
+        let ramp = self.ramp;
+        self.module_stretch.update(look, ramp, || {
+            Stretch::of(m.order.iter().map(|&g| m.block(g)), ramp)
+        });
         let order = self.module_order();
-        let blocks: Vec<Vec<Count>> = order.iter().map(|&g| self.in_columns(m.block(g))).collect();
         let fit = (area.height.saturating_sub(1) / 2).max(1) as usize;
         let at = order.iter().position(|&g| g == self.module).unwrap_or(0);
         let first = (at + 1).saturating_sub(fit);
-        let rows: Vec<Row> = (first..order.len())
-            .take(fit)
-            .map(|i| {
-                let g = order[i];
-                Row {
-                    label: format!("M{:<3}{:>5} genes", g + 1, m.gene_sizes[g]),
-                    reads: blocks[i].clone(),
-                    extra: format!("Δ{:.2}", m.shift_range(g)),
-                    spot: Spot::Module(g),
-                }
+        let rows: Vec<Row> = order[first..order.len().min(first + fit)]
+            .iter()
+            .map(|&g| Row {
+                label: format!("M{:<3}{:>5} genes", g + 1, m.gene_sizes[g]),
+                reads: m.block(g),
+                extra: format!("Δ{:.2}", m.shift_range(g)),
+                spot: Spot::Module(g),
             })
             .collect();
-        let look = self.looks[0];
-        let stretch =
-            (look != Look::Bars).then(|| Stretch::of(blocks.iter().map(Vec::as_slice), self.ramp));
         let placing = Placing {
             label_w: MODULE_LABEL,
             extra_w: MODULE_EXTRA,
             first,
             selected: at,
             look,
-            stretch: stretch.as_ref(),
+            stretch: self.module_stretch.get(look),
         };
         self.draw_grid(buf, area, &rows, placing);
     }
@@ -213,7 +246,7 @@ impl ModulesView<'_> {
                 let mark = if self.pinned(g, i) { "• " } else { "" };
                 Row {
                     label: format!("{mark}{} {}", query_symbol(&s.gene), s.pos),
-                    reads: self.in_columns(&members[i].reads),
+                    reads: &members[i].reads,
                     extra: self.site_counts(members[i].site),
                     spot: Spot::Site(i),
                 }
@@ -228,15 +261,10 @@ impl ModulesView<'_> {
         let look = self.looks[1];
         // Colours over every site of the module, not only those shown,
         // worked out once per module and scale.
-        if look != Look::Bars && self.site_stretch.as_ref().map(|s| s.0) != Some((g, self.ramp)) {
-            let stretch = Stretch::of(members.iter().map(|s| s.reads.as_slice()), self.ramp);
-            self.site_stretch = Some(((g, self.ramp), stretch));
-        }
-        let stretch = self
-            .site_stretch
-            .as_ref()
-            .filter(|_| look != Look::Bars)
-            .map(|s| &s.1);
+        let ramp = self.ramp;
+        self.site_stretch.update(look, (g, ramp), || {
+            Stretch::of(members.iter().map(|s| s.reads.as_slice()), ramp)
+        });
         let selected = self.listed_at().unwrap_or(0);
         let placing = Placing {
             label_w,
@@ -244,7 +272,7 @@ impl ModulesView<'_> {
             first,
             selected,
             look,
-            stretch,
+            stretch: self.site_stretch.get(look),
         };
         let shown = self.draw_grid(buf, area, &rows, placing);
         let x = area.x + label_w + shown as u16 * self.cell_w;
@@ -277,11 +305,6 @@ impl ModulesView<'_> {
             ),
             None => format!("{:>6} {:>6} {:>6} {:>6}", "-", "-", "-", "-"),
         }
-    }
-
-    /// Per-cell-module reads in the order every pane shows the cell modules.
-    pub(super) fn in_columns(&self, reads: &[Count]) -> Vec<Count> {
-        self.m.columns.iter().map(|&c| reads[c]).collect()
     }
 
     /// The `rows` shown, placed as `at` says, two lines a row, under the
@@ -322,13 +345,13 @@ impl ModulesView<'_> {
                 Some(s) => heat_row(
                     buf,
                     grid,
-                    &row.reads,
+                    row.reads,
                     cells,
                     (at.look, self.ramp),
                     s,
                     selected,
                 ),
-                None => grid_row(buf, grid, &row.reads, cells),
+                None => grid_row(buf, grid, row.reads, cells),
             };
             if end + 1 < area.right() {
                 let room = (area.right() - end - 1) as usize;

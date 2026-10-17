@@ -22,6 +22,9 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use rustc_hash::FxHashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::thread::JoinHandle;
 
 mod bars;
 mod chrome;
@@ -36,13 +39,13 @@ mod strip;
 #[cfg(test)]
 pub use bars::{eighths, hanging};
 #[cfg(test)]
-pub use grid::box_size;
-pub use grid::{Look, Ramp, Stretch};
+pub use grid::{box_size, Stretch};
+pub use grid::{Look, Ramp};
 #[cfg(test)]
 pub use strip::{columns, pack, segment_width};
 
 use find::{Entry, Find};
-use grid::CELL;
+use grid::{Kept, CELL};
 use input::Held;
 
 /// The footer while the gene models load.
@@ -139,8 +142,8 @@ pub struct ModulesView<'a> {
     pub(super) descending: bool,
     /// The annotation while it is still loading.
     pending: Option<SharedModels>,
-    /// The sites' genes' models, by gene.
-    models: FxHashMap<Box<str>, GeneModel>,
+    /// The sites' genes' models, by gene, shared with a report being written.
+    models: Arc<FxHashMap<Box<str>, GeneModel>>,
     catalog: Vec<Entry>,
     find: Option<Find>,
     held: Option<Held>,
@@ -148,11 +151,19 @@ pub struct ModulesView<'a> {
     status: Option<String>,
     /// The gene whose full pileup Enter asked for.
     open: Option<String>,
-    /// Where `e` writes the report.
-    report: Option<std::path::PathBuf>,
+    /// Where `e` writes the report, and the modules for its thread.
+    report: Option<(PathBuf, Arc<Modules>)>,
+    /// The report being written on a thread of its own, to `report`'s path.
+    writing: Option<JoinHandle<anyhow::Result<()>>>,
+    /// `e` came again while a report was being written: write it anew
+    /// once that one is done, with what has arrived since.
+    again: bool,
     /// The sites grid's colour ranges, for the gene role and scale they
     /// were worked out for.
-    site_stretch: Option<((usize, Ramp), Stretch)>,
+    site_stretch: Kept<(usize, Ramp)>,
+    /// The modules grid's colour ranges, for the scale they were worked
+    /// out for: over every module's blocks, whatever the rows' order.
+    pub(super) module_stretch: Kept<Ramp>,
     hits: Hits<Spot>,
     done: bool,
 }
@@ -180,14 +191,17 @@ impl<'a> ModulesView<'a> {
             sort: Sort::Module,
             descending: false,
             pending: None,
-            models: FxHashMap::default(),
+            models: Arc::default(),
             catalog: find::catalog(m),
             find: None,
             held: None,
             status: None,
             open: None,
             report: None,
-            site_stretch: None,
+            writing: None,
+            again: false,
+            site_stretch: Kept::default(),
+            module_stretch: Kept::default(),
             hits: Hits::default(),
             done: false,
         };
@@ -221,7 +235,7 @@ impl<'a> ModulesView<'a> {
         };
         match read {
             Ok(all) => {
-                self.models = super::gene_models(self.m, all);
+                self.models = Arc::new(super::gene_models(self.m, all));
                 if self.status.as_deref() == Some(LOADING) {
                     self.status = None;
                 }
@@ -231,19 +245,63 @@ impl<'a> ModulesView<'a> {
         self.pending = None;
     }
 
-    /// Where `e` writes the report.
-    pub fn with_report(mut self, path: std::path::PathBuf) -> Self {
-        self.report = Some(path);
+    /// Where `e` writes the report of `modules` (those the view shows).
+    pub fn with_report(mut self, path: PathBuf, modules: Arc<Modules>) -> Self {
+        self.report = Some((path, modules));
         self
     }
 
-    /// `e`: write the report, saying where (or why not).
+    /// `e`: gather and write the report on a thread of its own, saying
+    /// where; [`Self::take_written`] says when it is done. Asked again
+    /// while one is being written, it is written anew after.
     fn export(&mut self) {
-        let Some(path) = &self.report else { return };
-        self.status = Some(match super::report::write(self.m, &self.models, path) {
-            Ok(()) => format!("wrote {}", path.display()),
-            Err(e) => format!("{e:#}"),
+        let Some((path, modules)) = self.report.clone() else {
+            return;
+        };
+        if self.writing.is_some() {
+            self.again = true;
+            self.status = Some(format!("writing {}, then again", path.display()));
+            return;
+        }
+        self.status = Some(format!("writing {}", path.display()));
+        let models = self.models.clone();
+        self.writing = Some(std::thread::spawn(move || {
+            super::report::save(&super::report::data(&modules, &models), &path)
+        }));
+    }
+
+    /// Say where the report was written (or why not) once it is, then
+    /// write it again if that was asked meanwhile; true when it says so.
+    fn take_written(&mut self) -> bool {
+        if !self.writing.as_ref().is_some_and(JoinHandle::is_finished) {
+            return false;
+        }
+        self.status = self.written().map(|w| match w {
+            Ok(msg) | Err(msg) => msg,
         });
+        if std::mem::take(&mut self.again) {
+            self.export();
+        }
+        true
+    }
+
+    /// Where the report was written, or why not, once its thread is done
+    /// (waiting for it); none when none is being written.
+    fn written(&mut self) -> Option<Result<String, String>> {
+        let thread = self.writing.take()?;
+        let path = self.report_path();
+        Some(match thread.join() {
+            Ok(Ok(())) => Ok(format!("wrote {path}")),
+            Ok(Err(e)) => Err(format!("{e:#}")),
+            Err(_) => Err(format!("{path}: writing it failed")),
+        })
+    }
+
+    /// Where `e` writes the report, as said.
+    fn report_path(&self) -> String {
+        self.report
+            .as_ref()
+            .map_or_else(String::new, |(p, _)| p.display().to_string())
     }
 
     /// The gene role in focus; none when no module has sites.
@@ -295,6 +353,21 @@ impl<'a> ModulesView<'a> {
 
 impl crate::tui::View for ModulesView<'_> {}
 
+impl Drop for ModulesView<'_> {
+    /// A report still being written is finished, not cut short on
+    /// quitting; the wait and a failure are said, not hidden.
+    fn drop(&mut self) {
+        if self.writing.as_ref().is_some_and(|t| !t.is_finished()) {
+            log::warn!("finishing {}", self.report_path());
+        }
+        match self.written() {
+            Some(Ok(msg)) => log::info!("{msg}"),
+            Some(Err(msg)) => log::warn!("{msg}"),
+            None => {}
+        }
+    }
+}
+
 impl Screen for ModulesView<'_> {
     fn done(&self) -> bool {
         self.done
@@ -307,7 +380,8 @@ impl Screen for ModulesView<'_> {
     fn tick(&mut self) -> bool {
         let waiting = self.pending.is_some();
         self.take_genes();
-        waiting && self.pending.is_none()
+        let wrote = self.take_written();
+        (waiting && self.pending.is_none()) || wrote
     }
 
     fn takes_mouse(&self) -> bool {

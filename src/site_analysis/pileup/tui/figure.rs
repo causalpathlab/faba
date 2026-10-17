@@ -13,7 +13,7 @@ impl PileupView<'_> {
         let room = figure::tick_room(&self.tick_list(), true);
         let rows = self.rows();
         let genes_h = 24.0 + GENE_LANE * self.lanes() as f64;
-        let n_plots = Self::plot_count(&rows) as f64;
+        let n_plots = Self::plot_count(&rows);
         // The shape the view has on screen, grown alike on both sides until
         // each plot has room for its axis, the plots sharing what the title
         // and the genes leave; else a page of its own.
@@ -22,17 +22,19 @@ impl PileupView<'_> {
         } else {
             0.0
         };
-        let least = 50.0 + genes + n_plots * (100.0 + room);
-        let (width, panel_h) = match self.controls.page(self.drawn, (360.0, least)) {
-            Some((w, h)) => (w, (h - 50.0 - genes) / n_plots),
-            None => (720.0, 170.0 + room),
-        };
+        // The plots are alike: each at least `least`, sharing alike what a
+        // taller page adds.
+        let (fixed, least) = (50.0 + genes, 100.0 + room);
+        let page = self
+            .controls
+            .page(self.drawn, (360.0, fixed + least * n_plots as f64));
+        let panel_h = page.map_or(170.0 + room, |(_, h)| (h - fixed) / n_plots.max(1) as f64);
         let heights: Vec<f64> = rows
             .iter()
             .map(|&r| if r == Row::Genes { genes_h } else { panel_h })
             .collect();
-        let total: f64 = heights.iter().sum();
-        let mut c = Canvas::new(width, 50.0 + total);
+        let (width, height) = page.unwrap_or((720.0, 50.0 + heights.iter().sum::<f64>()));
+        let mut c = Canvas::new(width, height);
         c.bold(16.0, 22.0, &self.title, 12.0, Anchor::Start, INK);
         c.text(
             16.0,

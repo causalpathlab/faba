@@ -1,79 +1,105 @@
-//! A `faba cluster` run as the command that would run it again, its options
-//! by the flags clap names them.
+//! A `faba cluster` run as the command that would run it again: each option
+//! given or set away from its default, by the flag clap names it, with the
+//! value the run had.
 
 use super::ClusterArgs;
-use rustc_hash::FxHashMap;
+use clap::{ArgMatches, Args, FromArgMatches, ValueHint};
+use rustc_hash::FxHashSet;
+use serde_json::{Map, Value};
 
-/// `faba cluster`'s options alone, to parse them or name their flags.
-#[derive(clap::Parser)]
-pub(super) struct Alone {
-    #[command(flatten)]
-    pub(super) args: ClusterArgs,
+/// The options given to `faba cluster` (on the command line or by the
+/// environment), by clap id.
+#[derive(Debug, Clone, Default)]
+pub struct Given(FxHashSet<String>);
+
+/// `faba cluster`'s options alone, as clap defines them.
+fn definition() -> clap::Command {
+    ClusterArgs::augment_args(clap::Command::new("cluster"))
+}
+
+impl ClusterArgs {
+    /// Notes which of `faba cluster`'s options `matches` were given, for
+    /// the command saved beside the run.
+    pub fn record_given(&mut self, matches: &ArgMatches) {
+        self.given = Given(
+            definition()
+                .get_arguments()
+                .map(|a| a.get_id().as_str())
+                .filter(|id| crate::script::given_words(matches, id).is_some())
+                .map(String::from)
+                .collect(),
+        );
+    }
+}
+
+/// `word` as the saved command takes it: a word of an option that takes a
+/// path (or, as `--fit`, a pattern over paths) made absolute, so the script
+/// runs from anywhere, unless it starts with a wildcard.
+fn absolute(arg: &clap::Arg, word: &str) -> String {
+    let path = matches!(
+        arg.get_value_hint(),
+        ValueHint::AnyPath | ValueHint::FilePath | ValueHint::DirPath
+    );
+    if path && !word.starts_with(['*', '?']) {
+        crate::run_record::absolute(word)
+    } else {
+        word.to_string()
+    }
+}
+
+/// `args`' options by field name, which is each one's clap id.
+fn fields(args: &ClusterArgs) -> Map<String, Value> {
+    match serde_json::to_value(args) {
+        Ok(Value::Object(m)) => m,
+        _ => Map::new(),
+    }
+}
+
+/// The words of one option's value: none for unset, each item of a list.
+fn words(v: &Value) -> Vec<String> {
+    match v {
+        Value::Null => Vec::new(),
+        Value::String(s) => vec![s.clone()],
+        Value::Array(items) => items.iter().flat_map(words).collect(),
+        other => vec![other.to_string()],
+    }
 }
 
 /// `args` as a `faba cluster` command: its inputs as absolute paths, then
-/// each option that differs from its default, by the flag clap names it,
-/// paths among them absolute too.
+/// each option given or away from its default, by the flag clap names it,
+/// with the value this run had, paths among them absolute too.
 pub(super) fn command(args: &ClusterArgs) -> Vec<String> {
-    let defaults = <Alone as clap::Parser>::parse_from(["faba", "x"]).args;
-    let flags: FxHashMap<String, String> = <Alone as clap::CommandFactory>::command()
-        .get_arguments()
-        .filter_map(|a| Some((a.get_id().to_string(), a.get_long()?.to_string())))
-        .collect();
+    let cmd = definition();
+    let ran = fields(args);
+    let default = cmd
+        .clone()
+        .try_get_matches_from(["cluster"])
+        .ok()
+        .and_then(|m| ClusterArgs::from_arg_matches(&m).ok())
+        .map(|d| fields(&d))
+        .unwrap_or_default();
     let mut argv = vec!["cluster".to_string()];
     argv.extend(
         args.data_files
             .iter()
             .map(|f| crate::run_record::absolute(f)),
     );
-    let (Ok(serde_json::Value::Object(given)), Ok(defaults)) =
-        (serde_json::to_value(args), serde_json::to_value(&defaults))
-    else {
-        return argv;
-    };
-    for (field, mut value) in given {
-        // Paths, as the inputs are, so the script runs from anywhere: the
-        // output, and a pattern that does not start with a wildcard.
-        if let serde_json::Value::String(s) = &value {
-            let path = field == "output" || (field == "fit" && !s.starts_with(['*', '?', '/']));
-            if path {
-                value = crate::run_record::absolute(s).into();
-            }
-        }
-        let Some(flag) = flags
-            .get(&field)
-            .filter(|_| defaults.get(&field) != Some(&value))
-        else {
+    for arg in cmd.get_arguments() {
+        let id = arg.get_id().as_str();
+        let (Some(long), Some(value)) = (arg.get_long(), ran.get(id)) else {
             continue;
         };
-        push_option(&mut argv, &format!("--{flag}"), &value);
-    }
-    argv
-}
-
-/// `--flag` with `value` as the command line takes it: a switch alone, a
-/// list as its values, a value that starts like a flag in the same word.
-fn push_option(argv: &mut Vec<String>, flag: &str, value: &serde_json::Value) {
-    use serde_json::Value;
-    let words: Vec<String> = match value {
-        Value::Bool(true) => return argv.push(flag.to_string()),
-        Value::Number(n) => vec![n.to_string()],
-        Value::String(s) => vec![s.clone()],
-        Value::Array(items) => items
-            .iter()
-            .filter_map(|v| match v {
-                Value::String(s) => Some(s.clone()),
-                Value::Number(n) => Some(n.to_string()),
-                _ => None,
-            })
-            .collect(),
-        _ => return,
-    };
-    match &words[..] {
-        [one] if one.starts_with('-') => argv.push(format!("{flag}={one}")),
-        _ => {
-            argv.push(flag.to_string());
-            argv.extend(words);
+        let changed = default.get(id) != Some(value);
+        let flag = format!("--{long}");
+        if !arg.get_action().takes_values() {
+            // A switch is its flag alone, written when away from its default.
+            if changed {
+                argv.push(flag);
+            }
+        } else if changed || args.given.0.contains(id) {
+            let ws = words(value).iter().map(|w| absolute(arg, w)).collect();
+            argv.extend(crate::script::emit(&flag, crate::script::many_of(arg), ws));
         }
     }
+    argv
 }

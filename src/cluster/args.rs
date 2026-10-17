@@ -11,6 +11,7 @@ pub struct ClusterArgs {
     #[arg(
         num_args = 0..,
         value_name = "MATRIX|DIR",
+        value_hint = clap::ValueHint::AnyPath,
         help = "Site matrices (zarr or h5), or a faba output directory (or a run record in it); browse for one when left out",
         long_help = "Site matrices (zarr or h5): `{batch}_m6a_site` or `{batch}_atoi_site`,\n\
                      or a faba output directory (or a run record in it), whose site matrices\n\
@@ -30,13 +31,17 @@ pub struct ClusterArgs {
         short = 'o',
         long = "output",
         value_name = "DIR",
+        value_hint = clap::ValueHint::DirPath,
         help = "Where to write the tables and the run record (default: the input's directory)"
     )]
     pub(super) output: Option<Box<str>>,
 
+    /// A pattern over the inputs' paths, so the saved command makes it
+    /// absolute as a path, unless it starts with a wildcard.
     #[arg(
         long = "fit",
         value_name = "PATTERN",
+        value_hint = clap::ValueHint::AnyPath,
         help = "Fit only the cells of matrices whose path matches PATTERN (`*`, `?`); assign the rest",
         long_help = "Fit only the cells of matrices whose path matches PATTERN (`*` any run,\n\
                      `?` one character), e.g. `--fit '*_wt_*'`. The other matrices' cells are\n\
@@ -198,6 +203,11 @@ pub struct ClusterArgs {
         help = "Random seed (chain i uses seed + i)"
     )]
     pub(super) seed: u64,
+
+    /// The options given, for the command saved beside the run.
+    #[arg(skip)]
+    #[serde(skip)]
+    pub(super) given: super::command::Given,
 }
 
 /// Which mixture `faba cluster` fits.
