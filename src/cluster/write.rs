@@ -173,8 +173,8 @@ pub struct CommunityRow<'a> {
 }
 
 /// Every input cell: barcode, batch, its main `name` (a community or role,
-/// 1..), that one's weight, its level when any cell has one, and its weight
-/// in each.
+/// 1..), that one's weight, whether it was fitted (kept and in the fit, not
+/// placed after), its level when any cell has one, and its weight in each.
 pub fn communities(rows: &[CommunityRow], k: usize, name: &str, path: &Path) -> anyhow::Result<()> {
     let labels = [
         (
@@ -186,12 +186,17 @@ pub fn communities(rows: &[CommunityRow], k: usize, name: &str, path: &Path) -> 
             rows.iter().map(|r| r.cell.batch.as_ref()).collect(),
         ),
     ];
-    let level = rows
+    let fitted = rows
         .iter()
-        .any(|r| r.level.is_some())
-        .then(|| rows.iter().map(|r| r.level).collect());
+        .map(|r| r.cell.fit && r.membership.is_some())
+        .collect::<Vec<_>>();
+    let mut extra: Vec<(&str, ArrayRef)> = vec![("fitted", Arc::new(BooleanArray::from(fitted)))];
+    if rows.iter().any(|r| r.level.is_some()) {
+        let level = rows.iter().map(|r| r.level).collect::<Vec<_>>();
+        extra.push(("level", Arc::new(Float32Array::from(level))));
+    }
     let membership: Vec<Option<&[f32]>> = rows.iter().map(|r| r.membership).collect();
-    memberships(&labels, &membership, level, k, name, path)
+    memberships(&labels, &membership, extra, k, name, path)
 }
 
 /// One row per gene: its main gene role (1..), that role's weight, and its
@@ -206,7 +211,7 @@ pub fn gene_roles(
     memberships(
         &[("gene", names.to_vec())],
         &membership,
-        None,
+        Vec::new(),
         roles,
         "role",
         path,
@@ -214,11 +219,11 @@ pub fn gene_roles(
 }
 
 /// One row per member: its `labels` columns, its main `name` (1..), that
-/// one's weight, its `level` when given, and its weight in each of `k`.
+/// one's weight, the `extra` columns, and its weight in each of `k`.
 fn memberships(
     labels: &[(&str, Vec<&str>)],
     membership: &[Option<&[f32]>],
-    level: Option<Vec<Option<f32>>>,
+    extra: Vec<(&str, ArrayRef)>,
     k: usize,
     name: &str,
     path: &Path,
@@ -251,9 +256,7 @@ fn memberships(
                 .collect::<Vec<_>>(),
         )),
     ));
-    if let Some(level) = level {
-        columns.push(("level".into(), Arc::new(Float32Array::from(level))));
-    }
+    columns.extend(extra.into_iter().map(|(n, a)| (n.to_string(), a)));
     for j in 0..k {
         columns.push((
             format!("{name}_{}", j + 1),
@@ -433,10 +436,10 @@ pub fn block_members(
     write(columns, path)
 }
 
-/// One row per block and site with reads there, by block, gene and
-/// position: both roles, the site, its posterior-mean reads in the block,
-/// their methylated fraction, and its lift over the site's baseline (logit
-/// scale).
+/// One row per block and site with a read or more there, by block, gene
+/// and position: both roles, the site, its posterior-mean reads in the
+/// block, their methylated fraction, and its lift over the site's baseline
+/// (logit scale). A site's reads over every block are in [`site_cells`].
 pub fn block_sites(
     sites: &[Site],
     on: &[f64],
@@ -472,6 +475,53 @@ pub fn block_sites(
         ("total", f32s(&|i| on[i] + off[i])),
         ("fraction", f32s(&|i| on[i] / (on[i] + off[i]))),
         ("lift", f32s(&|i| lift[i])),
+    ]);
+    write(columns, path)
+}
+
+/// Posterior-mean reads under which a site's entry in a cell role is left
+/// out of [`site_cells`]: low enough that a gene's full pileup loses no
+/// fractional reads (the table is drawn, never sorted or standardized).
+const SITE_CELL_READS: f64 = 1e-3;
+
+/// One row per site and cell role with reads there (at least
+/// [`SITE_CELL_READS`]), by gene, position and cell role: the site, the
+/// cell role (1..), and its posterior-mean converted and total reads summed
+/// over every gene role, the site's whole reads in that cell role. `on` and
+/// `off` are site-major over `blocks`, block `c * gene_roles + g`.
+pub fn site_cells(
+    sites: &[Site],
+    on: &[f64],
+    off: &[f64],
+    blocks: usize,
+    gene_roles: usize,
+    path: &Path,
+) -> anyhow::Result<()> {
+    let cell_roles = blocks / gene_roles;
+    let sum = |x: &[f64], s: usize, c: usize| -> f64 {
+        let from = s * blocks + c * gene_roles;
+        x[from..from + gene_roles].iter().sum()
+    };
+    // Per row: its site, cell role (1..), converted and total reads.
+    let (mut at, mut role, mut converted, mut total) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    for s in site_order(sites) {
+        for c in 0..cell_roles {
+            let m = sum(on, s, c);
+            let t = m + sum(off, s, c);
+            if t >= SITE_CELL_READS {
+                at.push(s);
+                role.push(c as i32 + 1);
+                converted.push(m as f32);
+                total.push(t as f32);
+            }
+        }
+    }
+    let mut columns = Vec::from(site_columns(sites, at.iter().copied()));
+    columns.extend([
+        ("cell_role", Arc::new(Int32Array::from(role)) as ArrayRef),
+        ("converted", Arc::new(Float32Array::from(converted))),
+        ("total", Arc::new(Float32Array::from(total))),
     ]);
     write(columns, path)
 }

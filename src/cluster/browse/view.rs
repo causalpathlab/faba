@@ -3,7 +3,9 @@
 //! of the module in focus (right), and the genes the user pins, side by side
 //! (below), each on its own axis under its gene model, with an "all cells"
 //! track (the margin over cell modules) above one track per cell module.
-//! Enter on a pinned gene opens the fourth, its full pileup (`super::gene`).
+//! Each gene is in its main gene module, with its posterior-mean reads
+//! there. Enter on a pinned gene opens the fourth, its full pileup over
+//! every gene module (`super::gene`).
 //!
 //! Reads are drawn as the pileup draws them, mirror bars (see [`bars`]). A
 //! grid can show its blocks as bars, a % heatmap or a z heatmap (see
