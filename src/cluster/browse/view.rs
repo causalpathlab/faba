@@ -24,7 +24,6 @@ use ratatui::Frame;
 use rustc_hash::FxHashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::thread::JoinHandle;
 
 mod bars;
 mod chrome;
@@ -153,17 +152,19 @@ pub struct ModulesView<'a> {
     open: Option<String>,
     /// Where `e` writes the report, and the modules for its thread.
     report: Option<(PathBuf, Arc<Modules>)>,
-    /// The report being written on a thread of its own, to `report`'s path.
-    writing: Option<JoinHandle<anyhow::Result<()>>>,
-    /// `e` came again while a report was being written: write it anew
-    /// once that one is done, with what has arrived since.
-    again: bool,
+    /// The report being written on a thread of its own, to `report`'s
+    /// path; `e` again meanwhile writes it anew after, with what has
+    /// arrived since.
+    writing: crate::report::Writing,
     /// The sites grid's colour ranges, for the gene role and scale they
     /// were worked out for.
     site_stretch: Kept<(usize, Ramp)>,
     /// The modules grid's colour ranges, for the scale they were worked
     /// out for: over every module's blocks, whatever the rows' order.
     pub(super) module_stretch: Kept<Ramp>,
+    /// Each gene's widest site label for the gene role it was worked out
+    /// for (see [`ModulesView::site_label_w`]).
+    pub(super) site_labels: Kept<usize, Vec<usize>>,
     hits: Hits<Spot>,
     done: bool,
 }
@@ -198,10 +199,10 @@ impl<'a> ModulesView<'a> {
             status: None,
             open: None,
             report: None,
-            writing: None,
-            again: false,
+            writing: Default::default(),
             site_stretch: Kept::default(),
             module_stretch: Kept::default(),
+            site_labels: Kept::default(),
             hits: Hits::default(),
             done: false,
         };
@@ -221,6 +222,11 @@ impl<'a> ModulesView<'a> {
     pub fn take_open(&mut self) -> Option<String> {
         self.done = false;
         self.open.take()
+    }
+
+    /// The first cell module shown, a place among the columns.
+    pub(super) fn first_column(&self) -> usize {
+        self.col_from
     }
 
     /// Say `msg` on the footer until the next key.
@@ -255,53 +261,32 @@ impl<'a> ModulesView<'a> {
     /// where; [`Self::take_written`] says when it is done. Asked again
     /// while one is being written, it is written anew after.
     fn export(&mut self) {
-        let Some((path, modules)) = self.report.clone() else {
-            return;
-        };
-        if self.writing.is_some() {
-            self.again = true;
-            self.status = Some(format!("writing {}, then again", path.display()));
-            return;
+        if let Some(said) = self.start_report() {
+            self.status = Some(said);
         }
-        self.status = Some(format!("writing {}", path.display()));
-        let models = self.models.clone();
-        self.writing = Some(std::thread::spawn(move || {
-            super::report::save(&super::report::data(&modules, &models), &path)
-        }));
+    }
+
+    /// Start the report, or queue one more while one is under way: what
+    /// to say; none without a report to write.
+    fn start_report(&mut self) -> Option<String> {
+        let (path, modules) = self.report.clone()?;
+        if let Some(said) = self.writing.busy() {
+            return Some(said);
+        }
+        let (models, to) = (self.models.clone(), path.clone());
+        Some(self.writing.spawn(path, move || {
+            super::report::save(&super::report::data(&modules, &models), &to)
+        }))
     }
 
     /// Say where the report was written (or why not) once it is, then
     /// write it again if that was asked meanwhile; true when it says so.
     fn take_written(&mut self) -> bool {
-        if !self.writing.as_ref().is_some_and(JoinHandle::is_finished) {
+        let Some(done) = self.writing.poll() else {
             return false;
-        }
-        self.status = self.written().map(|w| match w {
-            Ok(msg) | Err(msg) => msg,
-        });
-        if std::mem::take(&mut self.again) {
-            self.export();
-        }
+        };
+        self.status = Some(done.then(|| self.start_report().unwrap_or_default()));
         true
-    }
-
-    /// Where the report was written, or why not, once its thread is done
-    /// (waiting for it); none when none is being written.
-    fn written(&mut self) -> Option<Result<String, String>> {
-        let thread = self.writing.take()?;
-        let path = self.report_path();
-        Some(match thread.join() {
-            Ok(Ok(())) => Ok(format!("wrote {path}")),
-            Ok(Err(e)) => Err(format!("{e:#}")),
-            Err(_) => Err(format!("{path}: writing it failed")),
-        })
-    }
-
-    /// Where `e` writes the report, as said.
-    fn report_path(&self) -> String {
-        self.report
-            .as_ref()
-            .map_or_else(String::new, |(p, _)| p.display().to_string())
     }
 
     /// The gene role in focus; none when no module has sites.
@@ -352,21 +337,6 @@ impl<'a> ModulesView<'a> {
 }
 
 impl crate::tui::View for ModulesView<'_> {}
-
-impl Drop for ModulesView<'_> {
-    /// A report still being written is finished, not cut short on
-    /// quitting; the wait and a failure are said, not hidden.
-    fn drop(&mut self) {
-        if self.writing.as_ref().is_some_and(|t| !t.is_finished()) {
-            log::warn!("finishing {}", self.report_path());
-        }
-        match self.written() {
-            Some(Ok(msg)) => log::info!("{msg}"),
-            Some(Err(msg)) => log::warn!("{msg}"),
-            None => {}
-        }
-    }
-}
 
 impl Screen for ModulesView<'_> {
     fn done(&self) -> bool {
@@ -440,7 +410,7 @@ impl Screen for ModulesView<'_> {
         self.draw_modules(buf, inner[0]);
         self.draw_sites(buf, inner[1]);
         self.draw_genes(buf, inner[2]);
-        frame.render_widget(Paragraph::new(self.stats_line()), stats);
+        frame.render_widget(Paragraph::new(self.stats_line(stats.width)), stats);
         frame.render_widget(Paragraph::new(help), footer);
     }
 }

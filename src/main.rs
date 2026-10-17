@@ -19,6 +19,8 @@ mod run_record;
 mod script;
 mod site_analysis;
 mod snp;
+#[cfg(test)]
+mod test_util;
 mod tui;
 
 use crate::common::*;

@@ -107,6 +107,12 @@ impl GeneList {
         self.refilter(v, keep);
     }
 
+    /// Gene `g`'s place among view `v`'s pinned genes, if it is one.
+    pub(super) fn pin_of(&self, v: usize, g: usize) -> Option<usize> {
+        let rank = *self.pin.get(v)?.get(g)?;
+        (rank != usize::MAX).then_some(rank)
+    }
+
     pub(super) fn shown(&self) -> &[u32] {
         &self.shown
     }
@@ -160,6 +166,24 @@ impl GeneProfile {
         let (a, z) = self.edges.col_range(b);
         let m = self.model.as_ref()?;
         Some(m.exons.iter().any(|&(s, e)| s < z.max(a + 1) && e > a))
+    }
+}
+
+/// A gene's span `[lo, hi)`, as its profile bins it: its model's, widened
+/// to its sites at `pos` (an annotation other than the one the sites were
+/// called on may not cover them all); its model's alone without sites, and
+/// none with neither.
+pub(super) fn gene_span(
+    model: Option<&GeneModel>,
+    pos: impl Iterator<Item = i64>,
+) -> Option<(i64, i64)> {
+    let sites = pos.fold(None, |span: Option<(i64, i64)>, p| {
+        Some(span.map_or((p, p + 1), |(lo, hi)| (lo.min(p), hi.max(p + 1))))
+    });
+    match (model, sites) {
+        (Some(m), Some((lo, hi))) => Some((m.lo.min(lo), m.hi.max(hi))),
+        (Some(m), None) => Some((m.lo, m.hi)),
+        (None, sites) => sites,
     }
 }
 
@@ -247,12 +271,7 @@ impl<'a> SitePicker<'a> {
             _ => None,
         };
         let pos = |i: &u32| genes.pos.value(*i as usize);
-        // The model's span, widened to every site: an annotation other than
-        // the one the sites were called on may not cover them all.
-        let (min, max) = (rows.iter().map(pos).min()?, rows.iter().map(pos).max()? + 1);
-        let (lo, hi) = model
-            .as_ref()
-            .map_or((min, max), |m| (m.lo.min(min), m.hi.max(max)));
+        let (lo, hi) = gene_span(model.as_ref(), rows.iter().map(pos))?;
         let edges = BinEdges::new(lo, hi, n.max(1));
         let (mut all, mut kept) = (vec![0usize; edges.num_bins], vec![0usize; edges.num_bins]);
         let fails = &self.view().fails;

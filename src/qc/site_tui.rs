@@ -37,7 +37,7 @@ use rustc_hash::FxHashSet;
 use super::args::SiteFilterArgs;
 use super::layout::{file_name, SITE_MODALITIES};
 use super::progress::Progress;
-use super::sites::{genomic_sites, Criterion, GeneSites, SiteTable};
+use super::sites::{genomic_sites, Criterion, GeneSites, RawColumns, SiteTable};
 use crate::tui::browser::{is_annotation, Browser, Nav};
 use crate::tui::{
     apply_key, button_popup, enter_hint, first_visible, is_apply, popup, popup_frame, run_view,
@@ -47,12 +47,20 @@ use crate::tui::{
 mod annotation;
 mod column;
 mod draw;
+mod frame;
 mod genes;
+mod keys;
+mod mouse;
+mod report;
+mod writer;
 
 use annotation::*;
 use column::*;
-use draw::{render_gff, render_leave};
+use draw::{render_gff, render_leave, LEGEND};
 use genes::*;
+use keys::*;
+use mouse::*;
+pub use writer::{Figure, Writer};
 
 /// Width of HistPlot's y gutter.
 use crate::figure::GUTTER;
@@ -91,9 +99,9 @@ struct SiteView<'a> {
     criteria: Vec<Criterion>,
     /// Per site, a [`Criterion::bit`] for every check it fails.
     fails: Vec<u8>,
-    /// Sites by gene, for the gene list; `None` for a table without the
-    /// columns.
-    genes: Option<GeneSites>,
+    /// Sites by gene, for the gene list, shared with a report being
+    /// written; `None` for a table without the columns.
+    genes: Option<std::sync::Arc<GeneSites>>,
 }
 
 impl<'a> SiteView<'a> {
@@ -107,7 +115,7 @@ impl<'a> SiteView<'a> {
             n_cells,
             criteria,
             fails: vec![0; table.len()],
-            genes: GeneSites::new(table).ok(),
+            genes: GeneSites::new(table).ok().map(Into::into),
         };
         for c in view.criteria.clone() {
             view.update(c, f);
@@ -196,51 +204,11 @@ enum Mode {
     Leave(Picked),
 }
 
-/// The key that asks to leave as `picked` says, and confirms it.
-fn leave_key(picked: &Picked) -> char {
-    match picked {
-        Picked::PrintOnly(_) => 'p',
-        _ => 'q',
-    }
-}
-
 /// The panel Tab moves to, which the arrow keys then drive.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Panel {
     Thresholds,
     Genes,
-}
-
-/// Writes the fileset once the thresholds are confirmed: `start` spawns the
-/// writer with them, and `progress` is how far it has got.
-pub struct Writer<'a> {
-    /// The output directory, for the confirmation and the progress.
-    pub output: &'a str,
-    pub progress: &'a Progress,
-    pub start: Option<StartWrite<'a>>,
-}
-
-/// Starts the write with the applied thresholds and the view's figures.
-pub type StartWrite<'a> = Box<dyn FnOnce(SiteFilterArgs, Vec<Figure>) + 'a>;
-
-/// A figure of the view to save with the fileset: a file stem and its SVG.
-pub struct Figure {
-    pub stem: String,
-    pub svg: String,
-}
-
-/// Progress that is already over, for a writer with nothing to write.
-static NOTHING_TO_WRITE: Progress = Progress::finished();
-
-impl Writer<'_> {
-    /// A writer that writes nothing: applying only decides.
-    fn idle() -> Self {
-        Writer {
-            output: "",
-            progress: &NOTHING_TO_WRITE,
-            start: None,
-        }
-    }
 }
 
 /// State of the picker, independent of the terminal so it can be tested.
@@ -281,6 +249,13 @@ struct SitePicker<'a> {
     /// Writes the fileset in the view once the thresholds are applied.
     writer: Writer<'a>,
     decision: Option<Picked>,
+    /// Where `Ctrl+E` writes the report: the working directory unless told.
+    report_dir: std::path::PathBuf,
+    /// The report being written, on a thread of its own; dropped with
+    /// the picker, however its run ends, it finishes first.
+    report: crate::report::Writing,
+    /// A message for the footer, until the next key.
+    status: Option<String>,
 }
 
 impl<'a> SitePicker<'a> {
@@ -316,6 +291,9 @@ impl<'a> SitePicker<'a> {
             list: GeneList::default(),
             writer: Writer::idle(),
             decision: None,
+            report_dir: std::env::current_dir().unwrap_or_default(),
+            report: Default::default(),
+            status: None,
         }
         .pin_genes(&[])
         .with_refreshed_meta()
@@ -430,66 +408,6 @@ impl<'a> SitePicker<'a> {
         self.retally();
     }
 
-    /// The footer: a prompt, a hint, or the keys of the mode.
-    fn footer_line(&self) -> Line<'static> {
-        match (&self.mode, self.controls.footer()) {
-            (_, Some(line)) => line,
-            (Mode::Edit(buf), None) => input_line(
-                &format!("{} {}: ", self.criterion().label(), self.criterion().flag()),
-                buf,
-                &[("Enter", "set"), ("Esc", "back")],
-            ),
-            (Mode::Confirm, None) => {
-                help_line(&[(APPLY_KEYS, "apply and write"), ("Esc/n", "back")])
-            }
-            (Mode::Writing, None) => help_line(&[("", "writing; the view closes when done")]),
-            (Mode::Leave(picked), None) => help_line(&[
-                match picked {
-                    Picked::PrintOnly(_) => ("p", "print the flags and leave"),
-                    _ => ("q", "leave without writing"),
-                },
-                ("Esc/n", "back"),
-            ]),
-            (Mode::Gff(_), None) => help_line(&[
-                ("type", "find"),
-                ("↑/↓", "move"),
-                ("Enter", "open / read"),
-                ("←", "up"),
-                ("Esc", "clear find / back"),
-            ]),
-            (Mode::Find, None) => input_line(
-                "gene: ",
-                &self.list.find,
-                &[("↑/↓", "move"), ("Enter", "focus"), ("Esc", "cancel")],
-            ),
-            (Mode::Browse, None) => {
-                let apply = (APPLY_KEYS, "apply");
-                if self.enter_hint {
-                    return Line::styled(format!(" {}", enter_hint("applies")), DIM);
-                }
-                let mut keys = vec![("Tab", "panel")];
-                keys.extend(match self.panel {
-                    Panel::Thresholds => [("↑/↓", "knob"), ("←/→", "bin")],
-                    Panel::Genes => [("↑/↓", "gene"), ("/", "find")],
-                });
-                // What matters most first.
-                keys.extend([apply, ("p", "print flags"), ("q", "cancel")]);
-                self.controls.help_keys(&mut keys);
-                keys.extend([
-                    ("m/M", "modality"),
-                    ("[ ]", "gene"),
-                    ("-/+", "±1"),
-                    ("0-9/e", "type"),
-                    ("o", "off"),
-                    ("r", "reset"),
-                    ("x/y", "scale"),
-                    ("a", "annotation"),
-                ]);
-                help_line(&keys)
-            }
-        }
-    }
-
     /// End the session, handing the terminal's keyboard back as it was.
     /// Leave as `picked` says; first ask, when the thresholds have changed.
     fn leave(&mut self, picked: Picked) {
@@ -504,130 +422,10 @@ impl<'a> SitePicker<'a> {
         self.decision = Some(picked);
     }
 
-    /// Apply the confirmed thresholds: start the write, which [`Screen::tick`]
-    /// then follows to the end.
-    fn apply(&mut self) {
-        self.mode = Mode::Writing;
-    }
-
-    /// Draw the figures and start the writer, once the writing pop-up is up.
-    fn start_writing(&mut self) {
-        if let Some(start) = self.writer.start.take() {
-            let figures = self.figures();
-            start(self.filter.clone(), figures);
-        }
-    }
-
-    /// The view's figure for every modality and every knob, under the
-    /// applied thresholds and the scales chosen per knob. The modality on
-    /// screen keeps its selected gene; the others show their top gene, the
-    /// gene filter aside.
-    fn figures(&mut self) -> Vec<Figure> {
-        let (modality, focus, at) = (self.modality, self.focus, self.list.at);
-        let find = std::mem::take(&mut self.list.find);
-        let mut out = Vec::new();
-        for m in 0..self.views.len() {
-            self.modality = m;
-            if m == modality {
-                self.list.find.clone_from(&find);
-            }
-            self.refresh_genes(true);
-            self.list.find.clear();
-            if m == modality {
-                self.list.at = at;
-            }
-            for f in 0..self.views[m].criteria.len() {
-                self.focus = f;
-                self.rebuild_column();
-                let knob = self.criterion().flag().trim_start_matches("--site-");
-                out.push(Figure {
-                    stem: format!("{}_{knob}", self.view().table.modality),
-                    svg: self.figure(),
-                });
-            }
-        }
-        self.modality = modality;
-        self.list.find = find;
-        self.refresh_genes(true);
-        self.list.at = at;
-        self.focus = focus;
-        self.rebuild_column();
-        out
-    }
-
     /// The histogram bin holding the focused threshold, `None` when off.
     fn pointer_key(&self) -> Option<i32> {
         let c = self.criterion();
         (!c.is_off(&self.filter)).then(|| self.column.key_of(c, c.get(&self.filter)))
-    }
-}
-
-/// What a click lands on, as the last draw laid it out.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Hit {
-    Modality(usize),
-    /// The thresholds panel, or one of its knobs.
-    Thresholds(Option<usize>),
-    /// The gene list, or one of its genes (by place in the list).
-    Genes(Option<usize>),
-    /// The buttons: apply (as the apply key), and in the confirmation
-    /// write and back.
-    Apply,
-    Write,
-    Back,
-}
-
-impl SitePicker<'_> {
-    /// A click focuses and selects what is under it; the wheel then moves
-    /// as ↑/↓ would. Only while browsing, with no prompt open.
-    fn click(&mut self, m: MouseEvent) {
-        let Some(hit) = self.hits.at(m.column, m.row) else {
-            return;
-        };
-        let clicked = matches!(m.kind, MouseEventKind::Down(_));
-        // A button does what its key does, the same way.
-        let browsing = matches!(self.mode, Mode::Browse) && self.controls.footer().is_none();
-        let confirming = matches!(self.mode, Mode::Confirm);
-        let button = match hit {
-            _ if !clicked => None,
-            Hit::Apply if browsing => Some(apply_key()),
-            Hit::Write if confirming => Some(apply_key()),
-            Hit::Back if confirming => Some(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
-            _ => None,
-        };
-        if let Some(key) = button {
-            return self.handle_key(key);
-        }
-        if !browsing {
-            return;
-        }
-        self.enter_hint = false;
-        // The plots are drawn again only when what they show changes.
-        let shown = (self.modality, self.focus, self.list.at);
-        match hit {
-            Hit::Modality(i) if clicked => {
-                self.switch_modality(i as isize - self.modality as isize);
-            }
-            Hit::Thresholds(j) => {
-                self.panel = Panel::Thresholds;
-                if let Some(j) = j.filter(|_| clicked) {
-                    self.move_focus(j as isize - self.focus as isize);
-                }
-            }
-            Hit::Genes(i) => {
-                self.panel = Panel::Genes;
-                if let Some(i) = i.filter(|_| clicked) {
-                    self.step_gene(i as isize - self.list.at as isize);
-                }
-            }
-            _ => return,
-        }
-        if shown != (self.modality, self.focus, self.list.at) {
-            self.plot.invalidate();
-        }
-        if let Some(key) = wheel_key(&m) {
-            self.handle_key(key);
-        }
     }
 }
 
@@ -638,6 +436,12 @@ impl View for SitePicker<'_> {
 
     fn stray_enter(&mut self) {
         self.enter_hint = matches!(self.mode, Mode::Browse);
+    }
+
+    /// The report's chord, only while browsing: elsewhere it is dropped,
+    /// so it types nothing.
+    fn takes_chord(&self, key: &KeyEvent) -> bool {
+        is_report(key) && self.browsing()
     }
 }
 
@@ -692,11 +496,19 @@ impl Screen for SitePicker<'_> {
         if arrived {
             self.refresh_meta();
         }
-        arrived
+        // Said once browsing again: the other footers would hide it.
+        let written = self.browsing() && self.end_report();
+        arrived || written
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
         self.enter_hint = false;
+        self.status = None;
+        // The chord comes only while browsing (see `takes_chord`).
+        if is_report(&key) {
+            self.status = Some(self.export());
+            return;
+        }
         if matches!(self.mode, Mode::Browse) {
             match self.controls.key(key) {
                 Key::Pass => {}
@@ -705,184 +517,19 @@ impl Screen for SitePicker<'_> {
             }
         }
         self.plot.invalidate();
-        if matches!(self.mode, Mode::Gff(_)) {
-            return self.gff_key(key);
-        }
-        match &mut self.mode {
-            Mode::Edit(buf) => match key.code {
-                // The apply key sets the value, as Enter does.
-                _ if is_apply(&key) || key.code == KeyCode::Enter => {
-                    let typed = buf.parse::<f64>().ok();
-                    self.mode = Mode::Browse;
-                    if let Some(v) = typed {
-                        self.set_threshold(v);
-                    }
-                }
-                KeyCode::Char(ch)
-                    if (ch.is_ascii_digit() || "-+.eEinf".contains(ch)) && buf.len() < 24 =>
-                {
-                    buf.push(ch)
-                }
-                KeyCode::Backspace => {
-                    buf.pop();
-                }
-                KeyCode::Esc => self.mode = Mode::Browse,
-                _ => {}
-            },
-            // Letters type, so only the arrow keys move through the matches.
-            Mode::Find => match key.code {
-                _ if is_apply(&key) => self.end_find(true),
-                KeyCode::Char(ch) if self.list.find.len() < 32 => self.set_find(|f| f.push(ch)),
-                KeyCode::Backspace => self.set_find(|f| {
-                    f.pop();
-                }),
-                KeyCode::Up => self.step_gene(-1),
-                KeyCode::Down => self.step_gene(1),
-                KeyCode::PageUp => self.step_gene(-10),
-                KeyCode::PageDown => self.step_gene(10),
-                KeyCode::Enter => self.end_find(true),
-                KeyCode::Esc => self.end_find(false),
-                _ => {}
-            },
-            Mode::Confirm => match key.code {
-                _ if is_apply(&key) => self.apply(),
-                KeyCode::Esc | KeyCode::Char('n' | 'q') => self.mode = Mode::Browse,
-                _ => {}
-            },
-            Mode::Leave(picked) => match key.code {
-                KeyCode::Char(ch) if ch == leave_key(picked) => {
-                    let picked = picked.clone();
-                    self.decide(picked);
-                }
-                KeyCode::Esc | KeyCode::Char('n') => self.mode = Mode::Browse,
-                _ => {}
-            },
-            Mode::Writing | Mode::Gff(_) => {}
-            Mode::Browse => match key.code {
-                _ if is_apply(&key) => self.mode = Mode::Confirm,
-                KeyCode::Enter => self.enter_hint = true,
-                KeyCode::Tab | KeyCode::BackTab => {
-                    self.panel = match self.panel {
-                        Panel::Thresholds => Panel::Genes,
-                        Panel::Genes => Panel::Thresholds,
-                    }
-                }
-                KeyCode::Char('m') => self.switch_modality(1),
-                KeyCode::Char('M') => self.switch_modality(-1),
-                KeyCode::Char('[') => self.step_gene(-1),
-                KeyCode::Char(']') => self.step_gene(1),
-                KeyCode::Char('/') => self.start_find(),
-                KeyCode::Char('c') => self.switch_weight(),
-                KeyCode::Char('a') => self.open_gff_browser(),
-                KeyCode::Up | KeyCode::Char('k') if self.panel == Panel::Genes => {
-                    self.step_gene(-1)
-                }
-                KeyCode::Down | KeyCode::Char('j') if self.panel == Panel::Genes => {
-                    self.step_gene(1)
-                }
-                KeyCode::PageUp if self.panel == Panel::Genes => self.step_gene(-10),
-                KeyCode::PageDown if self.panel == Panel::Genes => self.step_gene(10),
-                KeyCode::Up | KeyCode::Char('k') => self.move_focus(-1),
-                KeyCode::Down | KeyCode::Char('j') => self.move_focus(1),
-                KeyCode::Left | KeyCode::Char('h') => self.step_bin(-1),
-                KeyCode::Right | KeyCode::Char('l') => self.step_bin(1),
-                KeyCode::Char('-' | ',') => self.nudge(-1),
-                KeyCode::Char('+' | '=' | '.') => self.nudge(1),
-                KeyCode::Char('o') => self.set_off(),
-                KeyCode::Char('r') => self.reset(),
-                KeyCode::Char('x') => self.cycle_x_scale(),
-                KeyCode::Char('y') => self.y_scale = self.y_scale.next(),
-                KeyCode::Char('e') => self.mode = Mode::Edit(String::new()),
-                KeyCode::Char(ch) if ch.is_ascii_digit() => self.mode = Mode::Edit(ch.to_string()),
-                // Esc backs out of every pop-up, so it never leaves the view.
-                KeyCode::Char('p') => self.leave(Picked::PrintOnly(self.filter.clone())),
-                KeyCode::Char('q') => self.leave(Picked::Cancelled),
-                _ => {}
-            },
+        match self.mode {
+            Mode::Gff(_) => self.gff_key(key),
+            Mode::Edit(_) => self.edit_key(key),
+            Mode::Find => self.find_key(key),
+            Mode::Confirm => self.confirm_key(key),
+            Mode::Leave(_) => self.leave_key_press(key),
+            Mode::Writing => {}
+            Mode::Browse => self.browse_key(key),
         }
     }
 
     fn render(&mut self, frame: &mut Frame) {
-        self.drawn = frame.area();
-        // The footer takes as many lines as its keys need at this width.
-        let help = crate::tui::wrap_help(self.footer_line(), frame.area().width);
-        let [top, tabs, body, footer] = Layout::vertical([
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Fill(1),
-            Constraint::Length(help.len() as u16),
-        ])
-        .areas(frame.area());
-
-        let scales = format!(
-            "x {} · y {}{}",
-            self.scale().name(),
-            self.y_scale.name(),
-            self.controls.tag()
-        );
-        frame.render_widget(header("qc", &self.title, &scales), top);
-
-        self.hits.clear();
-        let names: Vec<&str> = self.views.iter().map(|v| &*v.table.modality).collect();
-        let button = matches!(self.mode, Mode::Browse).then_some(("✓ apply", Hit::Apply));
-        let tabs_line = tab_bar(
-            tabs,
-            &names,
-            self.modality,
-            button,
-            &self.hits,
-            Hit::Modality,
-        );
-        // Keep the mark clear of the header's text and the modality tabs.
-        let reserve = (self.title.chars().count() + scales.chars().count() + 12)
-            .max(tabs_line.width()) as u16;
-        frame.render_widget(tabs_line, tabs);
-        let corner = Rect::new(top.x, top.y, top.width, 2);
-        crate::figure::logo::draw_mini_logo(frame.buffer_mut(), corner, reserve);
-
-        let [left, right] =
-            Layout::horizontal([Constraint::Length(56), Constraint::Fill(1)]).areas(body);
-        let table = self.criteria_lines();
-        let [table_area, genes] = Layout::vertical([
-            Constraint::Length(table.len() as u16 + 2),
-            Constraint::Fill(1),
-        ])
-        .areas(left);
-        let block = panel(" site thresholds ".into(), self.panel == Panel::Thresholds);
-        let inner = block.inner(table_area);
-        frame.render_widget(block, table_area);
-        frame.render_widget(Paragraph::new(table), inner);
-        self.hits.add(table_area, Hit::Thresholds(None));
-        // The knobs come under the table's three header lines.
-        let knobs = Rect::new(
-            inner.x,
-            inner.y + 3,
-            inner.width,
-            inner.height.saturating_sub(3),
-        );
-        let n = self.view().criteria.len();
-        self.hits.rows(knobs, 0, n, |j| Hit::Thresholds(Some(j)));
-        self.hits.add(genes, Hit::Genes(None));
-        self.render_gene_list(frame, genes);
-        let [hist, gene, meta] = Layout::vertical([
-            Constraint::Fill(3),
-            Constraint::Fill(2),
-            Constraint::Fill(2),
-        ])
-        .areas(right);
-        self.render_hist(frame, hist);
-        self.render_gene(frame, gene);
-        self.render_meta(frame, meta);
-
-        frame.render_widget(Paragraph::new(help), footer);
-        match self.mode {
-            Mode::Confirm => self.render_confirm(frame, body),
-            Mode::Writing => self.render_writing(frame, body),
-            Mode::Gff(ref browser) => render_gff(frame, body, browser),
-            Mode::Leave(ref picked) => render_leave(frame, body, picked),
-            _ => {}
-        }
-        self.controls.render_save(frame, frame.area());
+        self.render_frame(frame);
     }
 }
 
@@ -946,5 +593,5 @@ pub fn run_site_picker(
 }
 
 #[cfg(test)]
-#[path = "tests/site_tui.rs"]
+#[path = "tests/site_tui/mod.rs"]
 mod tests;

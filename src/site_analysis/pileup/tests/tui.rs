@@ -572,7 +572,7 @@ fn every_footer_key_shows_at_80_columns() {
     let mut v = PileupView::new("GENE1", "chr1", vec![a, b], EXTENT);
     v.switchable = true;
     let screen = screen(&mut v, 80, 30);
-    let missing = crate::tui::missing_keys(&v.footer_line(), &screen);
+    let missing = crate::tui::missing_keys(&v.footer_line(v.rows_hidden()), &screen);
     assert!(missing.is_empty(), "{missing:?}\n{screen}");
 }
 
@@ -621,6 +621,7 @@ fn the_browser_draws_text_and_saves_turned_position_labels() {
         genes: None,
         cursor: None,
         switchable: false,
+        track_from: 0,
     };
     let tracks = vec![Track::single("matrix", "sum", &m, false)];
     let mut b = browser(view, tracks, None);
@@ -677,6 +678,7 @@ fn paired_tracks_mirror_in_pairs_and_the_margin_keeps_its_own_scale() {
         genes: None,
         cursor: None,
         switchable: false,
+        track_from: 0,
     };
     let tracks = vec![
         Track::single("all: methylated", "reads", &all_on, false)
@@ -752,4 +754,188 @@ fn the_last_track_shares_no_row() {
     let v = PileupView::new("GENE1", "chr1", tracks, EXTENT);
     assert_eq!(v.rows(), vec![Row::Track(0), Row::Track(1)]);
     assert!(!v.mirrorable());
+}
+
+/// Labels for a margin and `n` groups, each converted then unconverted.
+fn group_labels(n: usize) -> Vec<String> {
+    std::iter::once("all cells".to_string())
+        .chain((1..=n).map(|k| format!("CT{k}")))
+        .flat_map(|g| [format!("{g}: methylated"), format!("{g}: unmethylated")])
+        .collect()
+}
+
+/// A mirrored row per pair of `labels`, the first on its own scale.
+fn group_tracks<'a>(labels: &'a [String], m: &'a [(i64, f64)]) -> Vec<Track<'a>> {
+    labels
+        .chunks(2)
+        .enumerate()
+        .flat_map(|(k, pair)| {
+            let up = Track::single(&pair[0], "reads", m, false).converted_above();
+            let down = Track::single(&pair[1], "reads", m, false);
+            match k {
+                0 => [up.on_own_scale(), down.on_own_scale()],
+                _ => [up, down],
+            }
+        })
+        .collect()
+}
+
+/// Each mirrored row's title line and the lines of its panel below it.
+fn panels(s: &str) -> Vec<(String, Vec<String>)> {
+    let lines: Vec<&str> = s.lines().collect();
+    let tops: Vec<usize> = (0..lines.len())
+        .filter(|&y| lines[y].contains(" above, "))
+        .collect();
+    tops.iter()
+        .enumerate()
+        .map(|(k, &y)| {
+            let end = tops.get(k + 1).copied().unwrap_or(lines.len());
+            let body = lines[y + 1..end].iter().map(|l| l.to_string()).collect();
+            (lines[y].to_string(), body)
+        })
+        .collect()
+}
+
+#[test]
+fn many_mirrored_rows_each_keep_room_to_draw_and_the_rest_scroll() {
+    let m = positions();
+    let labels = group_labels(12);
+    let mut v = PileupView::new("GENE1", "chr1", group_tracks(&labels, &m), EXTENT);
+    let s = screen(&mut v, 200, 50);
+    let shown = panels(&s);
+    assert!((2..13).contains(&shown.len()), "{s}");
+    for (title, body) in &shown {
+        let bars = body.iter().any(|l| l.contains('█') || l.contains('▄'));
+        let axis = body.iter().any(|l| l.contains('└'));
+        assert!(bars && axis, "{title} draws nothing: {s}");
+    }
+    assert!(shown[0].0.contains("all cells"), "the margin on top: {s}");
+    let hidden = 13 - shown.len();
+    let last = &shown[shown.len() - 1].0;
+    assert!(last.contains(&format!("{hidden}›")), "{last}");
+    assert!(!s.contains('‹'), "none above yet: {s}");
+    assert!(s.contains("[/]"), "the footer names the keys: {s}");
+    // `]` scrolls the groups, the margin kept on top.
+    press(&mut v, KeyCode::Char(']'));
+    let s = screen(&mut v, 200, 50);
+    let after = panels(&s);
+    assert!(after[0].0.contains("all cells"), "{s}");
+    assert!(after[1].0.contains("‹1 CT2"), "{s}");
+    let last = &after[after.len() - 1].0;
+    assert!(last.contains(&format!("{}›", hidden - 1)), "{last}");
+    // No further than the last group just filling the rows.
+    for _ in 0..20 {
+        press(&mut v, KeyCode::Char(']'));
+    }
+    let s = screen(&mut v, 200, 50);
+    let end = panels(&s);
+    assert_eq!(end.len(), shown.len(), "{s}");
+    assert!(
+        end[end.len() - 1].0.contains("CT12") && !s.contains('›'),
+        "{s}"
+    );
+    press(&mut v, KeyCode::Char('['));
+    assert!(screen(&mut v, 200, 50).contains("1›"));
+}
+
+#[test]
+fn a_short_track_list_shows_every_row_without_scrolling() {
+    let m = positions();
+    let labels = group_labels(1);
+    let mut v = PileupView::new("GENE1", "chr1", group_tracks(&labels, &m), EXTENT);
+    let s = screen(&mut v, 200, 50);
+    let shown = panels(&s);
+    assert_eq!(shown.len(), 2, "{s}");
+    assert!(
+        !s.contains('‹') && !s.contains('›') && !s.contains("[/]"),
+        "{s}"
+    );
+    // The rows share the height as before: as many lines each.
+    assert!(shown[0].1.len().abs_diff(shown[1].1.len()) <= 1, "{s}");
+    press(&mut v, KeyCode::Char(']'));
+    assert_eq!(screen(&mut v, 200, 50), s, "nothing to scroll");
+}
+
+#[test]
+fn the_view_opens_scrolled_to_the_row_asked_for() {
+    let m = positions();
+    let labels = group_labels(12);
+    let view = View {
+        title: "GENE1",
+        chr: "chr1",
+        extent: EXTENT,
+        on: "methylated",
+        off: "unmethylated",
+        keys: None,
+        genes: None,
+        cursor: None,
+        switchable: false,
+        track_from: 8,
+    };
+    let mut b = browser(view, group_tracks(&labels, &m), None);
+    let s = screen(&mut b, 200, 50);
+    let shown = panels(&s);
+    assert!(shown[1].0.contains("‹3 CT4"), "{s}");
+    // Split, a row a track, it still starts at the same group.
+    press(&mut b, KeyCode::Char('v'));
+    let s = screen(&mut b, 200, 50);
+    let titles: Vec<&str> = s.lines().filter(|l| l.starts_with('╭')).collect();
+    assert!(titles[0].contains("all cells: methylated ·"), "{s}");
+    assert!(titles[1].contains("‹7 CT4: methylated ·"), "{s}");
+}
+
+/// A browser over a margin and 12 groups, opened at track `from`.
+fn groups_from<'a>(labels: &'a [String], m: &'a [(i64, f64)], from: usize) -> PileupView<'a> {
+    let view = View {
+        title: "GENE1",
+        chr: "chr1",
+        extent: EXTENT,
+        on: "methylated",
+        off: "unmethylated",
+        keys: None,
+        genes: None,
+        cursor: None,
+        switchable: false,
+        track_from: from,
+    };
+    browser(view, group_tracks(labels, m), None)
+}
+
+#[test]
+fn a_view_opened_split_starts_at_the_group_asked_for() {
+    let (m, labels) = (positions(), group_labels(12));
+    let mut b = groups_from(&labels, &m, 8);
+    // Split by the gene before, as it opens.
+    b.apply(&Settings {
+        mirror: Some(false),
+        ..Settings::default()
+    });
+    let s = screen(&mut b, 200, 50);
+    let titles: Vec<&str> = s.lines().filter(|l| l.starts_with('╭')).collect();
+    assert!(titles[1].contains("CT4: methylated ·"), "{s}");
+    // Mirrored again, the same group's row.
+    b.apply(&Settings {
+        mirror: Some(true),
+        ..Settings::default()
+    });
+    let s = screen(&mut b, 200, 50);
+    assert!(panels(&s)[1].0.contains("‹3 CT4"), "{s}");
+}
+
+#[test]
+fn the_last_rows_are_reached_at_every_height() {
+    let (m, labels) = (positions(), group_labels(12));
+    // Widths at which naming `[/]` takes the footer another line.
+    for w in [60, 85, 160] {
+        for h in 20..60 {
+            let mut v = PileupView::new("GENE1", "chr1", group_tracks(&labels, &m), EXTENT);
+            screen(&mut v, w, h);
+            for _ in 0..30 {
+                press(&mut v, KeyCode::Char(']'));
+            }
+            screen(&mut v, w, h);
+            let rows = v.rows();
+            assert_eq!(v.shown_rows(&rows).last(), rows.last(), "{w}x{h}");
+        }
+    }
 }

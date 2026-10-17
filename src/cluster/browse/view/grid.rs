@@ -4,8 +4,9 @@
 
 use super::bars::{mirror, peak};
 use super::{ModulesView, Spot};
-use crate::cluster::browse::{standardized, Count};
+use crate::cluster::browse::{standardized, Count, Modules};
 use crate::site_analysis::pileup::{channel_names, query_symbol};
+use crate::tui::hidden_marks;
 use data_beans::interactive::ui::{compact, DIM, HIGHLIGHT, PLAIN};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -140,23 +141,35 @@ impl Stretch {
     }
 }
 
-/// A grid's colour ranges, kept with the key they were worked out for (the
-/// scale, and for the sites grid the gene role too), so a frame works them
-/// out only when the key changes.
-pub(in crate::cluster::browse) struct Kept<K>(Option<(K, Stretch)>);
+/// What a frame needs worked out over a whole module, kept with the key it
+/// was worked out for, so a frame works it out only when the key changes:
+/// by default a grid's colour ranges (for the scale, and for the sites grid
+/// the gene role too).
+pub(in crate::cluster::browse) struct Kept<K, V = Stretch>(Option<(K, V)>);
 
-impl<K> Default for Kept<K> {
+impl<K, V> Default for Kept<K, V> {
     fn default() -> Self {
         Self(None)
     }
 }
 
-impl<K: Copy + PartialEq> Kept<K> {
-    /// The key the ranges were worked out for; none before any heatmap.
+impl<K: Copy + PartialEq, V> Kept<K, V> {
+    /// The key it was worked out for; none before it was.
     pub(in crate::cluster::browse) fn key(&self) -> Option<K> {
         self.0.as_ref().map(|&(k, _)| k)
     }
 
+    /// What `make` works out for `key`, anew only when it was worked out
+    /// for another key.
+    fn of(&mut self, key: K, make: impl FnOnce() -> V) -> &V {
+        if self.key() != Some(key) {
+            self.0 = Some((key, make()));
+        }
+        &self.0.as_ref().expect("just kept").1
+    }
+}
+
+impl<K: Copy + PartialEq> Kept<K> {
     /// The ranges worked out by `make` for `key` when `look` is a heatmap
     /// and they were worked out for another key; bars need none.
     fn update(&mut self, look: Look, key: K, make: impl FnOnce() -> Stretch) {
@@ -236,6 +249,7 @@ impl ModulesView<'_> {
         let Some(g) = self.role() else { return };
         self.rows = (area.height.saturating_sub(1) / 2).max(1) as usize;
         self.select_site(self.site);
+        let label_w = self.site_label_w(g);
         let members = &self.m.members[g];
         let list = &self.list;
         let first = self.from.min(list.len().saturating_sub(self.rows));
@@ -243,21 +257,15 @@ impl ModulesView<'_> {
             .iter()
             .map(|&i| {
                 let s = &self.m.sites[members[i].site];
-                let mark = if self.pinned(g, i) { "• " } else { "" };
+                let mark = if self.pinned(g, i) { PIN_MARK } else { "" };
                 Row {
-                    label: format!("{mark}{} {}", query_symbol(&s.gene), s.pos),
+                    label: site_label(mark, &s.gene, s.pos),
                     reads: &members[i].reads,
                     extra: self.site_counts(members[i].site),
                     spot: Spot::Site(i),
                 }
             })
             .collect();
-        let label_w = rows
-            .iter()
-            .map(|r| r.label.chars().count() as u16 + 1)
-            .max()
-            .unwrap_or(0)
-            .min(SITE_LABEL);
         let look = self.looks[1];
         // Colours over every site of the module, not only those shown,
         // worked out once per module and scale.
@@ -292,6 +300,20 @@ impl ModulesView<'_> {
         scrollbar(buf, area, first, self.rows, list.len());
     }
 
+    /// The sites grid's label column for gene role `g`: its widest site
+    /// label and a gap, over all its sites (so it holds as the list
+    /// scrolls), at most [`SITE_LABEL`]; each gene's widest worked out
+    /// once per role, its pin mark added as pinned.
+    pub(in crate::cluster::browse) fn site_label_w(&mut self, g: usize) -> u16 {
+        let m = self.m;
+        let widths = self.site_labels.of(g, || label_widths(m, g));
+        let pinned = self.pins.iter().filter(|p| p.role == g);
+        let mark = PIN_MARK.chars().count();
+        let marked = pinned.filter_map(|p| widths.get(p.gene)).map(|w| w + mark);
+        let widest = widths.iter().copied().chain(marked).max().unwrap_or(0);
+        (widest as u16).min(SITE_LABEL)
+    }
+
     /// A site's raw reads over every cell read: all, converted, unconverted,
     /// and the cells with any.
     fn site_counts(&self, site: usize) -> String {
@@ -312,8 +334,7 @@ impl ModulesView<'_> {
     /// hidden either side counted in the corner. How many are shown.
     fn draw_grid(&self, buf: &mut Buffer, area: Rect, rows: &[Row], at: Placing) -> usize {
         let cell_w = self.cell_w;
-        let room = area.width.saturating_sub(at.label_w + at.extra_w);
-        let cols = self.visible(room);
+        let cols = self.visible(cells_room(area.width, at.label_w, at.extra_w));
         for (k, &c) in self.m.columns[cols.clone()].iter().enumerate() {
             let x = area.x + at.label_w + k as u16 * cell_w;
             let name = format!("C{}", c + 1);
@@ -362,16 +383,33 @@ impl ModulesView<'_> {
     }
 }
 
-/// How many cell modules are hidden left and right, as `‹2 5›`; empty when
-/// none are.
-pub(super) fn hidden_marks(left: usize, right: usize) -> String {
-    let left = (left > 0).then(|| format!("‹{left}"));
-    let right = (right > 0).then(|| format!("{right}›"));
-    [left, right]
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>()
-        .join(" ")
+/// The mark before a pinned gene's site labels.
+const PIN_MARK: &str = "• ";
+
+/// A site's label in the sites grid: `mark`, the gene's symbol and the
+/// site's position. [`label_widths`] measures it.
+fn site_label(mark: &str, gene: &str, pos: i64) -> String {
+    format!("{mark}{} {pos}", query_symbol(gene))
+}
+
+/// Each gene of role `g`'s widest site label (see [`site_label`]),
+/// unpinned, and a gap.
+fn label_widths(m: &Modules, g: usize) -> Vec<usize> {
+    let members = &m.members[g];
+    let digits = |i: usize| crate::tui::digits(m.sites[members[i].site].pos);
+    m.genes(g)
+        .iter()
+        .map(|span| {
+            let symbol = query_symbol(m.gene_of(g, span.start)).chars().count();
+            symbol + 1 + span.clone().map(digits).max().unwrap_or(0) + 1
+        })
+        .collect()
+}
+
+/// The columns a grid `width` wide inside its frame has for its cells, a
+/// `label_w` label column and `extra_w` after them kept.
+pub(super) fn cells_room(width: u16, label_w: u16, extra_w: u16) -> u16 {
+    width.saturating_sub(label_w + extra_w)
 }
 
 /// One grid row of mirror bars for the cell modules `cols` of `reads`, in

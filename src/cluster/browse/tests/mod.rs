@@ -136,6 +136,93 @@ fn tables_with(dir: &Path, swap: bool) {
     write::site_stats(&sites, &stats, &path("site_stats")).unwrap();
 }
 
+/// Twelve cell roles and two gene roles, one fitted cell in each cell role:
+/// GENE1 at 100 and 300 in gene role 1, GENE2 at 50 in gene role 2, each
+/// with reads in every cell role, so every cell module draws.
+fn wide_tables(dir: &Path) {
+    let (cells, roles) = (12usize, 2usize);
+    let blocks = cells * roles;
+    let sites = vec![site("GENE1", 100), site("GENE1", 300), site("GENE2", 50)];
+    let gene_of = [0usize, 0, 1];
+    let mut on = vec![0.0; sites.len() * blocks];
+    let mut off = vec![0.0; sites.len() * blocks];
+    for (s, &g) in gene_of.iter().enumerate() {
+        for c in 0..cells {
+            on[s * blocks + c * roles + g] = (1 + c) as f64;
+            off[s * blocks + c * roles + g] = (cells - c) as f64;
+        }
+    }
+    let lift = vec![0.0; on.len()];
+    let path = |name: &str| dir.join(format!("m6a_{name}.parquet"));
+    write::block_sites(
+        &sites,
+        &on,
+        &off,
+        &lift,
+        blocks,
+        roles,
+        &path("block_sites"),
+    )
+    .unwrap();
+    let shift: Vec<f64> = (0..blocks).map(|k| 0.1 * k as f64).collect();
+    let ones = vec![1.0; blocks];
+    write::blocks(&shift, &ones, &ones, roles, &path("blocks")).unwrap();
+    let weights = [0.9, 0.1, 0.1, 0.9];
+    write::gene_roles(&["GENE1", "GENE2"], &weights, roles, &path("gene_roles")).unwrap();
+    let all: Vec<Cell> = (0..cells)
+        .map(|i| Cell {
+            barcode: format!("B{i}").into(),
+            batch: "b".into(),
+            fit: true,
+        })
+        .collect();
+    let member: Vec<Vec<f32>> = (0..cells)
+        .map(|i| (0..cells).map(|c| if c == i { 0.9 } else { 0.0 }).collect())
+        .collect();
+    let rows: Vec<write::CommunityRow> = all
+        .iter()
+        .zip(&member)
+        .map(|(cell, m)| write::CommunityRow {
+            cell,
+            membership: Some(m.as_slice()),
+            level: None,
+        })
+        .collect();
+    write::communities(&rows, cells, "role", &path("cell_roles")).unwrap();
+    let mut links = vec![0.0; cells * blocks];
+    for r in 0..cells {
+        links[r * blocks + r * roles] = 1.0;
+    }
+    let labels = [
+        ("barcode", all.iter().map(|c| &*c.barcode).collect()),
+        ("batch", all.iter().map(|c| &*c.batch).collect()),
+    ];
+    let enrichment = vec![1.0; links.len()];
+    write::block_members(
+        &labels,
+        &links,
+        &enrichment,
+        blocks,
+        roles,
+        &path("block_cells"),
+    )
+    .unwrap();
+    let stats = SiteStats {
+        on: vec![78, 78, 78],
+        off: vec![78, 78, 78],
+        cells: vec![12, 12, 12],
+    };
+    write::site_stats(&sites, &stats, &path("site_stats")).unwrap();
+}
+
+/// The modules of [`wide_tables`]: more cell modules than fit at 100
+/// columns.
+fn wide() -> Modules {
+    let tmp = tempfile::tempdir().unwrap();
+    wide_tables(tmp.path());
+    Modules::load(tmp.path(), "m6a").unwrap()
+}
+
 fn loaded() -> Modules {
     let tmp = tempfile::tempdir().unwrap();
     tables(tmp.path());

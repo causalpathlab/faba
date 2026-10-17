@@ -584,7 +584,7 @@ fn browse(
     let stacked_name = stacked_name(args, loaded);
     let tracks = tracks_of(args, loaded, &stacked_name);
     let view = view_of(loaded, genes, switchable);
-    tui::show_pileup(view, tracks, status, settings)
+    tui::show_pileup(view, tracks, status, settings).map(|(exit, _)| exit)
 }
 
 /// Browse `loaded`'s genes stacked top to bottom, as [`browse`] does one.
@@ -667,6 +667,7 @@ fn view_of<'a>(
         genes: genes.cloned(),
         cursor: loaded.cursor,
         switchable,
+        track_from: 0,
     }
 }
 

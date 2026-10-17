@@ -1,7 +1,7 @@
 //! The cell modules the grids and the strip show: how wide each is, how
 //! many fit, and which one comes first, the same in every pane.
 
-use super::grid::{CELL, COMPACT, COUNTS, MODULE_EXTRA, MODULE_LABEL, SITE_LABEL};
+use super::grid::{cells_room, CELL, COMPACT, COUNTS, MODULE_EXTRA, MODULE_LABEL, SITE_LABEL};
 use super::ModulesView;
 use std::ops::Range;
 
@@ -68,11 +68,12 @@ impl ModulesView<'_> {
         } else {
             COMPACT
         };
+        // Inside each pane's frame, as the grids draw.
         let modules = self.split(width);
-        let room = |pane: u16, kept: u16| pane.saturating_sub(2 + kept);
+        let site_label = self.role().map_or(0, |g| self.site_label_w(g));
         let fits = [
-            room(modules, MODULE_LABEL + MODULE_EXTRA),
-            room(width - modules, SITE_LABEL + COUNTS + 1),
+            cells_room(modules.saturating_sub(2), MODULE_LABEL, MODULE_EXTRA),
+            cells_room((width - modules).saturating_sub(2), site_label, COUNTS + 1),
         ]
         .map(|r| self.visible_from(0, r));
         self.col_fit = fits.into_iter().min().unwrap_or(1);

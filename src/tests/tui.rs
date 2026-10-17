@@ -69,10 +69,23 @@ fn output_folders_are_numbered_and_checked() {
     assert!(output_problem("").is_some());
 }
 
+#[test]
+fn files_are_numbered_before_their_extension() {
+    let tmp = tempfile::tempdir().unwrap();
+    let base = tmp.path();
+    assert_eq!(next_free_file(base, "r", ".html"), base.join("r.html"));
+    std::fs::write(base.join("r.html"), b"").unwrap();
+    assert_eq!(next_free_file(base, "r", ".html"), base.join("r2.html"));
+    std::fs::write(base.join("r2.html"), b"").unwrap();
+    assert_eq!(next_free_file(base, "r", ".html"), base.join("r3.html"));
+}
+
 /// A view that keeps what it is handed.
 #[derive(Default)]
 struct Keeps {
     apply: bool,
+    /// The chords it takes.
+    chords: Vec<KeyEvent>,
     keys: Vec<KeyEvent>,
     stray: usize,
 }
@@ -94,6 +107,9 @@ impl View for Keeps {
     }
     fn takes_apply(&self) -> bool {
         self.apply
+    }
+    fn takes_chord(&self, key: &KeyEvent) -> bool {
+        self.chords.contains(key)
     }
 }
 
@@ -117,6 +133,31 @@ fn feed_hands_on_only_what_a_view_takes() {
         assert_eq!(v.keys, want, "apply taken: {apply}");
         assert_eq!(v.stray, 1);
     }
+}
+
+#[test]
+fn a_view_gets_only_the_chords_it_names() {
+    let k = |c, m| KeyEvent::new(c, m);
+    let ctrl_e = k(KeyCode::Char('e'), KeyModifiers::CONTROL);
+    let ctrl_s = k(KeyCode::Char('s'), KeyModifiers::CONTROL);
+    let ctrl_enter = k(KeyCode::Enter, KeyModifiers::CONTROL);
+    // Taking none, as every view does by default: all dropped.
+    let mut none = Keeps::default();
+    for key in [ctrl_e, ctrl_s, ctrl_enter] {
+        feed(&mut none, key);
+    }
+    assert!(none.keys.is_empty());
+    assert_eq!(none.stray, 1, "Ctrl+Enter still says what applies");
+    // Naming Ctrl+E: that one comes, the others are dropped as before.
+    let mut named = Keeps {
+        chords: vec![ctrl_e],
+        ..Keeps::default()
+    };
+    for key in [ctrl_e, ctrl_s, ctrl_enter] {
+        feed(&mut named, key);
+    }
+    assert_eq!(named.keys, vec![ctrl_e]);
+    assert_eq!(named.stray, 1);
 }
 
 #[test]
@@ -155,4 +196,23 @@ fn help_wraps_whole_keys_within_the_width() {
         lines[1].spans[1].content, "Space",
         "a key moves with what it does"
     );
+}
+
+#[test]
+fn digits_count_a_number_as_it_is_written() {
+    for n in [
+        0,
+        9,
+        10,
+        99,
+        100,
+        99_999,
+        100_000,
+        -1,
+        -10,
+        i64::MAX,
+        i64::MIN,
+    ] {
+        assert_eq!(digits(n), n.to_string().len(), "{n}");
+    }
 }

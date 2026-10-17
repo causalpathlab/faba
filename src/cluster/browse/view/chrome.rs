@@ -1,16 +1,19 @@
 //! What frames the grids and the strip: the panes' titles, the levels, the
 //! site in focus's numbers and the footer's keys.
 
-use super::grid::hidden_marks;
 use super::{Look, ModulesView, Pane, Spot};
 use crate::site_analysis::pileup::query_symbol;
+use crate::tui::hidden_marks;
 use data_beans::interactive::ui::{compact, help_line, panel, DIM, HIGHLIGHT};
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::Frame;
 
 impl ModulesView<'_> {
-    pub(super) fn stats_line(&self) -> Line<'static> {
+    /// The site in focus: its gene, place and module, then each cell
+    /// module's % and reads from the first shown, as many as fit in `width`;
+    /// those left out either side counted.
+    pub(super) fn stats_line(&self, width: u16) -> Line<'static> {
         let Some((g, i)) = self.focus() else {
             return Line::from(Span::styled(" no module has sites", DIM));
         };
@@ -30,13 +33,34 @@ impl ModulesView<'_> {
                 DIM,
             ));
         }
-        let shown = self.col_from.min(self.m.columns.len())..;
-        for (&c, r) in self.m.columns[shown.clone()]
+        let from = self.col_from.min(self.m.columns.len());
+        let mut used: usize = spans.iter().map(|s| s.width()).sum();
+        let cols = self.m.columns.len();
+        for (k, (&c, r)) in self.m.columns[from..]
             .iter()
-            .zip(&member.reads[shown])
+            .zip(&member.reads[from..])
+            .enumerate()
         {
-            spans.push(Span::styled(format!("  C{} ", c + 1), DIM));
-            spans.push(Span::raw(format!("{} of {}", r.pct(), compact(r.total))));
+            let name = format!("  C{} ", c + 1);
+            let reads = format!("{} of {}", r.pct(), compact(r.total));
+            // Room kept for counting those after it, unless it is the last.
+            let after = cols - from - k - 1;
+            let mark = if after > 0 {
+                hidden_marks(0, after).chars().count() + 2
+            } else {
+                0
+            };
+            let len = name.chars().count() + reads.chars().count();
+            if used + len + mark > width as usize {
+                spans.push(Span::styled(
+                    format!("  {}", hidden_marks(0, after + 1)),
+                    DIM,
+                ));
+                break;
+            }
+            used += len;
+            spans.push(Span::styled(name, DIM));
+            spans.push(Span::raw(reads));
         }
         Line::from(spans)
     }

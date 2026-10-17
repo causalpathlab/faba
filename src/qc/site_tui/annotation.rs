@@ -25,6 +25,15 @@ impl Weight {
         }
     }
 
+    /// Site `i`'s weight in columns `t`.
+    pub(super) fn of(self, t: RawColumns, i: usize) -> usize {
+        match self {
+            Weight::Coverage => t.coverage[i] as usize,
+            Weight::Converted => t.converted[i] as usize,
+            Weight::Sites => 1,
+        }
+    }
+
     /// The one `c` switches to.
     pub(super) fn next(self) -> Self {
         match self {
@@ -51,7 +60,8 @@ pub(super) enum Meta {
     Unavailable(String),
     /// The annotation being read and the sites placed, on a thread.
     Pending(std::thread::JoinHandle<Result<Annotation, String>>),
-    Ready(Annotation),
+    /// Read, and shared with a report being written.
+    Ready(std::sync::Arc<Annotation>),
 }
 
 /// What an annotation is read for, kept so another can be read in its place.
@@ -116,11 +126,14 @@ impl Meta {
 
     #[cfg(test)]
     pub(super) fn ready(layouts: Vec<Option<MetaLayout>>, models: Vec<GeneModel>) -> Self {
-        Meta::Ready(Annotation {
-            views: layouts,
-            no_metagene: None,
-            models: models.into_iter().map(|m| (m.key.clone(), m)).collect(),
-        })
+        Meta::Ready(
+            Annotation {
+                views: layouts,
+                no_metagene: None,
+                models: models.into_iter().map(|m| (m.key.clone(), m)).collect(),
+            }
+            .into(),
+        )
     }
 
     /// Take the thread's result if it has arrived; true when it just did.
@@ -136,7 +149,7 @@ impl Meta {
             unreachable!()
         };
         *self = match handle.join() {
-            Ok(Ok(annotation)) => Meta::Ready(annotation),
+            Ok(Ok(annotation)) => Meta::Ready(annotation.into()),
             Ok(Err(e)) => Meta::Unavailable(e),
             Err(_) => Meta::Unavailable("reading the annotation panicked".into()),
         };
@@ -174,12 +187,7 @@ impl<'a> SitePicker<'a> {
 
     /// Site `i`'s bar weight in the focused view.
     pub(super) fn site_weight(&self, i: usize) -> usize {
-        let t = &self.view().table;
-        match self.weight {
-            Weight::Coverage => t.coverage[i] as usize,
-            Weight::Converted => t.converted[i] as usize,
-            Weight::Sites => 1,
-        }
+        self.weight.of(self.view().table.raw_columns(), i)
     }
 
     /// Recount the focused view's metagene bars; redraw only if they changed.
