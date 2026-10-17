@@ -1,7 +1,7 @@
 //! Given the chosen partition: each cluster's reads per site, cells outside
 //! the fit assigned to a cluster, and every cell's level offset.
 
-use super::crp::pooled_fraction;
+use super::crp::{ln_sigmoid, pooled_fraction};
 use super::read::{Reads, Weighted};
 use super::summary::Partition;
 
@@ -260,8 +260,7 @@ impl Tiles {
                 let fit: f64 = (0..sites.len())
                     .map(|i| {
                         let eta = self.logit[sites[i] as usize * self.k + k] + b;
-                        // ln sigmoid(eta) and ln sigmoid(-eta), stably.
-                        on[i].into() * -(-eta).exp().ln_1p() + off[i].into() * -eta.exp().ln_1p()
+                        on[i].into() * ln_sigmoid(eta) + off[i].into() * ln_sigmoid(-eta)
                     })
                     .sum();
                 let prior = (sizes[k].max(1) as f64 / total.max(1) as f64).ln();

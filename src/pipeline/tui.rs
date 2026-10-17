@@ -495,7 +495,7 @@ impl App {
     pub fn command_line(&self) -> String {
         let argv = self.argv_out();
         std::iter::once("faba".to_string())
-            .chain(argv.iter().map(|w| script::quote(w)))
+            .chain(argv.iter().map(|w| crate::script::quote(w)))
             .collect::<Vec<_>>()
             .join(" ")
     }

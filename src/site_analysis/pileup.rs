@@ -610,7 +610,7 @@ fn stacked_name(args: &PileupArgs, loaded: &Loaded) -> String {
 }
 
 /// `loaded`'s tracks as the browser draws them, those with a total titled
-/// `stacked_name`, and its depth.
+/// `stacked_name`, the first two in one row when alike, and its depth.
 fn tracks_of<'a>(
     args: &'a PileupArgs,
     loaded: &'a Loaded,
@@ -632,10 +632,22 @@ fn tracks_of<'a>(
             }
         })
         .collect();
+    if alike(&tracks) {
+        tracks[0].mirror_with_next = true;
+    }
     if !args.depth_files.is_empty() {
         tracks.push(tui::Track::depth("depth", &loaded.depth));
     }
     tracks
+}
+
+/// The first two tracks are read tracks of the same measure, so they share
+/// a row.
+fn alike(tracks: &[tui::Track]) -> bool {
+    match tracks {
+        [a, b, ..] => a.is_reads() && b.is_reads() && a.name == b.name,
+        _ => false,
+    }
 }
 
 /// What the browser shows of `loaded` besides its tracks.
@@ -757,7 +769,7 @@ fn search(
 pub(crate) type SharedModels = std::sync::Arc<std::sync::OnceLock<Result<Vec<GeneModel>, String>>>;
 
 /// Start reading `gtf` on a thread; `None` without an annotation.
-fn start_gene_models(gtf: Option<&str>) -> Option<SharedModels> {
+pub(crate) fn start_gene_models(gtf: Option<&str>) -> Option<SharedModels> {
     let gtf = gtf?.to_string();
     let models = SharedModels::default();
     let slot = models.clone();
@@ -1129,7 +1141,7 @@ fn write_pileup(args: &PileupArgs, loaded: &Loaded, print: bool) -> anyhow::Resu
 
 mod picker;
 
-mod tui;
+pub(crate) mod tui;
 
 #[cfg(test)]
 mod tests;

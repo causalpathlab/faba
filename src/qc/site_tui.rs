@@ -265,6 +265,8 @@ struct SitePicker<'a> {
     hits: Hits<Hit>,
     /// Steps done the last time the write was drawn.
     drawn_steps: usize,
+    /// The screen the view last took, which a saved figure takes the shape of.
+    drawn: Rect,
     controls: Controls,
     plot: PlotImage,
     meta: Meta,
@@ -303,6 +305,7 @@ impl<'a> SitePicker<'a> {
             enter_hint: false,
             hits: Hits::default(),
             drawn_steps: 0,
+            drawn: Rect::default(),
             controls: Controls::new("qc_sites"),
             plot: PlotImage::default(),
             meta,
@@ -800,6 +803,7 @@ impl Screen for SitePicker<'_> {
     }
 
     fn render(&mut self, frame: &mut Frame) {
+        self.drawn = frame.area();
         // The footer takes as many lines as its keys need at this width.
         let help = crate::tui::wrap_help(self.footer_line(), frame.area().width);
         let [top, tabs, body, footer] = Layout::vertical([

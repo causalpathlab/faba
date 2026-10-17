@@ -157,7 +157,8 @@ faba <COMMAND> [OPTIONS]
 | **QC — choose and apply thresholds after profiling** ||
 | `qc`                      | Pick thresholds in a full-screen view, then filter a faba output directory into a new fileset |
 | **Clustering: cells by their own sites** ||
-| `cluster`                 | Cluster cells by their site reads (a Chinese-restaurant-process mixture, several chains), with each cell's confidence and the posterior over the number of clusters |
+| `cluster`                 | Cluster cells by their site reads: link communities over (cell, gene) links with cell memberships (default), cell and gene modules with a methylation shift per pair (`--model blocks`), or a Chinese-restaurant-process mixture |
+| `modules` (`blocks`)      | Browse the gene modules against the cell modules of `cluster --model blocks` (clustering first when needed): each module's sites, the genes you pin side by side, and a gene's full pileup, one track per cell module; `--html` writes it as one self-contained page to share |
 | **Inspection & reference** ||
 | `pwm`                     | Build a position weight matrix around genomic sites |
 | `pileup` (`inspect`)      | ASCII pileup, or a faceted Miami plot, for one gene |

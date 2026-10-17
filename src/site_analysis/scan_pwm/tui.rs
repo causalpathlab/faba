@@ -232,11 +232,11 @@ impl PwmView {
     /// The logo as a figure: letters stretched to their heights.
     fn figure(&self) -> String {
         let n = self.columns.len().max(1) as f64;
-        // The view's shape on screen, its letters 8 to 40 points wide
-        // whatever the motif's length; else a page of readable letters.
+        // The logo's shape on screen, grown alike on both sides until its
+        // letters are 8 points wide at least; else a page of readable letters.
         let margins = 76.0;
-        let (width, height) = match crate::figure::page(self.drawn, (300.0, 200.0)) {
-            Some((w, h)) => (w.clamp(margins + 8.0 * n, margins + 40.0 * n), h),
+        let (width, height) = match self.controls.page(self.drawn, (margins + 8.0 * n, 200.0)) {
+            Some(size) => size,
             None => (margins + (560.0 / n).clamp(8.0, 40.0) * n, 330.0),
         };
         let mut c = Canvas::new(width, height);
@@ -326,6 +326,9 @@ impl PwmView {
         }
         let cw = (chart.width / n as u16).clamp(1, MAX_COL);
         let fit = (chart.width / cw) as usize;
+        // What a save takes the shape of: the gutter and the letters drawn.
+        let used = GUTTER + cw * fit.min(n) as u16;
+        self.drawn = Rect::new(area.x, area.y, used.min(area.width), area.height);
         // Keep the cursor on screen.
         if self.cursor < self.offset {
             self.offset = self.cursor;
@@ -454,7 +457,6 @@ impl Screen for PwmView {
     }
 
     fn render(&mut self, frame: &mut Frame) {
-        self.drawn = frame.area();
         let help = self.controls.footer().unwrap_or_else(|| {
             let mut keys = vec![
                 ("←/→", "position"),
@@ -500,7 +502,9 @@ impl Screen for PwmView {
             })
         });
         self.plot = plot;
-        if !drawn {
+        if drawn {
+            self.drawn = inner;
+        } else {
             self.render_logo(frame.buffer_mut(), inner);
         }
         frame.render_widget(Paragraph::new(self.stats_line()), stats);

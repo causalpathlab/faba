@@ -176,7 +176,7 @@ fn entry(p: &str) -> Value {
 }
 
 /// `p` made absolute against the working directory, symlinks kept.
-fn absolute(p: &str) -> String {
+pub(crate) fn absolute(p: &str) -> String {
     std::path::absolute(p).map_or_else(|_| p.to_string(), |a| a.to_string_lossy().into_owned())
 }
 
