@@ -1,5 +1,6 @@
 //! The view `faba modules` shows while it fits: a bar per chain, its
-//! burn-in marked, with the time taken and left; then the chains' split
+//! burn-in marked, with the time taken and left; under them each chain's
+//! log joint as it goes; then whether a chain lags and the chains' split
 //! R-hat. `q` cancels; once the fit writes, too late for that, it leaves
 //! without opening the browser.
 
@@ -7,12 +8,15 @@ use super::Progress;
 use crate::tui::{clock, on_thread, run_view, spinner_frame, Pending, View};
 use data_beans::interactive::ui::{header, help_line, panel, Screen, ACCENTED, DIM, HIGHLIGHT};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
-use ratatui::layout::{Constraint, Layout};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use std::borrow::Cow;
 use std::time::{Duration, Instant};
+use trace::chain_style;
+
+mod trace;
 
 /// How long the R-hat stays up once the fit is done, unless a key comes.
 const HOLD: Duration = Duration::from_millis(1500);
@@ -60,31 +64,39 @@ impl<T> Fitting<'_, T> {
         let w = usize::from(width)
             .saturating_sub(head.len() + tail.len() + 1)
             .max(4);
-        let mut spans = vec![Span::raw(head)];
+        let mut spans = vec![Span::styled(head, chain_style(i))];
         spans.extend(chain_bar(done, total, warmup, w));
         spans.push(Span::styled(tail, DIM));
         Line::from(spans)
     }
 
-    /// The lines under the bars: the R-hat once the chains are
-    /// summarised, and what the fit is doing.
-    fn after(&self) -> Vec<Line<'static>> {
+    /// The lines under the plot: once every chain is done, whether one
+    /// lags; once they are summarised, the R-hat and what the fit is doing.
+    fn after(
+        &self,
+        (total, warmup): (usize, usize),
+        traces: &[Vec<(usize, f64)>],
+    ) -> Vec<Line<'static>> {
+        let mut lines = Vec::new();
+        if (0..self.progress.chains()).all(|i| self.progress.done(i) >= total) {
+            lines.extend(trace::verdict(traces, warmup));
+        }
         let Some(rhat) = self.progress.rhat() else {
-            return Vec::new();
+            return lines;
         };
         let verdict = if rhat <= crate::cluster::RHAT_OK {
             "the chains agree"
         } else {
             "the chains disagree: run more --sweeps or --chains"
         };
-        let mut lines = vec![
+        lines.extend([
             Line::raw(""),
             Line::from(vec![
                 Span::raw(" split R-hat "),
                 Span::styled(format!("{rhat:.2}"), HIGHLIGHT),
                 Span::styled(format!("  {verdict}"), DIM),
             ]),
-        ];
+        ]);
         lines.push(Line::from(Span::styled(
             if self.leave {
                 " not opening the modules"
@@ -96,6 +108,33 @@ impl<T> Fitting<'_, T> {
             DIM,
         )));
         lines
+    }
+
+    /// The bars in `area`, the traces under them in what rows are left
+    /// over (none when too few), then the lines after; the bars first, the
+    /// lines after next, when rows run short.
+    fn sampling(&self, frame: &mut Frame, area: Rect, schedule: (usize, usize)) {
+        let mut bars: Vec<Line> = (0..self.progress.chains())
+            .map(|i| self.chain_line(i, schedule, area.width))
+            .collect();
+        bars.push(Line::from(Span::styled(
+            format!(" │ the burn-in ends at sweep {}", schedule.1),
+            DIM,
+        )));
+        let traces = self.progress.traces();
+        let after = self.after(schedule, &traces);
+        let rows = |n: usize| u16::try_from(n).unwrap_or(u16::MAX);
+        let top = rows(bars.len()).min(area.height);
+        let bottom = rows(after.len()).min(area.height - top);
+        let [bars_at, plot_at, after_at] = Layout::vertical([
+            Constraint::Length(top),
+            Constraint::Fill(1),
+            Constraint::Length(bottom),
+        ])
+        .areas(area);
+        frame.render_widget(Paragraph::new(bars), bars_at);
+        trace::draw(frame, plot_at, &traces, schedule);
+        frame.render_widget(Paragraph::new(after), after_at);
     }
 
     /// Stop the fit, or, too late for that, leave once it is written
@@ -166,27 +205,17 @@ impl<T> Screen for Fitting<'_, T> {
         );
         let inner = block.inner(body);
         frame.render_widget(block, body);
-        let lines = match schedule {
+        match schedule {
             None => {
                 let spin = spinner_frame(self.start.elapsed());
-                vec![Line::from(vec![
+                let line = Line::from(vec![
                     Span::styled(format!(" {spin} "), HIGHLIGHT),
                     Span::raw("reading and filtering the reads"),
-                ])]
+                ]);
+                frame.render_widget(Paragraph::new(line), inner);
             }
-            Some((total, warmup)) => {
-                let mut lines: Vec<Line> = (0..self.progress.chains())
-                    .map(|i| self.chain_line(i, (total, warmup), inner.width))
-                    .collect();
-                lines.push(Line::from(Span::styled(
-                    format!(" │ the burn-in ends at sweep {warmup}"),
-                    DIM,
-                )));
-                lines.extend(self.after());
-                lines
-            }
-        };
-        frame.render_widget(Paragraph::new(lines), inner);
+            Some(schedule) => self.sampling(frame, inner, schedule),
+        }
         let footer = match self.status {
             Some(s) => Line::from(Span::styled(format!(" {s}"), HIGHLIGHT)),
             None => help_line(&[("q", "cancel")]),
@@ -244,7 +273,7 @@ fn watch_with<T: Send>(
     work: impl FnOnce(&Progress) -> anyhow::Result<T> + Send,
     show: impl FnOnce(&mut Fitting<T>) -> anyhow::Result<()>,
 ) -> anyhow::Result<Option<T>> {
-    let progress = Progress::new(chains);
+    let progress = Progress::traced(chains);
     let ((shown, leave), out) = on_thread(
         "the fit",
         || work(&progress),

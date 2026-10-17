@@ -1,17 +1,20 @@
-//! Sampling progress: each chain's sweeps counted as they are done, read
-//! from another thread (a bar on stderr for `faba cluster`, a view in
-//! `faba modules`), and a cancel that turns the sweeps left into no-ops.
+//! Sampling progress: each chain's sweeps counted as they are done, and
+//! for `faba modules` its log joint every so many sweeps, read from
+//! another thread (a bar on stderr for `faba cluster`, a view with the
+//! traces in `faba modules`), and a cancel that turns the sweeps left into
+//! no-ops.
 //!
 //! The chains run as `run_mcmc_parallel` runs them, each model wrapped so
-//! that its sweep is the model's own, then a count: the random numbers and
-//! so the draws are those of the bare model.
+//! that its sweep is the model's own, then a count (and the log joint,
+//! read from the state without random numbers): the random numbers and so
+//! the draws are those of the bare model.
 
 use legume_numeric::mcmc::engine::{run_mcmc_parallel, McmcConfig, McmcModel};
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
 use std::io::IsTerminal;
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
-use std::sync::OnceLock;
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
 pub mod view;
@@ -54,6 +57,23 @@ pub struct Progress {
     rhat: OnceLock<f64>,
     /// Draw the chains' sweeps on a bar on stderr while they run.
     bar: bool,
+    /// Each chain's log joint so far, by sweep, when traced.
+    traces: Vec<Mutex<Vec<(usize, f64)>>>,
+    /// Note each chain's log joint every so many sweeps.
+    tracing: bool,
+}
+
+/// Points a chain's trace keeps about: every k-th sweep is noted, k the
+/// fewest sweeps that keep it under this many.
+const TRACE_POINTS: usize = 200;
+
+/// A model whose state gives its log joint, for a chain's trace.
+pub trait Traced: McmcModel {
+    /// The log joint at `st`, computed without random numbers; none for a
+    /// model never traced.
+    fn log_joint_of(&self, _st: &Self::State) -> Option<f64> {
+        None
+    }
 }
 
 impl Progress {
@@ -66,7 +86,44 @@ impl Progress {
             state: AtomicU8::new(RUNNING),
             rhat: OnceLock::new(),
             bar: false,
+            traces: (0..chains).map(|_| Mutex::default()).collect(),
+            tracing: false,
         }
+    }
+
+    /// [`Progress::new`], each chain's log joint traced as it sweeps.
+    pub fn traced(chains: usize) -> Self {
+        Self {
+            tracing: true,
+            ..Self::new(chains)
+        }
+    }
+
+    /// Chain `i`'s log joint so far, by sweep.
+    pub fn trace(&self, i: usize) -> Vec<(usize, f64)> {
+        self.trace_of(i).clone()
+    }
+
+    /// Chain `i`'s trace, held.
+    fn trace_of(&self, i: usize) -> MutexGuard<'_, Vec<(usize, f64)>> {
+        self.traces[i].lock().expect("a chain's trace")
+    }
+
+    /// Every chain's [`Progress::trace`].
+    pub fn traces(&self) -> Vec<Vec<(usize, f64)>> {
+        (0..self.chains()).map(|i| self.trace(i)).collect()
+    }
+
+    /// Whether a chain's log joint is noted at its sweep `n`: every k-th,
+    /// k the fewest sweeps that keep the trace within [`TRACE_POINTS`].
+    fn traces_at(&self, n: usize) -> bool {
+        if !self.tracing {
+            return false;
+        }
+        let every = self
+            .schedule()
+            .map_or(1, |(total, _)| total.div_ceil(TRACE_POINTS).max(1));
+        n.is_multiple_of(every)
     }
 
     /// [`Progress::new`], its chains drawn on a bar on stderr while they
@@ -176,8 +233,9 @@ pub fn sweeps(config: &McmcConfig) -> usize {
     .expect("warmup + n_samples * thin overflows usize")
 }
 
-/// A model whose sweeps are counted on a [`Progress`], and skipped once it
-/// is cancelled (as are the draws: a cancelled chain keeps none).
+/// A model whose sweeps are counted on a [`Progress`], its log joint noted
+/// there when traced, and skipped once it is cancelled (as are the draws:
+/// a cancelled chain keeps none).
 struct Watched<'m, 'p, M> {
     model: &'m M,
     progress: &'p Progress,
@@ -194,30 +252,35 @@ impl<M> Watched<'_, '_, M> {
     }
 }
 
-impl<'p, M: McmcModel> McmcModel for Watched<'_, 'p, M> {
-    /// The chain's sweep count (none counts nowhere), and the model's state
+impl<M: Traced> McmcModel for Watched<'_, '_, M> {
+    /// The chain's index (none counts nowhere), and the model's state
     /// (none for a chain that started after a cancel, which never sweeps).
-    type State = (Option<&'p AtomicUsize>, Option<M::State>);
+    type State = (Option<usize>, Option<M::State>);
     type Sample = Option<M::Sample>;
     type Result = M::Result;
 
     fn init(&self, rng: &mut SmallRng) -> Self::State {
         let chain = self.chain_of(rng);
-        if let Some(at) = chain.and_then(|i| self.progress.started.get(i)) {
+        if let Some(at) = chain.map(|i| &self.progress.started[i]) {
             let _ = at.set(Instant::now());
         }
-        let done = chain.and_then(|i| self.progress.done.get(i)).map(|c| &c.0);
         let state = (!self.progress.cancelled()).then(|| self.model.init(rng));
-        (done, state)
+        (chain, state)
     }
 
-    fn sweep(&self, (done, st): &mut Self::State, rng: &mut SmallRng) {
+    fn sweep(&self, (chain, st): &mut Self::State, rng: &mut SmallRng) {
         let Some(st) = st.as_mut().filter(|_| !self.progress.stopping()) else {
             return;
         };
         self.model.sweep(st, rng);
-        if let Some(done) = done {
-            done.fetch_add(1, Ordering::Relaxed);
+        let Some(i) = *chain else {
+            return;
+        };
+        let n = self.progress.done[i].0.fetch_add(1, Ordering::Relaxed) + 1;
+        if self.progress.traces_at(n) {
+            if let Some(v) = self.model.log_joint_of(st) {
+                self.progress.trace_of(i).push((n, v));
+            }
         }
     }
 
@@ -234,7 +297,8 @@ impl<'p, M: McmcModel> McmcModel for Watched<'_, 'p, M> {
 }
 
 /// `chains` chains of `model`, as `run_mcmc_parallel` runs them (the same
-/// draws), their sweeps counted on `progress`, and drawn on a bar on
+/// draws), their sweeps counted on `progress` (their log joint traced if
+/// it is [`Progress::traced`]), and drawn on a bar on
 /// stderr if it is [`Progress::on_stderr`]. [`Cancelled`] when `progress`
 /// was cancelled.
 pub fn run<M>(
@@ -244,7 +308,7 @@ pub fn run<M>(
     progress: &Progress,
 ) -> anyhow::Result<Vec<M::Result>>
 where
-    M: McmcModel + Sync,
+    M: Traced + Sync,
     M::State: Send,
     M::Result: Send,
 {

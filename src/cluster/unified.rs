@@ -466,3 +466,10 @@ impl McmcModel for Model<'_> {
         draws
     }
 }
+
+impl crate::cluster::progress::Traced for Model<'_> {
+    /// The kept draws' log joint, at any sweep.
+    fn log_joint_of(&self, st: &State) -> Option<f64> {
+        Some(self.log_joint(st))
+    }
+}

@@ -1,6 +1,7 @@
-//! Sampling progress: counting the sweeps leaves every chain's draws as
-//! they were, the count is the engine's schedule, a cancel turns the sweeps
-//! left into no-ops, and a cancelled fit writes nothing.
+//! Sampling progress: counting the sweeps and tracing the log joint leave
+//! every chain's draws as they were, the count is the engine's schedule, a
+//! cancel turns the sweeps left into no-ops, and a cancelled fit writes
+//! nothing.
 
 use super::unified::{planted_blocks, planted_site_data, settings};
 use super::{config, small_cells};
@@ -49,6 +50,8 @@ impl McmcModel for Counting<'_> {
         kept.len()
     }
 }
+
+impl progress::Traced for Counting<'_> {}
 
 /// Each chain counts the sweeps the engine runs, and keeps the draws it
 /// would keep, whatever the schedule.
@@ -159,6 +162,53 @@ fn counting_the_sweeps_leaves_the_draws_as_they_were() {
         };
         assert_eq!(draws(a), draws(b));
         assert_eq!((a.splits, a.merges), (b.splits, b.merges));
+    }
+}
+
+/// The same seed gives the same draws with the log joint traced as
+/// without, and the trace is the chain's log joint: at each kept draw's
+/// sweep, that draw's, bit for bit, in both blockmodel settings; a short
+/// run traced every sweep, a long one every other.
+#[test]
+fn tracing_the_log_joint_leaves_the_draws_as_they_were() {
+    let (reads, gene_of, _, _, _) = planted_blocks(30, 6, 1.0, 161);
+    let links = Links::new(&Weighted::new(&reads, None), &gene_of);
+    // Draw j is kept after sweep warmup + j * thin + 1: even in the long
+    // run, so traced.
+    for (cfg, every) in [(config(6, 8, 163), 1), (config(6, 199, 163), 2)] {
+        let cfg = McmcConfig { thin: 2, ..cfg };
+        let total = progress::sweeps(&cfg);
+        for s in both_settings() {
+            let model = Model::new(&links, &gene_of, gene_of.len(), s).unwrap();
+            let bare = run_mcmc_parallel(&model, &cfg, 2);
+            let p = Progress::traced(2);
+            let traced = progress::run(&model, &cfg, 2, &p).unwrap();
+            for (i, (a, b)) in bare.iter().zip(&traced).enumerate() {
+                let joint = |c: &Vec<crate::cluster::unified::Draw>| -> Vec<u64> {
+                    c.iter().map(|d| d.log_joint.to_bits()).collect()
+                };
+                assert_eq!(joint(a), joint(b), "chain {i}");
+                assert_eq!(
+                    a.last().unwrap().means(true).cell,
+                    b.last().unwrap().means(true).cell
+                );
+                let trace = p.trace(i);
+                assert_eq!(
+                    trace.iter().map(|t| t.0).collect::<Vec<_>>(),
+                    (every..=total).step_by(every).collect::<Vec<_>>(),
+                    "traced every {every} of {total} sweeps"
+                );
+                for (j, d) in b.iter().enumerate() {
+                    let at = cfg.warmup + j * cfg.thin + 1;
+                    let v = trace.iter().find(|t| t.0 == at).map(|t| t.1);
+                    assert_eq!(
+                        v.map(f64::to_bits),
+                        Some(d.log_joint.to_bits()),
+                        "draw {j} at sweep {at}"
+                    );
+                }
+            }
+        }
     }
 }
 
