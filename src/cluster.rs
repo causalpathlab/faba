@@ -18,6 +18,7 @@ mod command;
 mod crp;
 mod embed;
 mod fit;
+mod progress;
 mod read;
 /// Each model's fit, from the read and filtered input to its tables.
 mod run {
@@ -103,6 +104,15 @@ fn memory_estimate(
 /// Cluster as `args` say; the modality fitted, none when no inputs were
 /// chosen.
 pub fn run_cluster(args: &ClusterArgs) -> anyhow::Result<Option<String>> {
+    run_cluster_watched(args, &progress::Progress::on_stderr(args.chains))
+}
+
+/// [`run_cluster`], the chains counting their sweeps on `progress`.
+/// Cancelled, it writes nothing, not even its record.
+fn run_cluster_watched(
+    args: &ClusterArgs,
+    progress: &progress::Progress,
+) -> anyhow::Result<Option<String>> {
     let Some(args) = &with_inputs(args, "cluster", false)? else {
         return Ok(None);
     };
@@ -110,7 +120,10 @@ pub fn run_cluster(args: &ClusterArgs) -> anyhow::Result<Option<String>> {
     let mut record = RunRecord::start("cluster", &dir.to_string_lossy())
         .inputs("matrices", &args.data_files)
         .options(args);
-    let outcome = cluster(args, &dir, &mut record);
+    let outcome = match cluster(args, &dir, &mut record, progress) {
+        Err(e) if e.is::<progress::Cancelled>() => return Err(e),
+        outcome => outcome,
+    };
     if let Ok(written) = &outcome {
         record = record.file_name(&written.record);
         // The command, to read, edit and run again, beside its record.
@@ -132,6 +145,26 @@ pub fn run_cluster(args: &ClusterArgs) -> anyhow::Result<Option<String>> {
     outcome.map(|written| Some(written.modality))
 }
 
+/// The chains' schedule for `args`: `--burn-in` sweeps, then the
+/// `(sweeps - burn-in) / thin` kept draws every `thin`-th sweep, the
+/// engine stopping on the last of them. A `thin` that does not divide the
+/// sweeps after the burn-in leaves the remainder unrun; the progress shows
+/// the sweeps run ([`progress::sweeps`]), not `--sweeps`.
+fn mcmc_config(args: &ClusterArgs) -> McmcConfig {
+    McmcConfig {
+        n_samples: kept_draws(args).max(1),
+        warmup: args.burn_in,
+        thin: args.thin,
+        seed: args.seed,
+    }
+}
+
+/// The draws `args` keep: `(sweeps - burn-in) / thin`, a `thin` of 0 read
+/// as 1; none when the sweeps end with the burn-in.
+fn kept_draws(args: &ClusterArgs) -> usize {
+    (args.sweeps - args.burn_in) / args.thin.max(1)
+}
+
 /// What a fit wrote: the modality fitted (lowercased, as its tables are
 /// named) and its run record's file name.
 struct Written {
@@ -139,12 +172,19 @@ struct Written {
     record: String,
 }
 
-/// Fit, summarise and write; what was written.
-fn cluster(args: &ClusterArgs, dir: &Path, record: &mut RunRecord) -> anyhow::Result<Written> {
+/// Fit, summarise and write, the sweeps counted on `progress`; what was
+/// written.
+fn cluster(
+    args: &ClusterArgs,
+    dir: &Path,
+    record: &mut RunRecord,
+    progress: &progress::Progress,
+) -> anyhow::Result<Written> {
     check(args)?;
     let inputs = inputs(args)?;
-    let all = read::read_inputs(&inputs)?;
+    let all = read::read_inputs(&inputs, progress)?;
     let (data, kept) = read::filter(&all, args.min_cell_sites, args.min_site_cells);
+    progress.check()?;
     // Only the input cells are needed from here: let their reads go.
     let read_sites = all.sites.len();
     let read::SiteData {
@@ -180,7 +220,6 @@ fn cluster(args: &ClusterArgs, dir: &Path, record: &mut RunRecord) -> anyhow::Re
     } else {
         (fit_reads, None)
     };
-    let kept_draws = (args.sweeps - args.burn_in) / args.thin.max(1);
     let links = match args.model {
         ModelKind::Crp => 0,
         ModelKind::Link | ModelKind::Blocks => {
@@ -191,19 +230,16 @@ fn cluster(args: &ClusterArgs, dir: &Path, record: &mut RunRecord) -> anyhow::Re
         fit_reads.site.len(),
         matches!(fit_reads, Cow::Owned(_)),
         (data.sites.len(), fitted.len(), links),
-        kept_draws,
+        kept_draws(args),
         args,
     );
     info!("about {} MB at the peak of the fit", memory >> 20);
+    progress.check()?;
 
     let (weighted, batch_stats) = weigh_batches(args, &data, &fitted, &fit_reads);
+    progress.check()?;
 
-    let config = McmcConfig {
-        n_samples: kept_draws.max(1),
-        warmup: args.burn_in,
-        thin: args.thin,
-        seed: args.seed,
-    };
+    let config = mcmc_config(args);
     record.set_result(
         "cells",
         &serde_json::json!({
@@ -227,6 +263,7 @@ fn cluster(args: &ClusterArgs, dir: &Path, record: &mut RunRecord) -> anyhow::Re
         all_cells: &all_cells,
         kept: &kept,
         controls: &controls,
+        progress,
     };
     match args.model {
         ModelKind::Crp => run::crp::crp_fit(args, &config, dir, record, fit, &fit_reads),
@@ -300,4 +337,6 @@ struct FitData<'a> {
     all_cells: &'a [read::Cell],
     kept: &'a [usize],
     controls: &'a [usize],
+    /// Where the chains count their sweeps.
+    progress: &'a progress::Progress,
 }

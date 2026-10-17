@@ -9,6 +9,7 @@ use rustc_hash::FxHashMap;
 use statrs::function::gamma::ln_gamma;
 
 mod command;
+mod progress;
 mod unified;
 
 fn settings(gibbs: bool, split_merge: usize, fixed_alpha: Option<f64>) -> Settings {
