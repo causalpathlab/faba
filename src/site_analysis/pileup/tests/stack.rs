@@ -47,7 +47,7 @@ fn genes_stack_top_to_bottom_with_every_key_shown() {
     let (one, two) = (text.find("GENE1").unwrap(), text.find("GENE2").unwrap());
     assert!(one < two, "the first marked on top");
     assert!(text.contains("▸ keys"), "says which gene has the keys");
-    let missing = crate::tui::missing_keys(&s.footer_line(), &text);
+    let missing = crate::tui::missing_keys(&s.footer_line(s.views[0].rows_hidden()), &text);
     assert!(missing.is_empty(), "{missing:?}");
 }
 
@@ -300,4 +300,59 @@ fn a_press_outside_every_gene_lets_go_of_a_grab() {
     s.mouse(at(MouseEventKind::Down(MouseButton::Left), x + 20, 39));
     s.mouse(at(MouseEventKind::Up(MouseButton::Left), x + 20, 39));
     assert_eq!(s.views[0].window, before, "no stale grab pans the gene");
+}
+
+/// A margin and `n` groups, each converted above unconverted in one row.
+fn group_tracks(m: &[(i64, f64)], n: usize) -> Vec<Track<'_>> {
+    const LABELS: [&str; 2] = ["on", "off"];
+    (0..=n)
+        .flat_map(|_| {
+            let up = Track::single(LABELS[0], "reads", m, false).converted_above();
+            [up, Track::single(LABELS[1], "reads", m, false)]
+        })
+        .collect()
+}
+
+/// Two genes of a margin and 12 groups each, both opened at track `from`.
+fn group_stack(m: &[(i64, f64)], from: usize) -> StackView<'_> {
+    let one = |name: &str| {
+        let mut v = PileupView::new(name, "chr1", group_tracks(m, 12), EXTENT);
+        v.track_from = from;
+        v
+    };
+    StackView::new(vec![one("GENE1"), one("GENE2")])
+}
+
+/// The first track of the first scrolled row each gene shows.
+fn first_scrolled(s: &StackView) -> Vec<usize> {
+    s.views
+        .iter()
+        .map(|v| match v.shown_rows(&v.rows())[1] {
+            super::super::Row::Track(k) | super::super::Row::Mirror(k, _) => k,
+            r => panic!("{r:?}"),
+        })
+        .collect()
+}
+
+#[test]
+fn split_or_mirrored_every_gene_stays_at_its_group() {
+    let m = positions(1.0);
+    let mut s = group_stack(&m, 8);
+    screen(&mut s, 200, 120);
+    assert_eq!(first_scrolled(&s), vec![8, 8]);
+    press(&mut s, KeyCode::Char('v'));
+    screen(&mut s, 200, 120);
+    assert_eq!(first_scrolled(&s), vec![8, 8], "split, both genes");
+    press(&mut s, KeyCode::Char('v'));
+    screen(&mut s, 200, 120);
+    assert_eq!(first_scrolled(&s), vec![8, 8], "mirrored again");
+}
+
+#[test]
+fn the_first_frame_names_the_scroll_keys() {
+    let m = positions(1.0);
+    let mut s = group_stack(&m, 0);
+    let first = screen(&mut s, 200, 60);
+    assert!(first.contains("[/]"), "{first}");
+    assert_eq!(screen(&mut s, 200, 60), first, "as every frame after");
 }

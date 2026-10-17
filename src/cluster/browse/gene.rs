@@ -203,11 +203,12 @@ fn tally(input: &Input, file: &FileIndex, gene: &str, groups: usize) -> anyhow::
 /// Browse `gene`'s full pileup until the user goes back (false) or quits
 /// (true). Zooming out past the gene widens it in place; a search, which
 /// the pileup cannot answer here, says to search from the modules.
-/// `settings` carries how the last one was drawn.
+/// `settings` carries how the last one was drawn; when not every cell
+/// module's row fits, they start at the one in column `first`.
 pub(super) fn show(
     matrices: &Matrices,
     m: &Modules,
-    gene: &str,
+    (gene, first): (&str, usize),
     models: Option<&SharedModels>,
     settings: &mut Settings,
 ) -> anyhow::Result<bool> {
@@ -216,32 +217,66 @@ pub(super) fn show(
     let reads = crate::tui::busy(true, "modules", &what, || matrices.read(m, gene))?;
     let (on, off) = channel_names(&m.modality);
     let labels = track_labels(m, on, off);
-    let mut extent = extent(&reads);
-    let (mut cursor, mut status) = (None, None);
     let keys = [Box::<str>::from(gene)];
+    let mut place = Place {
+        extent: extent(&reads),
+        cursor: None,
+        // Group 0 is all cells; each group has two tracks.
+        track_from: 2 * (first + 1),
+        status: None,
+    };
     loop {
         let view = View {
             title: &symbol,
             chr: &reads.chr,
-            extent,
+            extent: place.extent,
             on,
             off,
             keys: Some(&keys),
             genes: models.cloned(),
-            cursor,
+            cursor: place.cursor,
             switchable: false,
+            track_from: place.track_from,
         };
-        match show_pileup(view, tracks(&reads, &labels), status.take(), settings)? {
-            Exit::Quit => return Ok(true),
-            Exit::Genes => return Ok(false),
-            Exit::Locus { lo, hi, at } => (extent, cursor) = ((lo, hi), Some(at)),
+        let status = place.status.take();
+        let (exit, track_from) = show_pileup(view, tracks(&reads, &labels), status, settings)?;
+        if let Some(quit) = place.left(exit, track_from) {
+            return Ok(quit);
+        }
+    }
+}
+
+/// Where a gene's browser opens again after leaving for what it cannot do
+/// in place.
+#[derive(Debug, Default, PartialEq)]
+pub(super) struct Place {
+    /// The span shown, widened by `-` past the gene.
+    pub(super) extent: (i64, i64),
+    /// Where the cursor was; the first site when none.
+    pub(super) cursor: Option<i64>,
+    /// The track scrolled to.
+    pub(super) track_from: usize,
+    /// What the footer says first.
+    pub(super) status: Option<String>,
+}
+
+impl Place {
+    /// Left by `exit`, scrolled to `track_from`: whether the user quit
+    /// (`Some(true)`) or went back (`Some(false)`), else where to open again.
+    pub(super) fn left(&mut self, exit: Exit, track_from: usize) -> Option<bool> {
+        self.track_from = track_from;
+        match exit {
+            Exit::Quit => return Some(true),
+            Exit::Genes => return Some(false),
+            Exit::Locus { lo, hi, at } => (self.extent, self.cursor) = ((lo, hi), Some(at)),
             Exit::Search(query) => {
-                status = Some(format!(
+                self.status = Some(format!(
                     "{query}: search from the modules view (Esc, then /)"
                 ))
             }
-            Exit::Modality { at } => cursor = Some(at),
+            Exit::Modality { at } => self.cursor = Some(at),
         }
+        None
     }
 }
 

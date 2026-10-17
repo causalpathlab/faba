@@ -5,14 +5,19 @@
 //! Every view's report is a page fragment of its own (its panes, styles and
 //! drawing code) inside one shared shell (`report/shell.html`): the theme,
 //! the window with the faba mark, the key footer, the legend, the canvas
-//! helpers, and the data. A view offers it the same way everywhere: a
-//! `--html FILE` flag, and the `e` key in its full-screen view.
+//! helpers, and the data. Each full-screen view names its report key in
+//! its footer: `e` in the modules browser, `Ctrl+E` in the QC site view
+//! (where `e` types a value), a chord it takes through
+//! [`crate::tui::View::takes_chord`]. A view that can run without a
+//! terminal also writes it by a `--html FILE` flag. Either way the page is
+//! written on a thread of its own ([`Writing`]).
 
 use crate::figure::logo::{BEAN, TONES};
 use ratatui::style::Color;
 use serde::Serialize;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::thread::JoinHandle;
 
 /// The page around every report; see the module docs.
 const SHELL: &str = include_str!("report/shell.html");
@@ -105,6 +110,113 @@ pub fn write(
         .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))
 }
 
+/// To a tenth, which is all a page shows of a read count.
+pub(crate) fn tenth(x: f64) -> f64 {
+    (10.0 * x).round() / 10.0
+}
+
+/// To a thousandth, enough for two decimals or a fraction of a site.
+pub(crate) fn thousandth(x: f64) -> f64 {
+    (1000.0 * x).round() / 1000.0
+}
+
+/// A report written on a thread of its own, one at a time: asked again
+/// while one is under way, one more is written once it is done.
+#[derive(Default)]
+pub struct Writing {
+    /// The file being written, and the thread writing it, until polled.
+    under_way: Option<(PathBuf, JoinHandle<anyhow::Result<()>>)>,
+    /// Asked again meanwhile.
+    again: bool,
+}
+
+/// A write [`Writing::poll`] found done.
+pub struct Written {
+    /// Where it went, or why not.
+    pub said: String,
+    /// It was asked for again meanwhile: write it anew now.
+    pub again: bool,
+}
+
+impl Written {
+    /// What to say: where it went, or why not, and when it was asked for
+    /// again, what `restart` (writing it anew) says after it.
+    pub fn then(self, restart: impl FnOnce() -> String) -> String {
+        if self.again {
+            format!("{}; {}", self.said, restart())
+        } else {
+            self.said
+        }
+    }
+}
+
+impl Writing {
+    /// While a write is under way, or done but not yet polled, queue one
+    /// more and say so; none when [`Self::spawn`] may start one.
+    pub fn busy(&mut self) -> Option<String> {
+        let (path, _) = self.under_way.as_ref()?;
+        self.again = true;
+        Some(format!("writing {}, then again", crate::tui::tilde(path)))
+    }
+
+    /// Run `work`, which writes `path`, on a thread of its own, once
+    /// [`Self::busy`] says none is under way: what to say.
+    pub fn spawn<W>(&mut self, path: PathBuf, work: W) -> String
+    where
+        W: FnOnce() -> anyhow::Result<()> + Send + 'static,
+    {
+        debug_assert!(self.under_way.is_none(), "one write at a time");
+        let said = format!("writing {}", crate::tui::tilde(&path));
+        self.under_way = Some((path, std::thread::spawn(work)));
+        said
+    }
+
+    /// The write once it is done, however long ago, taken so it is said
+    /// once; none while it is under way or when there is none.
+    pub fn poll(&mut self) -> Option<Written> {
+        if !self.under_way.as_ref()?.1.is_finished() {
+            return None;
+        }
+        let said = match self.join()? {
+            Ok(msg) | Err(msg) => msg,
+        };
+        let again = std::mem::take(&mut self.again);
+        Some(Written { said, again })
+    }
+
+    /// The file of the write still running, if any.
+    pub fn running(&self) -> Option<&Path> {
+        let (path, thread) = self.under_way.as_ref()?;
+        (!thread.is_finished()).then_some(path.as_path())
+    }
+
+    /// Wait for the write, if any: where it went, or why not.
+    fn join(&mut self) -> Option<Result<String, String>> {
+        let (path, thread) = self.under_way.take()?;
+        let at = crate::tui::tilde(&path);
+        Some(match thread.join() {
+            Ok(Ok(())) => Ok(format!("wrote {at}")),
+            Ok(Err(e)) => Err(format!("{e:#}")),
+            Err(_) => Err(format!("{at}: writing it failed")),
+        })
+    }
+}
+
+impl Drop for Writing {
+    /// A write under way is finished, not cut short with the view; the
+    /// wait and a failure are said, not hidden.
+    fn drop(&mut self) {
+        if let Some(path) = self.running() {
+            log::warn!("finishing {}", crate::tui::tilde(path));
+        }
+        match self.join() {
+            Some(Ok(msg)) => log::info!("{msg}"),
+            Some(Err(msg)) => log::warn!("{msg}"),
+            None => {}
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,6 +277,104 @@ mod tests {
             let back: serde_json::Value = serde_json::from_slice(&out.0).unwrap();
             assert_eq!(back, data, "at {at}");
         }
+    }
+
+    /// Wait for `w`'s write to finish, and what it said.
+    fn finished(w: &mut Writing) -> Written {
+        let mut done = None;
+        crate::test_util::wait_for(|| {
+            done = w.poll();
+            done.is_some()
+        });
+        done.expect("waited for")
+    }
+
+    /// Ask `w` for a write of `path` by `work`, as a view does: queued
+    /// while one is under way. What it says.
+    fn start<W>(w: &mut Writing, path: &Path, work: W) -> String
+    where
+        W: FnOnce() -> anyhow::Result<()> + Send + 'static,
+    {
+        w.busy()
+            .unwrap_or_else(|| w.spawn(path.to_path_buf(), work))
+    }
+
+    #[test]
+    fn a_write_says_where_it_went_or_why_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("r.html");
+        let mut w = Writing::default();
+        assert!(w.poll().is_none(), "nothing under way");
+        let to = path.clone();
+        let said = start(&mut w, &path, move || Ok(std::fs::write(&to, "x")?));
+        assert_eq!(said, format!("writing {}", crate::tui::tilde(&path)));
+        let done = finished(&mut w);
+        assert_eq!(done.said, format!("wrote {}", crate::tui::tilde(&path)));
+        assert!(!done.again);
+        assert!(w.poll().is_none(), "said once");
+        start(&mut w, &path, || anyhow::bail!("no room"));
+        assert_eq!(finished(&mut w).said, "no room");
+        start(&mut w, &path, || panic!("a bug"));
+        assert_eq!(
+            finished(&mut w).said,
+            format!("{}: writing it failed", crate::tui::tilde(&path))
+        );
+    }
+
+    #[test]
+    fn a_press_while_writing_queues_one_more_and_a_late_poll_still_says() {
+        let path = PathBuf::from("r.html");
+        let (go, wait) = std::sync::mpsc::channel::<()>();
+        let mut w = Writing::default();
+        start(&mut w, &path, move || {
+            wait.recv().ok();
+            Ok(())
+        });
+        assert_eq!(w.running(), Some(path.as_path()));
+        assert_eq!(w.busy().as_deref(), Some("writing r.html, then again"));
+        go.send(()).unwrap();
+        // Polled long after it finished, it still says so, and once.
+        crate::test_util::wait_for(|| w.running().is_none());
+        assert_eq!(
+            w.busy().as_deref(),
+            Some("writing r.html, then again"),
+            "done but not polled is still busy"
+        );
+        let done = finished(&mut w);
+        assert_eq!(done.said, "wrote r.html");
+        assert!(done.again, "the queued one");
+        start(&mut w, &path, || Ok(()));
+        assert!(!finished(&mut w).again, "queued once only");
+    }
+
+    #[test]
+    fn a_rerun_says_the_first_writes_outcome_before_its_start() {
+        let done = |again| Written {
+            said: "wrote r.html".into(),
+            again,
+        };
+        assert_eq!(
+            done(true).then(|| "writing r2.html".into()),
+            "wrote r.html; writing r2.html"
+        );
+        assert_eq!(
+            done(false).then(|| unreachable!("not asked again")),
+            "wrote r.html"
+        );
+    }
+
+    #[test]
+    fn dropping_a_write_under_way_finishes_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("r.html");
+        let mut w = Writing::default();
+        let to = path.clone();
+        start(&mut w, &path, move || {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            Ok(std::fs::write(&to, "x")?)
+        });
+        drop(w);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "x");
     }
 
     #[test]

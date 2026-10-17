@@ -1,8 +1,8 @@
 //! The browser on a test terminal: keys, the mouse and what is drawn.
 
-use super::{cell_of, heads, loaded, mouse, press, screen, typed};
+use super::{cell_of, heads, loaded, mouse, press, screen, typed, wide};
 use crate::cluster::browse::view::{Look, Pane, Pin, Ramp, Sort};
-use crate::cluster::browse::ModulesView;
+use crate::cluster::browse::{Modules, ModulesView};
 use data_beans::interactive::ui::Screen;
 use ratatui::crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 
@@ -479,26 +479,24 @@ fn e_again_while_writing_writes_the_report_anew_after() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("r.html");
     let mut v = ModulesView::new("test", &m).with_report(path.clone(), m.clone());
-    let done = |v: &mut ModulesView| {
-        let start = std::time::Instant::now();
-        while !v.tick() {
-            assert!(start.elapsed().as_secs() < 30, "the report never finished");
-            std::thread::yield_now();
-        }
-    };
+    let done = |v: &mut ModulesView| crate::test_util::wait_for(|| v.tick());
     press(&mut v, KeyCode::Char('e'));
     // Not taken until a tick: the first is still being written.
     press(&mut v, KeyCode::Char('e'));
     assert!(screen(&mut v, 180, 40).contains("then again"));
     done(&mut v);
     let s = screen(&mut v, 180, 40);
+    let to = crate::tui::tilde(&path);
     assert!(
-        s.contains(&format!("writing {}", path.display())),
-        "the second: {s}"
+        s.contains(&format!("wrote {to}; writing {to}")),
+        "the first's outcome kept, then the second: {s}"
     );
     done(&mut v);
     let s = screen(&mut v, 180, 40);
-    assert!(s.contains(&format!("wrote {}", path.display())), "{s}");
+    assert!(
+        s.contains(&format!("wrote {}", crate::tui::tilde(&path))),
+        "{s}"
+    );
     assert!(!v.tick(), "and no third");
 }
 
@@ -510,14 +508,16 @@ fn e_writes_the_report_off_the_ui_thread_and_says_so_when_done() {
     let mut v = ModulesView::new("test", &m).with_report(path.clone(), m.clone());
     press(&mut v, KeyCode::Char('e'));
     let s = screen(&mut v, 180, 40);
-    assert!(s.contains(&format!("writing {}", path.display())), "{s}");
-    let start = std::time::Instant::now();
-    while !v.tick() {
-        assert!(start.elapsed().as_secs() < 30, "the report never finished");
-        std::thread::yield_now();
-    }
+    assert!(
+        s.contains(&format!("writing {}", crate::tui::tilde(&path))),
+        "{s}"
+    );
+    crate::test_util::wait_for(|| v.tick());
     let s = screen(&mut v, 180, 40);
-    assert!(s.contains(&format!("wrote {}", path.display())), "{s}");
+    assert!(
+        s.contains(&format!("wrote {}", crate::tui::tilde(&path))),
+        "{s}"
+    );
     let html = std::fs::read_to_string(&path).unwrap();
     assert!(html.starts_with("<!doctype html>") && html.ends_with("</html>\n"));
     assert!(!v.tick(), "said once");
@@ -525,13 +525,94 @@ fn e_writes_the_report_off_the_ui_thread_and_says_so_when_done() {
     let path = tmp.path().join("missing").join("r.html");
     let mut v = ModulesView::new("test", &m).with_report(path.clone(), m.clone());
     press(&mut v, KeyCode::Char('e'));
-    while !v.tick() {
-        assert!(start.elapsed().as_secs() < 30, "the report never finished");
-        std::thread::yield_now();
-    }
+    crate::test_util::wait_for(|| v.tick());
     let s = screen(&mut v, 180, 40);
     assert!(
         s.contains(&path.display().to_string()) && !s.contains("wrote"),
         "{s}"
     );
+}
+
+/// The modules grid's part of the column heads' line.
+fn module_heads(s: &str) -> String {
+    heads(s).split("││").next().unwrap().to_string()
+}
+
+#[test]
+fn the_last_scroll_fills_the_narrower_grid_with_the_last_cell_modules() {
+    let m = wide();
+    let name = |k: usize| format!("{}", m.columns[k] + 1);
+    let mut v = ModulesView::new("test", &m);
+    let s = screen(&mut v, 100, 40);
+    let h = module_heads(&s);
+    assert!(h.contains("8›"), "four of twelve fit: {h}");
+    for _ in 0..13 {
+        press(&mut v, KeyCode::Char(']'));
+    }
+    let s = screen(&mut v, 100, 40);
+    let h = module_heads(&s);
+    assert!(h.contains("‹8") && !h.contains('›'), "{h}");
+    let shown: Vec<&str> = h
+        .split_whitespace()
+        .filter(|w| !w.contains('‹') && w != &"│")
+        .map(|w| w.trim_matches('│'))
+        .collect();
+    assert_eq!(shown.len(), 4, "{h}");
+    let last = shown[3].trim_start_matches('C');
+    assert_eq!(last, name(11), "ending with the last: {h}");
+}
+
+#[test]
+fn the_stats_line_shows_what_fits_and_counts_the_rest() {
+    let m = wide();
+    let mut v = ModulesView::new("test", &m);
+    let w = 70;
+    let s = screen(&mut v, w, 40);
+    let line = s.lines().find(|l| l.contains("chr1:")).unwrap().trim_end();
+    let shown = line.matches(" of ").count() - 1;
+    assert!((1..12).contains(&shown), "{line}");
+    assert!(line.ends_with(&format!("{}›", 12 - shown)), "{line}");
+    // Scrolled, it starts with those before.
+    press(&mut v, KeyCode::Char(']'));
+    let s = screen(&mut v, w, 40);
+    let line = s.lines().find(|l| l.contains("chr1:")).unwrap().trim_end();
+    let shown = line.matches(" of ").count() - 1;
+    assert!(line.contains("‹1"), "{line}");
+    assert!(line.ends_with(&format!("{}›", 11 - shown)), "{line}");
+}
+
+/// The sites grid's label column for gene role `g` of `m`, from its
+/// labels' text: the widest, pin mark and gap included, at most 24.
+fn label_w_from_text(m: &Modules, pins: &[Pin], g: usize) -> u16 {
+    let spans = m.genes(g);
+    let pinned = |i: usize| {
+        pins.iter()
+            .any(|p| p.role == g && spans[p.gene].contains(&i))
+    };
+    let members = &m.members[g];
+    let widest = (0..members.len()).map(|i| {
+        let s = &m.sites[members[i].site];
+        let mark = if pinned(i) { 2 } else { 0 };
+        let symbol = crate::site_analysis::pileup::query_symbol(&s.gene);
+        mark + symbol.chars().count() + 1 + s.pos.to_string().len() + 1
+    });
+    (widest.max().unwrap_or(0) as u16).min(24)
+}
+
+#[test]
+fn the_site_label_column_fits_the_widest_label_pinned_or_not() {
+    for m in [loaded(), wide()] {
+        let mut v = ModulesView::new("t", &m);
+        for g in 0..m.members.len() {
+            let want = label_w_from_text(&m, &v.pins, g);
+            assert_eq!(v.site_label_w(g), want, "role {g}");
+            for gene in 0..m.genes(g).len() {
+                v.pins.push(Pin { role: g, gene });
+                let want = label_w_from_text(&m, &v.pins, g);
+                assert_eq!(v.site_label_w(g), want, "pinned");
+            }
+        }
+        // Worked out once per role: the cache holds the last one asked.
+        assert_eq!(v.site_labels.key(), m.members.len().checked_sub(1));
+    }
 }

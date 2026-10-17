@@ -249,6 +249,27 @@ pub fn moved(at: usize, d: isize, last: usize) -> usize {
     at.saturating_add_signed(d).min(last)
 }
 
+/// How many characters `n` takes written out, its sign included.
+pub fn digits(n: i64) -> usize {
+    let width = n
+        .unsigned_abs()
+        .checked_ilog10()
+        .map_or(1, |d| d as usize + 1);
+    width + usize::from(n < 0)
+}
+
+/// How many of a scrolled run are hidden before and after, as `‹2 5›`;
+/// empty when none are.
+pub fn hidden_marks(left: usize, right: usize) -> String {
+    let left = (left > 0).then(|| format!("‹{left}"));
+    let right = (right > 0).then(|| format!("{right}›"));
+    [left, right]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// The home folder, if known.
 pub fn home() -> Option<PathBuf> {
     std::env::var_os("HOME").map(PathBuf::from)
@@ -281,10 +302,16 @@ pub fn typed_path(text: &str) -> PathBuf {
 /// `base/stem`, or `base/stem2`, `base/stem3`, ... : the first that does
 /// not exist yet.
 pub(crate) fn next_free(base: &Path, stem: &str) -> PathBuf {
-    let mut out = base.join(stem);
+    next_free_file(base, stem, "")
+}
+
+/// `base/{stem}{ext}`, or `base/{stem}2{ext}`, `base/{stem}3{ext}`, ... :
+/// the first that does not exist yet, numbered before the extension.
+pub(crate) fn next_free_file(base: &Path, stem: &str, ext: &str) -> PathBuf {
+    let mut out = base.join(format!("{stem}{ext}"));
     let mut n = 2;
     while out.exists() {
-        out = base.join(format!("{stem}{n}"));
+        out = base.join(format!("{stem}{n}{ext}"));
         n += 1;
     }
     out
@@ -324,6 +351,12 @@ pub trait View: Screen {
     /// Whether the view has something for the apply key to do; elsewhere it
     /// is dropped, so it never acts as a letter key.
     fn takes_apply(&self) -> bool {
+        false
+    }
+
+    /// Whether the view takes `key`, a chord (Ctrl, Alt) that is dropped
+    /// otherwise; by default none, so no chord ever acts as its letter.
+    fn takes_chord(&self, _key: &KeyEvent) -> bool {
         false
     }
 }
@@ -398,11 +431,11 @@ impl<T: Clone> Hits<T> {
 
 /// Hand `key` to `view` by the rules every view shares: Enter held with
 /// Shift, Alt or Ctrl goes to [`View::stray_enter`], other Ctrl and Alt
-/// chords are dropped, so Ctrl+S is never `s`, and so is the apply key in a
-/// view with nothing for it to do. Views and the widgets in them can take
-/// what comes as meant.
+/// chords are dropped unless the view names them ([`View::takes_chord`]),
+/// so Ctrl+S is never `s`, and so is the apply key in a view with nothing for
+/// it to do. Views and the widgets in them can take what comes as meant.
 pub fn feed(view: &mut impl View, key: KeyEvent) {
-    if is_stray(&key) {
+    if is_stray(&key) && !view.takes_chord(&key) {
         if key.code == KeyCode::Enter {
             view.stray_enter();
         }

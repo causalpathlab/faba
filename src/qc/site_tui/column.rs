@@ -69,12 +69,17 @@ impl Criterion {
         }
     }
 
+    /// Whether the displayed axis is `-log10` of the raw value: a p-value.
+    pub(super) fn neg_log(self) -> bool {
+        self == Criterion::MaxPv
+    }
+
     /// Position of a raw value on the displayed axis (may be infinite).
     pub(super) fn display(self, raw: f64) -> f64 {
-        match self {
-            Criterion::MaxPv if raw <= 0.0 => f64::INFINITY,
-            Criterion::MaxPv => (-raw.log10()).max(0.0),
-            _ => raw,
+        match raw {
+            _ if !self.neg_log() => raw,
+            r if r <= 0.0 => f64::INFINITY,
+            r => (-r.log10()).max(0.0),
         }
     }
 
