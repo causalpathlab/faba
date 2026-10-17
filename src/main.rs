@@ -301,15 +301,19 @@ Example:\n  \
               block's shift, 0 with --shift off), _block_genes, _block_cells, _block_sites\n\
               (what each block holds, most enriched first; sites with a read or more),\n\
               _site_cells (each site's posterior-mean reads per cell role over every gene\n\
-              role, the full pileups), and _site_stats (each site's raw reads and cells)\n\
+              role, the full pileups), _site_stats (each site's raw reads and cells), and\n\
+              _trace (each chain's log joint about 200 times over its sweeps: chain, sweep,\n\
+              log_joint; the run's sweeps and burn-in in the run record)\n\
             - {modality}_blockmodel.run.json: the run record, with the model's settings\n\
             of crp:\n\
             - {modality}_cell_clusters.parquet: every input cell's cluster and confidence\n\
             - {modality}_site_clusters.parquet: each site's reads and posterior fraction per\n\
               cluster\n\
             - {modality}_cluster.run.json: the run record\n\
-            Each run record has split R-hat across chains and, with --holdout, held-out\n\
-            reads; the command beside it (.cmd.sh) runs it again.",
+            Each run record has split R-hat across chains (above 1.05: not converged) and,\n\
+            with --holdout, held-out reads; the command beside it (.cmd.sh) runs it again.\n\
+            A blockmodel fit ends with each chain's log joint as a sparkline on stderr, the\n\
+            R-hat, and what to do when the chains disagree.",
         after_long_help = "\
 Example:\n  \
   faba cluster out/ --fit '*_wt_*' --cell-roles 8\n  \
@@ -343,8 +347,11 @@ Example:\n  \
             in the header. `faba cluster --model blocks` runs first, with these options,\n\
             when they are missing, or when --model or a blockmodel switch is given whose\n\
             settings (the rest at their defaults) are not the recorded ones.\n\
-            Without a terminal (or with --batch-process) the modules are printed instead;\n\
-            --html writes them as one self-contained page instead (`e` in the browser).",
+            The header says whether the fit converged (its split R-hat, `ok` or `check`);\n\
+            `t` shows each chain's log joint as it ran ({modality}_trace), with what to do\n\
+            about it. Without a terminal (or with --batch-process) the modules are printed\n\
+            instead; --html writes them as one self-contained page instead (`e` in the\n\
+            browser), the trace drawn in its Model section.",
         after_long_help = "Example:\n  faba modules out/\n  faba modules out/ --fit '*_wt_*' --cell-roles 8 --gene-roles 8\n  faba modules out/ --html modules.html"
     )]
     Modules(ModulesArgs),

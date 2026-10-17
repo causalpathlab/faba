@@ -1,9 +1,11 @@
 //! The view `faba modules` shows while it fits: a bar per chain, its
 //! burn-in marked, with the time taken and left; under them each chain's
-//! log joint as it goes; then whether a chain lags and the chains' split
-//! R-hat. `q` cancels; once the fit writes, too late for that, it leaves
-//! without opening the browser.
+//! log joint as it goes; then whether a chain lags, and once summarised
+//! the verdict on that and the chains' split R-hat, and what to do about
+//! it (see [`super::advice`]). `q` cancels; once the fit writes, too late
+//! for that, it leaves without opening the browser.
 
+use super::advice::Verdict;
 use super::Progress;
 use crate::tui::{clock, on_thread, run_view, spinner_frame, Pending, View};
 use data_beans::interactive::ui::{header, help_line, panel, Screen, ACCENTED, DIM, HIGHLIGHT};
@@ -16,7 +18,7 @@ use std::borrow::Cow;
 use std::time::{Duration, Instant};
 use trace::chain_style;
 
-mod trace;
+pub(in crate::cluster) mod trace;
 
 /// How long the R-hat stays up once the fit is done, unless a key comes.
 const HOLD: Duration = Duration::from_millis(1500);
@@ -71,32 +73,28 @@ impl<T> Fitting<'_, T> {
     }
 
     /// The lines under the plot: once every chain is done, whether one
-    /// lags; once they are summarised, the R-hat and what the fit is doing.
+    /// lags; once they are summarised, in its place the verdict on the
+    /// R-hat and the traces, its advice, and what the fit is doing.
     fn after(
         &self,
         (total, warmup): (usize, usize),
         traces: &[Vec<(usize, f64)>],
     ) -> Vec<Line<'static>> {
-        let mut lines = Vec::new();
-        if (0..self.progress.chains()).all(|i| self.progress.done(i) >= total) {
-            lines.extend(trace::verdict(traces, warmup));
-        }
         let Some(rhat) = self.progress.rhat() else {
-            return lines;
+            let done = (0..self.progress.chains()).all(|i| self.progress.done(i) >= total);
+            return done
+                .then(|| trace::verdict(traces, warmup))
+                .flatten()
+                .into_iter()
+                .collect();
         };
-        let verdict = if rhat <= crate::cluster::RHAT_OK {
-            "the chains agree"
-        } else {
-            "the chains disagree: run more --sweeps or --chains"
-        };
-        lines.extend([
+        let verdict = Verdict::of(traces, warmup, total, rhat);
+        let style = if verdict.converged() { DIM } else { HIGHLIGHT };
+        let mut lines = vec![
             Line::raw(""),
-            Line::from(vec![
-                Span::raw(" split R-hat "),
-                Span::styled(format!("{rhat:.2}"), HIGHLIGHT),
-                Span::styled(format!("  {verdict}"), DIM),
-            ]),
-        ]);
+            Line::from(Span::styled(format!(" {}", verdict.said()), style)),
+            Line::from(Span::styled(format!(" {}", verdict.advice()), DIM)),
+        ];
         lines.push(Line::from(Span::styled(
             if self.leave {
                 " not opening the modules"

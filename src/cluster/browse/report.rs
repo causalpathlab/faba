@@ -12,6 +12,7 @@ use serde::Serialize;
 use std::path::Path;
 
 mod plate;
+mod trace;
 
 /// The page's own markup, styles and code.
 pub(super) const FRAGMENT: &str = include_str!("report.html");
@@ -40,6 +41,8 @@ pub(super) struct Data {
     modules: Vec<Module>,
     /// The model the tables come from, drawn, or why it is not.
     model: plate::Section,
+    /// The fit's trace and its verdict, or why there is none.
+    trace: trace::Section,
 }
 
 /// A gene module, its genes in its order.
@@ -131,6 +134,7 @@ pub(super) fn data(m: &Modules, models: &FxHashMap<Box<str>, GeneModel>) -> Data
         diagonal: m.diagonal.iter().map(|g| format!("M{}", g + 1)).collect(),
         modules,
         model: plate::section(&m.run),
+        trace: trace::section(&m.fit),
     }
 }
 

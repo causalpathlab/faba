@@ -3,7 +3,8 @@
 use super::fit::{Placement, Tiles};
 use super::read::{Cell, Site, SiteStats};
 use arrow::array::{
-    ArrayRef, BooleanArray, Float32Array, Int32Array, Int64Array, StringArray, UInt64Array,
+    ArrayRef, BooleanArray, Float32Array, Float64Array, Int32Array, Int64Array, StringArray,
+    UInt64Array,
 };
 use arrow::datatypes::{Field, Schema};
 use arrow::record_batch::RecordBatch;
@@ -473,4 +474,36 @@ pub fn site_stats(sites: &[Site], stats: &SiteStats, path: &Path) -> anyhow::Res
         ("cells", u64s(&stats.cells)),
     ]);
     write(columns, path)
+}
+
+/// One row per traced point of each chain: the chain (from 0, as the
+/// summary numbers them), the sweep and the log joint there.
+pub fn trace(traces: &[Vec<(usize, f64)>], path: &Path) -> anyhow::Result<()> {
+    let points = || {
+        traces
+            .iter()
+            .enumerate()
+            .flat_map(|(i, t)| t.iter().map(move |p| (i, p)))
+    };
+    write(
+        vec![
+            (
+                "chain",
+                Arc::new(Int32Array::from_iter_values(
+                    points().map(|(i, _)| i as i32),
+                )),
+            ),
+            (
+                "sweep",
+                Arc::new(Int64Array::from_iter_values(
+                    points().map(|(_, p)| p.0 as i64),
+                )),
+            ),
+            (
+                "log_joint",
+                Arc::new(Float64Array::from_iter_values(points().map(|(_, p)| p.1))),
+            ),
+        ],
+        path,
+    )
 }

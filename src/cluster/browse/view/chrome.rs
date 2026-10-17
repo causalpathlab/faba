@@ -121,7 +121,7 @@ impl ModulesView<'_> {
         if self.report.is_some() {
             keys.push(("e", "export report"));
         }
-        keys.push(("q", "quit"));
+        keys.extend([("t", "trace"), ("q", "quit")]);
         crate::tui::wrap_help(help_line(&keys), width)
     }
 

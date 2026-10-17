@@ -3,6 +3,7 @@
 //! R-hat once in, `q` cancelling.
 
 use super::*;
+use crate::cluster::progress::advice::lagging;
 use crate::tui::screen_text as screen;
 use ratatui::crossterm::event::KeyModifiers;
 use std::sync::atomic::Ordering;
@@ -142,7 +143,7 @@ fn shows_the_r_hat_then_ends() {
     let mut v = fitting(&p, &rx);
     let s = screen(&mut v, 100, 12);
     assert!(
-        s.contains("split R-hat 1.01") && s.contains("the chains agree"),
+        s.contains("chains agree (R-hat 1.01)") && s.contains("nothing to rerun"),
         "{s}"
     );
     assert!(s.contains("writing the tables"), "{s}");
@@ -311,24 +312,20 @@ fn a_chain_lags_when_far_below_the_others() {
         t
     };
     let agree = [low_burn_in(0.0), low_burn_in(0.3), low_burn_in(-0.3)];
-    assert_eq!(trace::lagging(&agree, 2), Some(Vec::new()));
+    assert_eq!(lagging(&agree, 2), Some(Vec::new()));
     let one_low = [low_burn_in(0.0), low_burn_in(-5.0), low_burn_in(0.2)];
-    assert_eq!(trace::lagging(&one_low, 2), Some(vec![1]));
+    assert_eq!(lagging(&one_low, 2), Some(vec![1]));
     // A wobble's sd is under 0.3: 0.7 below is within three of them.
     let near = [low_burn_in(0.0), low_burn_in(-0.5), low_burn_in(0.2)];
-    assert_eq!(trace::lagging(&near, 2), Some(Vec::new()));
+    assert_eq!(lagging(&near, 2), Some(Vec::new()));
     // Of two, the lower lags once three sds below, not six.
     let two = [low_burn_in(0.0), low_burn_in(-1.5)];
-    assert_eq!(trace::lagging(&two, 2), Some(vec![1]));
+    assert_eq!(lagging(&two, 2), Some(vec![1]));
     // Most stuck below one: they lag, not the one above.
     let most = [low_burn_in(0.0), low_burn_in(-5.0), low_burn_in(-5.0)];
-    assert_eq!(trace::lagging(&most, 2), Some(vec![1, 2]));
-    assert_eq!(trace::lagging(&agree[..1], 2), None, "one chain");
-    assert_eq!(
-        trace::lagging(&agree, 59),
-        None,
-        "one point after the burn-in"
-    );
+    assert_eq!(lagging(&most, 2), Some(vec![1, 2]));
+    assert_eq!(lagging(&agree[..1], 2), None, "one chain");
+    assert_eq!(lagging(&agree, 59), None, "one point after the burn-in");
 }
 
 /// Under the bars, a line per chain in its label's colour, the burn-in's
@@ -406,30 +403,29 @@ fn a_small_terminal_keeps_the_bars_and_drops_the_plot() {
         assert!(s.contains("chain 2"), "{w}x{h}\n{s}");
     }
     let s = screen(&mut v, 80, 14);
-    assert!(
-        s.contains("no chain lags") && s.contains("split R-hat 1.01"),
-        "{s}"
-    );
+    assert!(s.contains("chains agree (R-hat 1.01)"), "{s}");
     for (w, h) in [(10, 3), (20, 8), (200, 60)] {
         screen(&mut v, w, h);
     }
 }
 
-/// No chain lags, yet the R-hat says they disagree: the lag line speaks
-/// of the chains' levels, not of whether they agree, so the two lines
-/// never say opposite things.
+/// Once the R-hat is in, one line gives the verdict, the lag in it: the
+/// lag line before it goes, so nothing is said twice.
 #[test]
-fn the_lag_line_never_contradicts_the_r_hat() {
+fn once_the_r_hat_is_in_one_line_gives_the_verdict() {
     let (_tx, rx) = channel_u8();
-    let p = finished([0.0, 0.3, -0.2]);
-    p.set_rhat(1.3);
-    let mut v = fitting(&p, &rx);
-    let s = screen(&mut v, 80, 24);
-    assert!(
-        s.contains("no chain lags") && s.contains("the chains disagree"),
-        "{s}"
-    );
-    assert!(!s.contains("chains agree"), "{s}");
+    for (levels, rhat, said) in [
+        ([0.0, 0.3, -0.2], 1.3, "R-hat 1.30: chains disagree"),
+        ([0.0, 0.3, -0.2], 1.01, "chains agree (R-hat 1.01)"),
+        ([0.0, 10.0, -10.0], 1.01, "chains 0, 2 lag (R-hat 1.01)"),
+    ] {
+        let p = finished(levels);
+        p.set_rhat(rhat);
+        let mut v = fitting(&p, &rx);
+        let s = screen(&mut v, 80, 24);
+        assert!(s.contains(said), "{s}");
+        assert!(!s.contains("after burn-in"), "{s}");
+    }
 }
 
 /// Each of many chains has its own colour, on its label and its line.

@@ -1,7 +1,8 @@
-//! The chains' log joint under their bars: a line per chain in its
-//! label's colour, the burn-in's end marked; once done, whether a chain
-//! lags the best.
+//! The chains' log joint under their bars (and, saved, in `faba modules`'
+//! trace pane): a line per chain in its label's colour, the burn-in's end
+//! marked; once done, whether a chain lags the best.
 
+use crate::cluster::progress::advice::{lagging, lags};
 use crate::site_analysis::miami::palette::{color, Palette};
 use data_beans::interactive::ui::{DIM, HIGHLIGHT};
 use ratatui::layout::Rect;
@@ -19,62 +20,20 @@ const COLS: u16 = 30;
 /// dim style.
 pub(super) const MARK: Color = Color::DarkGray;
 
-/// How far below the best chain a chain's mean log joint lags, in median
-/// within-chain sds.
-const FAR: f64 = 3.0;
-
 /// Chain `i`'s colour, its label's and its trace's: the largest table's,
 /// so that chains repeat a colour only past its 18.
-pub(super) fn chain_style(i: usize) -> Style {
+pub(in crate::cluster) fn chain_style(i: usize) -> Style {
     let (r, g, b) = color(&Palette::Category20, i);
     Style::new().fg(Color::Rgb(r, g, b))
-}
-
-/// The median of `v` (taken in any order).
-fn median(mut v: Vec<f64>) -> f64 {
-    v.sort_by(f64::total_cmp);
-    let n = v.len();
-    (v[(n - 1) / 2] + v[n / 2]) / 2.0
-}
-
-/// The chains whose mean log joint over their traced points after the
-/// `warmup` burn-in sweeps is more than [`FAR`] median within-chain sds
-/// below the best chain's (the lower of two, or most stuck below one);
-/// none to say with fewer than two chains, or a chain with fewer than two
-/// points past its burn-in. A chain's level, not its mixing: that is the
-/// R-hat's.
-pub(super) fn lagging(traces: &[Vec<(usize, f64)>], warmup: usize) -> Option<Vec<usize>> {
-    if traces.len() < 2 {
-        return None;
-    }
-    let (means, sds): (Vec<f64>, Vec<f64>) = traces
-        .iter()
-        .map(|t| {
-            let v: Vec<f64> = t.iter().filter(|p| p.0 > warmup).map(|p| p.1).collect();
-            (v.len() >= 2).then(|| {
-                let n = v.len() as f64;
-                let mean = v.iter().sum::<f64>() / n;
-                let var = v.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / (n - 1.0);
-                (mean, var.sqrt())
-            })
-        })
-        .collect::<Option<Vec<_>>>()?
-        .into_iter()
-        .unzip();
-    let best = means.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    let bar = best - FAR * median(sds);
-    Some((0..means.len()).filter(|&i| means[i] < bar).collect())
 }
 
 /// The line under the plot once every chain is done: whether a chain lags
 /// after the burn-in, and which; none when there is nothing to say.
 pub(super) fn verdict(traces: &[Vec<(usize, f64)>], warmup: usize) -> Option<Line<'static>> {
     let lag = lagging(traces, warmup)?;
-    let names = lag.iter().map(usize::to_string).collect::<Vec<_>>();
-    let (said, style) = match names.as_slice() {
-        [] => ("no chain lags".to_string(), DIM),
-        [k] => (format!("chain {k} lags"), HIGHLIGHT),
-        _ => (format!("chains {} lag", names.join(", ")), HIGHLIGHT),
+    let (said, style) = match lag.is_empty() {
+        true => ("no chain lags".to_string(), DIM),
+        false => (lags(&lag), HIGHLIGHT),
     };
     Some(Line::from(vec![
         Span::styled(" log joint after burn-in: ", DIM),
@@ -87,7 +46,7 @@ pub(super) fn verdict(traces: &[Vec<(usize, f64)>], warmup: usize) -> Option<Lin
 /// burn-in sweeps, the log joint's range that of each chain's points past
 /// its first tenth (where it climbs from its start). Nothing when the area
 /// is too small to read or nothing is traced yet.
-pub(super) fn draw(
+pub(in crate::cluster) fn draw(
     frame: &mut Frame,
     area: Rect,
     traces: &[Vec<(usize, f64)>],

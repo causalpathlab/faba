@@ -1,5 +1,5 @@
 //! Sampling progress: each chain's sweeps counted as they are done, and
-//! for `faba modules` its log joint every so many sweeps, read from
+//! its log joint every so many sweeps (the blockmodel's), read from
 //! another thread (a bar on stderr for `faba cluster`, a view with the
 //! traces in `faba modules`), and a cancel that turns the sweeps left into
 //! no-ops.
@@ -17,6 +17,8 @@ use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
+pub mod advice;
+pub mod spark;
 pub mod view;
 
 /// The fit was cancelled: nothing was written.
@@ -114,6 +116,14 @@ impl Progress {
         (0..self.chains()).map(|i| self.trace(i)).collect()
     }
 
+    /// The verdict on the chains' traces and split R-hat in the schedule
+    /// they ran (see [`advice::Verdict::of`]); none until they are
+    /// summarised.
+    pub fn verdict(&self) -> Option<advice::Verdict> {
+        let ((total, warmup), rhat) = (self.schedule()?, self.rhat()?);
+        Some(advice::Verdict::of(&self.traces(), warmup, total, rhat))
+    }
+
     /// Whether a chain's log joint is noted at its sweep `n`: every k-th,
     /// k the fewest sweeps that keep the trace within [`TRACE_POINTS`].
     fn traces_at(&self, n: usize) -> bool {
@@ -126,12 +136,12 @@ impl Progress {
         n.is_multiple_of(every)
     }
 
-    /// [`Progress::new`], its chains drawn on a bar on stderr while they
-    /// run, when stderr is a terminal.
+    /// [`Progress::traced`], its chains drawn on a bar on stderr while
+    /// they run, when stderr is a terminal.
     pub fn on_stderr(chains: usize) -> Self {
         Self {
             bar: true,
-            ..Self::new(chains)
+            ..Self::traced(chains)
         }
     }
 
