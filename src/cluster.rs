@@ -626,6 +626,14 @@ fn blocks_fit(
         b,
         &dir.join(format!("{m}_block_sites.parquet")),
     )?;
+    write::site_cells(
+        &data.sites,
+        &best.site_on,
+        &best.site_off,
+        k,
+        b,
+        &dir.join(format!("{m}_site_cells.parquet")),
+    )?;
     write::site_stats(
         &data.sites,
         &read::SiteStats::of(&data.reads, data.sites.len()),

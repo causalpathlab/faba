@@ -2,10 +2,11 @@
 //!
 //! Reads the tables `faba cluster --model blocks` writes (running it first
 //! when they are missing, see [`data`]) and opens a view of four linked
-//! levels, each a margin of the next over one table of reads by gene module,
-//! site and cell module (see [`view`]): every gene module against every
+//! levels, each a margin of the next over the posterior-mean reads by gene
+//! role, site and cell role (see [`view`]): every gene module against every
 //! cell module, the sites of the module in focus, the genes pinned side by
-//! side, and one gene's full pileup from the site matrices (see [`gene`]).
+//! side (each in its main gene module), and one gene's full pileup over
+//! every gene role (see [`gene`]).
 //! `--html` (or `e`) writes the same as one page (see [`report`]).
 
 use super::{ClusterArgs, ModelKind};
@@ -100,17 +101,17 @@ fn tables(dir: &Path, asked: Option<&str>) -> Option<String> {
     }
 }
 
-/// The modules as text: per gene module, its genes and each cell module's
-/// methylated % and reads.
+/// The modules as text: per gene module, the genes whose main module it
+/// is, and each cell module's methylated % and posterior-mean reads.
 fn print(m: &Modules) {
-    let mut head = format!("{:<8}{:>7}{:>8}", "module", "genes", "range");
+    let mut head = format!("{:<8}{:>11}{:>8}", "module", "main genes", "range");
     for &c in &m.columns {
         head.push_str(&format!("{:>14}", format!("C{} %/reads", c + 1)));
     }
     println!("{head}");
     for &g in &m.order {
         let mut line = format!(
-            "{:<8}{:>7}{:>8.2}",
+            "{:<8}{:>11}{:>8.2}",
             format!("M{}", g + 1),
             m.gene_sizes[g],
             m.shift_range(g)
@@ -149,7 +150,7 @@ pub fn run_modules(args: &ModulesArgs) -> anyhow::Result<()> {
         print(&modules);
         return Ok(());
     }
-    browse(args, &dir, &modules, gtf)
+    browse(&dir, &modules, gtf)
 }
 
 /// The modality of the block tables in `dir`: those there, unless asked to
@@ -187,19 +188,10 @@ fn write_html(modules: &Modules, gtf: Option<&str>, path: &str) -> anyhow::Resul
 /// The browser, until it is quit: Enter on a gene opens its full pileup,
 /// and leaving that comes back to the browser as it was.
 fn browse(
-    args: &ModulesArgs,
     dir: &Path,
     modules: &std::sync::Arc<Modules>,
     gtf: Option<Box<str>>,
 ) -> anyhow::Result<()> {
-    // The matrices are indexed while the browser opens and the annotation
-    // is asked for: those of the modality of the tables opened, whatever
-    // the default.
-    let cluster = super::ClusterArgs {
-        modality: Some(modules.modality.as_str().into()),
-        ..args.cluster.clone()
-    };
-    let matrices = gene::Matrices::start(super::inputs(&cluster)?, modules);
     let gtf = match gtf {
         Some(gtf) => Some(gtf),
         None => ask_reference("modules", Reference::Annotation, None)?
@@ -221,7 +213,7 @@ fn browse(
         };
         // A gene that cannot be read leaves the browser as it was, saying why.
         let at = (key.as_str(), view.first_column());
-        match gene::show(&matrices, modules, at, models.as_ref(), &mut settings) {
+        match gene::show(modules, at, models.as_ref(), &mut settings) {
             Ok(true) => return Ok(()),
             Ok(false) => {}
             Err(e) => view.set_status(format!("{e:#}")),

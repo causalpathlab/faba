@@ -9,9 +9,11 @@ use ratatui::style::Color;
 fn the_tables_load_as_modules() {
     let m = loaded();
     assert_eq!((m.cell_roles, m.gene_roles), (2, 3));
-    // Fitted cells only: B2 was placed.
-    assert_eq!(m.cell_sizes, vec![2, 1]);
-    assert_eq!(m.cells.len(), 4, "placed cells keep their role");
+    // Fitted cells' memberships summed: B2 was placed.
+    let sizes = [0.8 + 0.7 + 0.1, 0.2 + 0.3 + 0.9];
+    for (size, expect) in m.cell_sizes.iter().zip(sizes) {
+        assert!((size - expect).abs() < 1e-6, "{:?}", m.cell_sizes);
+    }
     assert_eq!(m.gene_sizes, vec![2, 1, 0]);
     let names: Vec<(&str, i64)> = m.sites.iter().map(|s| (s.gene.as_ref(), s.pos)).collect();
     let expect = [("GENE1", 100), ("GENE1", 300), ("GENE2", 50), ("GENE3", 10)];

@@ -1,203 +1,67 @@
-//! The fourth level: one gene's full pileup, read from the site matrices
-//! and browsed with `faba pileup`'s browser. Its tracks are the levels
-//! above it unsummed: all cells (the margin, on a scale of its own), then
-//! one per cell module, each converted reads above unconverted. Being read
-//! from the matrices, it holds every cell with a cell module, placed and
-//! held-out reads too, not only the model's fitted reads.
+//! The fourth level: one gene's full pileup, from the posterior, browsed
+//! with `faba pileup`'s browser. Its tracks are the levels above it
+//! unsummed: all cells (the margin, on a scale of its own), then one per
+//! cell module, each converted reads above unconverted. Each site's reads
+//! are its posterior-mean reads over every gene role (`{m}_site_cells`),
+//! split across the cell modules by the links' role draws, so the gene's
+//! share in its main module (level 3) is a part of it. Placed cells are not
+//! in the posterior tally: the tracks hold the fitted cells' reads.
 
-use super::Modules;
-use crate::cluster::read::site_row;
-use crate::cluster::read::Input;
-use crate::qc::matrix::open_matrix;
+use super::data::bounds;
+use super::{Count, Modules};
 use crate::site_analysis::pileup::tui::{show_pileup, Exit, Settings, Track, View};
 use crate::site_analysis::pileup::{channel_names, query_symbol, SharedModels};
-use rayon::prelude::*;
-use rustc_hash::FxHashMap;
-use std::sync::{Arc, OnceLock};
 
 /// One channel's reads by position, sorted.
 type Channel = Vec<(i64, f64)>;
 
 /// A gene's reads by group, the groups all cells and then each cell module
-/// in the order the panes show them: per group, converted and unconverted.
-#[derive(Debug, Default, PartialEq)]
-pub(super) struct GeneReads {
-    pub chr: Box<str>,
+/// in the order the panes show them: per group, converted and unconverted;
+/// on the chromosome with most of its sites, the others' left out.
+#[derive(Debug)]
+pub(super) struct GeneReads<'a> {
+    pub chr: &'a str,
     pub groups: Vec<(Channel, Channel)>,
+    pub dropped: Vec<&'a str>,
 }
 
-/// Per group and position, converted and unconverted reads.
-type Tally = Vec<FxHashMap<i64, (f64, f64)>>;
-
-/// A gene's rows in one input: its chromosome, and each row as `(row,
-/// position, converted)`.
-type GeneRows = (Box<str>, Vec<(usize, i64, bool)>);
-
-/// One input's rows of the modules' modality by gene, and each column's
-/// group (its cell module's place among the columns, from 1), none for a
-/// cell without a cell module.
-struct FileIndex {
-    genes: FxHashMap<Box<str>, GeneRows>,
-    groups: Vec<Option<usize>>,
-}
-
-/// Per batch, each cell's group by its barcode.
-type Groups = FxHashMap<Box<str>, FxHashMap<Box<str>, usize>>;
-
-/// The site matrices behind the modules, their rows indexed by gene on a
-/// thread of their own as the browser opens, so a gene opened reads only
-/// its rows.
-pub(super) struct Matrices {
-    inputs: Arc<Vec<Input>>,
-    /// The index once built, or why it could not be, set by the thread
-    /// building it and kept for every ask.
-    index: Arc<OnceLock<Result<Vec<FileIndex>, String>>>,
-}
-
-impl Matrices {
-    /// Index `inputs` for `m` in the background.
-    pub(super) fn start(inputs: Vec<Input>, m: &Modules) -> Self {
-        let inputs = Arc::new(inputs);
-        let column = m.role_columns();
-        let mut groups: Groups = FxHashMap::default();
-        for ((batch, barcode), &r) in &m.cells {
-            if let Some(&k) = column.get(r) {
-                groups
-                    .entry(batch.clone())
-                    .or_default()
-                    .insert(barcode.clone(), k + 1);
+impl<'a> GeneReads<'a> {
+    /// `gene`'s posterior-mean reads at each of its sites, over every gene
+    /// role: all cells the sum over the cell modules.
+    pub(super) fn of(m: &'a Modules, gene: &str) -> anyhow::Result<Self> {
+        let Some(pileup) = m.pileup(gene) else {
+            anyhow::bail!("the modules hold no sites of {}", query_symbol(gene));
+        };
+        let mut groups = vec![(Channel::new(), Channel::new()); 1 + m.cell_roles];
+        for s in pileup.sites {
+            let (pos, whole) = (m.sites[s].pos, m.whole(s));
+            let all: Count = whole.iter().copied().sum();
+            for (group, r) in groups.iter_mut().zip(std::iter::once(&all).chain(whole)) {
+                group.0.push((pos, r.on));
+                group.1.push((pos, r.off()));
             }
         }
-        let (files, modality) = (inputs.clone(), m.modality.clone());
-        let index = Arc::new(OnceLock::new());
-        let done = index.clone();
-        std::thread::spawn(move || {
-            // Set even when it panics, so no one waits for it for ever.
-            let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                files
-                    .par_iter()
-                    .map(|input| file_index(input, &modality, groups.get(&input.batch)))
-                    .collect::<anyhow::Result<Vec<_>>>()
-            }));
-            let _ = done.set(match built {
-                Ok(r) => r.map_err(|e| format!("{e:#}")),
-                Err(_) => Err("indexing the matrices failed".to_string()),
-            });
-        });
-        Self { inputs, index }
-    }
-
-    /// The index, waiting for it to be built the first time.
-    fn index(&self) -> anyhow::Result<&[FileIndex]> {
-        self.index
-            .wait()
-            .as_deref()
-            .map_err(|e| anyhow::anyhow!("{e}"))
-    }
-
-    /// `gene`'s reads in every input, its cells grouped by their main cell
-    /// role; cells without one are left out, so all cells is the sum of the
-    /// cell modules.
-    pub(super) fn read(&self, m: &Modules, gene: &str) -> anyhow::Result<GeneReads> {
-        let index = self.index()?;
-        let Some(chr) = index
-            .iter()
-            .find_map(|f| f.genes.get(gene).map(|g| g.0.clone()))
-        else {
-            anyhow::bail!("no input holds {}'s sites", query_symbol(gene));
-        };
-        let groups = 1 + m.cell_roles;
-        let parts: Vec<anyhow::Result<Tally>> = self
-            .inputs
-            .par_iter()
-            .zip(index)
-            .map(|(input, file)| tally(input, file, gene, groups))
-            .collect();
-        Ok(GeneReads {
-            chr,
-            groups: sorted(merge(parts, groups)?),
+        Ok(Self {
+            chr: pileup.chr,
+            groups,
+            dropped: pileup.dropped,
         })
     }
 }
 
-/// The inputs' tallies, added up.
-fn merge(parts: Vec<anyhow::Result<Tally>>, groups: usize) -> anyhow::Result<Tally> {
-    let mut all: Tally = vec![FxHashMap::default(); groups];
-    for part in parts {
-        for (into, from) in all.iter_mut().zip(part?) {
-            for (pos, (on, off)) in from {
-                let e = into.entry(pos).or_default();
-                e.0 += on;
-                e.1 += off;
-            }
-        }
+/// What the footer says first of `reads`: the chromosomes left out, and
+/// that older tables make the pileup approximate; none when neither.
+pub(super) fn note(m: &Modules, reads: &GeneReads) -> Option<String> {
+    let mut parts = Vec::new();
+    if !reads.dropped.is_empty() {
+        parts.push(format!(
+            "its sites on {} left out (shown: {})",
+            reads.dropped.join(", "),
+            reads.chr
+        ));
     }
-    Ok(all)
-}
-
-/// Each group's two channels, by position.
-fn sorted(all: Tally) -> Vec<(Channel, Channel)> {
-    all.into_iter()
-        .map(|t| {
-            let mut at: Vec<(i64, (f64, f64))> = t.into_iter().collect();
-            at.sort_unstable_by_key(|p| p.0);
-            at.into_iter()
-                .map(|(p, (on, off))| ((p, on), (p, off)))
-                .unzip()
-        })
-        .collect()
-}
-
-/// `input`'s rows of `modality` by gene, and its columns' groups from its
-/// batch's cells.
-fn file_index(
-    input: &Input,
-    modality: &str,
-    groups: Option<&FxHashMap<Box<str>, usize>>,
-) -> anyhow::Result<FileIndex> {
-    let data = open_matrix(&input.path)?;
-    let mut genes: FxHashMap<Box<str>, GeneRows> = FxHashMap::default();
-    for (i, name) in data.row_names()?.iter().enumerate() {
-        let Some((g, chr, pos, converted)) = site_row(name, modality) else {
-            continue;
-        };
-        genes
-            .entry(g.into())
-            .or_insert_with(|| (chr.into(), Vec::new()))
-            .1
-            .push((i, pos, converted));
-    }
-    let groups = data
-        .column_names()?
-        .iter()
-        .map(|b| groups.and_then(|g| g.get(b)).copied())
-        .collect();
-    Ok(FileIndex { genes, groups })
-}
-
-/// `gene`'s reads in one input by group and position.
-fn tally(input: &Input, file: &FileIndex, gene: &str, groups: usize) -> anyhow::Result<Tally> {
-    let mut tally: Tally = vec![FxHashMap::default(); groups];
-    let Some((_, rows)) = file.genes.get(gene) else {
-        return Ok(tally);
-    };
-    let data = open_matrix(&input.path)?;
-    let (_, _, triplets) = data.read_triplets_by_rows(rows.iter().map(|r| r.0).collect())?;
-    for (row, col, value) in triplets {
-        let Some(Some(k)) = file.groups.get(col as usize) else {
-            continue;
-        };
-        let (_, pos, converted) = rows[row as usize];
-        for t in [0, *k] {
-            let e = tally[t].entry(pos).or_default();
-            if converted {
-                e.0 += value as f64;
-            } else {
-                e.1 += value as f64;
-            }
-        }
-    }
-    Ok(tally)
+    parts.extend(m.approximate.pileup_note(&m.modality));
+    (!parts.is_empty()).then(|| parts.join(" · "))
 }
 
 /// Browse `gene`'s full pileup until the user goes back (false) or quits
@@ -206,15 +70,13 @@ fn tally(input: &Input, file: &FileIndex, gene: &str, groups: usize) -> anyhow::
 /// `settings` carries how the last one was drawn; when not every cell
 /// module's row fits, they start at the one in column `first`.
 pub(super) fn show(
-    matrices: &Matrices,
     m: &Modules,
     (gene, first): (&str, usize),
     models: Option<&SharedModels>,
     settings: &mut Settings,
 ) -> anyhow::Result<bool> {
-    let symbol = query_symbol(gene);
-    let what = format!("reading {symbol} from {} file(s)", matrices.inputs.len());
-    let reads = crate::tui::busy(true, "modules", &what, || matrices.read(m, gene))?;
+    let reads = GeneReads::of(m, gene)?;
+    let title = format!("{} · {POSTERIOR}", query_symbol(gene));
     let (on, off) = channel_names(&m.modality);
     let labels = track_labels(m, on, off);
     let keys = [Box::<str>::from(gene)];
@@ -223,12 +85,12 @@ pub(super) fn show(
         cursor: None,
         // Group 0 is all cells; each group has two tracks.
         track_from: 2 * (first + 1),
-        status: None,
+        status: note(m, &reads),
     };
     loop {
         let view = View {
-            title: &symbol,
-            chr: &reads.chr,
+            title: &title,
+            chr: reads.chr,
             extent: place.extent,
             on,
             off,
@@ -306,22 +168,21 @@ fn tracks<'a>(reads: &'a GeneReads, labels: &'a [String]) -> Vec<Track<'a>> {
 /// The first and last position of all cells' converted reads, `(0, 0)` when
 /// there are none.
 fn extent(reads: &GeneReads) -> (i64, i64) {
-    let positions = reads.groups[0].0.iter().map(|p| p.0);
-    (
-        positions.clone().min().unwrap_or(0),
-        positions.max().unwrap_or(0),
-    )
+    bounds(reads.groups[0].0.iter().map(|p| p.0))
 }
 
+/// What the full pileup's numbers are, in its title.
+const POSTERIOR: &str = "posterior-mean reads, fitted cells";
+
 /// Each group's two tracks' labels: all cells, then each cell module with
-/// its cells, converted and then unconverted.
+/// its posterior size, converted and then unconverted.
 fn track_labels(m: &Modules, on: &str, off: &str) -> Vec<String> {
-    let sizes = super::data::role_sizes(m.cells.values().copied(), m.cell_roles);
-    std::iter::once(format!("all {} cells", m.cells.len()))
+    let all: f64 = m.cell_sizes.iter().sum();
+    std::iter::once(format!("all {} cells", m.cells_label(all)))
         .chain(
             m.columns
                 .iter()
-                .map(|&c| format!("C{} {} cells", c + 1, sizes[c])),
+                .map(|&c| format!("C{} {} cells", c + 1, m.cells_label(m.cell_sizes[c]))),
         )
         .flat_map(|n| [format!("{n}: {on}"), format!("{n}: {off}")])
         .collect()

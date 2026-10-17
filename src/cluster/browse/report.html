@@ -33,8 +33,8 @@
       </div>
       <section class="pane focus" id="p-mods" tabindex="0"><header><span id="h-mods">Gene modules</span><span id="h-mods-view"></span></header><canvas id="c-mods"></canvas></section>
       <section class="pane" id="p-sites" tabindex="0"><header><span id="h-sites">Sites</span><span id="h-sites-view"></span></header><canvas id="c-sites"></canvas></section>
-      <section class="pane full" id="p-full" tabindex="0" hidden><header><span id="h-full">Pileup</span><span>all cells, then one track per cell module · ←→ site · +/− zoom · esc back</span></header><canvas id="c-full"></canvas></section>
-      <section class="pane wide" id="p-pile" tabindex="0"><header><span id="h-pile">Pileup</span><span>all cells, then one track per cell module · enter opens the gene</span></header><canvas id="c-pile"></canvas></section>
+      <section class="pane full" id="p-full" tabindex="0" hidden><header><span id="h-full">Pileup</span><span>posterior-mean reads over every gene module, fitted cells · ←→ site · +/− zoom · esc back</span></header><canvas id="c-full"></canvas></section>
+      <section class="pane wide" id="p-pile" tabindex="0"><header><span id="h-pile">Pileup</span><span>posterior-mean reads in the main module, fitted cells · enter opens the gene</span></header><canvas id="c-pile"></canvas></section>
       <div class="keys search" id="search" hidden></div>
       <div class="keys" id="keys"></div>
     </div>
@@ -48,32 +48,44 @@
     <span class="key"><i style="width:64px;height:10px;background:linear-gradient(90deg,rgb(0,0,255),#fff,rgb(255,0,0))"></i> <span id="zramp-text"></span></span>
   </div>
   <div class="margins">
+    <b>numbers</b><span>posterior-mean reads of the fitted cells (placed cells are not in the posterior tally); a cell module's size is its fitted cells' memberships summed, a gene module's the genes whose main module it is, and levels 1 to 3 show each gene there</span>
     <b>1 modules</b><span>gene module × cell module: each block summed over the module's sites; in the heatmaps a box's colour is its % or z and its area its reads, its number shown on the highlighted row only, the modules in diagonal order, and the cell modules keep that order in every pane</span>
     <b>2 sites</b><span>site × cell module: each site summed over the cells of each cell module; each row ends with the site's global counts over every cell read: reads, <span class="on-name"></span>, <span class="off-name"></span>, and the cells with reads there</span>
     <b>3 genes</b><span>the genes you pin (Space on a site), side by side along their sites in the order pinned, one track per cell module; the top track sums them (all cells)</span>
-    <b>4 pileup</b><span>one gene full width under its model, zoomable, with the same tracks; Enter goes one level finer, Esc sums back up. Drawn from the module tables, so it shows the fitted cells' reads (the terminal view reads every cell from the site matrices)</span>
+    <b>4 pileup</b><span>one gene full width under its model, zoomable, with the same tracks; Enter goes one level finer, Esc sums back up. Each site's reads over every gene module, split across the cell modules, so the gene's share in its main module (level 3) is a part of it</span>
   </div>
   <p class="note">The same mirror bars as the pileup view: a block's methylation reads as the balance of its two bars, and its depth as their total height. In the grids the small number beside each bar is its methylated %; the gene views show a site's numbers (% · reads) for the site under the pointer or in focus.</p>
 </div>
 
 <script>
 // The modules, as `faba modules --html` wrote them: per module its genes, per
-// gene its sites, per site each cell module's [converted, all] reads (cell
-// modules in the order every pane shows them, as the terminal does) and its
-// counts over every cell read [converted, unconverted, cells]. Positions come
-// within the gene (`pos`); their place on the chromosome (`at`) is the gene's
-// `lo` plus that.
+// gene its sites, per site each cell module's posterior-mean [converted, all]
+// reads in the gene's main module (`c`) and over every gene module (`w`, the
+// full pileup, sent only when not `c`), cell modules in the order every pane
+// shows them, as the terminal does, all cell modules' of each (`ca`, `wa`,
+// sent only when not their sum), `o` when off the full pileup's chromosome,
+// and its counts over every cell read [converted, unconverted, cells]; then
+// the sites in the full pileup only (`more`). Positions come within the gene
+// (`pos`); their place on the chromosome (`at`) is the gene's `lo` plus that.
 const DATA = JSON.parse(document.getElementById("data").textContent);
 const CM = DATA.cellNames.length;
 const cellNames = DATA.cellNames;
-const cellSizes = DATA.cellSizes;
+const cellLabels = DATA.cellLabels;
 // A cell module without reads has no fraction (none, not 0%).
 const read = ([on, total]) => ({reads: total, frac: total > 0 ? on / total : null});
+// [converted, all] pairs added up in order, as `faba modules` checks they add.
+const sum = pairs => pairs.reduce((a, p) => [a[0] + p[0], a[1] + p[1]], [0, 0]);
 const modules = DATA.modules.map(m => {
-  const genes = m.genes.map(ge => ({
-    ...ge,
-    sites: ge.sites.map(s => ({pos: s.pos, at: ge.lo + s.pos, stats: s.s, cells: s.c.map(read)})),
-  }));
+  const genes = m.genes.map(ge => {
+    const sites = ge.sites.map(s => {
+      const ca = s.ca || sum(s.c), w = s.w || s.c, wa = s.wa || (s.w ? sum(s.w) : ca);
+      return {pos: s.pos, at: ge.lo + s.pos, stats: s.s, cells: s.c.map(read), whole: w.map(read), all: {cells: read(ca), whole: read(wa)}, inFull: !s.o};
+    });
+    const more = (ge.more || []).map(s => ({pos: s.pos, at: ge.lo + s.pos, whole: s.w.map(read), all: {whole: read(s.wa || sum(s.w))}}));
+    // Level 4's sites, by position: the gene's own on its chromosome and those only there.
+    const full = sites.filter(s => s.inFull).concat(more).sort((a, b) => a.pos - b.pos);
+    return {...ge, sites, full};
+  });
   const cells = cellNames.map((_, c) => {
     let on = 0, tot = 0;
     genes.forEach(ge => ge.sites.forEach(s => { on += (s.cells[c].frac || 0) * s.cells[c].reads; tot += s.cells[c].reads; }));
@@ -101,12 +113,24 @@ function standardized(row) {
 const moduleOf = new Map(modules.flatMap(m => m.genes.map(ge => [ge, m])));
 // The modules pane's rows: diagonal in a heatmap, else by shift range.
 const modOrder = () => state.heat ? diag.rows : modules.map((_, i) => i);
-const state = {pane: 1, mod: 0, site: 0, from: 0, gfrom: 0, cfrom: 0, full: false, zoom: 1, hover: null, heat: 0, siteHeat: 0, scale: 0, pins: [], pk: 0, psite: 0};
-// The gene and site in focus: in the genes pane (and its full pileup) the pinned
-// gene's, elsewhere the sites list's.
+const state = {pane: 1, mod: 0, site: 0, from: 0, gfrom: 0, cfrom: 0, full: false, zoom: 1, hover: null, heat: 0, siteHeat: 0, scale: 0, pins: [], pk: 0, psite: 0, fsite: 0};
+// The gene and site in focus: in the full pileup the pinned gene's among its
+// full pileup's sites, in the genes pane among its own, elsewhere the sites list's.
 function focus() {
-  if ((state.pane === 2 || state.full) && state.pins.length) { const ge = state.pins[state.pk]; return {gene: ge, site: ge.sites[state.psite]}; }
+  if (state.full && state.pins.length) { const ge = state.pins[state.pk]; return {gene: ge, site: ge.full[state.fsite]}; }
+  if (state.pane === 2 && state.pins.length) { const ge = state.pins[state.pk]; return {gene: ge, site: ge.sites[state.psite]}; }
   return sitesOf(state.mod)[state.site];
+}
+// Enter: the pinned gene in focus full width, on its site in focus (else its first).
+function openFull() {
+  const ge = state.pins[state.pk];
+  state.full = true; state.zoom = 1; state.fsite = Math.max(0, ge.full.indexOf(ge.sites[state.psite]));
+}
+// Esc from the full pileup: back on its site in the genes pane, when it is one there.
+function closeFull() {
+  const ge = state.pins[state.pk], at = ge ? ge.sites.indexOf(ge.full[state.fsite]) : -1;
+  if (at >= 0) state.psite = at;
+  state.full = false;
 }
 // Space: pin a gene, or select it when it is pinned already; never unpin.
 function pinOrSelect(ge) {
@@ -297,7 +321,7 @@ function drawRamp() {
 // The modules grid's row height in the last frame, for clicks.
 let modsCell = 34;
 function drawMods() {
-  document.getElementById("h-mods").textContent = `Gene modules · ${state.heat ? "diagonal order" : "by shift range"}`;
+  document.getElementById("h-mods").textContent = `Gene modules · genes by main module · ${state.heat ? "diagonal order" : "by shift range"}`;
   const order = modOrder(), ms = order.map(i => modules[i]);
   modsCell = hinton(document.getElementById("c-mods"), ms.map(m => m.cells),
     r => `${ms[r].name}  ${String(ms[r].size).padStart(3)} genes`, order.indexOf(state.mod),
@@ -329,14 +353,14 @@ function drawSites() {
 // The module's genes side by side, each on its own genomic axis; the window
 // of genes scrolls to keep the selected one in view.
 const SEG = 150;
-// The tracks of a pileup: all cells (the margin over cell modules), then each cell module.
-const total = cellSizes.reduce((a, b) => a + b, 0);
-const tracks = [{name: "all", size: total, read: s => {
-  const reads = s.cells.reduce((a, c) => a + c.reads, 0);
-  return {reads, frac: reads > 0 ? s.cells.reduce((a, c) => a + c.reads * (c.frac || 0), 0) / reads : null};
-}}, ...cellNames.map((name, c) => ({name, size: cellSizes[c], read: s => s.cells[c]}))];
-// The tallest bar of track `k` over `sites`, either way up: the scale its bars share.
-const peakOf = (sites, k) => Math.max(...sites.map(s => { const r = tracks[k].read(s); return Math.max(r.reads * r.frac, r.reads * (1 - r.frac)); }));
+// The tracks of a pileup over a site's reads `key` (`cells` in the main module,
+// `whole` over every gene module): all cells (the margin over cell modules),
+// then each cell module, sized by its posterior cells as the terminal labels them.
+const tracksOf = key => [{name: "all", size: DATA.allLabel, read: s => s.all[key]},
+  ...cellNames.map((name, c) => ({name, size: cellLabels[c], read: s => s[key][c]}))];
+const pileTracks = tracksOf("cells"), fullTracks = tracksOf("whole");
+// The tallest bar of `tracks[k]` over `sites`, either way up: the scale its bars share.
+const peakOf = (tracks, sites, k) => Math.max(...sites.map(s => { const r = tracks[k].read(s); return Math.max(r.reads * r.frac, r.reads * (1 - r.frac)); }));
 // The pinned genes in rows: as many as fit across, then a new row below, the
 // pane growing with them; each row has its own models and tracks.
 const ROW_H = 230;
@@ -365,7 +389,7 @@ function drawPile() {
 }
 // One row of pinned genes from `y0`, ROW_H high.
 function drawPileRow(ctx, W, y0, shown, seg, left, right, pick) {
-  const top = y0 + 26, bottom = 34, gap = 6, track = (ROW_H - 26 - bottom - gap) / tracks.length;
+  const tracks = pileTracks, top = y0 + 26, bottom = 34, gap = 6, track = (ROW_H - 26 - bottom - gap) / tracks.length;
   const ty = t => top + t * track + (t > 0 ? gap : 0), base = y0 + ROW_H;
   const fg = css("--fg"), dim = css("--dim"), acc = css("--accent"), rule = css("--rule");
   if (y0 > 0) { ctx.strokeStyle = rule; ctx.beginPath(); ctx.moveTo(0, y0 + 0.5); ctx.lineTo(W, y0 + 0.5); ctx.stroke(); }
@@ -386,9 +410,9 @@ function drawPileRow(ctx, W, y0, shown, seg, left, right, pick) {
     ctx.textAlign = "center"; ctx.fillStyle = mine ? acc : fg; ctx.fillText(ge.name, x0 + seg / 2, base - bottom + 14);
     ctx.fillStyle = dim; ctx.fillText(`${moduleOf.get(ge).name} · ${(ge.len / 1000).toFixed(1)} kb`, x0 + seg / 2, base - bottom + 27);
     // Each gene on its own scale, shared by its tracks; the margin on its own.
-    const cellPeak = Math.max(...cellNames.map((_, c) => peakOf(ge.sites, c + 1)));
+    const cellPeak = Math.max(...cellNames.map((_, c) => peakOf(tracks, ge.sites, c + 1)));
     tracks.forEach((t, k) => {
-      const mid = ty(k) + track / 2, half = track / 2 - 3, top_ = k === 0 ? peakOf(ge.sites, 0) : cellPeak;
+      const mid = ty(k) + track / 2, half = track / 2 - 3, top_ = k === 0 ? peakOf(tracks, ge.sites, 0) : cellPeak;
       ge.sites.forEach(s => {
         const r = t.read(s), up = half * r.reads * r.frac / top_, down = half * r.reads * (1 - r.frac) / top_;
         ctx.fillStyle = acc; ctx.fillRect(x(s.pos) - 2, mid - up, 4, up);
@@ -413,27 +437,28 @@ function siteLabel(ctx, r, x, mid, up, colour) { if (r.frac === null) return; la
 }); }
 // Labels go on last, over every bar.
 function flushLabels() { labels.forEach(f => f()); labels = []; }
-// Level 4: one gene full width, as `faba pileup` draws it, with the same tracks.
+// Level 4: one gene full width, as `faba pileup` draws it, with the same tracks
+// over every gene module.
 function drawFull() {
   spots = [];
   const pick = focus(), ge = pick.gene;
   const [ctx, W, H] = fit(document.getElementById("c-full"));
-  const left = 190, right = 30, top = 44, bottom = 40, gap = 8, track = (H - top - bottom - gap) / tracks.length;
+  const tracks = fullTracks, left = 190, right = 30, top = 44, bottom = 40, gap = 8, track = (H - top - bottom - gap) / tracks.length;
   const ty = t => top + t * track + (t > 0 ? gap : 0);
   // The window: the whole gene, narrowed around the site by the zoom.
   const span = ge.len / state.zoom, lo = Math.max(0, Math.min(ge.len - span, pick.site.pos - span / 2)), hi = lo + span;
   const x = p => left + (W - left - right) * (p - lo) / span;
   const fg = css("--fg"), dim = css("--dim"), acc = css("--accent"), rule = css("--rule");
-  document.getElementById("h-full").textContent = `Pileup · ${ge.name} · ${ge.chr}:${(ge.lo + Math.round(lo)).toLocaleString()}-${(ge.lo + Math.round(hi)).toLocaleString()} · zoom ×${state.zoom}`;
+  document.getElementById("h-full").textContent = `Pileup · ${ge.name} · ${ge.chr}:${(ge.lo + Math.round(lo)).toLocaleString()}-${(ge.lo + Math.round(hi)).toLocaleString()} · zoom ×${state.zoom}${DATA.pileupNote ? ` · ${DATA.pileupNote}` : ""}`;
   ctx.save(); ctx.beginPath(); ctx.rect(left - 6, 0, W - left - right + 12, H); ctx.clip();
   ctx.strokeStyle = dim; ctx.beginPath(); ctx.moveTo(x(0), 20); ctx.lineTo(x(ge.len), 20); ctx.stroke();
   ctx.fillStyle = fg; ge.exons.forEach(([a, b]) => ctx.fillRect(x(a), 13, x(b) - x(a), 14));
   ctx.restore();
   ctx.textAlign = "right"; ctx.fillStyle = dim; ctx.fillText(`${ge.name} model`, left - 12, 20);
-  const visible = ge.sites.filter(s => s.pos >= lo && s.pos <= hi);
-  const cellPeak = Math.max(...cellNames.map((_, c) => peakOf(visible, c + 1)));
+  const visible = ge.full.filter(s => s.pos >= lo && s.pos <= hi);
+  const cellPeak = Math.max(...cellNames.map((_, c) => peakOf(tracks, visible, c + 1)));
   tracks.forEach((t, k) => {
-    const mid = ty(k) + track / 2, half = track / 2 - 4, top_ = k === 0 ? peakOf(visible, 0) : cellPeak, r0 = t.read(pick.site);
+    const mid = ty(k) + track / 2, half = track / 2 - 4, top_ = k === 0 ? peakOf(tracks, visible, 0) : cellPeak, r0 = t.read(pick.site);
     ctx.textAlign = "right"; ctx.fillStyle = k === 0 ? acc : fg;
     ctx.fillText(`${k === 0 ? "all cells" : t.name}  ${t.size}  ${r0.frac === null ? "-" : Math.round(100 * r0.frac) + "%"}`, left - 12, mid);
     ctx.strokeStyle = rule; ctx.beginPath(); ctx.moveTo(left, mid); ctx.lineTo(W - right, mid); ctx.stroke();
@@ -477,13 +502,14 @@ function drawKeys(level) {
   footerKeys([...KEYS[level], ...every, ...tail]);
 }
 
-// In the genes strip and the pileup, ←/→ walk the pinned genes' sites across
-// genes; the full pileup stays on its gene.
+// In the genes strip, ←/→ walk the pinned genes' sites across genes; the full
+// pileup walks its own sites and stays on its gene.
 function stepSite(d) {
   if (!state.pins.length) return;
+  if (state.full) { const n = state.pins[state.pk].full.length; state.fsite = Math.max(0, Math.min(n - 1, state.fsite + d)); draw(); return; }
   let k = state.pk, i = state.psite + d;
-  if (i < 0 && !state.full && k > 0) { k -= 1; i = state.pins[k].sites.length - 1; }
-  if (i >= state.pins[k].sites.length && !state.full && k + 1 < state.pins.length) { k += 1; i = 0; }
+  if (i < 0 && k > 0) { k -= 1; i = state.pins[k].sites.length - 1; }
+  if (i >= state.pins[k].sites.length && k + 1 < state.pins.length) { k += 1; i = 0; }
   state.pk = k; state.psite = Math.max(0, Math.min(state.pins[k].sites.length - 1, i)); draw();
 }
 function move(d) {
@@ -548,12 +574,12 @@ document.addEventListener("keydown", e => {
   if (nav.includes(k)) e.preventDefault();
   // Every level.
   if (k === "q") return;  // quits the tool
-  if (k === "Enter") { if (level === 1) state.pane = 0; else if (level === 2) state.pane = 2; else if (level === 3 && state.pins.length) { state.full = true; state.zoom = 1; } }
+  if (k === "Enter") { if (level === 1) state.pane = 0; else if (level === 2) state.pane = 2; else if (level === 3 && state.pins.length) openFull(); }
   else if (k === " " && level === 2) { e.preventDefault(); pinOrSelect(sitesOf(state.mod)[state.site].gene); }
   else if ((k === "Delete" || k === "Backspace") && level === 2) { const ge = sitesOf(state.mod)[state.site].gene; if (state.pins.includes(ge)) togglePin(ge); }
   else if ((k === "Delete" || k === "Backspace") && level === 3 && state.pins.length) { e.preventDefault(); togglePin(state.pins[state.pk]); }
   else if (k === "X" && level < 4) { state.pins = []; state.pk = 0; state.psite = 0; }
-  else if (k === "Escape" || (level === 4 && k === "g")) { if (level === 4) state.full = false; else if (level === 3) state.pane = 0; else if (level === 2) state.pane = 1; }
+  else if (k === "Escape" || (level === 4 && k === "g")) { if (level === 4) closeFull(); else if (level === 3) state.pane = 0; else if (level === 2) state.pane = 1; }
   else if ((k === "[" || k === "]") && level < 4) setCfrom(state.cfrom + (k === "]" ? 1 : -1));
   else if (k === "Tab" && level < 4) { const order = [1, 0, 2], i = order.indexOf(state.pane); state.pane = order[(i + (e.shiftKey ? 2 : 1)) % 3]; }
   // 1 modules
@@ -599,7 +625,7 @@ panes.forEach((p, i) => p.addEventListener("click", e => {
   draw();
 }));
 // A double click on the strip opens the gene in focus; Esc comes back.
-panes[2].addEventListener("dblclick", () => { if (state.pins.length) { state.full = true; state.zoom = 1; draw(); } });
+panes[2].addEventListener("dblclick", () => { if (state.pins.length) { openFull(); draw(); } });
 // The pointer over a gene view shows that site's numbers; only that view redraws.
 const drawGenes = () => state.full ? drawFull() : drawPile();
 ["c-pile", "c-full"].forEach(id => {
@@ -616,6 +642,7 @@ const drawGenes = () => state.full ? drawFull() : drawPile();
   // A click puts the cursor on that site, as it would in the terminal.
   c.addEventListener("click", () => {
     if (!state.hover) return;
+    if (state.full) { state.fsite = state.pins[state.pk].full.indexOf(state.hover); draw(); return; }
     const k = state.pins.findIndex(ge => ge.sites.includes(state.hover));
     if (k >= 0) { state.pk = k; state.psite = state.pins[k].sites.indexOf(state.hover); state.pane = 2; draw(); }
   });

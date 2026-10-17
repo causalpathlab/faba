@@ -285,14 +285,17 @@ Example:\n  \
             the number of clusters learned, with split-merge moves and each cell's confidence.\n\n\
             Outputs, in the output directory (link / crp):\n\
             - {modality}_cell_communities.parquet / {modality}_cell_clusters.parquet: every input\n\
-              cell's community and memberships / cluster and confidence\n\
+              cell's community and memberships (`fitted`: in the fit, not placed after) /\n\
+              cluster and confidence\n\
             - {modality}_community_sites.parquet / {modality}_site_clusters.parquet: each site's\n\
               reads and posterior fraction per community / cluster\n\
             - {modality}_gene_communities.parquet (link): each gene's links per community\n\
-            - blocks: {modality}_cell_roles.parquet (each cell's roles and level),\n\
-              _gene_roles (each gene's roles), _blocks (each block's shift), and\n\
+            - blocks: {modality}_cell_roles.parquet (each cell's roles, level, and\n\
+              `fitted`), _gene_roles (each gene's roles), _blocks (each block's shift),\n\
               _block_genes, _block_cells, _block_sites (what each block holds, most\n\
-              enriched first), and _site_stats (each site's raw reads and cells)\n\
+              enriched first; sites with a read or more), _site_cells (each site's\n\
+              posterior-mean reads per cell role over every gene role, the full\n\
+              pileups), and _site_stats (each site's raw reads and cells)\n\
             - {modality}_cluster.run.json: the run record, with split R-hat across chains\n\
               and, with --holdout, held-out reads",
         after_long_help = "\
@@ -308,12 +311,18 @@ Example:\n  \
         alias = "blocks",
         about = "Browse the gene modules and cell modules of `faba cluster --model blocks`",
         long_about = "Browse the gene modules and cell modules of `faba cluster --model blocks`\n\n\
-            Four levels, each a margin of the next. 1 gene modules: every gene module against\n\
-            every cell module. 2 sites: the sites of the module in focus, each with its reads,\n\
-            converted, unconverted and cells over every cell read. 3 genes: the genes you pin\n\
-            (Space on a site, or Alt-drag its row down), side by side under their gene models,\n\
-            an all-cells track above one track per cell module. 4 pileup: one pinned gene's\n\
-            full pileup from the site matrices, every cell with a cell module in it.\n\n\
+            Four levels, each a margin of the next, all posterior-mean reads of the fitted\n\
+            cells. 1 gene modules: every gene module against every cell module. 2 sites: the\n\
+            sites of the module in focus, each with its reads, converted, unconverted and\n\
+            cells over every cell read. 3 genes: the genes you pin (Space on a site, or\n\
+            Alt-drag its row down), side by side under their gene models, an all-cells track\n\
+            above one track per cell module. Levels 1 to 3 list each gene in its main gene\n\
+            module with its reads there. 4 pileup: one pinned gene's full pileup, its reads\n\
+            over every gene module ({modality}_site_cells), on the chromosome with most of\n\
+            its sites. Cell modules are sized by their fitted cells' summed memberships\n\
+            (the `fitted` column of {modality}_cell_roles); placed cells are not in the\n\
+            posterior tally. Tables older than these two are read approximately, and say\n\
+            so: rerun with --refit.\n\n\
             Reads are mirror bars, converted up and unconverted down; `v` shows a grid as a %\n\
             heatmap or a heatmap of each row's z across the cell modules, diagonally ordered;\n\
             `/` finds a gene. The tables are written by `faba cluster --model blocks`, which\n\
