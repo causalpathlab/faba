@@ -12,6 +12,8 @@ pub use busy::{busy, busy_counting};
 pub const SPINNER: &str = "⠁⠂⠄⡀⢀⠠⠐⠈";
 
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{Receiver, TryRecvError};
+use std::time::{Duration, Instant};
 
 use data_beans::interactive::ui::{panel, Screen, DIM, HIGHLIGHT};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
@@ -204,12 +206,126 @@ pub fn bar_spans(done: u64, total: u64, width: usize, on: Style) -> [Span<'stati
     ]
 }
 
+/// `d` as `hh:mm:ss`.
+pub fn clock(d: std::time::Duration) -> String {
+    let s = d.as_secs();
+    format!("{:02}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)
+}
+
 /// How many of `width` cells a bar shows filled for `done` of `total`.
 pub fn filled(done: u64, total: u64, width: usize) -> usize {
     match total {
         0 => 0,
         _ => (done.min(total) as f64 / total as f64 * width as f64).round() as usize,
     }
+}
+
+/// The [`SPINNER`] frame `elapsed` into a spin: one every 200 ms.
+pub fn spinner_frame(elapsed: Duration) -> char {
+    let frames = SPINNER.chars().count();
+    SPINNER
+        .chars()
+        .nth((elapsed.as_millis() / 200) as usize % frames)
+        .expect("a frame within the spinner")
+}
+
+/// The result of work on another thread, as a view picks it up between
+/// frames from the channel it comes on.
+pub struct Pending<'a, T> {
+    rx: &'a Receiver<T>,
+    /// The result, and when it came.
+    out: Option<(T, Instant)>,
+    /// The work ended without a result: it panicked.
+    gone: bool,
+}
+
+impl<'a, T> Pending<'a, T> {
+    /// Waiting on `rx`.
+    pub fn new(rx: &'a Receiver<T>) -> Self {
+        Self {
+            rx,
+            out: None,
+            gone: false,
+        }
+    }
+
+    /// Pick up the result, if it has come.
+    pub fn poll(&mut self) {
+        match self.rx.try_recv() {
+            Ok(out) => self.out = Some((out, Instant::now())),
+            Err(TryRecvError::Disconnected) => self.gone = true,
+            Err(TryRecvError::Empty) => {}
+        }
+    }
+
+    /// The result, once it came.
+    pub fn out(&self) -> Option<&T> {
+        self.out.as_ref().map(|(out, _)| out)
+    }
+
+    /// The time since the result came; none before.
+    pub fn since(&self) -> Option<Duration> {
+        self.out.as_ref().map(|(_, at)| at.elapsed())
+    }
+
+    /// Whether the work ended without a result: it panicked.
+    pub fn gone(&self) -> bool {
+        self.out.is_none() && self.gone
+    }
+
+    /// The result itself, once it came.
+    pub fn take(self) -> Option<T> {
+        self.out.map(|(out, _)| out)
+    }
+}
+
+/// The screen of `view` drawn `w` x `h`, as text.
+#[cfg(test)]
+pub fn screen_text(view: &mut impl Screen, w: u16, h: u16) -> String {
+    let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
+    t.draw(|f| view.render(f)).unwrap();
+    let buf = t.backend().buffer();
+    (0..h)
+        .map(|y| (0..w).map(|x| buf[(x, y)].symbol()).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Run `work` on a thread while `meanwhile` waits here on the channel its
+/// result comes on; what `meanwhile` returns, and the work's result: the
+/// one `meanwhile` took, else the one left on the channel, else (the work
+/// panicked) an error saying `what` panicked, with the panic's message.
+pub fn on_thread<T: Send, R>(
+    what: &str,
+    work: impl FnOnce() -> anyhow::Result<T> + Send,
+    meanwhile: impl FnOnce(&Receiver<anyhow::Result<T>>) -> (R, Option<anyhow::Result<T>>),
+) -> (R, anyhow::Result<T>) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::scope(|s| {
+        let worker = s.spawn(move || {
+            // The receiver outlives the scope, so the send cannot fail.
+            let _ = tx.send(work());
+        });
+        let (waited, taken) = meanwhile(&rx);
+        // Joined here, a panic is the work's error: the scope raises it
+        // again only for threads it joins itself.
+        let joined = worker.join();
+        let out = match (taken.or_else(|| rx.try_recv().ok()), joined) {
+            (Some(out), _) => out,
+            (None, Err(panic)) => Err(anyhow::anyhow!("{what} panicked: {}", panic_text(&*panic))),
+            (None, Ok(())) => Err(anyhow::anyhow!("{what} ended without a result")),
+        };
+        (waited, out)
+    })
+}
+
+/// A panic's message, when it is text.
+fn panic_text(panic: &(dyn std::any::Any + Send)) -> &str {
+    panic
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("no message")
 }
 
 /// The x axis of a text plot in `area` without its tick marks: the axis

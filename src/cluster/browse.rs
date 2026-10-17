@@ -144,7 +144,14 @@ pub fn run_modules(args: &ModulesArgs) -> anyhow::Result<()> {
         ..args.clone()
     };
     let dir = super::output_dir(&args.cluster);
-    let modality = ensure_tables(args, &dir)?;
+    // A cancelled fit is an error: nothing was written.
+    let Some(modality) = ensure_tables(args, &dir, !batch)? else {
+        eprintln!(
+            "faba modules: the tables are written in {}; not opening the modules, as asked",
+            dir.display()
+        );
+        return Ok(());
+    };
     // Shared with the thread that writes the report on `e`.
     let modules = std::sync::Arc::new(Modules::load(&dir, &modality)?);
     let gtf = crate::run_record::explicit_or_recorded(
@@ -213,15 +220,17 @@ fn plan(args: &ModulesArgs, dir: &Path) -> anyhow::Result<Plan> {
 
 /// The modality of the block tables in `dir`: those there (see [`plan`]),
 /// else those `faba cluster` writes now (the blocks preset, or the
-/// settings given).
-fn ensure_tables(args: &ModulesArgs, dir: &Path) -> anyhow::Result<String> {
+/// settings given), its chains drawn in a view when `view` (and there is a
+/// terminal), where `q` cancels the fit, else on a bar on stderr. None
+/// when a cancel came too late to stop the fit: the browser is not to open.
+fn ensure_tables(args: &ModulesArgs, dir: &Path, view: bool) -> anyhow::Result<Option<String>> {
     let why = match plan(args, dir)? {
         Plan::Open(m) => {
             log::info!(
                 "opening the {m} block tables in {} as they are (--refit clusters again)",
                 dir.display()
             );
-            return Ok(m);
+            return Ok(Some(m));
         }
         Plan::Fit(why) => why,
     };
@@ -231,9 +240,26 @@ fn ensure_tables(args: &ModulesArgs, dir: &Path) -> anyhow::Result<String> {
         cluster.model.name(),
         dir.display()
     );
+    let fitted = if view && data_beans::interactive::tui_available() {
+        let title = format!(
+            "fitting the {} model in {}",
+            cluster.model.name(),
+            dir.display()
+        );
+        let watched = super::progress::view::watch(&title, cluster.chains, |p| {
+            super::run_cluster_watched(&cluster, p)
+        })?;
+        let Some(fitted) = watched else {
+            return Ok(None);
+        };
+        fitted
+    } else {
+        super::run_cluster(&cluster)?
+    };
     // The tables of the modality just fitted, not older ones beside them.
-    super::run_cluster(&cluster)?
+    fitted
         .and_then(|m| tables(dir, Some(&m)))
+        .map(Some)
         .ok_or_else(|| anyhow::anyhow!("`faba cluster` wrote no block tables in {}", dir.display()))
 }
 

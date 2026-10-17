@@ -165,7 +165,7 @@ fn planted_links(cells: usize, genes: usize, seed: u64) -> (Reads, Vec<u32>, Vec
 /// each (cell role, gene role) block shifting its sites' methylation, and
 /// each cell its own level within `±level`: the reads, each site's gene,
 /// the cells' and genes' roles, and the cells' levels.
-fn planted_blocks(
+pub(super) fn planted_blocks(
     cells: usize,
     genes: usize,
     level: f64,
@@ -212,8 +212,49 @@ fn correlation(x: &[f64], y: &[f64]) -> f64 {
     cov / (vx * vy).sqrt()
 }
 
+/// [`planted_blocks`] (each cell's level within `±1`) as `faba cluster`
+/// reads them: `cells` cells, the first `fitted` of them fitted and the
+/// rest controls, over `genes` genes; the data and the fitted cells' reads.
+pub(super) fn planted_site_data(
+    cells: usize,
+    fitted: usize,
+    genes: usize,
+    seed: u64,
+) -> (read::SiteData, Reads) {
+    let (reads, gene_of, _, _, _) = planted_blocks(cells, genes, 1.0, seed);
+    let sites = gene_of
+        .iter()
+        .enumerate()
+        .map(|(s, &g)| read::Site {
+            gene: format!("GENE{}", g + 1).into(),
+            chr: "chr1".into(),
+            pos: s as i64 * 10,
+        })
+        .collect();
+    let cells = (0..cells)
+        .map(|c| read::Cell {
+            barcode: format!("B{c}").into(),
+            batch: "b".into(),
+            fit: c < fitted,
+        })
+        .collect();
+    let fit_reads = reads.subset(&(0..fitted).collect::<Vec<_>>());
+    let data = read::SiteData {
+        modality: "m6A".into(),
+        sites,
+        cells,
+        reads,
+    };
+    (data, fit_reads)
+}
+
 /// infinite strength, each cell's own level too).
-fn settings(weights: Weights, shift: bool, strength: f64, gene_roles: usize) -> Settings {
+pub(super) fn settings(
+    weights: Weights,
+    shift: bool,
+    strength: f64,
+    gene_roles: usize,
+) -> Settings {
     Settings {
         cell_roles: 2,
         gene_roles,

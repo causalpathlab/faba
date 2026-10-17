@@ -224,14 +224,20 @@ impl SiteStats {
     }
 }
 
-/// Read every input's site rows (both channels) of the first modality met.
-pub fn read_inputs(inputs: &[Input]) -> anyhow::Result<SiteData> {
+/// Read every input's site rows (both channels) of the first modality met;
+/// [`super::progress::Cancelled`] before the next input, or the next block
+/// of an input's columns, once `progress` is.
+pub fn read_inputs(
+    inputs: &[Input],
+    progress: &super::progress::Progress,
+) -> anyhow::Result<SiteData> {
     let mut modality: Option<Box<str>> = None;
     let mut sites: Vec<Site> = Vec::new();
     let mut index: FxHashMap<(Box<str>, Box<str>, i64), u32> = FxHashMap::default();
     let mut cells: Vec<Cell> = Vec::new();
     let mut per_cell: Vec<Vec<(u32, u32, u32)>> = Vec::new();
     for input in inputs {
+        progress.check()?;
         let (backend, resolved) = resolve_backend_file(&input.path, None)?;
         let mut data = open_sparse_matrix(&resolved, &backend)?;
         // Every column is read once: preload them when they fit the budget.
@@ -288,6 +294,7 @@ pub fn read_inputs(inputs: &[Input]) -> anyhow::Result<SiteData> {
         per_cell.resize_with(cells.len(), Vec::new);
         let ncol = barcodes.len();
         for start in (0..ncol).step_by(COLUMN_BLOCK) {
+            progress.check()?;
             let block: Vec<usize> = (start..(start + COLUMN_BLOCK).min(ncol)).collect();
             let (_, _, triplets) = data.read_triplets_by_columns(block)?;
             for (row, col, value) in triplets {

@@ -2,7 +2,6 @@
 //! preview and file pop-ups, and the footer of keys.
 
 use std::path::Path;
-use std::time::Duration;
 
 use data_beans::interactive::ui::{
     header, help_line, input_line, panel, ACCENTED, DIM, HIGHLIGHT, PLAIN,
@@ -18,7 +17,7 @@ use super::inputs::{InputsFocus, OutState, Role, Row};
 use super::steps::Step;
 use super::{script, App, Hit, Page, Target};
 use crate::tui::{
-    button_popup, first_visible, marker, popup_frame, tab_bar, tilde, window, APPLY_KEYS,
+    button_popup, clock, first_visible, marker, popup_frame, tab_bar, tilde, window, APPLY_KEYS,
 };
 
 /// Width of the inputs panel on the Inputs screen.
@@ -99,12 +98,6 @@ pub(super) fn draw(app: &App, frame: &mut Frame) {
         draw_ended(app, frame, body);
     }
     frame.render_widget(Paragraph::new(help), footer);
-}
-
-/// `hh:mm:ss`.
-fn clock(d: Duration) -> String {
-    let s = d.as_secs();
-    format!("{:02}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)
 }
 
 /// How the run stands, in a word or few.

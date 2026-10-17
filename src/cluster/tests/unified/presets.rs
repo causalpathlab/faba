@@ -385,32 +385,8 @@ fn held_out_scores_are_finite_at_extreme_sites() {
 /// fitted.
 #[test]
 fn both_presets_write_the_tables_faba_modules_reads() {
-    use crate::cluster::read::{Cell, Site, SiteData};
-    let (reads, gene_of, _, _, _) = planted_blocks(90, 12, 1.0, 141);
-    let sites: Vec<Site> = gene_of
-        .iter()
-        .enumerate()
-        .map(|(s, &g)| Site {
-            gene: format!("GENE{}", g + 1).into(),
-            chr: "chr1".into(),
-            pos: s as i64 * 10,
-        })
-        .collect();
-    let cells: Vec<Cell> = (0..90)
-        .map(|c| Cell {
-            barcode: format!("B{c}").into(),
-            batch: "b".into(),
-            fit: c < 80,
-        })
-        .collect();
-    let data = SiteData {
-        modality: "m6A".into(),
-        sites,
-        cells: cells.clone(),
-        reads,
-    };
+    let (data, fit_reads) = planted_site_data(90, 80, 12, 141);
     let fitted: Vec<usize> = (0..80).collect();
-    let fit_reads = data.reads.subset(&fitted);
     let weighted = Weighted::new(&fit_reads, None);
     let kept: Vec<usize> = (0..90).collect();
     let controls: Vec<usize> = (80..90).collect();
@@ -433,9 +409,10 @@ fn both_presets_write_the_tables_faba_modules_reads() {
             fitted: &fitted,
             weighted: &weighted,
             held: None,
-            all_cells: &cells,
+            all_cells: &data.cells,
             kept: &kept,
             controls: &controls,
+            progress: &crate::cluster::progress::Progress::new(2),
         };
         let mut record = crate::run_record::RunRecord::start("cluster", "unused");
         let written = crate::cluster::run::blockmodel::blockmodel_fit(

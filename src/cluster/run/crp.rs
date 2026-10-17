@@ -3,7 +3,7 @@
 
 use super::super::{args, crp, fit, read, record_name, summary, write, FitData, Written, RHAT_OK};
 use crate::run_record::RunRecord;
-use legume_numeric::mcmc::engine::{run_mcmc_parallel, McmcConfig};
+use legume_numeric::mcmc::engine::McmcConfig;
 use log::{info, warn};
 use std::path::Path;
 
@@ -24,6 +24,7 @@ pub(in crate::cluster) fn crp_fit(
         held,
         all_cells,
         kept,
+        progress,
         ..
     } = fit;
     let settings = crp::Settings {
@@ -34,11 +35,13 @@ pub(in crate::cluster) fn crp_fit(
         gibbs: true,
         fixed_alpha: None,
     };
+    // The model takes a while to build: not once cancelled.
+    progress.check()?;
     let mut model = crp::Model::new(weighted, data.sites.len(), settings);
     if let Some(h) = held {
         model = model.with_heldout(h);
     }
-    let chains = run_mcmc_parallel(&model, config, args.chains);
+    let chains = super::super::progress::run(&model, config, args.chains, progress)?;
     let posterior = summary::posterior(&chains, args.min_cluster_cells);
     if posterior.rhat_k > RHAT_OK || posterior.rhat_log_posterior > RHAT_OK {
         warn!(
@@ -46,6 +49,7 @@ pub(in crate::cluster) fn crp_fit(
             posterior.rhat_k, posterior.rhat_log_posterior
         );
     }
+    progress.summarised(posterior.rhat_k.max(posterior.rhat_log_posterior))?;
     let (part, tiles) = fit::settle(
         fit_reads,
         weighted,

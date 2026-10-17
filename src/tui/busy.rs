@@ -2,7 +2,7 @@
 //! terminal blank while it reads.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, TryRecvError};
+use std::sync::mpsc::RecvTimeoutError;
 use std::time::{Duration, Instant};
 
 use data_beans::interactive::ui::{header, Screen, DIM, HIGHLIGHT};
@@ -11,7 +11,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
-use super::{bar_spans, popup_frame, run_view, View, SPINNER};
+use super::{bar_spans, on_thread, popup_frame, run_view, spinner_frame, Pending, View};
 
 /// How long the work may take before the spinner shows, so quick work
 /// never flickers the screen.
@@ -22,10 +22,8 @@ struct Busy<'a, T> {
     badge: &'a str,
     what: &'a str,
     start: Instant,
-    rx: &'a Receiver<T>,
-    out: Option<T>,
-    /// The work ended without a result: it panicked.
-    gone: bool,
+    /// The work's result, once it comes.
+    pending: Pending<'a, T>,
     /// A key (or Ctrl-C) came: say it cannot stop the work.
     pressed: bool,
     /// Files done, of `total`; no bar when `total` is 0.
@@ -40,8 +38,7 @@ impl<T> Screen for Busy<'_, T> {
         let area = frame.area();
         frame.render_widget(header(self.badge, "loading", ""), area);
         let elapsed = self.start.elapsed();
-        let frames: Vec<char> = SPINNER.chars().collect();
-        let spin = frames[(elapsed.as_millis() / 200) as usize % frames.len()];
+        let spin = spinner_frame(elapsed);
         let w = (self.what.chars().count() as u16 + 12)
             .max(if self.pressed { 56 } else { 40 })
             .min(area.width);
@@ -84,16 +81,12 @@ impl<T> Screen for Busy<'_, T> {
     }
 
     fn done(&self) -> bool {
-        self.out.is_some() || self.gone
+        self.pending.out().is_some() || self.pending.gone()
     }
 
     /// Pick up the result, else redraw for the spinner and the clock.
     fn tick(&mut self) -> bool {
-        match self.rx.try_recv() {
-            Ok(out) => self.out = Some(out),
-            Err(TryRecvError::Disconnected) => self.gone = true,
-            Err(TryRecvError::Empty) => {}
-        }
+        self.pending.poll();
         true
     }
 }
@@ -123,42 +116,37 @@ pub fn busy_counting<T: Send>(
     if !show || !data_beans::interactive::tui_available() {
         return work(&done);
     }
-    let (tx, rx) = channel();
     let counter = &done;
-    std::thread::scope(|s| {
-        s.spawn(move || {
-            // The receiver outlives the scope, so the send cannot fail.
-            let _ = tx.send(work(counter));
-        });
-        match rx.recv_timeout(GRACE) {
-            Ok(out) => return out,
-            Err(RecvTimeoutError::Disconnected) => anyhow::bail!("{what}: the work panicked"),
-            Err(RecvTimeoutError::Timeout) => {}
-        }
-        let mut screen = Busy {
-            badge,
-            what,
-            start: Instant::now(),
-            rx: &rx,
-            out: None,
-            gone: false,
-            pressed: false,
-            done: &done,
-            total,
-        };
-        run_view(&mut screen)?;
-        match screen.out {
-            Some(out) => out,
-            None => rx
-                .recv()
-                .map_err(|_| anyhow::anyhow!("{what}: the work panicked"))?,
-        }
-    })
+    let (shown, out) = on_thread(
+        &format!("{what}: the work"),
+        || work(counter),
+        |rx| {
+            match rx.recv_timeout(GRACE) {
+                Ok(out) => return (Ok(()), Some(out)),
+                Err(RecvTimeoutError::Disconnected) => return (Ok(()), None),
+                Err(RecvTimeoutError::Timeout) => {}
+            }
+            let mut screen = Busy {
+                badge,
+                what,
+                start: Instant::now(),
+                pending: Pending::new(rx),
+                pressed: false,
+                done: counter,
+                total,
+            };
+            let shown = run_view(&mut screen);
+            (shown, screen.pending.take())
+        },
+    );
+    shown?;
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::mpsc::channel;
 
     #[test]
     fn draws_at_any_terminal_size_and_ends_with_the_result() {
@@ -168,9 +156,7 @@ mod tests {
             badge: "pileup",
             what: "reading GENE1",
             start: Instant::now(),
-            rx: &rx,
-            out: None,
-            gone: false,
+            pending: Pending::new(&rx),
             pressed: false,
             done: &done,
             total: 3,
@@ -184,7 +170,7 @@ mod tests {
         tx.send(7).unwrap();
         b.tick();
         assert!(b.done());
-        assert_eq!(b.out, Some(7));
+        assert_eq!(b.pending.out(), Some(&7));
     }
 
     #[test]
@@ -195,16 +181,14 @@ mod tests {
             badge: "pwm",
             what: "collecting",
             start: Instant::now(),
-            rx: &rx,
-            out: None,
-            gone: false,
+            pending: Pending::new(&rx),
             pressed: false,
             done: &done,
             total: 0,
         };
         drop(tx);
         b.tick();
-        assert!(b.done() && b.out.is_none(), "not left spinning");
+        assert!(b.done() && b.pending.out().is_none(), "not left spinning");
     }
 
     #[test]

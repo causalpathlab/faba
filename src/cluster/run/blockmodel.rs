@@ -3,7 +3,7 @@
 
 use super::super::{args, read, record_name, unified, write, FitData, Written, RHAT_OK};
 use crate::run_record::RunRecord;
-use legume_numeric::mcmc::engine::{run_mcmc_parallel, McmcConfig};
+use legume_numeric::mcmc::engine::McmcConfig;
 use log::{info, warn};
 use rustc_hash::FxHashMap;
 use std::path::Path;
@@ -78,6 +78,8 @@ pub(in crate::cluster) fn blockmodel_fit(
 ) -> anyhow::Result<Written> {
     let data = fit.data;
     let (gene_of, names) = number_genes(&data.sites);
+    // The links and the model take a while to build: not once cancelled.
+    fit.progress.check()?;
     let links = unified::Links::new(fit.weighted, &gene_of);
     info!(
         "{} (cell, gene) links over {} genes",
@@ -88,13 +90,15 @@ pub(in crate::cluster) fn blockmodel_fit(
     let recorded = args::recorded(args);
     record.set_result("model", &recorded);
     let (a, b) = (recorded.settings.cell_roles, recorded.settings.gene_roles);
+    fit.progress.check()?;
     let mut model = unified::Model::new(&links, &gene_of, data.sites.len(), recorded.settings)?;
     if let Some(h) = fit.held {
         model = model.with_heldout(h);
     }
-    let chains = run_mcmc_parallel(&model, config, args.chains);
+    let chains = super::super::progress::run(&model, config, args.chains, fit.progress)?;
     let summary = unified::summarize(&model, &chains);
     warn_unconverged(summary.rhat_log_joint);
+    fit.progress.summarised(summary.rhat_log_joint)?;
     let best = chains[summary.best_chain]
         .last()
         .expect("a chain has draws")

@@ -216,3 +216,41 @@ fn digits_count_a_number_as_it_is_written() {
         assert_eq!(digits(n), n.to_string().len(), "{n}");
     }
 }
+
+/// Work on a thread comes back with its result, whether the wait took it
+/// or left it; work that panics is an error saying with what.
+#[test]
+fn work_on_a_thread_comes_back_or_says_why_it_panicked() {
+    let (waited, out) = on_thread("w", || Ok(3), |rx| (1, rx.recv().ok()));
+    assert_eq!((waited, out.unwrap()), (1, 3));
+    let (_, out) = on_thread("w", || Ok(4), |_| ((), None));
+    assert_eq!(out.unwrap(), 4);
+    let owned = String::from("an owned message");
+    let (_, out) = on_thread(
+        "the work",
+        || -> anyhow::Result<u8> { panic!("{owned}") },
+        |_| ((), None),
+    );
+    let err = out.unwrap_err().to_string();
+    assert_eq!(err, "the work panicked: an owned message");
+    let (_, out) = on_thread(
+        "the work",
+        || -> anyhow::Result<u8> { panic!("a fixed message") },
+        |_| ((), None),
+    );
+    assert_eq!(
+        out.unwrap_err().to_string(),
+        "the work panicked: a fixed message"
+    );
+}
+
+/// The spinner turns a frame every 200 ms, round and round.
+#[test]
+fn the_spinner_turns_with_the_time() {
+    let frames: Vec<char> = SPINNER.chars().collect();
+    let at = |ms| spinner_frame(std::time::Duration::from_millis(ms));
+    assert_eq!(at(0), frames[0]);
+    assert_eq!(at(199), frames[0]);
+    assert_eq!(at(200), frames[1]);
+    assert_eq!(at(200 * frames.len() as u64), frames[0]);
+}
