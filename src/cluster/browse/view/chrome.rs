@@ -184,7 +184,9 @@ impl ModulesView<'_> {
             (
                 genes,
                 Pane::Genes,
-                format!(" genes · {pinned} · all cells, then each cell module "),
+                format!(
+                    " genes · {pinned} · posterior-mean reads in the main module, fitted cells "
+                ),
             ),
         ];
         let mut inner = [Rect::default(); 3];

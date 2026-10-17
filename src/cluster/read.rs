@@ -224,13 +224,6 @@ impl SiteStats {
     }
 }
 
-/// A site row of `modality`: its gene, chromosome, position, and whether it
-/// is the converted channel; none for any other row.
-pub fn site_row<'n>(name: &'n str, modality: &str) -> Option<(&'n str, &'n str, i64, bool)> {
-    let (gene, m, chr, pos, converted) = parse_row_channel(name)?;
-    (m.eq_ignore_ascii_case(modality) && !chr.is_empty()).then_some((gene, chr, pos, converted?))
-}
-
 /// Read every input's site rows (both channels) of the first modality met.
 pub fn read_inputs(inputs: &[Input]) -> anyhow::Result<SiteData> {
     let mut modality: Option<Box<str>> = None;

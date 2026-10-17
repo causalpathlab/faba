@@ -13,6 +13,7 @@ use ratatui::Terminal;
 
 mod data;
 mod gene;
+mod posterior;
 mod report;
 mod strip;
 mod view;
@@ -64,18 +65,8 @@ fn tables_with(dir: &Path, swap: bool) {
     put(2, 1, 1, 3.0, 1.0);
     put(3, 0, 1, 30.0, 10.0);
     put(3, 1, 1, 10.0, 30.0);
-    let lift = vec![0.0; on.len()];
     let path = |name: &str| dir.join(format!("m6a_{name}.parquet"));
-    write::block_sites(
-        &sites,
-        &on,
-        &off,
-        &lift,
-        blocks,
-        roles,
-        &path("block_sites"),
-    )
-    .unwrap();
+    write_reads(dir, &sites, (&on, &off), (blocks, roles), true);
     let mut shift = [0.1, -1.0, 0.0, 0.3, 0.5, 0.0];
     if swap {
         shift.rotate_left(roles);
@@ -88,7 +79,7 @@ fn tables_with(dir: &Path, swap: bool) {
         .map(|i| Cell {
             barcode: format!("B{i}").into(),
             batch: "b".into(),
-            fit: true,
+            fit: i != 2,
         })
         .collect();
     let mut member = [[0.8f32, 0.2], [0.7, 0.3], [0.6, 0.4], [0.1, 0.9]];
@@ -134,6 +125,25 @@ fn tables_with(dir: &Path, swap: bool) {
         cells: vec![9, 4, 3, 12],
     };
     write::site_stats(&sites, &stats, &path("site_stats")).unwrap();
+}
+
+/// The posterior-mean reads `(on, off)` of `sites`, site-major over
+/// `(blocks, gene_roles)`, as `faba cluster` writes them: each block's in
+/// `{m}_block_sites`, and with `whole`, each cell role's over every gene
+/// role in `{m}_site_cells` (older runs wrote no such table).
+fn write_reads(
+    dir: &Path,
+    sites: &[Site],
+    (on, off): (&[f64], &[f64]),
+    (blocks, roles): (usize, usize),
+    whole: bool,
+) {
+    let path = |name: &str| dir.join(format!("m6a_{name}.parquet"));
+    let lift = vec![0.0; on.len()];
+    write::block_sites(sites, on, off, &lift, blocks, roles, &path("block_sites")).unwrap();
+    if whole {
+        write::site_cells(sites, on, off, blocks, roles, &path("site_cells")).unwrap();
+    }
 }
 
 /// Twelve cell roles and two gene roles, one fitted cell in each cell role:

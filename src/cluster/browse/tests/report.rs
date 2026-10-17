@@ -69,7 +69,7 @@ fn data_json(m: &crate::cluster::browse::Modules) -> String {
 #[test]
 fn the_reports_data_is_in_column_order() {
     let head = r#"{"title":"gene modules × cell modules · m6a","modality":"m6a","on":"methylated","off":"unmethylated","cellNames":"#;
-    let tail = r#","cellSizes":[2,1],"diagonal":["M2","M1"],"modules":[{"name":"M2","size":1,"range":1.5,"genes":[{"name":"GENE3","chr":"chr1","lo":-40,"len":100,"exons":[],"sites":[{"pos":50,"c":[[30.0,40.0],[10.0,40.0]],"s":[40,40,12]}]}]},{"name":"M1","size":2,"range":0.2,"genes":[{"name":"GENE1","chr":"chr1","lo":50,"len":350,"exons":[[0,70],[230,351]],"sites":[{"pos":50,"c":[[8.0,10.0],[1.0,10.0]],"s":[20,20,9]},{"pos":250,"c":[[5.0,10.0],[0.0,0.0]],"s":[10,10,4]}]},{"name":"GENE2","chr":"chr1","lo":0,"len":100,"exons":[],"sites":[{"pos":50,"c":[[1.0,2.0],[0.0,0.0]],"s":[4,2,3]}]}]}]}"#;
+    let tail = r#","cellLabels":["1.6","1.4"],"allLabel":"3.0","diagonal":["M2","M1"],"modules":[{"name":"M2","size":1,"range":1.5,"genes":[{"name":"GENE3","chr":"chr1","lo":-40,"len":100,"exons":[],"sites":[{"pos":50,"c":[[30.0,40.0],[10.0,40.0]],"s":[40,40,12]}]}]},{"name":"M1","size":2,"range":0.2,"genes":[{"name":"GENE1","chr":"chr1","lo":50,"len":350,"exons":[[0,70],[230,351]],"sites":[{"pos":50,"c":[[8.0,10.0],[1.0,10.0]],"s":[20,20,9]},{"pos":250,"c":[[5.0,10.0],[0.0,0.0]],"s":[10,10,4]}]},{"name":"GENE2","chr":"chr1","lo":0,"len":100,"exons":[],"sites":[{"pos":50,"c":[[1.0,2.0],[0.0,0.0]],"w":[[1.0,2.0],[3.0,4.0]],"s":[4,2,3]}]}]}]}"#;
     for (m, names) in [loaded(), super::swapped()]
         .iter()
         .zip([r#"["C1","C2"]"#, r#"["C2","C1"]"#])

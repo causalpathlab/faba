@@ -233,6 +233,11 @@ fn the_screen_shows_the_grids_the_counts_and_genes_side_by_side() {
         "{names}"
     );
     assert!(s.contains("all"), "the all-cells track");
+    let title = s.lines().find(|l| l.contains(" genes · ")).unwrap();
+    assert!(
+        title.contains("posterior") && title.contains("fitted cells"),
+        "the strip's reads and sizes are the fitted cells' posterior: {title}"
+    );
     assert!(s.contains("• GENE1 100"), "pinned genes are marked: {s}");
     assert!(
         s.contains("modules") && s.contains("faba"),
@@ -456,17 +461,17 @@ fn cell_modules_in_the_other_order_keep_their_own_reads_names_and_sizes() {
     };
     assert!(line("C2 % ").contains("sites · M1 · 1/3 · C2 % ↓"), "{s}");
     assert!(heads(&s)
-        .starts_with("│                 C2    C1            ││            C2    C1     reads"));
+        .starts_with("│     main genes  C2    C1            ││            C2    C1     reads"));
     assert!(line("M2      1 genes")
         .starts_with("│M2      1 genes  ▇▇ 75 ▂▂ 25 Δ1.50   ││• GENE1 100 ▆▆ 80 ▁▁ 10     40"));
     assert!(line("M1      2 genes")
         .starts_with("│M1      2 genes  ▇▇ 64 ▁▁ 10 Δ0.20   ││• GENE1 300 ▇▇ 50           20"));
     assert!(line("GENE2 50").contains("││GENE2 50    ▇▇ 50            6"));
     assert!(
-        line("C2       2").starts_with("│C2       2   █      █"),
+        line("C2     1.6").starts_with("│C2     1.6   █      █"),
         "{s}"
     );
-    assert!(line("C1       1").starts_with("│C1       1   ▂"), "{s}");
+    assert!(line("C1     1.4").starts_with("│C1     1.4   ▂"), "{s}");
     assert_eq!(
         line("chr1:100"),
         " GENE1  chr1:100   of M1    C2 80% of 10  C1 10% of 10"
@@ -554,7 +559,7 @@ fn the_last_scroll_fills_the_narrower_grid_with_the_last_cell_modules() {
     assert!(h.contains("‹8") && !h.contains('›'), "{h}");
     let shown: Vec<&str> = h
         .split_whitespace()
-        .filter(|w| !w.contains('‹') && w != &"│")
+        .filter(|w| !w.contains('‹') && !["│", "main", "genes"].contains(w))
         .map(|w| w.trim_matches('│'))
         .collect();
     assert_eq!(shown.len(), 4, "{h}");

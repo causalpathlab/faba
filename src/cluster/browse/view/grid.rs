@@ -188,16 +188,30 @@ impl<K: Copy + PartialEq> Kept<K> {
 }
 
 /// The rows a grid shows, from row `first` of all of them, and how: the
-/// label column's width, the row highlighted, the look, and the colour
-/// ranges over all the rows (for a heatmap).
+/// label column's width and head, the row highlighted, the look, and the
+/// colour ranges over all the rows (for a heatmap).
 struct Placing<'s> {
     label_w: u16,
+    /// What the labels count, over their last column.
+    head: &'static str,
     /// Room kept right of the cells for each row's numbers.
     extra_w: u16,
     first: usize,
     selected: usize,
     look: Look,
     stretch: Option<&'s Stretch>,
+}
+
+/// A grid's corner `room` wide: the cell modules `hidden`, then `head`
+/// ending a column short of the room, when both fit apart.
+fn corner(hidden: &str, head: &str, room: usize) -> String {
+    let lead = hidden.chars().count();
+    let gap = room.saturating_sub(1 + lead + head.chars().count());
+    if head.is_empty() || (gap == 0 && lead > 0) {
+        hidden.to_string()
+    } else {
+        format!("{hidden}{}{head}", " ".repeat(gap))
+    }
 }
 
 /// One row of a grid, its reads in the panes' column order.
@@ -233,6 +247,7 @@ impl ModulesView<'_> {
             .collect();
         let placing = Placing {
             label_w: MODULE_LABEL,
+            head: "main genes",
             extra_w: MODULE_EXTRA,
             first,
             selected: at,
@@ -276,6 +291,7 @@ impl ModulesView<'_> {
         let selected = self.listed_at().unwrap_or(0);
         let placing = Placing {
             label_w,
+            head: "",
             extra_w: COUNTS + 1,
             first,
             selected,
@@ -350,7 +366,7 @@ impl ModulesView<'_> {
         }
         let hidden = hidden_marks(cols.start, self.m.cell_roles - cols.end);
         let room = at.label_w.saturating_sub(1) as usize;
-        buf.set_stringn(area.x, area.y, hidden, room, DIM);
+        buf.set_stringn(area.x, area.y, corner(&hidden, at.head, room), room, DIM);
         let fit = (area.height.saturating_sub(1) / 2) as usize;
         for (k, row) in rows.iter().take(fit).enumerate() {
             let selected = at.first + k == at.selected;

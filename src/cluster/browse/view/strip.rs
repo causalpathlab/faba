@@ -5,6 +5,7 @@
 
 use super::bars::{mirror, peak};
 use super::{ModulesView, Pane, Spot};
+use crate::cluster::browse::data::bounds;
 use crate::cluster::browse::Count;
 use crate::site_analysis::miami::genemodel::GeneModel;
 use crate::site_analysis::pileup::query_symbol;
@@ -125,11 +126,12 @@ impl ModulesView<'_> {
         }
     }
 
-    /// All cells, then each cell module shown, with its fitted cells; the
-    /// cell modules hidden above and below counted under them.
+    /// All cells, then each cell module shown, with its posterior size over
+    /// the fitted cells; the cell modules hidden above and below counted
+    /// under them.
     fn track_labels(&self, buf: &mut Buffer, area: Rect, rows: &Rows) {
         let m = self.m;
-        let fitted: usize = m.cell_sizes.iter().sum();
+        let fitted: f64 = m.cell_sizes.iter().sum();
         for t in 0..rows.tracks {
             let y = rows.top(area, t) + rows.lines - 1;
             let (name, n, style) = match self.track(t) {
@@ -139,7 +141,7 @@ impl ModulesView<'_> {
                     (format!("C{}", c + 1), m.cell_sizes[c], PLAIN)
                 }
             };
-            let label = format!("{name:<4}{:>6}", compact(n as f64));
+            let label = format!("{name:<4}{:>6}", m.cells_label(n));
             buf.set_stringn(area.x, y, label, TRACK_LABEL as usize - 1, style);
         }
         let below = m.cell_roles - (self.col_from + rows.tracks.saturating_sub(1));
@@ -159,10 +161,7 @@ impl ModulesView<'_> {
         let model = self.models.get(gene);
         let extent = match model {
             Some(model) => (model.lo, model.hi - 1),
-            None => (
-                pos.iter().copied().min().unwrap_or(0),
-                pos.iter().copied().max().unwrap_or(0),
-            ),
+            None => bounds(pos.iter().copied()),
         };
         let focused = k == self.pin;
         let cursor = focused && self.pane == Pane::Genes;
