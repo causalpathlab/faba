@@ -13,6 +13,7 @@ use ratatui::Terminal;
 
 mod data;
 mod gene;
+mod model;
 mod posterior;
 mod report;
 mod strip;
@@ -86,16 +87,16 @@ fn tables_with(dir: &Path, swap: bool) {
     if swap {
         member.iter_mut().for_each(|m| m.reverse());
     }
-    let rows: Vec<write::CommunityRow> = cells
+    let rows: Vec<write::RoleRow> = cells
         .iter()
         .enumerate()
-        .map(|(i, cell)| write::CommunityRow {
+        .map(|(i, cell)| write::RoleRow {
             cell,
             membership: member.get(i).map(|m| m.as_slice()),
             level: None,
         })
         .collect();
-    write::communities(&rows, 2, "role", &path("cell_roles")).unwrap();
+    write::cell_roles(&rows, 2, &path("cell_roles")).unwrap();
     // The fitted cells' links: B0, B1 and B3.
     let fitted = [0usize, 1, 3];
     let mut links = vec![0.0; fitted.len() * blocks];
@@ -189,16 +190,16 @@ fn wide_tables(dir: &Path) {
     let member: Vec<Vec<f32>> = (0..cells)
         .map(|i| (0..cells).map(|c| if c == i { 0.9 } else { 0.0 }).collect())
         .collect();
-    let rows: Vec<write::CommunityRow> = all
+    let rows: Vec<write::RoleRow> = all
         .iter()
         .zip(&member)
-        .map(|(cell, m)| write::CommunityRow {
+        .map(|(cell, m)| write::RoleRow {
             cell,
             membership: Some(m.as_slice()),
             level: None,
         })
         .collect();
-    write::communities(&rows, cells, "role", &path("cell_roles")).unwrap();
+    write::cell_roles(&rows, cells, &path("cell_roles")).unwrap();
     let mut links = vec![0.0; cells * blocks];
     for r in 0..cells {
         links[r * blocks + r * roles] = 1.0;

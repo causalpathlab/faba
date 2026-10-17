@@ -75,16 +75,16 @@ fn split_tables(dir: &Path, old: bool) {
             fit: i < 2,
         })
         .collect();
-    let rows: Vec<write::CommunityRow> = cells
+    let rows: Vec<write::RoleRow> = cells
         .iter()
         .zip(&SPLIT_MEMBERSHIP)
-        .map(|(cell, m)| write::CommunityRow {
+        .map(|(cell, m)| write::RoleRow {
             cell,
             membership: Some(m.as_slice()),
             level: None,
         })
         .collect();
-    write::communities(&rows, 2, "role", &path("cell_roles")).unwrap();
+    write::cell_roles(&rows, 2, &path("cell_roles")).unwrap();
     if old {
         without_column(&path("cell_roles"), "fitted");
     }

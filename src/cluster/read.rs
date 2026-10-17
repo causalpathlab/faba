@@ -133,7 +133,7 @@ pub fn hold_out(reads: &Reads, fraction: f64, seed: u64) -> (Reads, Reads) {
 /// Held-out reads' log-likelihood and read count: each cell `c`'s entry at
 /// site `j` scored at `ln_p(c, j)`, the log probabilities of a converted and
 /// of an unconverted read.
-pub fn score(held: &Reads, ln_p: impl Fn(usize, usize) -> (f64, f64)) -> (f64, f64) {
+pub fn score(held: &Reads, mut ln_p: impl FnMut(usize, usize) -> (f64, f64)) -> (f64, f64) {
     let (mut ll, mut n) = (0.0, 0.0);
     for c in 0..held.cells() {
         let (s, m, u) = held.of(c);

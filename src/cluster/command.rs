@@ -30,6 +30,11 @@ impl ClusterArgs {
                 .collect(),
         );
     }
+
+    /// Whether option `id` (its clap id) was given.
+    pub(super) fn given(&self, id: &str) -> bool {
+        self.given.0.contains(id)
+    }
 }
 
 /// `word` as the saved command takes it: a word of an option that takes a
@@ -96,7 +101,7 @@ pub(super) fn command(args: &ClusterArgs) -> Vec<String> {
             if changed {
                 argv.push(flag);
             }
-        } else if changed || args.given.0.contains(id) {
+        } else if changed || args.given(id) {
             let ws = words(value).iter().map(|w| absolute(arg, w)).collect();
             argv.extend(crate::script::emit(&flag, crate::script::many_of(arg), ws));
         }

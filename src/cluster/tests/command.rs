@@ -57,6 +57,8 @@ fn the_saved_command_runs_the_same_fit_again() {
         "--holdout",
         "0.1",
         "--shift-sd=-0.5",
+        "--cell-sd",
+        "0.4",
         "-o",
         "out",
     ]);
@@ -71,6 +73,8 @@ fn the_saved_command_runs_the_same_fit_again() {
     assert_eq!(after(&argv, "--fit"), "*_wt_*");
     // A value that starts like a flag stays in its flag's word.
     assert!(argv.contains(&"--shift-sd=-0.5".to_string()), "{argv:?}");
+    // The cells' levels' prior sd, away from its default.
+    assert_eq!(after(&argv, "--cell-sd"), "0.4");
     // Parsed back, the same options; only the paths are absolute now.
     let mut again = parse_saved(&argv);
     again.data_files = args.data_files.clone();
@@ -144,33 +148,66 @@ fn the_saved_command_quotes_a_path_with_a_space() {
     assert!(text.contains("'/x y/a.zarr'"), "{text}");
 }
 
-/// `faba modules` clusters with `--model blocks` whatever was given, so its
-/// saved command says so, beside the options given to `faba modules`.
-#[test]
-fn the_saved_command_of_modules_says_blocks() {
+/// `words` parsed as `faba modules` parses them, what was given recorded.
+fn parse_modules(words: &[&str]) -> ModulesArgs {
     use clap::{Args, FromArgMatches};
-    let cmd = ModulesArgs::augment_args(clap::Command::new("faba"));
-    let m = cmd
-        .try_get_matches_from(["faba", "/x.zarr", "--chains", "2", "--refit"])
+    let m = ModulesArgs::augment_args(clap::Command::new("faba"))
+        .try_get_matches_from(words)
         .unwrap();
     let mut args = ModulesArgs::from_arg_matches(&m).unwrap();
     args.record_given(&m);
-    let argv = command(&args.blocks());
+    args
+}
+
+/// `faba modules` clusters with the blocks preset unless `--model link` is
+/// given, so its saved command says which, beside the options given to
+/// `faba modules`; `--model crp`, which writes no modules, is refused.
+#[test]
+fn the_saved_command_of_modules_names_its_preset() {
+    let args = parse_modules(&["faba", "/x.zarr", "--chains", "2", "--refit"]);
+    let argv = command(&args.blockmodel().unwrap());
     assert_eq!(after(&argv, "--model"), "blocks");
     assert_eq!(after(&argv, "--chains"), "2");
     // Only `faba cluster`'s own options.
     assert!(!argv.iter().any(|w| w == "--refit"), "{argv:?}");
-    // Set in code over one given: the last word is the one run.
-    let m = ModulesArgs::augment_args(clap::Command::new("faba"))
-        .try_get_matches_from(["faba", "/x.zarr", "--model", "crp"])
-        .unwrap();
-    let mut args = ModulesArgs::from_arg_matches(&m).unwrap();
-    args.record_given(&m);
-    let argv = command(&args.blocks());
+    let args = parse_modules(&["faba", "/x.zarr", "--model", "link"]);
+    let argv = command(&args.blockmodel().unwrap());
+    assert_eq!(after(&argv, "--model"), "link");
+    let refused = parse_modules(&["faba", "/x.zarr", "--model", "crp"])
+        .blockmodel()
+        .unwrap_err()
+        .to_string();
+    assert!(refused.contains("--model crp"), "{refused}");
+}
+
+/// The blockmodel's switches, an infinite profile strength among them, are
+/// saved as given and parsed back the same; the strength's old name is the
+/// same option.
+#[test]
+fn the_saved_command_keeps_the_blockmodel_switches() {
+    let args = parse_cluster(&[
+        "faba",
+        "/x.zarr",
+        "--model",
+        "link",
+        "--profile-strength",
+        "inf",
+        "--global",
+        "symmetric",
+        "--shift",
+        "on",
+        "--gene-roles",
+        "2",
+    ]);
+    let argv = command(&args);
+    assert_eq!(after(&argv, "--profile-strength"), "inf");
+    assert_eq!(after(&argv, "--global"), "symmetric");
+    assert_eq!(after(&argv, "--shift"), "on");
+    assert_eq!(after(&argv, "--gene-roles"), "2");
     assert_eq!(
-        argv.iter().filter(|w| *w == "--model").count(),
-        1,
-        "{argv:?}"
+        serde_json::to_value(parse_saved(&argv)).unwrap(),
+        serde_json::to_value(&args).unwrap()
     );
-    assert_eq!(after(&argv, "--model"), "blocks");
+    let old = parse_cluster(&["faba", "/x.zarr", "--prior-strength", "3"]);
+    assert_eq!(after(&command(&old), "--profile-strength"), "3.0");
 }

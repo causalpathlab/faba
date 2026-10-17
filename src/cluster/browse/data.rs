@@ -1,4 +1,4 @@
-//! What `faba cluster --model blocks` wrote, read for the browser: each
+//! What `faba cluster`'s blockmodel wrote, read for the browser: each
 //! gene module's sites with their posterior-mean reads in each cell module,
 //! each site's over every gene module (the full pileups), the shifts, the
 //! cell modules' posterior sizes, the genes' main roles, and each site's
@@ -6,6 +6,7 @@
 
 use super::order::{diagonal, standardized};
 use crate::cluster::read::{Site, SiteStats};
+use crate::cluster::unified::Recorded;
 use crate::common::{column, read_record_batch};
 use crate::site_analysis::miami::genemodel::GeneModel;
 use crate::site_analysis::pileup::query_symbol;
@@ -19,8 +20,11 @@ use std::path::Path;
 use tables::{main_roles, posterior_sizes, read_shifts, role_sizes, site_counts};
 use tables::{BlockSites, SiteRows};
 
+mod run;
 mod sites;
 mod tables;
+
+pub(super) use run::model as run_model;
 
 #[cfg(test)]
 pub(super) use tables::role_at;
@@ -117,7 +121,7 @@ pub struct Pileup<'a> {
     pub dropped: Vec<&'a str>,
 }
 
-/// What `faba cluster --model blocks` wrote, as the browser reads it.
+/// What `faba cluster`'s blockmodel wrote, as the browser reads it.
 #[derive(Debug)]
 pub struct Modules {
     /// The sites' modality, e.g. `m6a`.
@@ -161,6 +165,9 @@ pub struct Modules {
     /// Per site, its raw reads over every cell read and its cells, from
     /// `{m}_site_stats`; none when the tables predate it.
     pub stats: Option<SiteStats>,
+    /// The model the tables come from, from their run record; why not
+    /// when there is none (see [`run::model`]).
+    pub run: Result<Recorded, String>,
 }
 
 impl Modules {
@@ -225,6 +232,7 @@ impl Modules {
             diagonal: Vec::new(),
             columns: (0..cell_roles).collect(),
             stats,
+            run: run::model(dir, modality),
         };
         modules.set_orders();
         modules.put_in_columns();
@@ -276,8 +284,7 @@ impl Modules {
 
     /// The range of gene role `g`'s shifts across the cell roles.
     pub fn shift_range(&self, g: usize) -> f64 {
-        let s = (0..self.cell_roles).map(|c| self.shift[c * self.gene_roles + g]);
-        s.clone().fold(f64::MIN, f64::max) - s.fold(f64::MAX, f64::min)
+        crate::cluster::unified::shift_range(&self.shift, self.cell_roles, self.gene_roles, g)
     }
 
     /// Gene role `g`'s genes in its order, each a span of its members.

@@ -11,6 +11,8 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use serde::Serialize;
 use std::path::Path;
 
+mod plate;
+
 /// The page's own markup, styles and code.
 pub(super) const FRAGMENT: &str = include_str!("report.html");
 
@@ -36,6 +38,8 @@ pub(super) struct Data {
     /// The modules' diagonal order for the heatmaps.
     diagonal: Vec<String>,
     modules: Vec<Module>,
+    /// The model the tables come from, drawn, or why it is not.
+    model: plate::Section,
 }
 
 /// A gene module, its genes in its order.
@@ -126,6 +130,7 @@ pub(super) fn data(m: &Modules, models: &FxHashMap<Box<str>, GeneModel>) -> Data
         pileup_note: m.approximate.pileup_note(&m.modality),
         diagonal: m.diagonal.iter().map(|g| format!("M{}", g + 1)).collect(),
         modules,
+        model: plate::section(&m.run),
     }
 }
 

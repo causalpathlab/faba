@@ -1,8 +1,8 @@
 //! `faba modules`: the blockmodel's gene modules and cell modules, browsed.
 //!
-//! Reads the tables `faba cluster --model blocks` writes (running it first
-//! when they are missing, see [`data`]) and opens a view of four linked
-//! levels, each a margin of the next over the posterior-mean reads by gene
+//! Reads the tables `faba cluster`'s blockmodel writes (see [`data`]),
+//! fitting them first when they are missing or of other settings than those
+//! given (see [`plan`]), and opens a view of four linked levels, each a margin of the next over the posterior-mean reads by gene
 //! role, site and cell role (see [`view`]): every gene module against every
 //! cell module, the sites of the module in focus, the genes pinned side by
 //! side (each in its main gene module), and one gene's full pileup over
@@ -47,9 +47,11 @@ pub struct ModulesArgs {
         long = "refit",
         default_value_t = false,
         help = "Cluster again with these options even when block tables exist",
-        long_help = "Cluster again (`faba cluster --model blocks` with these options) even when\n\
-                     the output directory has block tables. Without it, existing tables are\n\
-                     opened as they are and the clustering options are not used."
+        long_help = "Cluster again (`faba cluster --model blocks`, or `--model link` when given,\n\
+                     with these options) even when the output directory has block tables.\n\
+                     Without it, existing tables are opened as their run record says, unless\n\
+                     --model or a blockmodel switch is given whose settings (the rest at their\n\
+                     defaults) are not the recorded ones."
     )]
     refit: bool,
 
@@ -80,11 +82,19 @@ impl ModulesArgs {
         self.cluster.record_given(matches);
     }
 
-    /// The clustering options, with the blockmodel these tables come from.
-    pub(super) fn blocks(&self) -> ClusterArgs {
+    /// The clustering options, with the blockmodel preset they fit: the
+    /// blocks preset unless `--model link` is given; `--model crp`, which
+    /// writes no modules, refused.
+    pub(super) fn blockmodel(&self) -> anyhow::Result<ClusterArgs> {
         let mut cluster = self.cluster.clone();
-        cluster.model = ModelKind::Blocks;
-        cluster
+        if !cluster.given("model") {
+            cluster.model = ModelKind::Blocks;
+        }
+        anyhow::ensure!(
+            cluster.model != ModelKind::Crp,
+            "`faba modules` reads the blockmodel (--model link or blocks), not --model crp"
+        );
+        Ok(cluster)
     }
 }
 
@@ -153,25 +163,88 @@ pub fn run_modules(args: &ModulesArgs) -> anyhow::Result<()> {
     browse(&dir, &modules, gtf)
 }
 
-/// The modality of the block tables in `dir`: those there, unless asked to
-/// cluster again, else those `faba cluster --model blocks` writes now.
-fn ensure_tables(args: &ModulesArgs, dir: &Path) -> anyhow::Result<String> {
-    let asked = args.cluster.modality.as_deref();
-    if let Some(m) = tables(dir, asked).filter(|_| !args.refit) {
-        log::info!(
-            "opening the {m} block tables in {} as they are (--refit clusters again)",
-            dir.display()
-        );
-        return Ok(m);
+/// What `faba modules` does with `dir`: open the block tables of a
+/// modality there, or cluster first, and why.
+#[derive(Debug, PartialEq)]
+enum Plan {
+    Open(String),
+    Fit(String),
+}
+
+/// What to do with `dir`: cluster when asked to (`--refit`), when it has
+/// no block tables, or when the blockmodel options given set other settings
+/// than the tables' run record says (the options not given at their
+/// defaults); else open the tables as they are. `--model crp`, which writes
+/// no modules, is refused whatever the tables.
+fn plan(args: &ModulesArgs, dir: &Path) -> anyhow::Result<Plan> {
+    let asked = args.blockmodel()?;
+    if args.refit {
+        return Ok(Plan::Fit("--refit".to_string()));
     }
+    let Some(m) = tables(dir, args.cluster.modality.as_deref()) else {
+        return Ok(Plan::Fit(format!("no block tables in {}", dir.display())));
+    };
+    if !super::args::asks_model(&args.cluster) {
+        return Ok(Plan::Open(m));
+    }
+    match data::run_model(dir, &m) {
+        Ok(recorded) => {
+            let wanted = super::args::recorded(&asked);
+            if wanted.settings == recorded.settings {
+                Ok(Plan::Open(m))
+            } else {
+                Ok(Plan::Fit(format!(
+                    "the {m} block tables in {} are of the {}, not the {} asked for",
+                    dir.display(),
+                    recorded.label(),
+                    wanted.label()
+                )))
+            }
+        }
+        Err(why) => {
+            log::warn!(
+                "the clustering options given cannot be compared with the tables' ({why}): \
+                 opening them as they are (--refit clusters again)"
+            );
+            Ok(Plan::Open(m))
+        }
+    }
+}
+
+/// The modality of the block tables in `dir`: those there (see [`plan`]),
+/// else those `faba cluster` writes now (the blocks preset, or the
+/// settings given).
+fn ensure_tables(args: &ModulesArgs, dir: &Path) -> anyhow::Result<String> {
+    let why = match plan(args, dir)? {
+        Plan::Open(m) => {
+            log::info!(
+                "opening the {m} block tables in {} as they are (--refit clusters again)",
+                dir.display()
+            );
+            return Ok(m);
+        }
+        Plan::Fit(why) => why,
+    };
+    let cluster = args.blockmodel()?;
     log::info!(
-        "running `faba cluster --model blocks` in {} first",
+        "{why}: running `faba cluster --model {}` in {} first",
+        cluster.model.name(),
         dir.display()
     );
     // The tables of the modality just fitted, not older ones beside them.
-    super::run_cluster(&args.blocks())?
+    super::run_cluster(&cluster)?
         .and_then(|m| tables(dir, Some(&m)))
         .ok_or_else(|| anyhow::anyhow!("`faba cluster` wrote no block tables in {}", dir.display()))
+}
+
+/// The browser's header: the directory, the modality, and the model the
+/// tables come from (its preset, or custom settings).
+fn title(dir: &Path, modules: &Modules) -> String {
+    let model = match &modules.run {
+        Ok(r) => r.label(),
+        Err(_) => "settings not recorded".to_string(),
+    };
+    format!("{} · {} · {model}", dir.display(), modules.modality)
 }
 
 /// `--html`: the modules as one page at `path`, gene models from `gtf`.
@@ -198,7 +271,7 @@ fn browse(
             .map(|p| p.to_string_lossy().into()),
     };
     let models = crate::site_analysis::pileup::start_gene_models(gtf.as_deref());
-    let title = format!("{} · {}", dir.display(), modules.modality);
+    let title = title(dir, modules);
     let mut view = ModulesView::new(&title, modules)
         .with_genes(models.clone())
         .with_report(
