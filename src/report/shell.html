@@ -66,9 +66,15 @@ h1 { font-size: 1.15rem; font-weight: 600; margin: 0; text-wrap: balance; }
 </style>
 <script id="data" type="application/json">{{DATA}}</script>
 <script>
-// Helpers every report's drawing shares: a CSS token's value, and a canvas
-// sized to its box at the screen's pixel density.
+// Helpers every report's drawing shares: a CSS token's value, text escaped
+// for HTML, the key footer, and a canvas sized to its box at the screen's
+// pixel density.
 const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const esc = t => String(t).replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"})[c]);
+// The key footer (`#keys`) listing `keys`, each a [key, what it does].
+function footerKeys(keys) {
+  document.getElementById("keys").innerHTML = keys.map(([k, w]) => `<span><kbd>${k}</kbd> ${w}</span>`).join("");
+}
 function fit(canvas) {
   const r = canvas.getBoundingClientRect(), d = window.devicePixelRatio || 1;
   canvas.width = Math.round(r.width * d); canvas.height = Math.round(r.height * d);

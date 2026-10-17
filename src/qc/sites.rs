@@ -51,7 +51,70 @@ pub struct SiteTable {
     pub raw_log_odds: Vec<f64>,
 }
 
+/// The columns a criterion's raw value and a site's weight are read from,
+/// borrowed from a table ([`RawColumns`]) or a copy a thread owns
+/// ([`OwnedColumns`]): counts as `U`, reals as `F`, the log odds as `D`.
+#[derive(Clone, Copy)]
+pub struct Columns<U, F, D> {
+    pub coverage: U,
+    pub control_coverage: U,
+    pub converted: U,
+    pub edit_ratio: F,
+    pub fold: F,
+    pub raw_log_odds: D,
+    pub pv: F,
+}
+
+/// A table's columns, as it lends them.
+pub type RawColumns<'a> = Columns<&'a [u64], &'a [f32], &'a [f64]>;
+
+/// A table's columns, copied.
+pub type OwnedColumns = Columns<Vec<u64>, Vec<f32>, Vec<f64>>;
+
+impl RawColumns<'_> {
+    /// The columns, copied.
+    pub fn copied(self) -> OwnedColumns {
+        Columns {
+            coverage: self.coverage.to_vec(),
+            control_coverage: self.control_coverage.to_vec(),
+            converted: self.converted.to_vec(),
+            edit_ratio: self.edit_ratio.to_vec(),
+            fold: self.fold.to_vec(),
+            raw_log_odds: self.raw_log_odds.to_vec(),
+            pv: self.pv.to_vec(),
+        }
+    }
+}
+
+impl OwnedColumns {
+    /// The copy, lent as a table lends its columns.
+    pub fn as_raw(&self) -> RawColumns<'_> {
+        Columns {
+            coverage: &self.coverage,
+            control_coverage: &self.control_coverage,
+            converted: &self.converted,
+            edit_ratio: &self.edit_ratio,
+            fold: &self.fold,
+            raw_log_odds: &self.raw_log_odds,
+            pv: &self.pv,
+        }
+    }
+}
+
 impl SiteTable {
+    /// Its columns the criteria read their raw values from.
+    pub fn raw_columns(&self) -> RawColumns<'_> {
+        Columns {
+            coverage: &self.coverage,
+            control_coverage: &self.control_coverage,
+            converted: &self.converted,
+            edit_ratio: &self.edit_ratio,
+            fold: &self.fold,
+            raw_log_odds: &self.raw_log_odds,
+            pv: &self.pv,
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.key.len()
     }
@@ -339,6 +402,11 @@ impl Criterion {
 
     /// The raw value this check tests at site `i`.
     pub fn raw(self, t: &SiteTable, i: usize, n_cells: Option<usize>) -> f64 {
+        self.raw_in(t.raw_columns(), i, n_cells)
+    }
+
+    /// The raw value this check tests at site `i` of columns `t`.
+    pub fn raw_in(self, t: RawColumns, i: usize, n_cells: Option<usize>) -> f64 {
         match self {
             Criterion::MinCoverage => (t.coverage[i] + t.control_coverage[i]) as f64,
             Criterion::MinConverted => t.converted[i] as f64,

@@ -4,11 +4,12 @@
 
 use data_beans::interactive::ui::{help_line, Screen};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
-use ratatui::layout::{Constraint, Layout};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
+use super::render::fitted_help;
 use super::{browser, Exit, PileupView, Settings, Track, View};
 use crate::figure::{status_line, Controls, Key};
 
@@ -105,7 +106,9 @@ impl<'a> StackView<'a> {
         crate::figure::tile_svgs(&figures, self.arrange.cols(figures.len()))
     }
 
-    pub(super) fn footer_line(&self) -> Line<'static> {
+    /// The footer: a status, the save prompt, or the keys, `[/]` among
+    /// them when the gene with the keys has rows `hidden`.
+    pub(super) fn footer_line(&self, hidden: bool) -> Line<'static> {
         if let Some(msg) = &self.status {
             return status_line(msg);
         }
@@ -134,6 +137,9 @@ impl<'a> StackView<'a> {
         ];
         if v.tracks.iter().any(|t| t.is_reads()) {
             keys.push(("c", v.show.next().short()));
+        }
+        if hidden {
+            keys.push(("[/]", "tracks"));
         }
         self.controls.help_keys(&mut keys);
         keys.extend([("g/Esc", "gene list"), ("q", "quit")]);
@@ -264,26 +270,50 @@ impl Screen for StackView<'_> {
         self.mark_focus();
     }
 
+    /// The genes in their cells over the footer's keys, which name `[/]`
+    /// when the gene with the keys, fitted there, leaves rows out.
     fn render(&mut self, frame: &mut Frame) {
         let area = frame.area();
-        let help = crate::tui::wrap_help(self.footer_line(), area.width);
-        let [body, footer] =
-            Layout::vertical([Constraint::Fill(1), Constraint::Length(help.len() as u16)])
-                .areas(area);
-        let n = self.views.len();
-        let cols = self.arrange.cols(n);
-        let rows = n.div_ceil(cols);
-        let row_areas = Layout::vertical(vec![Constraint::Ratio(1, rows as u32); rows]).split(body);
-        for (r, chunk) in self.views.chunks_mut(cols).enumerate() {
-            let cells = Layout::horizontal(vec![Constraint::Ratio(1, cols as u32); cols])
-                .split(row_areas[r]);
-            for (v, &cell) in chunk.iter_mut().zip(cells.iter()) {
-                v.render_in(frame, cell, false);
-            }
+        let help = fitted_help(self, area.width, Self::footer_line, |s, lines| {
+            let cell = s.cells(split(area, lines).0)[s.focus];
+            let v = &mut s.views[s.focus];
+            v.fit_in(&v.rows(), cell, 0, v.genes_height());
+            v.rows_hidden()
+        });
+        let (body, footer) = split(area, help.len());
+        let cells = self.cells(body);
+        for (v, cell) in self.views.iter_mut().zip(cells) {
+            v.render_in(frame, cell, false);
         }
         frame.render_widget(Paragraph::new(help), footer);
         self.controls.render_save(frame, area);
     }
+}
+
+impl StackView<'_> {
+    /// Each gene's cell of `body`, laid out as [`Arrange`] asks.
+    fn cells(&self, body: Rect) -> Vec<Rect> {
+        let n = self.views.len();
+        let cols = self.arrange.cols(n);
+        let rows = n.div_ceil(cols);
+        Layout::vertical(vec![Constraint::Ratio(1, rows as u32); rows])
+            .split(body)
+            .iter()
+            .flat_map(|&row| {
+                Layout::horizontal(vec![Constraint::Ratio(1, cols as u32); cols])
+                    .split(row)
+                    .to_vec()
+            })
+            .take(n)
+            .collect()
+    }
+}
+
+/// `area` as the genes' body over `footer` lines of keys.
+fn split(area: Rect, footer: usize) -> (Rect, Rect) {
+    let [body, keys] =
+        Layout::vertical([Constraint::Fill(1), Constraint::Length(footer as u16)]).areas(area);
+    (body, keys)
 }
 
 /// The name a save suggests: `pileup_` and the first genes' names.

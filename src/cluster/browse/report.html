@@ -20,7 +20,7 @@
 </style>
 <div class="wrap">
   <h1 id="title">gene modules × cell modules</h1>
-  <p class="lede">The gene modules and cell modules of <code>faba cluster --model blocks</code>. Click a pane or press <kbd>Tab</kbd> to focus it, then <kbd>↑</kbd>/<kbd>↓</kbd> to move. Choosing a gene module (left) fills the sites pane (right); <kbd>Space</kbd> on a site (or Shift-dragging its row down) pins its gene to the strip below, which grows a row at a time as genes are added; there the pinned genes (from any module) run side by side; Delete unpins one (or Shift-drag it off the strip; Shift-drag along it to reorder; a plain click only selects), <kbd>X</kbd> clears them, and Enter opens one's pileup. Each level is a margin of the next. Press <kbd>/</kbd> and type a gene name to jump to it.</p>
+  <p class="lede">The gene modules and cell modules of <code>faba cluster --model blocks</code>. Click a pane or press <kbd>Tab</kbd> to focus it, then <kbd>↑</kbd>/<kbd>↓</kbd> to move. Choosing a gene module (left) fills the sites pane (right); <kbd>Space</kbd> on a site (or Shift-dragging its row down) pins its gene to the strip below, which grows a row at a time as genes are added; there the pinned genes (from any module) run side by side; Delete unpins one (or Shift-drag it off the strip; Shift-drag along it to reorder; a plain click only selects), <kbd>Shift</kbd>+<kbd>X</kbd> clears them, and Enter opens one's pileup. When the cell modules do not all fit across a grid, its columns narrow and then <kbd>[</kbd>/<kbd>]</kbd> scroll them in every grid together, those hidden counted in its corner. Each level is a margin of the next. Press <kbd>/</kbd> and type a gene name to jump to it.</p>
 
   <div class="scroller">
     <div class="term" id="term">
@@ -101,7 +101,7 @@ function standardized(row) {
 const moduleOf = new Map(modules.flatMap(m => m.genes.map(ge => [ge, m])));
 // The modules pane's rows: diagonal in a heatmap, else by shift range.
 const modOrder = () => state.heat ? diag.rows : modules.map((_, i) => i);
-const state = {pane: 1, mod: 0, site: 0, from: 0, gfrom: 0, full: false, zoom: 1, hover: null, heat: 0, siteHeat: 0, scale: 0, pins: [], pk: 0, psite: 0};
+const state = {pane: 1, mod: 0, site: 0, from: 0, gfrom: 0, cfrom: 0, full: false, zoom: 1, hover: null, heat: 0, siteHeat: 0, scale: 0, pins: [], pk: 0, psite: 0};
 // The gene and site in focus: in the genes pane (and its full pileup) the pinned
 // gene's, elsewhere the sites list's.
 function focus() {
@@ -167,36 +167,84 @@ function stretchOf(key, rows, f) {
   }
   return stretches.get(key);
 }
-// A Hinton grid: rows of cells, true squares, area = reads within the row,
-// row `r` labelled `label(r)`. With `fixed`, rows keep that height and the
-// grid scrolls from row `from`. `key` names the rows for `stretchOf`.
-function hinton(canvas, rows, label, sel, extra, fixed, from, heat, key) {
+// The cell modules' columns every grid shares, so they line up, as in the
+// terminal: the narrowest grid's column width, and how many every grid has
+// room for in the last frame, from the first shown (`[` and `]` scroll them).
+let cols = {cw: 34, fits: CM};
+// Narrowest a cell module's column gets before the columns scroll.
+const MIN_CELL = 12;
+// A grid's margins: its row labels left, its column heads above.
+const LEFT = 132, TOP = 22;
+// A grid of `n` rows on `canvas`, sized to its box: its room for the cells
+// past `extra` on its right, its rows' height (`fixed`, else as the room
+// allows) and its own columns' width, true squares unless narrowed.
+function gridBox(canvas, n, extra, fixed) {
   const [ctx, W, H] = fit(canvas);
-  const left = 132, top = 22, right = extra ? Math.max(70, 7.4 * Math.max(...extra.map(e => e.length)) + 18) : 24;
-  const cell = fixed || Math.min((W - left - right) / CM, (H - top - 6) / Math.max(rows.length, 1), 34);
+  const right = extra ? Math.max(70, Math.max(...extra.map(e => ctx.measureText(e).width)) + 18) : 24;
+  const room = W - LEFT - right, scroll = room / CM < MIN_CELL;
+  const ch = fixed || Math.min(scroll ? MIN_CELL : room / CM, (H - TOP - 6) / Math.max(n, 1), 34);
+  return {ctx, W, H, room, ch, cw: Math.min(ch, scroll ? MIN_CELL : room / CM)};
+}
+// Each module's shift range, after its cells in the modules grid, by module.
+const modsExtra = modules.map(m => `Δ ${m.range.toFixed(2)}`);
+// Both grids' boxes in the frame being drawn, by canvas id: laid out once
+// by `layColumns`, drawn in by `hinton`.
+let boxes = {};
+// Both grids' columns laid out before either draws: the narrower width, as
+// many as fit in each, and the first shown kept so the last fill them.
+function layColumns() {
+  const sites = moduleSites(state.mod);
+  boxes = {
+    "c-mods": gridBox(document.getElementById("c-mods"), modules.length, modsExtra),
+    "c-sites": gridBox(document.getElementById("c-sites"), sites.rows.length, sites.stats, ROW),
+  };
+  const all = Object.values(boxes), cw = Math.min(...all.map(b => b.cw));
+  const fits = Math.min(CM, ...all.map(b => Math.max(1, Math.floor(b.room / cw + 1e-9))));
+  cols = {cw, fits};
+  setCfrom(state.cfrom);
+}
+// The first cell module shown, at `x` or as near as the last still fill the grids.
+const setCfrom = x => { state.cfrom = Math.max(0, Math.min(x, CM - cols.fits)); };
+// A Hinton grid: rows of cells, true squares while every cell module fits
+// at the rows' height, narrower columns (no %) when not, and scrolled once
+// even those do not fit; area = reads within the row, row `r` labelled
+// `label(r)`, each row's `extra` after its cells, in the box `layColumns`
+// laid out for `canvas`; the grid scrolls from row `from`. `key` names the
+// rows for `stretchOf`.
+function hinton(canvas, rows, label, sel, extra, from, heat, key) {
+  const {ctx, W, H, ch} = boxes[canvas.id], left = LEFT, top = TOP;
+  const {cw, fits} = cols, c0 = state.cfrom, shownCols = cellNames.map((_, c) => c).slice(c0, c0 + fits);
   const fg = css("--fg"), dim = css("--dim"), acc = css("--accent"), rule = css("--rule");
   const f = SCALES[state.scale][1];
   const {lo, hi, zTop, gridMax} = stretchOf(`${canvas.id} ${key} ${state.scale}`, rows, f);
   if (canvas.id === "c-mods") stretch = {lo, hi, zTop};
+  // Narrowed columns' heads: the number alone, in smaller type, as the
+  // terminal's compact heads.
+  const narrow = cw < ch, font = ctx.font;
   ctx.textAlign = "center"; ctx.fillStyle = dim;
-  cellNames.forEach((name, c) => ctx.fillText(name, left + (c + 0.5) * cell, 10));
-  const shown = Math.floor((H - top - 4) / cell);
+  if (narrow) ctx.font = `${Math.min(10, cw / 1.6)}px ${css("--mono")}`;
+  shownCols.forEach((c, k) => ctx.fillText(narrow ? cellNames[c].replace(/^\D+/, "") : cellNames[c], left + (k + 0.5) * cw, 10));
+  ctx.font = font;
+  // Those hidden either side counted in the corner, as `‹2 5›`.
+  const hidden = [c0 > 0 ? `‹${c0}` : "", CM - c0 - shownCols.length > 0 ? `${CM - c0 - shownCols.length}›` : ""].filter(Boolean).join(" ");
+  ctx.textAlign = "right"; ctx.fillText(hidden, left - 10, 10);
+  const shown = Math.floor((H - top - 4) / ch);
   rows.slice(from, from + shown).forEach((row, i) => {
-    const r = from + i, y = top + i * cell, max = Math.max(...row.map(x => x.reads));
-    if (r === sel) { ctx.fillStyle = "rgba(217,119,87,0.12)"; ctx.fillRect(0, y, W, cell); }
+    const r = from + i, y = top + i * ch, max = Math.max(...row.map(x => x.reads));
+    if (r === sel) { ctx.fillStyle = "rgba(217,119,87,0.12)"; ctx.fillRect(0, y, W, ch); }
     ctx.textAlign = "right"; ctx.fillStyle = r === sel ? acc : fg;
-    ctx.fillText(label(r), left - 10, y + cell / 2);
+    ctx.fillText(label(r), left - 10, y + ch / 2);
     // Each block a mirror bar, as in the pileup: converted reads up,
     // unconverted down, both on the row's scale.
     const peak = Math.max(...row.map(x => x.frac === null ? 0 : Math.max(x.reads * x.frac, x.reads * (1 - x.frac))));
     const zrow = standardized(row);
     // A cell module without reads draws nothing.
-    if (heat) row.forEach((x, c) => { if (x.frac === null) return;
+    if (heat) shownCols.forEach((c, k) => { const x = row[c]; if (x.frac === null) return;
       // A square outlined by a hairline: on a sqrt grayscale by the methylated %
       // (bright high), or blue-white-red by the row's z (clamped at ±2).
       // Area in proportion to the block's reads, against the grid's deepest.
-      const pad = 2, full = cell - 2 * pad, side = Math.max(3, full * Math.sqrt(x.reads / gridMax));
-      const sx = left + c * cell + pad + (full - side) / 2, sy = y + pad + (full - side) / 2;
+      const pad = 2, full = Math.min(cw, ch) - 2 * pad, side = Math.max(3, full * Math.sqrt(x.reads / gridMax));
+      const sx = left + k * cw + (cw - side) / 2, sy = y + (ch - side) / 2;
       let fill, text, dark;
       if (heat === 1) {
         const g = Math.round(255 * Math.min(1, Math.max(0, (f(x.frac) - lo) / (hi - lo || 1))));
@@ -208,23 +256,24 @@ function hinton(canvas, rows, label, sel, extra, fixed, from, heat, key) {
       }
       ctx.fillStyle = fill; ctx.fillRect(sx, sy, side, side);
       ctx.strokeStyle = "#000"; ctx.lineWidth = 0.5; ctx.strokeRect(sx, sy, side, side);
-      const keep = ctx.font; ctx.font = `${Math.min(10, cell * 0.36)}px ui-monospace, monospace`; ctx.textAlign = "center";
+      const keep = ctx.font; ctx.font = `${Math.min(10, cw * 0.36)}px ui-monospace, monospace`; ctx.textAlign = "center";
       // Numbers only on the highlighted row; a box too small for its number
       // leaves it on the dark ground.
       if (r === sel) { ctx.fillStyle = dark && side >= 16 ? "#111" : fg; ctx.fillText(text, sx + side / 2, sy + side / 2); }
       ctx.font = keep;
     });
-    else row.forEach((x, c) => { if (x.frac === null) return;
-      // The bar sits left of centre; its methylated % in small type to its right.
-      const cx = left + (c + 0.3) * cell, cy = y + cell / 2, half = cell / 2 - 2, w = Math.max(3, cell * 0.28);
+    else shownCols.forEach((c, k) => { const x = row[c]; if (x.frac === null) return;
+      // The bar sits left of centre; its methylated % in small type to its
+      // right, when the column is not narrowed.
+      const cx = left + (k + 0.3) * cw, cy = y + ch / 2, half = ch / 2 - 2, w = Math.max(3, cw * 0.28);
       const up = half * x.reads * x.frac / peak, down = half * x.reads * (1 - x.frac) / peak;
       ctx.strokeStyle = rule; ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.moveTo(left + c * cell + 2, cy); ctx.lineTo(left + (c + 1) * cell - 2, cy); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(left + k * cw + 2, cy); ctx.lineTo(left + (k + 1) * cw - 2, cy); ctx.stroke();
       ctx.fillStyle = acc; ctx.fillRect(cx - w / 2, cy - up, w, up);
       ctx.fillStyle = fg; ctx.fillRect(cx - w / 2, cy, w, down);
-      pct(ctx, x.frac, cx + w / 2 + 2, cy, Math.min(10, cell * 0.4), dim);
+      if (!narrow) pct(ctx, x.frac, cx + w / 2 + 2, cy, Math.min(10, cw * 0.4), dim);
     });
-    if (extra) { ctx.textAlign = "left"; ctx.fillStyle = dim; ctx.fillText(extra[r], left + CM * cell + 10, y + cell / 2); }
+    if (extra) { ctx.textAlign = "left"; ctx.fillStyle = dim; ctx.fillText(extra[r], left + shownCols.length * cw + 10, y + ch / 2); }
   });
   // A scrollbar when the rows do not all fit.
   if (rows.length > shown) {
@@ -232,7 +281,7 @@ function hinton(canvas, rows, label, sel, extra, fixed, from, heat, key) {
     ctx.fillStyle = rule; ctx.fillRect(x, top, 4, h);
     ctx.fillStyle = dim; ctx.fillRect(x, top + (h - th) * from / (rows.length - shown), 4, th);
   }
-  return {cell, shown};
+  return {cell: ch, shown};
 }
 
 // The legend's ramp, as the % heatmap draws it now.
@@ -245,12 +294,14 @@ function drawRamp() {
   document.getElementById("zramp-text").textContent = `z heatmap within each row, stretched: −${stretch.zTop.toFixed(1)} to +${stretch.zTop.toFixed(1)} (modules)`;
   document.getElementById("ramp-text").textContent = `% heatmap, ${name}, stretched: ${pct(stretch.lo)} to ${pct(stretch.hi)} (modules)`;
 }
+// The modules grid's row height in the last frame, for clicks.
+let modsCell = 34;
 function drawMods() {
   document.getElementById("h-mods").textContent = `Gene modules · ${state.heat ? "diagonal order" : "by shift range"}`;
   const order = modOrder(), ms = order.map(i => modules[i]);
-  hinton(document.getElementById("c-mods"), ms.map(m => m.cells),
+  modsCell = hinton(document.getElementById("c-mods"), ms.map(m => m.cells),
     r => `${ms[r].name}  ${String(ms[r].size).padStart(3)} genes`, order.indexOf(state.mod),
-    ms.map(m => `Δ ${m.range.toFixed(2)}`), undefined, 0, state.heat, "all");
+    order.map(i => modsExtra[i]), 0, state.heat, "all").cell;
   drawRamp();
   document.getElementById("h-mods-view").textContent = `${state.heat === 1 ? `% heatmap (${SCALES[state.scale][0]})` : VIEWS[state.heat]}${state.heat ? ", diagonal" : ""} · v next${state.heat === 1 ? " · y scale" : ""}`;
 }
@@ -273,7 +324,7 @@ function drawSites() {
   state.from = Math.max(0, Math.min(state.from, Math.max(0, list.length - shown)));
   document.getElementById("h-sites").textContent = `Sites · ${m.name} · ${state.site + 1}/${list.length}`;
   hinton(canvas, rows,
-    r => `${state.pins.includes(list[r].gene) ? "• " : ""}${names[r]}`, state.site, stats, ROW, state.from, state.siteHeat, state.mod);
+    r => `${state.pins.includes(list[r].gene) ? "• " : ""}${names[r]}`, state.site, stats, state.from, state.siteHeat, state.mod);
 }
 // The module's genes side by side, each on its own genomic axis; the window
 // of genes scrolls to keep the selected one in view.
@@ -410,7 +461,7 @@ function draw() {
   const level = state.full ? 4 : [2, 1, 3][state.pane];
   document.getElementById("levels").innerHTML = ["modules", "sites", "genes", "pileup"]
     .map((n, i) => `<span class="${i + 1 === level ? "on" : ""}">${i + 1} ${n}</span>`).join("<span>›</span>");
-  if (state.full) drawFull(); else { drawMods(); drawSites(); drawPile(); }
+  if (state.full) drawFull(); else { layColumns(); drawMods(); drawSites(); drawPile(); }
   drawKeys(level);
 }
 // The footer lists only the keys that act where the focus is.
@@ -421,10 +472,9 @@ const KEYS = {
   4: [["←→ hl", "bar"], ["n N", "next / prev site"], ["+ − 0", "zoom / whole gene"], ["pgup pgdn", "half a view"], ["y", "scale"], ["c", "reads shown"], ["v", "mirror / split"], ["g esc", "back to genes"]],
 };
 function drawKeys(level) {
-  const every = level < 4 ? [["tab", "pane"]] : [];
+  const every = level < 4 ? [...(cols.fits < CM ? [["[ ]", "cell modules"]] : []), ["tab", "pane"]] : [];
   const tail = [["/", "find gene"]];
-  document.getElementById("keys").innerHTML = [...KEYS[level], ...every, ...tail]
-    .map(([k, w]) => `<span><kbd>${k}</kbd> ${w}</span>`).join("");
+  footerKeys([...KEYS[level], ...every, ...tail]);
 }
 
 // In the genes strip and the pileup, ←/→ walk the pinned genes' sites across
@@ -463,7 +513,6 @@ function jump() {
   state.site = sitesOf(h.mi).findIndex(x => x.gene === h.ge);
 }
 // Text as HTML: names come from the data, the query from the keyboard.
-const esc = t => String(t).replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"})[c]);
 function drawFind() {
   const box = document.getElementById("search");
   box.hidden = !find.on; document.getElementById("keys").hidden = find.on;
@@ -505,6 +554,7 @@ document.addEventListener("keydown", e => {
   else if ((k === "Delete" || k === "Backspace") && level === 3 && state.pins.length) { e.preventDefault(); togglePin(state.pins[state.pk]); }
   else if (k === "X" && level < 4) { state.pins = []; state.pk = 0; state.psite = 0; }
   else if (k === "Escape" || (level === 4 && k === "g")) { if (level === 4) state.full = false; else if (level === 3) state.pane = 0; else if (level === 2) state.pane = 1; }
+  else if ((k === "[" || k === "]") && level < 4) setCfrom(state.cfrom + (k === "]" ? 1 : -1));
   else if (k === "Tab" && level < 4) { const order = [1, 0, 2], i = order.indexOf(state.pane); state.pane = order[(i + (e.shiftKey ? 2 : 1)) % 3]; }
   // 1 modules
   else if (level === 1 && (k === "ArrowDown" || k === "j")) move(1);
@@ -539,8 +589,7 @@ panes.forEach((p, i) => p.addEventListener("click", e => {
   const c = p.querySelector("canvas"), r = c.getBoundingClientRect();
   const yy = e.clientY - r.top;
   if (i === 1) {
-    const cell = Math.min((r.width - 132 - 70) / CM, (r.height - 28) / modules.length, 34);
-    const row = Math.floor((yy - 22) / cell);
+    const row = Math.floor((yy - 22) / modsCell);
     if (row >= 0 && row < modules.length) { const to = modOrder()[row]; if (to !== state.mod) { state.mod = to; state.site = 0; state.from = 0; } }
   } else if (i === 0) {
     const n = sitesOf(state.mod).length;

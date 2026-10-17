@@ -4,12 +4,12 @@
 //! track per cell module on a shared one.
 
 use super::bars::{mirror, peak};
-use super::grid::hidden_marks;
 use super::{ModulesView, Pane, Spot};
 use crate::cluster::browse::Count;
 use crate::site_analysis::miami::genemodel::GeneModel;
 use crate::site_analysis::pileup::query_symbol;
 use crate::site_analysis::pileup::tui::draw_gene_line;
+use crate::tui::hidden_marks;
 use data_beans::interactive::ui::{compact, ACCENTED, DIM, HIGHLIGHT, PLAIN};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;

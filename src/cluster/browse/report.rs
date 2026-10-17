@@ -3,6 +3,7 @@
 //! [`crate::report`]).
 
 use super::Modules;
+use crate::report::{tenth, thousandth};
 use crate::site_analysis::miami::genemodel::GeneModel;
 use crate::site_analysis::pileup::{channel_names, query_symbol};
 use rustc_hash::FxHashMap;
@@ -59,16 +60,6 @@ struct Site {
     pos: i64,
     c: Vec<[f64; 2]>,
     s: Option<[u64; 3]>,
-}
-
-/// To a tenth, which is all a page shows.
-fn tenth(x: f64) -> f64 {
-    (10.0 * x).round() / 10.0
-}
-
-/// To a thousandth, enough for a shift range's two decimals.
-fn thousandth(x: f64) -> f64 {
-    (1000.0 * x).round() / 1000.0
 }
 
 /// The page's data: the modules in their order, as the browser shows them.

@@ -220,7 +220,8 @@ fn browse(
             return Ok(());
         };
         // A gene that cannot be read leaves the browser as it was, saying why.
-        match gene::show(&matrices, modules, &key, models.as_ref(), &mut settings) {
+        let at = (key.as_str(), view.first_column());
+        match gene::show(&matrices, modules, at, models.as_ref(), &mut settings) {
             Ok(true) => return Ok(()),
             Ok(false) => {}
             Err(e) => view.set_status(format!("{e:#}")),

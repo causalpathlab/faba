@@ -163,7 +163,7 @@ fn draw_gene(canvas: &mut Canvas, p: &GeneProfile, (x, y, w, h): (f64, f64, f64,
 
 /// What the table's two counts mean, a line each for the screen and the
 /// figure.
-const LEGEND: [&str; 4] = [
+pub(super) const LEGEND: [&str; 4] = [
     "filtered out: sites failing this threshold.",
     "  A site failing several thresholds counts in",
     "  each row, so the rows add up to more than the",

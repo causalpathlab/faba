@@ -1,0 +1,504 @@
+<!-- Ctrl+E in `faba qc`'s site view: its thresholds, recounted live, inside the report shell (src/report/shell.html). -->
+<style>
+.term { display: grid; grid-template-columns: 470px 1fr; --back: #3b4046; }
+.tabs { grid-column: 1 / -1; padding: 3px 12px; display: flex; gap: 18px; border-bottom: 1px solid var(--rule); }
+.tabs span { color: var(--dim); cursor: pointer; }
+.tabs span.on { color: var(--accent); font-weight: 600; }
+.col { display: flex; flex-direction: column; min-width: 0; }
+.col.right .pane { border-right: 0; }
+.lines { padding: 2px 10px 6px; white-space: pre; overflow: hidden; }
+.lines div { height: 1.5em; }
+.lines .row { cursor: pointer; }
+.lines .on, .lines .on .name { color: var(--accent); }
+.dim, .lines .dim { color: var(--dim); }
+.lines .count { color: var(--accent); }
+.lines b { font-weight: 400; color: var(--fg); }
+#gene-lines { height: 330px; }
+#c-hist { height: 270px; flex: none; }
+#c-gene, #c-meta { height: 180px; flex: none; }
+.stat { padding: 0 10px; color: var(--dim); white-space: nowrap; overflow: hidden; min-height: 1.5em; }
+.stat b { color: var(--fg); font-weight: 400; }
+.stat i { display: inline-block; width: 9px; height: 9px; margin: 0 6px 0 14px; font-style: normal; }
+.stat i:first-child { margin-left: 0; }
+.find .q { color: var(--accent); }
+.find .q::after { content: "▏"; }
+</style>
+<div class="wrap">
+  <h1 id="title">site thresholds</h1>
+  <p class="lede">The site thresholds of <code>faba qc</code> as the view had them when this page was written, recounted live here as they are in the view. <kbd>↑</kbd>/<kbd>↓</kbd> pick a threshold and <kbd>←</kbd>/<kbd>→</kbd> step it a bar of its histogram; <kbd>o</kbd> turns it off and <kbd>r</kbd> puts it back as written. Thresholds are shared by every modality (<kbd>m</kbd>). <kbd>Tab</kbd> moves to the genes, where <kbd>/</kbd> finds one as you type.</p>
+
+  <div class="scroller">
+    <div class="term" id="term">
+      <div class="bar">
+        <span><b>faba</b> qc</span>
+        <span id="stat"></span>
+        <span style="margin-left:auto" id="scales"></span>
+        {{MARK}}
+      </div>
+      <div class="tabs" id="tabs"></div>
+      <div class="col left">
+        <section class="pane focus" id="p-thr" tabindex="0"><header><span>site thresholds</span><span id="h-thr"></span></header><div class="lines" id="thr-lines"></div></section>
+        <section class="pane" id="p-genes" tabindex="0" style="flex:1"><header><span>genes: kept / all sites</span><span id="h-genes"></span></header><div class="lines" id="gene-lines"></div><div class="stat" id="gene-find"></div></section>
+      </div>
+      <div class="col right">
+        <section class="pane" id="p-hist"><header><span id="h-hist">histogram</span><span>y: sites per bin</span></header><div class="stat" id="hist-stat"></div><canvas id="c-hist"></canvas><div class="stat" id="hist-key"></div></section>
+        <section class="pane" id="p-gene"><header><span id="h-gene">gene</span><span id="h-gene-unit"></span></header><canvas id="c-gene"></canvas><div class="stat" id="gene-key"></div></section>
+        <section class="pane" id="p-meta"><header><span id="h-meta">metagene</span><span>at the thresholds when written</span></header><div class="stat" id="meta-stat"></div><canvas id="c-meta"></canvas><div class="stat" id="meta-key"></div></section>
+      </div>
+      <div class="keys" id="keys"></div>
+    </div>
+  </div>
+
+  <div class="legend">
+    <span class="key"><i style="background:var(--back, #3b4046)"></i> all sites</span>
+    <span class="key"><i class="down"></i> sites passing every other threshold</span>
+    <span class="key"><i class="up"></i> those the focused threshold filters out</span>
+    <span>▼ the threshold's bar</span>
+  </div>
+  <p class="note" id="note"></p>
+</div>
+
+<script>
+// The site view's data as Ctrl+E wrote it: per modality, each applicable
+// criterion's raw value per site (a real as an f32, an infinity past f32's
+// range, NaN as null), the gene per site, and the genes; and per criterion how
+// the view shows and steps it. Everything below recounts as the view does.
+const DATA = JSON.parse(document.getElementById("data").textContent);
+// Rust's f64 max and min, where a NaN gives way, its `as i32`, saturating with
+// NaN at 0, and its round, halves away from zero.
+const rmax = (a, b) => a !== a ? b : b !== b ? a : Math.max(a, b);
+const rmin = (a, b) => a !== a ? b : b !== b ? a : Math.min(a, b);
+const toI32 = x => x !== x ? 0 : Math.max(-2147483648, Math.min(2147483647, Math.trunc(x)));
+const roundAway = x => Math.sign(x) * Math.round(Math.abs(x));
+const clamp = (x, lo, hi) => x < lo ? lo : x > hi ? hi : x;
+
+const KNOBS = new Map(DATA.criteria.map(k => [k.id, k]));
+const knob = id => KNOBS.get(id);
+// A value as written: whole counts as they are, reals back to their f32.
+const decode = (k, v) => k.integer ? v : v === null ? NaN : Math.fround(v);
+// The f32 next to `y`, up or down, as Rust's next_up and next_down.
+const F32 = new Float32Array(1), I32 = new Int32Array(F32.buffer);
+function nextF32(y, up) {
+  if (y !== y || y === (up ? Infinity : -Infinity)) return y;
+  if (y === 0) return up ? 1.401298464324817e-45 : -1.401298464324817e-45;
+  F32[0] = y; I32[0] += (y > 0) === up ? 1 : -1; return F32[0];
+}
+// A threshold set at `raw`, rounded so a site at exactly `raw` stays kept: a
+// lower bound down, an upper bound up; whole counts up from 0.
+function setValue(k, raw) {
+  if (k.integer) return raw > 0 ? Math.ceil(raw) : 0;
+  const y = Math.fround(raw);
+  return k.max && y < raw ? nextF32(y, true) : !k.max && y > raw ? nextF32(y, false) : y;
+}
+const offOf = id => decode(knob(id), knob(id).off);
+const isOff = (k, v) => k.max ? v >= offOf(k.id) : v <= offOf(k.id);
+const written = new Map(DATA.criteria.map(k => [k.id, decode(k, k.now)]));
+const thr = new Map(written);
+
+// Each modality: its columns decoded, a bit per failed check per site, and its
+// genes' sites.
+const mods = DATA.modalities.map(md => {
+  const raw = new Map(md.criteria.map((id, j) => [id, Float64Array.from(md.raw[j], v => decode(knob(id), v))]));
+  // What the histogram bins: each raw value to its nearest f32, as the view.
+  const near = new Map(md.criteria.map((id, j) => {
+    const r = raw.get(id), k = knob(id), x = md.near[j].length ? r.slice() : r;
+    for (const i of md.near[j]) x[i] = nextF32(x[i], !k.max);
+    return [id, x];
+  }));
+  const rows = md.genes ? md.genes.map(() => []) : null;
+  if (rows) md.gene.forEach((g, i) => rows[g].push(i));
+  const lower = md.genes ? md.genes.map(g => g.name.toLowerCase()) : null;
+  const m = {...md, raw, near, rows, lower, fails: new Uint8Array(md.sites), kept: [], order: rows ? rows.map((_, g) => g) : []};
+  md.criteria.forEach(id => updateBits(m, id));
+  return m;
+});
+// Recompute criterion `id`'s bit for every site of `m`.
+function updateBits(m, id) {
+  const k = knob(id), raw = m.raw.get(id);
+  if (!raw) return;
+  const t = thr.get(id), bit = 1 << id, f = m.fails;
+  for (let i = 0; i < raw.length; i++) {
+    const v = raw[i];
+    if (k.max ? v > t : v < t) f[i] |= bit; else f[i] &= ~bit;
+  }
+}
+
+// A finite `a >= 0`'s exact decimal digits, and how many precede the point.
+function digitsOf(a) {
+  const [int, frac] = (a < 1e21 ? a.toFixed(100) : `${BigInt(a)}.`).split(".");
+  return {d: int + frac, point: int.length};
+}
+// The first `n` of digits `d`, rounded as Rust's format rounds: to nearest,
+// an exact tie to even. A carry makes it one digit longer.
+function cut(d, n) {
+  const head = d.slice(0, n), rest = d.slice(n);
+  const odd = n > 0 && head.charCodeAt(n - 1) & 1;
+  const up = rest[0] > "5" || (rest[0] === "5" && (/[1-9]/.test(rest.slice(1)) || odd));
+  return up ? String(BigInt(head || "0") + 1n).padStart(n, "0") : head;
+}
+// Rust's `{v:.f}` and `{v:.2e}` for a finite `v`.
+function fixed(v, f) {
+  const {d, point} = digitsOf(Math.abs(v)), r = cut(d, point + f);
+  const int = r.slice(0, r.length - f).replace(/^0+(?=.)/, ""), frac = r.slice(r.length - f);
+  return (v < 0 ? "-" : "") + int + (f ? `.${frac}` : "");
+}
+function exp2(v) {
+  const {d, point} = digitsOf(Math.abs(v)), z = d.search(/[1-9]/);
+  let r = cut(d.slice(z), 3), e = point - z - 1;
+  if (r.length > 3) { r = r.slice(0, 3); e++; }
+  return `${v < 0 ? "-" : ""}${r[0]}.${r.slice(1)}e${e}`;
+}
+// How the view writes a value: whole counts as they are, else three
+// significant digits.
+function fmtShort(k, v) {
+  const a = Math.abs(v);
+  if (k.integer) return String(v !== v || v < 0 ? 0 : Math.trunc(v));
+  if (v !== v) return "NaN";
+  if (!isFinite(v)) return v > 0 ? "inf" : "-inf";
+  if (a === 0) return Object.is(v, -0) ? "-0" : "0";
+  if (a < 1e-3 || a >= 1e5) return exp2(v);
+  const s = fixed(v, Math.max(2 - Math.floor(Math.log10(a)), 0));
+  return s.includes(".") ? s.replace(/0+$/, "").replace(/\.$/, "") : s;
+}
+// A threshold as the view shows it: ≥ v or ≤ v, or off.
+const shown = (k, v) => isOff(k, v) ? "off" : `${k.max ? "≤" : "≥"} ${fmtShort(k, v)}`;
+
+// The histogram's axis: a p-value as -log10 p, every other raw as it is.
+const display = (k, raw) => !k.negLog ? raw : raw <= 0 ? Infinity : rmax(-Math.log10(raw), 0);
+// data-beans' Binning: equal-width bins on a scale, keyed by integers; on the
+// log scale tenth-decade bins keyed by rounding.
+const TARGET_BINS = 50, MAX_BINS = 400;
+const scaled = (s, v) => s === "log" ? Math.log10(v + 1) : s === "sqrt" ? Math.sqrt(rmax(v, 0)) : v;
+function binning(scale, max, integer) {
+  const span = integer ? max + 1 : max;
+  const width = scale === "log" ? 0.1 : scale === "linear" && integer ? rmax(Math.ceil(span / TARGET_BINS), 1) : scaled(scale, span) / TARGET_BINS;
+  return {scale, width: rmax(width, 2.2250738585072014e-308)};
+}
+const binKey = (b, x) => b.scale === "log" ? toI32(roundAway(Math.log10(x + 1) * 10)) : toI32(Math.floor(scaled(b.scale, x) / b.width));
+
+// The focused criterion's column binned, as the view's Column: display values
+// clamped to the finite range (infinities counted), each site's slot, each
+// bin's smallest value, and the stops: per bin the loosest raw threshold that
+// keeps it, those that keep everything left out.
+function column(m, k, scale) {
+  const raw = m.raw.get(k.id), near = m.near.get(k.id), n = raw.length, d = new Float64Array(n);
+  let lo = Infinity, hi = -Infinity, nInf = 0;
+  for (let i = 0; i < n; i++) {
+    const x = Math.fround(display(k, near[i])); d[i] = x;
+    if (isFinite(x)) { lo = Math.min(lo, x); hi = Math.max(hi, x); } else nInf++;
+  }
+  if (lo > hi) { lo = 0; hi = 0; }
+  for (let i = 0; i < n; i++) d[i] = clamp(d[i], lo, hi);
+  const max = lo < 0 ? 2 * Math.max(Math.abs(lo), Math.abs(hi)) : hi;
+  const bins = binning(scale, max, k.integer);
+  const kmin = binKey(bins, lo), nb = clamp(binKey(bins, hi) - kmin + 1, 1, MAX_BINS);
+  const counts = new Array(nb).fill(0), lowest = new Array(nb).fill(Infinity), edge = new Array(nb).fill(undefined);
+  const slot = new Uint16Array(n);
+  for (let i = 0; i < n; i++) {
+    const b = clamp(binKey(bins, d[i]) - kmin, 0, nb - 1);
+    counts[b]++; lowest[b] = rmin(lowest[b], d[i]); slot[i] = b;
+    edge[b] = edge[b] === undefined ? raw[i] : k.max ? rmax(edge[b], raw[i]) : rmin(edge[b], raw[i]);
+  }
+  const stops = [];
+  edge.forEach((e, b) => { if (e !== undefined && !isOff(k, setValue(k, e))) stops.push([kmin + b, e]); });
+  return {lo, hi, nInf, bins, kmin, kmax: kmin + nb - 1, counts, lowest, slot, stops};
+}
+// The bin of a raw threshold, clamped to the histogram.
+const keyOf = (col, k, raw) => clamp(binKey(col.bins, clamp(display(k, raw), col.lo, col.hi)), col.kmin, col.kmax);
+// Whether bin `kk` lies on the dropped side of the threshold's bin `p`.
+const drops = (k, kk, p) => p !== null && (k.keepsHigh ? kk < p : kk > p);
+
+const state = {m: DATA.modality, j: 0, scale: new Map(DATA.criteria.map(k => [k.id, k.scale])), y: DATA.yScale, pane: 0, at: 0, find: null};
+state.j = Math.max(0, mods[state.m].criteria.indexOf(DATA.focus));
+const mod = () => mods[state.m];
+const focusKnob = () => knob(mod().criteria[state.j]);
+const scaleOf = k => k.scales[state.scale.get(k.id)];
+let col = null, tally = null;
+
+function rebuild() { const k = focusKnob(); col = column(mod(), k, scaleOf(k)); }
+// Counts under the thresholds now, from the fail bits: kept sites and genes,
+// sites failing each criterion, those failing only the focused one, and per bin
+// the sites passing every other.
+function tallyFocus() {
+  const m = mod(), k = focusKnob(), bit = 1 << k.id, others = 0xff & ~bit, f = m.fails;
+  const t = {kept: 0, genes: 0, fail: new Array(8).fill(0), only: 0, subset: new Array(col.counts.length).fill(0)};
+  const seen = new Uint8Array(m.nGenes);
+  for (let i = 0; i < f.length; i++) {
+    const x = f[i];
+    if (x === 0) { t.kept++; const g = m.gene[i]; if (!seen[g]) { seen[g] = 1; t.genes++; } }
+    else { if (x === bit) t.only++; for (let b = 0; b < 8; b++) t.fail[b] += x >> b & 1; }
+    if ((x & others) === 0) t.subset[col.slot[i]]++;
+  }
+  tally = t;
+}
+// The counts and the genes' kept sites, after the fail bits change (or on a
+// modality not yet counted); a new focus or scale needs only the counts.
+function retally() { tallyFocus(); recountGenes(); }
+// Each gene's kept sites, and the list in the view's order: pinned first, then
+// most kept, most sites, then by name; the selection stays on its gene.
+function recountGenes() {
+  const m = mod();
+  if (!m.rows) return;
+  const keep = shownGenes()[state.at];
+  m.kept = m.rows.map(r => r.reduce((n, i) => n + (m.fails[i] === 0), 0));
+  const pin = g => m.genes[g].pin ?? Infinity;
+  m.order.sort((a, b) => (pin(a) - pin(b)) || (m.kept[b] - m.kept[a]) || (m.rows[b].length - m.rows[a].length) || (m.lower[a] < m.lower[b] ? -1 : m.lower[a] > m.lower[b] ? 1 : 0));
+  refind(keep);
+}
+let shownList = [];
+const shownGenes = () => shownList;
+function refind(keep) {
+  const m = mod(), q = (state.find ?? "").toLowerCase();
+  shownList = m.rows ? m.order.filter(g => m.lower[g].includes(q)) : [];
+  const at = keep === undefined ? -1 : shownList.indexOf(keep);
+  state.at = Math.min(at >= 0 ? at : state.at, Math.max(0, shownList.length - 1));
+}
+
+function setThreshold(id, raw) {
+  thr.set(id, setValue(knob(id), raw));
+  mods.forEach(m => updateBits(m, id));
+  retally();
+}
+// One bar right (`dir` > 0) or left on the displayed axis, to the next stop;
+// walking out through the kept end turns it off.
+function stepBin(dir) {
+  const k = focusKnob(), off = isOff(k, thr.get(k.id));
+  const cur = !off ? keyOf(col, k, thr.get(k.id)) : k.keepsHigh ? -Infinity : Infinity;
+  const to = dir > 0 ? col.stops.find(s => s[0] > cur) : [...col.stops].reverse().find(s => s[0] < cur);
+  if (to) setThreshold(k.id, to[1]);
+  else if (!off && (dir > 0) !== k.keepsHigh) setThreshold(k.id, offOf(k.id));
+}
+function switchModality(d) {
+  const id = focusKnob().id, n = mods.length;
+  state.m = ((state.m + d) % n + n) % n;
+  state.j = Math.max(0, mod().criteria.indexOf(id));
+  state.at = 0; shownList = [];
+  rebuild(); retally();
+}
+function moveFocus(d) {
+  const n = mod().criteria.length;
+  state.j = ((state.j + d) % n + n) % n;
+  rebuild(); tallyFocus();
+}
+const stepGene = d => { state.at = clamp(state.at + d, 0, Math.max(0, shownGenes().length - 1)); };
+
+// Drawing.
+const pct = (a, n) => fixed(n > 0 ? 100 * a / n : 0, 2);
+const yScaled = (s, v) => s === "log" ? Math.log10(v + 1) : s === "sqrt" ? Math.sqrt(v) : v;
+const compact = v => v < 1e3 ? String(Math.round(v)) : v < 1e4 ? `${(v / 1e3).toFixed(1)}k` : v < 1e6 ? `${Math.round(v / 1e3)}k` : `${(v / 1e6).toFixed(1)}M`;
+// Bars in `canvas`: `back` behind (all), `front` over it in `colour(i)`, on the
+// y scale `ys`; `ticks` as [bar, label]; `pointer` a bar; `dividers` bars whose
+// left edges get a line. Returns the plot's box.
+function bars(canvas, back, front, colour, ys, ticks, pointer, dividers, xTitle) {
+  const [ctx, W, H] = fit(canvas);
+  const left = 52, right = 14, top = 16, bottom = xTitle ? 40 : 24, n = Math.max(front.length, 1);
+  const pw = W - left - right, ph = H - top - bottom, bw = pw / n;
+  const fg = css("--fg"), dim = css("--dim"), rule = css("--rule"), backC = getComputedStyle(document.getElementById("term")).getPropertyValue("--back").trim();
+  const peak = Math.max(1e-9, ...(back || front));
+  const h = v => ph * yScaled(ys, v) / yScaled(ys, peak);
+  ctx.strokeStyle = rule; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(left, top + ph + 0.5); ctx.lineTo(W - right, top + ph + 0.5); ctx.stroke();
+  ctx.fillStyle = dim; ctx.textAlign = "right";
+  ctx.fillText(compact(peak), left - 6, top + 4); ctx.fillText("0", left - 6, top + ph);
+  for (let i = 0; i < n; i++) {
+    const x = left + i * bw, w = Math.max(1, bw - (bw > 3 ? 1 : 0));
+    if (back) { ctx.fillStyle = backC; const hb = h(back[i]); ctx.fillRect(x, top + ph - hb, w, hb); }
+    ctx.fillStyle = colour(i); const hf = h(front[i]); ctx.fillRect(x, top + ph - hf, w, hf);
+  }
+  ctx.strokeStyle = dim;
+  (dividers || []).forEach(b => { ctx.beginPath(); ctx.moveTo(left + b * bw + 0.5, top); ctx.lineTo(left + b * bw + 0.5, top + ph); ctx.stroke(); });
+  ctx.fillStyle = dim; ctx.textAlign = "center";
+  ticks.forEach(([b, label]) => ctx.fillText(label, left + (b + 0.5) * bw, top + ph + 12));
+  if (pointer !== null && pointer !== undefined) {
+    const x = left + (pointer + 0.5) * bw;
+    ctx.strokeStyle = css("--accent"); ctx.setLineDash([2, 3]);
+    ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x, top + ph); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = css("--accent"); ctx.fillText("▼", x, top - 8);
+  }
+  if (xTitle) { ctx.fillStyle = dim; ctx.fillText(xTitle, left + pw / 2, H - 6); }
+  return {ctx, left, top, pw, ph, W, H};
+}
+
+function drawTabs() {
+  document.getElementById("tabs").innerHTML = mods.map((m, i) => `<span data-m="${i}" class="${i === state.m ? "on" : ""}">${esc(m.name)}</span>`).join("");
+}
+function drawTable() {
+  const m = mod(), n = m.sites;
+  const pad = (s, w) => s.padEnd(w), lpad = (s, w) => s.padStart(w);
+  const lines = [`<div class="dim">${pad("", 17)}${lpad("", 10)} │${lpad("sites", 13)}</div>`,
+    `<div class="dim">${pad("  threshold", 17)}${lpad("value", 10)} │${lpad("filtered out", 13)}</div>`,
+    `<div class="dim">${"─".repeat(28)}┼${"─".repeat(14)}</div>`];
+  m.criteria.forEach((id, j) => {
+    const k = knob(id), on = j === state.j, now = shown(k, thr.get(id)), was = shown(k, written.get(id));
+    const value = `<span class="${now === "off" ? "dim" : on ? "on" : ""}">${esc(lpad(now, 10))}</span>`;
+    const changed = now !== was ? `<span class="dim">  was ${esc(was)}</span>` : "";
+    lines.push(`<div class="row ${on ? "on" : ""}" data-j="${j}"><span class="on">${on ? "▸ " : "  "}</span><span class="name">${esc(pad(k.label, 15))}</span>${value}<span class="dim"> │</span><span class="count">${lpad(String(tally.fail[id]), 13)}</span>${changed}</div>`);
+  });
+  lines.push("<div></div>");
+  lines.push(`<div><span class="dim">  kept </span><span class="on">${tally.kept}</span><span class="dim"> / ${n} sites (${pct(tally.kept, n)}%)</span></div>`);
+  lines.push(`<div><span class="dim">  in </span><b>${tally.genes}</b><span class="dim"> / ${m.nGenes} genes</span></div>`);
+  lines.push("<div></div>");
+  DATA.legend.forEach(l => lines.push(`<div class="dim">  ${esc(l)}</div>`));
+  document.getElementById("thr-lines").innerHTML = lines.join("");
+  const changed = DATA.criteria.filter(k => shown(k, thr.get(k.id)) !== shown(k, written.get(k.id))).length;
+  document.getElementById("h-thr").textContent = changed ? `${changed} changed since written` : "as written";
+}
+function drawHist() {
+  const k = focusKnob(), nb = col.counts.length;
+  document.getElementById("h-hist").textContent = `${k.axis} · ${k.label}`;
+  const inf = col.nInf > 0 ? `   ${col.nInf} infinite, drawn at the end bin` : "";
+  document.getElementById("hist-stat").innerHTML = `min <b>${esc(fmtShort(k, col.lo))}</b>   max <b>${esc(fmtShort(k, col.hi))}</b>${inf}`;
+  const front = tally.subset.reduce((a, b) => a + b, 0);
+  document.getElementById("hist-key").innerHTML = `<i style="background:var(--back)"></i>all sites ${mod().sites}<i style="background:var(--fg)"></i>pass the other thresholds ${front}<i style="background:var(--accent)"></i>filtered out only by this ${tally.only}`;
+  const every = Math.max(Math.floor(nb / 6), 1), ticks = [];
+  for (let b = 0; b < nb; b += every) {
+    let j = b; while (j < nb && !isFinite(col.lowest[j])) j++;
+    if (j < nb) ticks.push([j, fmtShort(k, col.lowest[j])]);
+  }
+  const off = isOff(k, thr.get(k.id)), p = off ? null : keyOf(col, k, thr.get(k.id));
+  const fg = css("--fg"), acc = css("--accent");
+  bars(document.getElementById("c-hist"), col.counts, tally.subset, i => drops(k, col.kmin + i, p) ? acc : fg,
+    state.y, ticks, p === null ? null : p - col.kmin, [], `${k.axis} (${scaleOf(k)} bins)`);
+}
+function drawGeneList() {
+  const m = mod(), el = document.getElementById("gene-lines");
+  const findEl = document.getElementById("gene-find");
+  if (!m.rows) { el.innerHTML = `<div class="dim">this site table has no gene column</div>`; findEl.textContent = ""; return; }
+  const list = shownGenes(), rows = Math.max(3, Math.floor(el.clientHeight / 18.75));
+  const first = Math.min(Math.max(0, state.at - Math.floor((rows - 1) / 2)), Math.max(0, list.length - rows));
+  const width = 52;
+  el.innerHTML = list.slice(first, first + rows).map((g, i) => {
+    const on = first + i === state.at, counts = `${m.kept[g]} / ${m.rows[g].length}`;
+    const name = m.genes[g].name.slice(0, width - counts.length - 3).padEnd(width - counts.length - 3);
+    return `<div class="row ${on ? "on" : ""}" data-at="${first + i}"><span class="on">${on ? "▸ " : "  "}</span><span class="name">${esc(name)}</span><span class="dim"> ${counts}</span></div>`;
+  }).join("") || `<div class="dim">  no gene matches</div>`;
+  findEl.innerHTML = state.find !== null ? `<span class="find">gene: <span class="q">${esc(state.find)}</span></span>` : `<b>/</b> find   ${list.length} genes`;
+  document.getElementById("h-genes").textContent = `${state.at + 1}/${list.length}`;
+}
+// The selected gene along its span, all sites behind and kept in front, each
+// weighted as the view's bars were, under its exons when the view had a model.
+function drawGene() {
+  const m = mod(), c = document.getElementById("c-gene"), g = shownGenes()[state.at];
+  document.getElementById("h-gene-unit").textContent = `y: ${DATA.unit}`;
+  // A gene with neither sites nor a model has no span, as in the view.
+  if (!m.rows || g === undefined || m.genes[g].lo === undefined) { const [ctx, W, H] = fit(c); ctx.fillStyle = css("--dim"); ctx.textAlign = "center"; ctx.fillText("no gene selected", W / 2, H / 2); document.getElementById("h-gene").textContent = "gene"; document.getElementById("gene-key").textContent = ""; return; }
+  const ge = m.genes[g], span = Math.max(ge.hi - ge.lo, 1);
+  const n = Math.max(10, Math.floor((c.getBoundingClientRect().width - 66) / 6));
+  const all = new Array(n).fill(0), kept = new Array(n).fill(0);
+  m.rows[g].forEach(i => {
+    const b = Math.min(Math.floor(Math.max(m.pos[i] - ge.lo, 0) * n / span), n - 1), w = m.weight ? m.weight[i] : 1;
+    all[b] += w; if (m.fails[i] === 0) kept[b] += w;
+  });
+  const sum = v => v.reduce((a, b) => a + b, 0);
+  const place = ge.chr ? `${ge.chr}:${ge.lo}-${ge.hi} (${ge.forward ? "+" : "-"})` : `${ge.lo}-${ge.hi}`;
+  document.getElementById("h-gene").textContent = `${ge.name}  ${place} · kept ${sum(kept)} of ${sum(all)} · per ${Math.round(span / n)} bp`;
+  const fg = css("--fg");
+  const box = bars(c, all, kept, () => fg, "linear", [], null, [], "");
+  const {ctx, left, top, pw, ph} = box, y = top + ph + 12, x = p => left + pw * (p - ge.lo) / span;
+  ctx.fillStyle = css("--dim"); ctx.textAlign = "right"; ctx.fillText("exons", left - 6, y);
+  if (ge.exons) {
+    ctx.strokeStyle = css("--dim"); ctx.beginPath(); ctx.moveTo(left, y); ctx.lineTo(left + pw, y); ctx.stroke();
+    ge.exons.forEach(([s, e]) => ctx.fillRect(x(s), y - 4, Math.max(1, x(e) - x(s)), 8));
+  } else { ctx.textAlign = "left"; ctx.fillText("(no gene model)", left + 4, y); }
+  document.getElementById("gene-key").innerHTML = `<i style="background:var(--back)"></i>all ${esc(DATA.unit)}<i style="background:var(--fg)"></i>kept ${esc(DATA.unit)}`;
+}
+// The metagene as written: it does not follow the thresholds here.
+const hasMeta = mods.some(m => m.meta);
+function drawMeta() {
+  const p = document.getElementById("p-meta");
+  p.hidden = !hasMeta;
+  if (!hasMeta) return;
+  const m = mod(), c = document.getElementById("c-meta");
+  document.getElementById("h-meta").textContent = `metagene · y: ${DATA.unit} per bin`;
+  if (!m.meta) { const [ctx, W, H] = fit(c); ctx.fillStyle = css("--dim"); ctx.textAlign = "center"; ctx.fillText(`no metagene for ${m.name} when written`, W / 2, H / 2); document.getElementById("meta-stat").textContent = ""; document.getElementById("meta-key").textContent = ""; return; }
+  const {all, kept, regions, unassigned} = m.meta;
+  const region = i => i < regions[0] ? 0 : i < regions[0] + regions[1] ? 1 : 2;
+  const sumOf = (v, r) => { const s = regions.slice(0, r).reduce((a, b) => a + b, 0); return Math.round(v.slice(s, s + regions[r]).reduce((a, b) => a + b, 0)); };
+  document.getElementById("meta-stat").innerHTML = "kept / all  " + DATA.regions.map((name, r) => `${esc(name)} <b>${sumOf(kept, r)}/${sumOf(all, r)}</b>   `).join("") + `off-transcript ${unassigned} sites`;
+  const ticks = [], dividers = [];
+  let at = 0;
+  regions.forEach((nr, r) => { if (nr > 0) ticks.push([at + Math.floor(nr / 2), DATA.regions[r]]); at += nr; });
+  if (regions[0] > 0 && regions[1] + regions[2] > 0) dividers.push(regions[0]);
+  if (regions[2] > 0 && regions[0] + regions[1] > 0) dividers.push(regions[0] + regions[1]);
+  bars(c, all, kept, i => DATA.colours[region(i)], "linear", ticks, null, dividers, "metagene position (MetaPlotR scale)");
+  document.getElementById("meta-key").innerHTML = `<i style="background:var(--back)"></i>all ` + DATA.regions.map((name, r) => `<i style="background:${esc(DATA.colours[r])}"></i>kept, ${esc(name)}`).join("");
+}
+function drawKeys() {
+  const keys = state.find !== null ? [["type", "find"], ["↑/↓", "move"], ["Enter", "keep"], ["Esc", "cancel"]]
+    : [["Tab", "panel"], ...(state.pane === 0 ? [["↑/↓ jk", "knob"], ["←/→ hl", "bin"]] : [["↑/↓ jk", "gene"], ["/", "find"]]),
+      ["o", "off"], ["r", "reset"], ["m/M", "modality"], ["[ ]", "gene"], ["x/y", "scale"]];
+  footerKeys(keys);
+}
+// What a move among the genes changes: the panes' focus, the genes and the keys.
+function drawGenes() {
+  document.getElementById("p-thr").classList.toggle("focus", state.pane === 0);
+  document.getElementById("p-genes").classList.toggle("focus", state.pane === 1);
+  drawGeneList(); drawGene(); drawKeys();
+}
+// Everything, after a threshold, the focus, a scale or the modality changes.
+function draw() {
+  const k = focusKnob();
+  document.getElementById("scales").textContent = `x ${scaleOf(k)} · y ${state.y}`;
+  drawTabs(); drawTable(); drawHist(); drawMeta(); drawGenes();
+}
+
+document.getElementById("title").textContent = `site thresholds · ${DATA.title}`;
+document.getElementById("stat").textContent = DATA.title;
+document.getElementById("note").textContent = "Counts here are the view's: a site is kept when it passes every threshold that applies to its modality, and each row counts every site failing it, so the rows add up to more than the sites removed. The metagene is the one the view showed for the thresholds as written; the histogram, the table and the genes follow the thresholds as they change.";
+
+document.addEventListener("keydown", e => {
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  const k = e.key;
+  if (state.find !== null) {
+    e.preventDefault();
+    if (k === "Escape") { state.find = null; refind(state.back); }
+    else if (k === "Enter") { const g = shownGenes()[state.at]; state.find = null; refind(g); state.pane = 1; }
+    else if (k === "ArrowDown") stepGene(1);
+    else if (k === "ArrowUp") stepGene(-1);
+    else if (k === "Backspace") { state.find = state.find.slice(0, -1); state.at = 0; refind(); }
+    else if (k.length === 1 && state.find.length < 32) { state.find += k; state.at = 0; refind(); }
+    drawGenes(); return;
+  }
+  const genes = state.pane === 1;
+  if (["Tab", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown", "/"].includes(k)) e.preventDefault();
+  // Among the genes only the genes are drawn again; the rest, all of it.
+  if (k === "Tab") state.pane = 1 - state.pane;
+  else if (k === "[") stepGene(-1);
+  else if (k === "]") stepGene(1);
+  else if (k === "/" && mod().rows) { state.back = shownGenes()[state.at]; state.find = ""; refind(); }
+  else if (genes && (k === "ArrowUp" || k === "k")) stepGene(-1);
+  else if (genes && (k === "ArrowDown" || k === "j")) stepGene(1);
+  else if (genes && k === "PageUp") stepGene(-10);
+  else if (genes && k === "PageDown") stepGene(10);
+  else return otherKey(k);
+  drawGenes();
+});
+// A key that changes more than the genes, drawn in full.
+function otherKey(k) {
+  if (k === "m") switchModality(1);
+  else if (k === "M") switchModality(-1);
+  else if (k === "ArrowUp" || k === "k") moveFocus(-1);
+  else if (k === "ArrowDown" || k === "j") moveFocus(1);
+  else if (k === "ArrowLeft" || k === "h") stepBin(-1);
+  else if (k === "ArrowRight" || k === "l") stepBin(1);
+  else if (k === "o") setThreshold(focusKnob().id, offOf(focusKnob().id));
+  else if (k === "r") setThreshold(focusKnob().id, written.get(focusKnob().id));
+  else if (k === "x") { const kn = focusKnob(); state.scale.set(kn.id, (state.scale.get(kn.id) + 1) % kn.scales.length); rebuild(); tallyFocus(); }
+  else if (k === "y") state.y = {log: "sqrt", sqrt: "linear", linear: "log"}[state.y];
+  else return;
+  draw();
+}
+// Clicks: a tab picks its modality, a threshold row its knob, a gene row its
+// gene; a pane takes the focus.
+document.getElementById("tabs").addEventListener("click", e => { const t = e.target.closest("[data-m]"); if (t) { switchModality(Number(t.dataset.m) - state.m); draw(); } });
+document.getElementById("p-thr").addEventListener("click", e => { state.pane = 0; const r = e.target.closest("[data-j]"); if (r) moveFocus(Number(r.dataset.j) - state.j); draw(); });
+document.getElementById("p-genes").addEventListener("click", e => { state.pane = 1; const r = e.target.closest("[data-at]"); if (r) state.at = Number(r.dataset.at); drawGenes(); });
+document.getElementById("p-genes").addEventListener("wheel", e => { e.preventDefault(); state.pane = 1; stepGene(Math.sign(e.deltaY)); drawGenes(); }, {passive: false});
+
+// The gene selected when written, else the top one.
+rebuild(); retally();
+if (DATA.gene !== null && DATA.gene !== undefined) state.at = Math.max(0, shownGenes().indexOf(DATA.gene));
+window.addEventListener("resize", draw);
+document.fonts.ready.then(draw);
+draw();
+</script>
