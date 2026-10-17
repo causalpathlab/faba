@@ -12,11 +12,10 @@ use crate::site_analysis::site_io::{parse_strand, GenomicSite};
 use arrow::array::{
     Array, ArrayRef, BooleanArray, Float32Array, Int64Array, StringArray, UInt64Array,
 };
-use arrow::compute::{concat_batches, filter_record_batch};
+use arrow::compute::filter_record_batch;
 use arrow::datatypes::{DataType, Field, Schema};
-use arrow::record_batch::{RecordBatch, RecordBatchReader};
+use arrow::record_batch::RecordBatch;
 use data_beans::aux::feature_rows::{parse_feature_row, EDITED, METHYLATED};
-use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::args::SiteFilterArgs;
@@ -138,26 +137,20 @@ pub fn genomic_sites(batch: &RecordBatch) -> anyhow::Result<Vec<GenomicSite>> {
         .collect())
 }
 
-fn col<'a, T: 'static>(batch: &'a RecordBatch, name: &str) -> anyhow::Result<&'a T> {
-    batch
-        .column_by_name(name)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "site table lacks the `{name}` column; it was written by an older faba \
-                 (rerun the producer, which now writes every putative site with its statistics)"
-            )
-        })?
-        .as_any()
-        .downcast_ref::<T>()
-        .ok_or_else(|| anyhow::anyhow!("`{name}` column has an unexpected type"))
+/// The column `name` of a site table, naming the older faba that wrote it
+/// when the column is missing.
+fn col<'a, T: Array + 'static>(batch: &'a RecordBatch, name: &str) -> anyhow::Result<&'a T> {
+    if batch.column_by_name(name).is_none() {
+        anyhow::bail!(
+            "site table lacks the `{name}` column; it was written by an older faba \
+             (rerun the producer, which now writes every putative site with its statistics)"
+        );
+    }
+    crate::common::column(batch, name)
 }
 
 pub fn read_site_table(path: &str, modality: &str) -> anyhow::Result<SiteTable> {
-    let file = std::fs::File::open(path)?;
-    let reader = ParquetRecordBatchReaderBuilder::try_new(file)?.build()?;
-    let schema = reader.schema();
-    let batches: Vec<RecordBatch> = reader.collect::<Result<_, _>>()?;
-    let batch = concat_batches(&schema, &batches)?;
+    let batch = crate::common::read_record_batch(path)?;
     let n = batch.num_rows();
 
     let chr: &StringArray = col(&batch, "chr")?;

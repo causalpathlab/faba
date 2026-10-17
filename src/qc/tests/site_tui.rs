@@ -412,6 +412,21 @@ fn saves_the_view_as_pdf_and_png() {
 }
 
 #[test]
+fn a_saved_view_keeps_its_shape_on_screen() {
+    let t = table(M6A, 600);
+    let mut p = picker(&t, Some(cells(t.len())), SiteFilterArgs::default_values());
+    let (cw, ch) = figure::CELL;
+    for (w, h) in [(160, 40), (100, 50)] {
+        let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+        term.draw(|f| p.render(f)).unwrap();
+        let (fw, fh) = figure::svg_size(&p.figure());
+        let on_screen = w as f64 * cw / (h as f64 * ch);
+        assert!((fw / fh - on_screen).abs() < 1e-6, "{w}x{h}: {fw}x{fh}");
+        assert!(fw >= 720.0, "never narrower than its table and plots: {fw}");
+    }
+}
+
+#[test]
 fn draws_through_the_image_path() {
     let t = table(M6A, 400);
     let mut p = picker(&t, None, SiteFilterArgs::default_values());

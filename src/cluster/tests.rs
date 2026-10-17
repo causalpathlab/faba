@@ -583,7 +583,7 @@ fn a_batch_name_in_two_folders_is_two_batches() {
         input("dirB/B1_m6a_site.zarr", "B1"),
         input("dirA/B2_m6a_site.zarr", "B2"),
     ];
-    super::qualify_batches(&mut inputs);
+    super::args::qualify_batches(&mut inputs);
     let names: Vec<&str> = inputs.iter().map(|i| i.batch.as_ref()).collect();
     assert_eq!(names, vec!["dirA/B1", "dirB/B1", "B2"]);
 }
@@ -1452,4 +1452,80 @@ fn held_out_scores_are_finite_at_extreme_sites() {
         "link held-out {:?}",
         summary.heldout_per_read
     );
+}
+
+#[test]
+fn the_saved_command_runs_the_same_fit_again() {
+    let parse = |words: &[&str]| <super::command::Alone as clap::Parser>::parse_from(words).args;
+    let args = parse(&[
+        "faba",
+        "rel/a_m6a_site.zarr",
+        "--model",
+        "blocks",
+        "--cell-roles",
+        "6",
+        "--fit",
+        "*_wt_*",
+        "--no-batch-correction",
+        "--holdout",
+        "0.1",
+        "--shift-sd=-0.5",
+        "-o",
+        "out",
+    ]);
+    let argv = super::command(&args);
+    assert_eq!(argv[0], "cluster");
+    assert!(argv[1].ends_with("rel/a_m6a_site.zarr") && argv[1].starts_with('/'));
+    // The output too, so the script writes where the run did from anywhere;
+    // a pattern from `*` matches the absolute inputs as it is.
+    let after = |flag: &str| &argv[argv.iter().position(|w| w == flag).unwrap() + 1];
+    assert!(after("--output").starts_with('/') && after("--output").ends_with("/out"));
+    assert_eq!(after("--fit"), "*_wt_*");
+    // Parsed back, the same options; only the paths are absolute now.
+    let words: Vec<&str> = std::iter::once("faba")
+        .chain(argv[1..].iter().map(String::as_str))
+        .collect();
+    let mut again = parse(&words);
+    again.data_files = args.data_files.clone();
+    again.output = args.output.clone();
+    assert_eq!(
+        serde_json::to_value(&again).unwrap(),
+        serde_json::to_value(&args).unwrap()
+    );
+    // A relative pattern is made absolute, as the inputs it matches are.
+    let rel = super::command(&parse(&["faba", "rel/a.zarr", "--fit", "rel/*_wt_*"]));
+    let fit = &rel[rel.iter().position(|w| w == "--fit").unwrap() + 1];
+    assert!(fit.starts_with('/') && fit.ends_with("rel/*_wt_*"), "{fit}");
+    // Defaults are left out.
+    let plain = super::command(&parse(&["faba", "/x.zarr"]));
+    assert_eq!(plain, vec!["cluster".to_string(), "/x.zarr".to_string()]);
+    // As a script: the program and `cluster` first, a flag a line.
+    let script = crate::script::Script {
+        name: "m6a_cluster.cmd.sh",
+        made_by: "faba cluster",
+        guard: None,
+        cd: false,
+        head: 1,
+        replace: true,
+    };
+    let text = crate::script::text(&script, &argv);
+    assert!(text.contains("\"${FABA:-faba}\" cluster \\\n"), "{text}");
+    assert!(text.contains("  --cell-roles 6"), "{text}");
+    assert!(text.contains("  --fit '*_wt_*'"), "{text}");
+}
+
+#[test]
+fn site_stats_count_every_cells_reads_and_the_cells_with_any() {
+    // Two cells: one with reads at sites 0 and 2, one at site 0 only, an
+    // entry with no reads not counted as a cell.
+    let reads = super::read::Reads {
+        ptr: vec![0, 2, 4],
+        site: vec![0, 2, 0, 1],
+        on: vec![3, 1, 2, 0],
+        off: vec![1, 0, 4, 0],
+    };
+    let stats = super::read::SiteStats::of(&reads, 3);
+    assert_eq!(stats.on, vec![5, 0, 1]);
+    assert_eq!(stats.off, vec![5, 0, 0]);
+    assert_eq!(stats.cells, vec![2, 0, 1]);
 }

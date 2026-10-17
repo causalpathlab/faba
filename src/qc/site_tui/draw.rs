@@ -458,10 +458,16 @@ impl<'a> SitePicker<'a> {
         let n = view.table.len();
         let meta = self.meta_counts();
         let gene = self.gene_profile(80);
-        let height = 340.0
-            + if gene.is_some() { 220.0 } else { 0.0 }
-            + if meta.is_some() { 220.0 } else { 0.0 };
-        let mut canvas = Canvas::new(720.0, height);
+        // The histogram, then a box each for the gene and the metagene.
+        let extra = f64::from(u8::from(gene.is_some()) + u8::from(meta.is_some()));
+        let least = (720.0, 340.0 + 220.0 * extra);
+        // The view's shape on screen; the plots on the right take the
+        // room it adds, the table on the left keeps its own.
+        let (width, height) = self.controls.page(self.drawn, least).unwrap_or(least);
+        let plots_w = width - 330.0;
+        let grow = (height - 60.0 - 10.0 * extra) / (280.0 + 210.0 * extra);
+        let (hist_h, box_h) = (280.0 * grow, 210.0 * grow);
+        let mut canvas = Canvas::new(width, height);
         canvas.bold(16.0, 22.0, &self.title, 12.0, Anchor::Start, INK);
         canvas.text(
             16.0,
@@ -510,15 +516,15 @@ impl<'a> SitePicker<'a> {
         }
 
         let title = format!("{} · y: sites per bin", c.label());
-        self.draw_hist(&mut canvas, (320.0, 50.0, 390.0, 280.0), title);
-        let mut below = 340.0;
+        self.draw_hist(&mut canvas, (320.0, 50.0, plots_w, hist_h), title);
+        let mut below = 60.0 + hist_h;
         if let Some(p) = &gene {
-            draw_gene(&mut canvas, p, (320.0, below, 390.0, 210.0));
-            below += 220.0;
+            draw_gene(&mut canvas, p, (320.0, below, plots_w, box_h));
+            below += box_h + 10.0;
         }
         if let Some(m) = &meta {
             let title = format!("{} {}", view.table.modality, self.meta_title());
-            self.draw_meta(&mut canvas, m, (320.0, below, 390.0, 210.0), title);
+            self.draw_meta(&mut canvas, m, (320.0, below, plots_w, box_h), title);
         }
         canvas.finish()
     }

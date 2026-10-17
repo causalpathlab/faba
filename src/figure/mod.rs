@@ -221,16 +221,28 @@ impl Canvas {
 pub const CELL: (f64, f64) = (6.0, 12.0);
 
 /// The size in points of a figure saved from a view that took `area` on
-/// screen, so it keeps the view's shape; `None` before it was drawn.
-/// No smaller than `min` (a view states its own), lest a narrow terminal
-/// squeeze the text out.
-pub fn page(area: Rect, min: (f64, f64)) -> Option<(f64, f64)> {
+/// screen, cells `cell` points each, so it keeps the view's shape; `None`
+/// before it was drawn. Both sides grow alike until neither is smaller
+/// than `min` (a view states its own), lest a narrow terminal squeeze the
+/// text out.
+pub fn page(area: Rect, min: (f64, f64), (cw, ch): (f64, f64)) -> Option<(f64, f64)> {
     (area.width > 0 && area.height > 0).then(|| {
-        (
-            (f64::from(area.width) * CELL.0).max(min.0),
-            (f64::from(area.height) * CELL.1).max(min.1),
-        )
+        let (w, h) = (f64::from(area.width) * cw, f64::from(area.height) * ch);
+        let grow = (min.0 / w).max(min.1 / h).max(1.0);
+        (w * grow, h * grow)
     })
+}
+
+/// Points per cell for a terminal font `font` pixels a cell: as high as
+/// [`CELL`], as wide for that as the font; [`CELL`] for a font of no size.
+pub fn font_cell(font: ratatui_image::FontSize) -> (f64, f64) {
+    if font.width == 0 || font.height == 0 {
+        return CELL;
+    }
+    (
+        CELL.1 * f64::from(font.width) / f64::from(font.height),
+        CELL.1,
+    )
 }
 
 /// The `(width, height)` an SVG from [`Canvas::finish`] declares; zero
@@ -917,6 +929,17 @@ impl Controls {
         self.picker = Some(picker);
         self.images = true;
         self
+    }
+
+    /// The size of a figure saved from a view that took `area`, as
+    /// [`page`] says, its cells shaped as the terminal's font where the
+    /// terminal has said, else as [`CELL`].
+    pub fn page(&self, area: Rect, min: (f64, f64)) -> Option<(f64, f64)> {
+        let cell = self
+            .picker
+            .as_ref()
+            .map_or(CELL, |p| font_cell(p.font_size()));
+        page(area, min, cell)
     }
 
     /// Handle `key` if it is for the save prompt, `s` or `i`.

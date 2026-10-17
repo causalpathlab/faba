@@ -21,6 +21,9 @@ pub struct Track<'a> {
     pub values: Values<'a>,
     /// Bins become `log10(1 + sum)`, as the printed pileup does.
     pub log: bool,
+    /// Scaled to its own tallest bar, not the shared scale, nor counted in
+    /// it: a track that sums the others would only flatten them.
+    pub own_scale: bool,
 }
 
 /// A track binned over the window: front, and the total when there is one.
@@ -37,7 +40,14 @@ impl<'a> Track<'a> {
                 behind: None,
             },
             log,
+            own_scale: false,
         }
+    }
+
+    /// This track on its own scale (see [`Track::own_scale`]).
+    pub fn on_own_scale(mut self) -> Self {
+        self.own_scale = true;
+        self
     }
 
     /// This read track drawn in front of `total`.
@@ -55,6 +65,7 @@ impl<'a> Track<'a> {
             name: "reads per depth bin",
             values: Values::Ranges(ranges),
             log: false,
+            own_scale: false,
         }
     }
 

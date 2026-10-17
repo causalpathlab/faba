@@ -193,6 +193,44 @@ pub struct SiteData {
     pub reads: Reads,
 }
 
+/// Each site's raw reads over every cell read, converted and not, and how
+/// many cells have any there.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct SiteStats {
+    pub on: Vec<u64>,
+    pub off: Vec<u64>,
+    pub cells: Vec<u64>,
+}
+
+impl SiteStats {
+    /// `sites` sites with nothing counted.
+    pub fn zeros(sites: usize) -> Self {
+        Self {
+            on: vec![0; sites],
+            off: vec![0; sites],
+            cells: vec![0; sites],
+        }
+    }
+
+    pub fn of(reads: &Reads, sites: usize) -> Self {
+        let mut out = Self::zeros(sites);
+        for e in 0..reads.site.len() {
+            let s = reads.site[e] as usize;
+            out.on[s] += reads.on[e] as u64;
+            out.off[s] += reads.off[e] as u64;
+            out.cells[s] += u64::from(reads.on[e] + reads.off[e] > 0);
+        }
+        out
+    }
+}
+
+/// A site row of `modality`: its gene, chromosome, position, and whether it
+/// is the converted channel; none for any other row.
+pub fn site_row<'n>(name: &'n str, modality: &str) -> Option<(&'n str, &'n str, i64, bool)> {
+    let (gene, m, chr, pos, converted) = parse_row_channel(name)?;
+    (m.eq_ignore_ascii_case(modality) && !chr.is_empty()).then_some((gene, chr, pos, converted?))
+}
+
 /// Read every input's site rows (both channels) of the first modality met.
 pub fn read_inputs(inputs: &[Input]) -> anyhow::Result<SiteData> {
     let mut modality: Option<Box<str>> = None;

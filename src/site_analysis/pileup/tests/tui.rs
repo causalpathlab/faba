@@ -40,6 +40,27 @@ fn screen(v: &mut PileupView, w: u16, h: u16) -> String {
         .join("\n")
 }
 
+/// A figure's width over its height.
+fn aspect((w, h): (f64, f64)) -> f64 {
+    w / h
+}
+
+#[test]
+fn a_saved_window_has_the_views_shape_even_on_a_short_terminal() {
+    let (m, s) = (positions(), sites());
+    let mut v = view(&m, &s);
+    let (cw, ch) = crate::figure::CELL;
+    for (w, h) in [(120, 40), (120, 12), (60, 50)] {
+        screen(&mut v, w, h);
+        let on_screen = aspect((v.drawn.width as f64 * cw, v.drawn.height as f64 * ch));
+        let saved = aspect(crate::figure::svg_size(&v.figure()));
+        assert!(
+            (saved - on_screen).abs() < 1e-6,
+            "{w}x{h}: {saved} vs {on_screen}"
+        );
+    }
+}
+
 #[test]
 fn bins_hold_exactly_the_window() {
     let (m, s) = (positions(), sites());
@@ -596,6 +617,7 @@ fn the_browser_draws_text_and_saves_turned_position_labels() {
         genes: None,
         cursor: None,
         switchable: false,
+        pairs: &[],
     };
     let tracks = vec![Track::single("matrix", "sum", &m, false)];
     let mut b = browser(view, tracks, None);
@@ -633,4 +655,52 @@ fn only_the_bars_grab_and_any_button_clicks() {
     // The wheel at the start of the span changes nothing, and says so.
     press(&mut v, KeyCode::Char('0'));
     assert!(!v.mouse(at(MouseEventKind::ScrollUp, x, y)));
+}
+
+#[test]
+fn paired_tracks_mirror_in_pairs_and_the_margin_keeps_its_own_scale() {
+    // All cells (the sum) and one group, each converted then unconverted.
+    let all_on = vec![(1_010_000, 30.0), (1_050_000, 40.0)];
+    let all_off = vec![(1_010_000, 10.0), (1_050_000, 20.0)];
+    let one_on = vec![(1_010_000, 3.0), (1_050_000, 4.0)];
+    let one_off = vec![(1_010_000, 1.0), (1_050_000, 2.0)];
+    let pairs = [(0, 1), (2, 3)];
+    let view = View {
+        title: "GENE1",
+        chr: "chr1",
+        extent: EXTENT,
+        on: "methylated",
+        off: "unmethylated",
+        keys: None,
+        genes: None,
+        cursor: None,
+        switchable: false,
+        pairs: &pairs,
+    };
+    let tracks = vec![
+        Track::single("all: methylated", "reads", &all_on, false).on_own_scale(),
+        Track::single("all: unmethylated", "reads", &all_off, false).on_own_scale(),
+        Track::single("C1: methylated", "reads", &one_on, false),
+        Track::single("C1: unmethylated", "reads", &one_off, false),
+    ];
+    let mut b = browser(view, tracks, None);
+    assert_eq!(b.rows(), vec![Row::Mirror(0, 1), Row::Mirror(2, 3)]);
+    let bins = b.bins();
+    // The shared scale is the group's, never the margin's.
+    assert_eq!(bins.shared, Some(4.0));
+    assert_eq!(b.row_max(Row::Mirror(0, 1), &bins), None, "its own");
+    assert_eq!(b.row_max(Row::Mirror(2, 3), &bins), Some(4.0));
+    let accent: Vec<bool> = bins.shown.iter().map(|s| s.accent).collect();
+    assert_eq!(accent, vec![true, false, true, false], "converted above");
+    // Split (`v`), each track a row, the margin still on its own scale.
+    press(&mut b, KeyCode::Char('v'));
+    assert_eq!(b.rows(), (0..4).map(Row::Track).collect::<Vec<_>>());
+    let bins = b.bins();
+    assert_eq!(b.row_max(Row::Track(1), &bins), None);
+    assert_eq!(b.row_max(Row::Track(3), &bins), Some(4.0));
+    // Locked (`Y`), the lock is the group's and the margin stays its own.
+    press(&mut b, KeyCode::Char('Y'));
+    let bins = b.bins();
+    assert_eq!(b.row_max(Row::Track(0), &bins), None);
+    screen(&mut b, 120, 40);
 }

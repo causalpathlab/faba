@@ -259,8 +259,9 @@ fn a_folder_with_files_is_refused_as_the_output() {
     let (tmp, mut a) = app_with_bams();
     a.inputs.output.clear();
     ctrl_r(&mut a);
-    // The BAMs' own folder has files in it: asked again, with why.
-    for _ in 0..40 {
+    // The BAMs' own folder has files in it: asked again, with why. Enough
+    // backspaces to clear any temp path the field starts with.
+    for _ in 0..400 {
         press(&mut a, KeyCode::Backspace);
     }
     for c in tmp.path().to_string_lossy().chars() {

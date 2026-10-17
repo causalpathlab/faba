@@ -6,14 +6,16 @@
 //! clusters afterwards, as a control.
 
 use crate::run_record::RunRecord;
-use clap::Args;
 use legume_numeric::mcmc::engine::{run_mcmc_parallel, McmcConfig};
 use log::{info, warn};
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 use std::borrow::Cow;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
+mod args;
 mod blocks;
+mod browse;
+mod command;
 mod crp;
 mod embed;
 mod fit;
@@ -22,329 +24,16 @@ mod read;
 mod summary;
 mod write;
 
+use args::{check, inputs, output_dir, with_inputs};
+pub use args::{ClusterArgs, ModelKind};
+pub use browse::{run_modules, ModulesArgs};
+use command::command;
+
 #[cfg(test)]
 mod tests;
 
 /// Split R-hat above this is reported as not converged.
 const RHAT_OK: f64 = 1.05;
-
-#[derive(Args, Debug, Clone, serde::Serialize)]
-pub struct ClusterArgs {
-    #[arg(
-        required = true,
-        num_args = 1..,
-        value_name = "MATRIX|DIR",
-        help = "Site matrices (zarr or h5), or a faba output directory (or a run record in it)",
-        long_help = "Site matrices (zarr or h5): `{batch}_m6a_site` or `{batch}_atoi_site`,\n\
-                     or a faba output directory (or a run record in it), whose site matrices\n\
-                     of --modality are taken, one batch each."
-    )]
-    pub data_files: Vec<Box<str>>,
-
-    #[arg(
-        long = "modality",
-        value_name = "m6a|atoi",
-        help = "Which sites to take from an output directory (default: m6a, else atoi)"
-    )]
-    modality: Option<Box<str>>,
-
-    #[arg(
-        short = 'o',
-        long = "output",
-        value_name = "DIR",
-        help = "Where to write the tables and the run record (default: the input's directory)"
-    )]
-    output: Option<Box<str>>,
-
-    #[arg(
-        long = "fit",
-        value_name = "PATTERN",
-        help = "Fit only the cells of matrices whose path matches PATTERN (`*`, `?`); assign the rest",
-        long_help = "Fit only the cells of matrices whose path matches PATTERN (`*` any run,\n\
-                     `?` one character), e.g. `--fit '*_wt_*'`. The other matrices' cells are\n\
-                     assigned to the fitted clusters afterwards, as a control, from their reads\n\
-                     as read: batch weights are not applied to them, so a control keeps its own\n\
-                     level, and its `offset` measures that level against the fitted clusters.\n\
-                     Default: fit all."
-    )]
-    fit: Option<Box<str>>,
-
-    #[arg(
-        long,
-        default_value_t = false,
-        help = "Do not weight reads to take the fitted batches out",
-        long_help = "Do not weight reads to take the fitted batches out. By default, with more\n\
-                     than one fitted batch, each read is weighted by the ratio of its site's\n\
-                     pooled fraction to its batch's there (importance weights, capped and\n\
-                     self-normalised per batch and site), so clusters cannot be made of\n\
-                     batches. That also removes a site's difference between batches that\n\
-                     differ in their cells."
-    )]
-    no_batch_correction: bool,
-
-    #[arg(long, default_value_t = 50, help = "Drop cells covering fewer sites")]
-    min_cell_sites: usize,
-
-    #[arg(
-        long,
-        default_value_t = 20,
-        help = "Drop sites covered by fewer fitted cells"
-    )]
-    min_site_cells: usize,
-
-    #[arg(
-        long,
-        default_value_t = 5.0,
-        help = "Prior strength: pseudo-reads pulling a cluster's site fraction toward the site's pooled fraction"
-    )]
-    prior_strength: f64,
-
-    #[arg(
-        long,
-        value_enum,
-        default_value = "link",
-        help = "link: each (cell, gene) link in a community, cells with memberships; blocks: cell roles and gene roles (gene modules) with a methylation shift per pair; crp: each cell in one cluster"
-    )]
-    model: ModelKind,
-
-    #[arg(long, default_value_t = 8, help = "Communities, with --model link")]
-    communities: usize,
-
-    #[arg(
-        long,
-        default_value_t = 0.5,
-        help = "With --model link or blocks: concentration of each cell's membership (smaller: cells condense onto fewer communities or roles)"
-    )]
-    membership_alpha: f64,
-
-    #[arg(
-        long,
-        default_value_t = 1.0,
-        help = "With --model link: concentration of the communities' global weights"
-    )]
-    community_gamma: f64,
-
-    #[arg(long, default_value_t = 8, help = "Cell roles, with --model blocks")]
-    cell_roles: usize,
-
-    #[arg(
-        long,
-        default_value_t = 8,
-        help = "Gene roles (gene modules), with --model blocks"
-    )]
-    gene_roles: usize,
-
-    #[arg(
-        long,
-        default_value_t = 0.5,
-        help = "With --model blocks: concentration of each gene's role weights"
-    )]
-    gene_alpha: f64,
-
-    #[arg(
-        long,
-        default_value_t = 1.0,
-        help = "With --model blocks: prior sd of each (cell role, gene role) block's methylation shift, on the logit scale"
-    )]
-    shift_sd: f64,
-
-    #[arg(
-        long,
-        default_value_t = 1.0,
-        help = "With --model blocks: prior sd of each cell's own methylation level, on the logit scale"
-    )]
-    cell_sd: f64,
-
-    #[arg(
-        long,
-        default_value_t = 0.0,
-        help = "Share of (cell, site) entries held out of the fit and scored at every kept draw, to compare models; the written tables then hold only the fitted share of the reads"
-    )]
-    holdout: f64,
-
-    #[arg(
-        long,
-        default_value_t = 10,
-        help = "Smallest cluster reported: smaller ones' cells go to their most probable larger cluster"
-    )]
-    min_cluster_cells: usize,
-
-    #[arg(
-        long,
-        default_value_t = 4,
-        help = "Independent chains, run in parallel"
-    )]
-    chains: usize,
-
-    #[arg(
-        long,
-        default_value_t = 150,
-        help = "Sweeps per chain, burn-in included"
-    )]
-    sweeps: usize,
-
-    #[arg(
-        long,
-        default_value_t = 50,
-        help = "Sweeps discarded at the start of each chain"
-    )]
-    burn_in: usize,
-
-    #[arg(
-        long,
-        default_value_t = 2,
-        help = "Keep every this-many-th sweep after the burn-in"
-    )]
-    thin: usize,
-
-    #[arg(long, default_value_t = 10, help = "Split-merge proposals per sweep")]
-    split_merge: usize,
-
-    #[arg(
-        long,
-        default_value_t = 2,
-        help = "Restricted Gibbs scans before each split-merge proposal"
-    )]
-    restricted_scans: usize,
-
-    #[arg(
-        long,
-        default_value_t = 20,
-        help = "Chains start from k-means into a number of clusters drawn from 1 up to this"
-    )]
-    start_clusters: usize,
-
-    #[arg(
-        long,
-        default_value_t = 1,
-        help = "Random seed (chain i uses seed + i)"
-    )]
-    seed: u64,
-}
-
-/// Which mixture `faba cluster` fits.
-#[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-pub enum ModelKind {
-    Crp,
-    Link,
-    Blocks,
-}
-
-/// The matrices to read: each with its batch and whether it is fitted; and
-/// the modality asked for.
-fn inputs(args: &ClusterArgs) -> anyhow::Result<Vec<read::Input>> {
-    let mut out = Vec::new();
-    let fits = |path: &str| {
-        args.fit
-            .as_deref()
-            .is_none_or(|p| crate::common::wildcard(p, path))
-    };
-    for f in &args.data_files {
-        let folder: Box<str> = crate::run_record::default_output_dir(f)
-            .to_string_lossy()
-            .into();
-        match crate::run_record::output_dir_of(f) {
-            Some(dir) => {
-                let sites = crate::site_analysis::output_dir::output_site_matrices(
-                    &dir,
-                    args.modality.as_deref(),
-                )?;
-                for (batch, path) in sites.matrices {
-                    out.push(read::Input {
-                        fit: fits(&path),
-                        path,
-                        folder: folder.clone(),
-                        batch,
-                    });
-                }
-            }
-            None => {
-                let name = crate::qc::layout::file_name(f);
-                out.push(read::Input {
-                    path: f.clone(),
-                    folder,
-                    batch: crate::qc::layout::matrix_batch(&name).unwrap_or(name),
-                    fit: fits(f),
-                });
-            }
-        }
-    }
-    anyhow::ensure!(
-        out.iter().any(|i| i.fit),
-        "no input matrix matches --fit {}",
-        args.fit.as_deref().unwrap_or("")
-    );
-    qualify_batches(&mut out);
-    Ok(out)
-}
-
-/// A batch name met in several folders is a different batch in each: those
-/// are named `{folder}/{batch}`.
-fn qualify_batches(inputs: &mut [read::Input]) {
-    let mut folders: FxHashMap<Box<str>, FxHashSet<Box<str>>> = FxHashMap::default();
-    for i in inputs.iter() {
-        folders
-            .entry(i.batch.clone())
-            .or_default()
-            .insert(i.folder.clone());
-    }
-    for i in inputs.iter_mut() {
-        if folders[&i.batch].len() > 1 {
-            i.batch = format!("{}/{}", i.folder, i.batch).into();
-        }
-    }
-}
-
-/// `-o`, else the first input directory, else the first matrix's directory.
-fn output_dir(args: &ClusterArgs) -> PathBuf {
-    if let Some(o) = &args.output {
-        return PathBuf::from(o.as_ref());
-    }
-    crate::run_record::default_output_dir(&args.data_files[0])
-}
-
-/// Settings that would make the fit meaningless, refused up front.
-fn check(args: &ClusterArgs) -> anyhow::Result<()> {
-    anyhow::ensure!(
-        args.prior_strength > 0.0 && args.prior_strength.is_finite(),
-        "--prior-strength must be positive"
-    );
-    anyhow::ensure!(args.chains >= 1, "--chains must be at least 1");
-    // Split R-hat needs at least two draws in each half of every chain.
-    anyhow::ensure!(
-        args.sweeps.saturating_sub(args.burn_in) / args.thin.max(1) >= 4,
-        "--sweeps less --burn-in must leave at least 4 draws per chain (after --thin)"
-    );
-    // Labels are stored as u16.
-    anyhow::ensure!(
-        (1..u16::MAX as usize).contains(&args.communities),
-        "--communities must be between 1 and {}",
-        u16::MAX - 1
-    );
-    anyhow::ensure!(
-        (1..u16::MAX as usize).contains(&args.cell_roles)
-            && (1..u16::MAX as usize).contains(&args.gene_roles),
-        "--cell-roles and --gene-roles must be between 1 and {}",
-        u16::MAX - 1
-    );
-    let positive = |x: f64| x > 0.0 && x.is_finite();
-    anyhow::ensure!(positive(args.gene_alpha), "--gene-alpha must be positive");
-    anyhow::ensure!(positive(args.shift_sd), "--shift-sd must be positive");
-    anyhow::ensure!(positive(args.cell_sd), "--cell-sd must be positive");
-    anyhow::ensure!(
-        positive(args.membership_alpha),
-        "--membership-alpha must be positive"
-    );
-    anyhow::ensure!(
-        positive(args.community_gamma),
-        "--community-gamma must be positive"
-    );
-    anyhow::ensure!(
-        (0.0..1.0).contains(&args.holdout),
-        "--holdout must be at least 0 and less than 1"
-    );
-    Ok(())
-}
 
 /// Bytes the fit (not the reading) will hold at its peak, roughly: the
 /// reads (raw, a copy of the fitted ones when some are left out, and
@@ -392,7 +81,12 @@ fn memory_estimate(
     reads + shared + args.chains * chain
 }
 
-pub fn run_cluster(args: &ClusterArgs) -> anyhow::Result<()> {
+/// Cluster as `args` say; the modality fitted, none when no inputs were
+/// chosen.
+pub fn run_cluster(args: &ClusterArgs) -> anyhow::Result<Option<String>> {
+    let Some(args) = &with_inputs(args, "cluster", false)? else {
+        return Ok(None);
+    };
     let dir = output_dir(args);
     let mut record = RunRecord::start("cluster", &dir.to_string_lossy())
         .inputs("matrices", &args.data_files)
@@ -400,9 +94,23 @@ pub fn run_cluster(args: &ClusterArgs) -> anyhow::Result<()> {
     let outcome = cluster(args, &dir, &mut record);
     if let Ok(name) = &outcome {
         record = record.file_name(name);
+        // The command, to read, edit and run again, beside its record.
+        let name = name.replace(".run.json", ".cmd.sh");
+        let script = crate::script::Script {
+            name: &name,
+            made_by: "faba cluster",
+            guard: None,
+            cd: false,
+            head: 1,
+            replace: true,
+        };
+        // The fit is done and recorded whether or not the script is written.
+        if let Err(e) = crate::script::write(&dir, &script, &command(args)) {
+            warn!("the command was not saved: {e:#}");
+        }
     }
     record.finish(&outcome);
-    outcome.map(|_| ())
+    outcome.map(|name| name.strip_suffix("_cluster.run.json").map(String::from))
 }
 
 /// Fit, summarise and write; the run record's file name.
@@ -458,55 +166,8 @@ fn cluster(args: &ClusterArgs, dir: &Path, record: &mut RunRecord) -> anyhow::Re
     );
     info!("about {} MB at the peak of the fit", memory >> 20);
 
-    // Batches taken out of the fitted reads by importance weights.
-    let batches: Vec<&str> = {
-        let mut b: Vec<&str> = fitted
-            .iter()
-            .map(|&c| data.cells[c].batch.as_ref())
-            .collect();
-        b.sort_unstable();
-        b.dedup();
-        b
-    };
-    let (weighted, batch_stats) =
-        if !args.no_batch_correction && batches.len() > 1 {
-            let batch_of: Vec<u16> = fitted
-                .iter()
-                .map(|&c| {
-                    batches
-                        .binary_search(&data.cells[c].batch.as_ref())
-                        .unwrap() as u16
-                })
-                .collect();
-            let w = fit::batch_weights(&fit_reads, &batch_of, batches.len(), data.sites.len());
-            info!(
-            "importance weights take out {} batches: effective share of reads {:?}, {:.2}% capped",
-            batches.len(),
-            w.effective_share.iter().map(|e| format!("{e:.2}")).collect::<Vec<_>>(),
-            100.0 * w.capped_share
-        );
-            let stats = serde_json::json!({
-                "batches": batches,
-                "effective_share": w.effective_share,
-                "capped_share": w.capped_share,
-            "max_weight": w.max_weight,
-            });
-            (
-                read::Weighted::new(&fit_reads, Some((&w.on, &w.off))),
-                Some(stats),
-            )
-        } else {
-            (read::Weighted::new(&fit_reads, None), None)
-        };
+    let (weighted, batch_stats) = weigh_batches(args, &data, &fitted, &fit_reads);
 
-    let settings = crp::Settings {
-        strength: args.prior_strength,
-        split_merge: args.split_merge,
-        restricted: args.restricted_scans,
-        start_clusters: args.start_clusters,
-        gibbs: true,
-        fixed_alpha: None,
-    };
     let config = McmcConfig {
         n_samples: kept_draws.max(1),
         warmup: args.burn_in,
@@ -528,26 +189,104 @@ fn cluster(args: &ClusterArgs, dir: &Path, record: &mut RunRecord) -> anyhow::Re
     );
     record.set_result("batch_weights", &batch_stats);
     record.set_result("fit_memory_estimate_bytes", &memory);
-    if args.model != ModelKind::Crp {
-        let fit = LinkFit {
-            data: &data,
-            fitted: &fitted,
-            weighted: &weighted,
-            held: held.as_ref(),
-            all_cells: &all_cells,
-            kept: &kept,
-        };
-        return if args.model == ModelKind::Blocks {
-            blocks_fit(args, &config, dir, record, fit)
-        } else {
-            link_fit(args, &config, dir, record, fit)
-        };
+    let fit = LinkFit {
+        data: &data,
+        fitted: &fitted,
+        weighted: &weighted,
+        held: held.as_ref(),
+        all_cells: &all_cells,
+        kept: &kept,
+    };
+    match args.model {
+        ModelKind::Crp => crp_fit(args, &config, dir, record, fit, &fit_reads),
+        ModelKind::Link => link_fit(args, &config, dir, record, fit),
+        ModelKind::Blocks => blocks_fit(args, &config, dir, record, fit),
     }
-    let mut model = crp::Model::new(&weighted, data.sites.len(), settings);
-    if let Some(h) = &held {
+}
+
+/// Batches taken out of the fitted reads by importance weights, when there
+/// are several and the correction is on: the reads weighted, and what the
+/// weights did, for the record.
+fn weigh_batches<'r>(
+    args: &ClusterArgs,
+    data: &read::SiteData,
+    fitted: &[usize],
+    fit_reads: &'r read::Reads,
+) -> (read::Weighted<'r>, Option<serde_json::Value>) {
+    let batches: Vec<&str> = {
+        let mut b: Vec<&str> = fitted
+            .iter()
+            .map(|&c| data.cells[c].batch.as_ref())
+            .collect();
+        b.sort_unstable();
+        b.dedup();
+        b
+    };
+    if !args.no_batch_correction && batches.len() > 1 {
+        let batch_of: Vec<u16> = fitted
+            .iter()
+            .map(|&c| {
+                batches
+                    .binary_search(&data.cells[c].batch.as_ref())
+                    .unwrap() as u16
+            })
+            .collect();
+        let w = fit::batch_weights(fit_reads, &batch_of, batches.len(), data.sites.len());
+        info!(
+            "importance weights take out {} batches: effective share of reads {:?}, {:.2}% capped",
+            batches.len(),
+            w.effective_share
+                .iter()
+                .map(|e| format!("{e:.2}"))
+                .collect::<Vec<_>>(),
+            100.0 * w.capped_share
+        );
+        let stats = serde_json::json!({
+            "batches": batches,
+            "effective_share": w.effective_share,
+            "capped_share": w.capped_share,
+            "max_weight": w.max_weight,
+        });
+        (
+            read::Weighted::new(fit_reads, Some((&w.on, &w.off))),
+            Some(stats),
+        )
+    } else {
+        (read::Weighted::new(fit_reads, None), None)
+    }
+}
+
+/// Fit the mixture, write its tables, and fill the record; the run record's
+/// file name. `fit_reads` are the fitted cells' reads before any weights.
+fn crp_fit(
+    args: &ClusterArgs,
+    config: &McmcConfig,
+    dir: &Path,
+    record: &mut RunRecord,
+    fit: LinkFit,
+    fit_reads: &read::Reads,
+) -> anyhow::Result<String> {
+    let LinkFit {
+        data,
+        fitted,
+        weighted,
+        held,
+        all_cells,
+        kept,
+    } = fit;
+    let settings = crp::Settings {
+        strength: args.prior_strength,
+        split_merge: args.split_merge,
+        restricted: args.restricted_scans,
+        start_clusters: args.start_clusters,
+        gibbs: true,
+        fixed_alpha: None,
+    };
+    let mut model = crp::Model::new(weighted, data.sites.len(), settings);
+    if let Some(h) = held {
         model = model.with_heldout(h);
     }
-    let chains = run_mcmc_parallel(&model, &config, args.chains);
+    let chains = run_mcmc_parallel(&model, config, args.chains);
     let posterior = summary::posterior(&chains, args.min_cluster_cells);
     if posterior.rhat_k > RHAT_OK || posterior.rhat_log_posterior > RHAT_OK {
         warn!(
@@ -556,49 +295,20 @@ fn cluster(args: &ClusterArgs, dir: &Path, record: &mut RunRecord) -> anyhow::Re
         );
     }
     let (part, tiles) = fit::settle(
-        &fit_reads,
-        &weighted,
+        fit_reads,
+        weighted,
         &summary::partition(&chains),
         args.min_cluster_cells,
         data.sites.len(),
         args.prior_strength,
     );
     let sizes = summary::sizes(&part.z, part.k);
-
-    // Every kept cell's cluster, confidence and offset: a fitted cell's from
-    // the fit (its offset from its reads as the fit saw them), any other
-    // placed by its own reads.
-    let mut fit_index = vec![None; data.cells.len()];
-    for (i, &c) in fitted.iter().enumerate() {
-        fit_index[c] = Some(i);
-    }
-    let placed: Vec<fit::Placement> = {
-        use rayon::prelude::*;
-        (0..data.cells.len())
-            .into_par_iter()
-            .map(|c| match fit_index[c] {
-                Some(i) => {
-                    let (s, m, u) = weighted.of(i);
-                    let k = part.z[i];
-                    fit::Placement {
-                        cluster: k,
-                        probability: part.confidence[i],
-                        offset: tiles.offset(s, m, u, k as usize),
-                    }
-                }
-                None => {
-                    // A control cell, from its reads as read.
-                    let (s, m, u) = data.reads.of(c);
-                    tiles.place(s, m, u, &sizes)
-                }
-            })
-            .collect()
-    };
+    let placed = place_cells(data, fitted, weighted, &part, &tiles, &sizes);
     let mut rows: Vec<write::CellRow> = all_cells
         .iter()
         .map(|cell| write::CellRow { cell, placed: None })
         .collect();
-    for (p, &orig) in placed.iter().zip(&kept) {
+    for (p, &orig) in placed.iter().zip(kept) {
         rows[orig].placed = Some(p);
     }
 
@@ -624,7 +334,44 @@ fn cluster(args: &ClusterArgs, dir: &Path, record: &mut RunRecord) -> anyhow::Re
     Ok(format!("{m}_cluster.run.json"))
 }
 
-/// What the link and block models need from the read and filtered input.
+/// Every kept cell's cluster, confidence and offset: a fitted cell's from
+/// the fit (its offset from its reads as the fit saw them), any other
+/// placed by its own reads.
+fn place_cells(
+    data: &read::SiteData,
+    fitted: &[usize],
+    weighted: &read::Weighted,
+    part: &summary::Partition,
+    tiles: &fit::Tiles,
+    sizes: &[usize],
+) -> Vec<fit::Placement> {
+    let mut fit_index = vec![None; data.cells.len()];
+    for (i, &c) in fitted.iter().enumerate() {
+        fit_index[c] = Some(i);
+    }
+    use rayon::prelude::*;
+    (0..data.cells.len())
+        .into_par_iter()
+        .map(|c| match fit_index[c] {
+            Some(i) => {
+                let (s, m, u) = weighted.of(i);
+                let k = part.z[i];
+                fit::Placement {
+                    cluster: k,
+                    probability: part.confidence[i],
+                    offset: tiles.offset(s, m, u, k as usize),
+                }
+            }
+            None => {
+                // A control cell, from its reads as read.
+                let (s, m, u) = data.reads.of(c);
+                tiles.place(s, m, u, sizes)
+            }
+        })
+        .collect()
+}
+
+/// What each model needs from the read and filtered input.
 struct LinkFit<'a> {
     data: &'a read::SiteData,
     fitted: &'a [usize],
@@ -878,6 +625,11 @@ fn blocks_fit(
         k,
         b,
         &dir.join(format!("{m}_block_sites.parquet")),
+    )?;
+    write::site_stats(
+        &data.sites,
+        &read::SiteStats::of(&data.reads, data.sites.len()),
+        &dir.join(format!("{m}_site_stats.parquet")),
     )?;
     record.set_result("blocks", &summary);
     record.set_result("converged", &(summary.rhat_log_joint <= RHAT_OK));

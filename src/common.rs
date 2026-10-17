@@ -9,7 +9,9 @@ pub use legume_numeric::matrix::common_io::*;
 pub use log::info;
 pub use rayon::prelude::*;
 
+use arrow::record_batch::RecordBatch;
 use rustc_hash::{FxHashMap, FxHashSet};
+use std::path::Path;
 
 pub struct TripletsRowsCols {
     pub triplets: Vec<(u64, u64, f32)>,
@@ -301,4 +303,29 @@ pub fn wildcard(pattern: &str, text: &str) -> bool {
         }
     }
     p[pi..].iter().all(|&c| c == '*')
+}
+
+/// A parquet file as one Arrow record batch.
+pub fn read_record_batch<P: AsRef<Path>>(path: P) -> anyhow::Result<RecordBatch> {
+    use arrow::record_batch::RecordBatchReader;
+    let reader = parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(
+        std::fs::File::open(path)?,
+    )?
+    .build()?;
+    let schema = reader.schema();
+    let batches: Vec<RecordBatch> = reader.collect::<std::result::Result<_, _>>()?;
+    Ok(arrow::compute::concat_batches(&schema, &batches)?)
+}
+
+/// The column `name` of `batch` as an array of type `T`.
+pub fn column<'a, T: arrow::array::Array + 'static>(
+    batch: &'a RecordBatch,
+    name: &str,
+) -> anyhow::Result<&'a T> {
+    batch
+        .column_by_name(name)
+        .ok_or_else(|| anyhow::anyhow!("the table lacks the `{name}` column"))?
+        .as_any()
+        .downcast_ref::<T>()
+        .ok_or_else(|| anyhow::anyhow!("`{name}` column has an unexpected type"))
 }

@@ -99,6 +99,45 @@ fn prompt_confirms_edits_and_cancels() {
 }
 
 #[test]
+fn a_page_keeps_the_views_shape_when_a_minimum_binds() {
+    let (cw, ch) = CELL;
+    let area = Rect::new(0, 0, 10, 10);
+    assert_eq!(page(area, (0.0, 0.0), CELL), Some((10.0 * cw, 10.0 * ch)));
+    // Too narrow for the least width: both sides grow alike.
+    let (w, h) = page(area, (6.0 * 10.0 * cw, 0.0), CELL).unwrap();
+    assert_eq!((w, h), (6.0 * 10.0 * cw, 6.0 * 10.0 * ch));
+    // Too short: the same.
+    let (w, h) = page(area, (0.0, 2.0 * 10.0 * ch), CELL).unwrap();
+    assert_eq!((w, h), (2.0 * 10.0 * cw, 2.0 * 10.0 * ch));
+    assert_eq!(page(Rect::default(), (1.0, 1.0), CELL), None);
+}
+
+#[test]
+fn a_page_takes_its_cells_shape_from_the_terminals_font() {
+    let area = Rect::new(0, 0, 10, 10);
+    let text = Controls::new("x");
+    assert_eq!(text.page(area, (0.0, 0.0)), page(area, (0.0, 0.0), CELL));
+    // A font 8 by 20 pixels: cells 0.4 as wide as high, as tall as CELL.
+    let (cw, ch) = font_cell(ratatui_image::FontSize {
+        width: 8,
+        height: 20,
+    });
+    assert!((cw / ch - 0.4).abs() < 1e-9 && ch == CELL.1, "{cw}x{ch}");
+    assert_eq!(
+        font_cell(ratatui_image::FontSize {
+            width: 0,
+            height: 0
+        }),
+        CELL
+    );
+    // With a picker, its font's cells.
+    let picker = ratatui_image::picker::Picker::halfblocks();
+    let cell = font_cell(picker.font_size());
+    let images = Controls::new("x").with_picker(picker);
+    assert_eq!(images.page(area, (0.0, 0.0)), page(area, (0.0, 0.0), cell));
+}
+
+#[test]
 fn empty_shapes_are_not_written() {
     let mut c = Canvas::new(100.0, 200.0);
     c.rect(1.0, 1.0, 10.0, 0.0, INK);

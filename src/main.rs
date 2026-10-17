@@ -14,7 +14,9 @@ mod pipeline;
 mod qc;
 mod quant;
 mod read_depth;
+mod report;
 mod run_record;
+mod script;
 mod site_analysis;
 mod snp;
 mod tui;
@@ -24,7 +26,7 @@ use crate::qc::{run_qc, QcArgs};
 use apa::run::*;
 use atoi::run::*;
 use clap::{CommandFactory, FromArgMatches};
-use cluster::{run_cluster, ClusterArgs};
+use cluster::{run_cluster, run_modules, ClusterArgs, ModulesArgs};
 use docs::*;
 use gene_count::run::*;
 use m6a::run::*;
@@ -288,7 +290,7 @@ Example:\n  \
             - blocks: {modality}_cell_roles.parquet (each cell's roles and level),\n\
               _gene_roles (each gene's roles), _blocks (each block's shift), and\n\
               _block_genes, _block_cells, _block_sites (what each block holds, most\n\
-              enriched first)\n\
+              enriched first), and _site_stats (each site's raw reads and cells)\n\
             - {modality}_cluster.run.json: the run record, with split R-hat across chains\n\
               and, with --holdout, held-out reads",
         after_long_help = "\
@@ -298,6 +300,27 @@ Example:\n  \
   faba cluster out/ --model crp --chains 4 --sweeps 200"
     )]
     Cluster(ClusterArgs),
+
+    #[command(
+        name = "modules",
+        alias = "blocks",
+        about = "Browse the gene modules and cell modules of `faba cluster --model blocks`",
+        long_about = "Browse the gene modules and cell modules of `faba cluster --model blocks`\n\n\
+            Four levels, each a margin of the next. 1 gene modules: every gene module against\n\
+            every cell module. 2 sites: the sites of the module in focus, each with its reads,\n\
+            converted, unconverted and cells over every cell read. 3 genes: the genes you pin\n\
+            (Space on a site, or Alt-drag its row down), side by side under their gene models,\n\
+            an all-cells track above one track per cell module. 4 pileup: one pinned gene's\n\
+            full pileup from the site matrices, every cell with a cell module in it.\n\n\
+            Reads are mirror bars, converted up and unconverted down; `v` shows a grid as a %\n\
+            heatmap or a heatmap of each row's z across the cell modules, diagonally ordered;\n\
+            `/` finds a gene. The tables are written by `faba cluster --model blocks`, which\n\
+            runs first, with these options, when they are missing.\n\
+            Without a terminal (or with --batch-process) the modules are printed instead;\n\
+            --html writes them as one self-contained page instead (`e` in the browser).",
+        after_long_help = "Example:\n  faba modules out/\n  faba modules out/ --fit '*_wt_*' --cell-roles 8 --gene-roles 8\n  faba modules out/ --html modules.html"
+    )]
+    Modules(ModulesArgs),
 
     #[command(
         name = "metagene",
@@ -527,7 +550,10 @@ fn main() -> anyhow::Result<()> {
         Commands::Depth(ref args) => recorded(args.run_record(), || run_read_depth(args))?,
         Commands::Pwm(ref args) => run_scan_pwm(args)?,
         Commands::Pileup(ref args) => run_pileup(args)?,
-        Commands::Cluster(ref args) => run_cluster(args)?,
+        Commands::Cluster(ref args) => {
+            run_cluster(args)?;
+        }
+        Commands::Modules(ref args) => run_modules(args)?,
         Commands::Metagene(ref args) => run_metagene(args)?,
         Commands::Snp(ref args) => recorded(args.run_record(), || run_snp(args))?,
         Commands::Qc(ref args) => run_qc(args)?,

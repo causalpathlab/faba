@@ -655,6 +655,7 @@ fn view_of<'a>(
         genes: genes.cloned(),
         cursor: loaded.cursor,
         switchable,
+        pairs: &[],
     }
 }
 
@@ -757,7 +758,7 @@ fn search(
 pub(crate) type SharedModels = std::sync::Arc<std::sync::OnceLock<Result<Vec<GeneModel>, String>>>;
 
 /// Start reading `gtf` on a thread; `None` without an annotation.
-fn start_gene_models(gtf: Option<&str>) -> Option<SharedModels> {
+pub(crate) fn start_gene_models(gtf: Option<&str>) -> Option<SharedModels> {
     let gtf = gtf?.to_string();
     let models = SharedModels::default();
     let slot = models.clone();
@@ -1129,7 +1130,7 @@ fn write_pileup(args: &PileupArgs, loaded: &Loaded, print: bool) -> anyhow::Resu
 
 mod picker;
 
-mod tui;
+pub(crate) mod tui;
 
 #[cfg(test)]
 mod tests;
