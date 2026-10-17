@@ -269,39 +269,52 @@ Example:\n  \
 
     #[command(
         name = "cluster",
-        about = "Cluster cells by their own site reads: link communities (default), cell and gene modules (blocks), or a CRP mixture",
+        about = "Cluster cells by their own site reads: a blockmodel of cell and gene roles (presets link, the default, and blocks), or a CRP mixture",
         long_about = "Cluster cells by their own site reads\n\n\
-            Link communities (--model link, the default): a cell's reads at one gene's sites\n\
-            form a link, and each link belongs to one of --communities communities. A\n\
-            community is a methylation profile over sites; a cell has membership weights over\n\
-            the communities, sharing global weights so popular communities draw reads.\n\
-            Site fractions and memberships are integrated out; several chains of collapsed\n\
-            Gibbs and whole-cell swaps run in parallel, each move exact. Cells left out of\n\
-            the fit are placed against the fitted communities.\n\n\
-            Cell and gene modules (--model blocks): each link takes a cell role and a gene\n\
-            role; a (cell role, gene role) block shifts its sites' methylation on top of\n\
-            each site's baseline and each cell's own level, so gene roles are gene modules.\n\n\
+            A blockmodel over links (--model link or blocks): a cell's reads at one gene's\n\
+            sites form a link, and each link takes a cell role (--cell-roles) from the\n\
+            cell's membership weights and a gene role (--gene-roles) from the gene's. A\n\
+            (cell role, gene role) block has a methylation profile over sites, centred on\n\
+            each site's pooled fraction and, with --shift on, shifted by the block's shift,\n\
+            so gene roles are gene modules. --profile-strength sets how far a profile may\n\
+            leave its centre (`inf`: not at all, and each cell then has its own\n\
+            methylation level on top, prior sd --cell-sd; a finite strength integrates\n\
+            the profile out, so no cell level can enter); --global hdp shares global\n\
+            weights so popular cell roles draw reads. Memberships and profiles are\n\
+            integrated out; several chains of collapsed Gibbs on each link's roles,\n\
+            whole-cell and whole-gene role swaps, global-weight and slice-sampled shift\n\
+            and level updates run in parallel, each move exact. Two presets, each switch\n\
+            given overriding them:\n\
+            - link (the default): one gene role, no shift, strength 5, hdp: link communities\n\
+            - blocks: 8 gene roles, the shift, strength inf (cell levels), symmetric: cell\n\
+              and gene modules\n\
+            Gene roles need --shift on: a site belongs to one gene, so without a shift a\n\
+            gene's role never reaches its reads. Cells left out of the fit are placed\n\
+            against the fitted roles.\n\n\
             A Chinese-restaurant-process mixture (--model crp): each cell in one cluster,\n\
             the number of clusters learned, with split-merge moves and each cell's confidence.\n\n\
-            Outputs, in the output directory (link / crp):\n\
-            - {modality}_cell_communities.parquet / {modality}_cell_clusters.parquet: every input\n\
-              cell's community and memberships (`fitted`: in the fit, not placed after) /\n\
-              cluster and confidence\n\
-            - {modality}_community_sites.parquet / {modality}_site_clusters.parquet: each site's\n\
-              reads and posterior fraction per community / cluster\n\
-            - {modality}_gene_communities.parquet (link): each gene's links per community\n\
-            - blocks: {modality}_cell_roles.parquet (each cell's roles, level, and\n\
-              `fitted`), _gene_roles (each gene's roles), _blocks (each block's shift),\n\
-              _block_genes, _block_cells, _block_sites (what each block holds, most\n\
-              enriched first; sites with a read or more), _site_cells (each site's\n\
-              posterior-mean reads per cell role over every gene role, the full\n\
-              pileups), and _site_stats (each site's raw reads and cells)\n\
-            - {modality}_cluster.run.json: the run record, with split R-hat across chains\n\
-              and, with --holdout, held-out reads",
+            Outputs, in the output directory, of the blockmodel (link and blocks alike, the\n\
+            tables `faba modules` reads), from the best chain's posterior means:\n\
+            - {modality}_cell_roles.parquet (every input cell's roles and `fitted`: in the\n\
+              fit, not placed after; at strength inf its `level`), _gene_roles (each\n\
+              gene's roles), _blocks (each\n\
+              block's shift, 0 with --shift off), _block_genes, _block_cells, _block_sites\n\
+              (what each block holds, most enriched first; sites with a read or more),\n\
+              _site_cells (each site's posterior-mean reads per cell role over every gene\n\
+              role, the full pileups), and _site_stats (each site's raw reads and cells)\n\
+            - {modality}_blockmodel.run.json: the run record, with the model's settings\n\
+            of crp:\n\
+            - {modality}_cell_clusters.parquet: every input cell's cluster and confidence\n\
+            - {modality}_site_clusters.parquet: each site's reads and posterior fraction per\n\
+              cluster\n\
+            - {modality}_cluster.run.json: the run record\n\
+            Each run record has split R-hat across chains and, with --holdout, held-out\n\
+            reads; the command beside it (.cmd.sh) runs it again.",
         after_long_help = "\
 Example:\n  \
-  faba cluster out/ --fit '*_wt_*' --communities 8\n  \
+  faba cluster out/ --fit '*_wt_*' --cell-roles 8\n  \
   faba cluster out/ --fit '*_wt_*' --model blocks --cell-roles 8 --gene-roles 8\n  \
+  faba cluster out/ --gene-roles 4 --shift on\n  \
   faba cluster out/ --model crp --chains 4 --sweeps 200"
     )]
     Cluster(ClusterArgs),
@@ -325,8 +338,11 @@ Example:\n  \
             so: rerun with --refit.\n\n\
             Reads are mirror bars, converted up and unconverted down; `v` shows a grid as a %\n\
             heatmap or a heatmap of each row's z across the cell modules, diagonally ordered;\n\
-            `/` finds a gene. The tables are written by `faba cluster --model blocks`, which\n\
-            runs first, with these options, when they are missing.\n\
+            `/` finds a gene. The tables are written by `faba cluster` (either blockmodel\n\
+            preset, or custom settings), and opened as their run record says, its preset\n\
+            in the header. `faba cluster --model blocks` runs first, with these options,\n\
+            when they are missing, or when --model or a blockmodel switch is given whose\n\
+            settings (the rest at their defaults) are not the recorded ones.\n\
             Without a terminal (or with --batch-process) the modules are printed instead;\n\
             --html writes them as one self-contained page instead (`e` in the browser).",
         after_long_help = "Example:\n  faba modules out/\n  faba modules out/ --fit '*_wt_*' --cell-roles 8 --gene-roles 8\n  faba modules out/ --html modules.html"

@@ -17,10 +17,44 @@
 .levels span.on { color: var(--accent); font-weight: 600; }
 .margins { display: grid; grid-template-columns: auto 1fr; gap: 4px 16px; color: var(--dim); font-size: 0.85rem; margin: 0; }
 .margins b { color: var(--fg); font-weight: 600; font-family: var(--mono); }
+/* The Model section: the run's settings and plate diagram, in the shell's tokens. */
+.model { display: flex; flex-direction: column; gap: 10px; }
+.model[hidden] { display: none; }
+.model-head { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; }
+.model-head h2 { font-size: 1rem; font-weight: 600; margin: 0; }
+.model-head button { font: inherit; font-size: 0.85rem; color: var(--fg); background: var(--term); border: 1px solid var(--rule); border-radius: 4px; padding: 2px 10px; cursor: pointer; }
+.model-head button:hover { border-color: var(--accent); }
+.settings { display: flex; flex-wrap: wrap; gap: 4px 20px; margin: 0; color: var(--dim); font-size: 0.85rem; }
+.settings b { color: var(--fg); font-family: var(--mono); font-weight: 600; }
+.diagram { overflow-x: auto; background: var(--term); border: 1px solid var(--rule); border-radius: 8px; }
+.diagram[hidden] { display: none; }
+.plate-svg { --serif: "STIX Two Text", "Cambria Math", "Times New Roman", serif; display: block; min-width: 900px; width: 100%; height: auto; }
+.plate-svg .pl { fill: none; stroke: var(--dim); stroke-width: 1.4; }
+.plate-svg .pt, .plate-svg .an { font-family: var(--sans); font-size: 12.5px; fill: var(--dim); }
+.plate-svg .an { font-size: 11.5px; }
+.plate-svg .ed { fill: none; stroke: var(--fg); stroke-width: 1.4; marker-end: url(#plate-arr); }
+.plate-svg .nd { fill: var(--term); stroke: var(--fg); stroke-width: 1.6; }
+.plate-svg .nd.cl { stroke-dasharray: 5 4; }
+.plate-svg .nd.obs { fill: var(--rule); }
+.plate-svg .dot { fill: var(--fg); }
+.plate-svg .m, .plate-svg .hv { font-family: var(--serif); fill: var(--fg); }
+.plate-svg .m { font-size: 20px; text-anchor: middle; }
+.plate-svg .hv { font-size: 17px; }
+.plate-svg .sub { font-size: 13px; }
+.plate-svg .fl { fill: var(--page); stroke: var(--accent); }
+.plate-svg .ft { font-family: var(--sans); font-size: 12px; fill: var(--accent); }
+.plate-svg .say { font-family: var(--sans); font-size: 12.5px; fill: var(--accent); }
+.model .legend .sw { display: inline-block; width: 16px; height: 16px; border-radius: 50%; border: 1.5px solid var(--fg); }
+.model .legend .sw.dash { border-style: dashed; }
+.model .legend .sw.obs { background: var(--rule); }
+.model .legend .sw.sq { border-radius: 2px; width: 13px; height: 13px; }
+.model .legend .sw.dot { width: 9px; height: 9px; background: var(--fg); border: 0; }
+.model .legend .sw.grey { opacity: 0.45; }
+.model .legend .sw.flag { border-radius: 3px; width: 22px; height: 13px; border-color: var(--accent); }
 </style>
 <div class="wrap">
   <h1 id="title">gene modules × cell modules</h1>
-  <p class="lede">The gene modules and cell modules of <code>faba cluster --model blocks</code>. Click a pane or press <kbd>Tab</kbd> to focus it, then <kbd>↑</kbd>/<kbd>↓</kbd> to move. Choosing a gene module (left) fills the sites pane (right); <kbd>Space</kbd> on a site (or Shift-dragging its row down) pins its gene to the strip below, which grows a row at a time as genes are added; there the pinned genes (from any module) run side by side; Delete unpins one (or Shift-drag it off the strip; Shift-drag along it to reorder; a plain click only selects), <kbd>Shift</kbd>+<kbd>X</kbd> clears them, and Enter opens one's pileup. When the cell modules do not all fit across a grid, its columns narrow and then <kbd>[</kbd>/<kbd>]</kbd> scroll them in every grid together, those hidden counted in its corner. Each level is a margin of the next. Press <kbd>/</kbd> and type a gene name to jump to it.</p>
+  <p class="lede">The gene modules and cell modules of the <code>faba cluster</code> blockmodel. Click a pane or press <kbd>Tab</kbd> to focus it, then <kbd>↑</kbd>/<kbd>↓</kbd> to move. Choosing a gene module (left) fills the sites pane (right); <kbd>Space</kbd> on a site (or Shift-dragging its row down) pins its gene to the strip below, which grows a row at a time as genes are added; there the pinned genes (from any module) run side by side; Delete unpins one (or Shift-drag it off the strip; Shift-drag along it to reorder; a plain click only selects), <kbd>Shift</kbd>+<kbd>X</kbd> clears them, and Enter opens one's pileup. When the cell modules do not all fit across a grid, its columns narrow and then <kbd>[</kbd>/<kbd>]</kbd> scroll them in every grid together, those hidden counted in its corner. Each level is a margin of the next. Press <kbd>/</kbd> and type a gene name to jump to it.</p>
 
   <div class="scroller">
     <div class="term" id="term">
@@ -55,6 +89,22 @@
     <b>4 pileup</b><span>one gene full width under its model, zoomable, with the same tracks; Enter goes one level finer, Esc sums back up. Each site's reads over every gene module, split across the cell modules, so the gene's share in its main module (level 3) is a part of it</span>
   </div>
   <p class="note">The same mirror bars as the pileup view: a block's methylation reads as the balance of its two bars, and its depth as their total height. In the grids the small number beside each bar is its methylated %; the gene views show a site's numbers (% · reads) for the site under the pointer or in focus.</p>
+
+  <section class="model" id="model" hidden>
+    <div class="model-head"><h2>Model</h2><span class="note" id="model-preset"></span><button type="button" id="model-toggle" aria-controls="model-diagram">hide diagram</button></div>
+    <p class="settings" id="model-settings"></p>
+    <div class="diagram" id="model-diagram"></div>
+    <div class="legend">
+      <span class="key"><i class="sw obs"></i> observed reads</span>
+      <span class="key"><i class="sw"></i> sampled</span>
+      <span class="key"><i class="sw dash"></i> integrated out</span>
+      <span class="key"><i class="sw sq"></i> computed from the data, fixed</span>
+      <span class="key"><i class="sw dot"></i> setting</span>
+      <span class="key"><i class="sw grey"></i> fixed by this run's switches</span>
+      <span class="key"><i class="sw flag"></i> switch, as this run set it</span>
+    </div>
+  </section>
+  <p class="note" id="model-why" hidden></p>
 </div>
 
 <script>
@@ -97,6 +147,28 @@ document.getElementById("title").textContent = DATA.title;
 document.querySelectorAll(".on-name").forEach(e => e.textContent = `${DATA.on} (${DATA.on[0]})`);
 document.querySelectorAll(".off-name").forEach(e => e.textContent = `${DATA.off} (${DATA.off[0]})`);
 document.getElementById("stat").textContent = `${modules.length} gene modules × ${CM} cell modules · ${DATA.modality}`;
+
+// The model the tables come from, as its run record says (`svg` drawn by
+// `faba modules` for its switches), or why there is none to draw.
+const MODEL = DATA.model;
+if (MODEL.svg) {
+  document.getElementById("model").hidden = false;
+  document.getElementById("model-diagram").innerHTML = MODEL.svg;
+  document.getElementById("model-preset").textContent = MODEL.preset ? `the ${MODEL.preset} preset` : "no preset: switches set by hand";
+  const off = "off", inf = MODEL.strength === "inf" ? "∞" : MODEL.strength;
+  const shown = [["cell roles A", MODEL.cellRoles], ["gene roles B", MODEL.geneRoles], ["strength S", inf], ["α", MODEL.alpha], ["gene α", MODEL.geneAlpha], ["σδ", MODEL.shiftSd ?? off], ["σν", MODEL.cellSd ?? "no cell level"], ["γ", MODEL.gamma ?? "symmetric"]];
+  document.getElementById("model-settings").innerHTML = shown.map(([k, v]) => `<span>${esc(k)} <b>${esc(v)}</b></span>`).join("");
+} else {
+  const why = document.getElementById("model-why");
+  why.hidden = false; why.textContent = `No model diagram: ${MODEL.why}.`;
+}
+// `d` (or the button) shows and hides the diagram.
+function toggleDiagram() {
+  const box = document.getElementById("model-diagram");
+  box.hidden = !box.hidden;
+  document.getElementById("model-toggle").textContent = box.hidden ? "show diagram" : "hide diagram";
+}
+document.getElementById("model-toggle").addEventListener("click", toggleDiagram);
 
 // The modules' diagonal order for the heatmaps, as `faba modules` chose it
 // (the cell modules come in theirs).
@@ -498,7 +570,7 @@ const KEYS = {
 };
 function drawKeys(level) {
   const every = level < 4 ? [...(cols.fits < CM ? [["[ ]", "cell modules"]] : []), ["tab", "pane"]] : [];
-  const tail = [["/", "find gene"]];
+  const tail = [["/", "find gene"], ...(MODEL.svg ? [["d", "diagram"]] : [])];
   footerKeys([...KEYS[level], ...every, ...tail]);
 }
 
@@ -574,6 +646,7 @@ document.addEventListener("keydown", e => {
   if (nav.includes(k)) e.preventDefault();
   // Every level.
   if (k === "q") return;  // quits the tool
+  if (k === "d" && MODEL.svg) { toggleDiagram(); return; }
   if (k === "Enter") { if (level === 1) state.pane = 0; else if (level === 2) state.pane = 2; else if (level === 3 && state.pins.length) openFull(); }
   else if (k === " " && level === 2) { e.preventDefault(); pinOrSelect(sitesOf(state.mod)[state.site].gene); }
   else if ((k === "Delete" || k === "Backspace") && level === 2) { const ge = sitesOf(state.mod)[state.site].gene; if (state.pins.includes(ge)) togglePin(ge); }

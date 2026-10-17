@@ -1,7 +1,6 @@
 //! The clustering's tables.
 
 use super::fit::{Placement, Tiles};
-use super::link::Profile;
 use super::read::{Cell, Site, SiteStats};
 use arrow::array::{
     ArrayRef, BooleanArray, Float32Array, Int32Array, Int64Array, StringArray, UInt64Array,
@@ -163,19 +162,20 @@ pub fn sites(sites: &[Site], tiles: &Tiles, path: &Path) -> anyhow::Result<()> {
     write(columns, path)
 }
 
-/// One row per input cell under the link or block model: its membership
-/// over the communities or roles and, under the block model, its own
-/// methylation level; none when it was not kept.
-pub struct CommunityRow<'a> {
+/// One row per input cell under the blockmodel: its weights over the cell
+/// roles and, at infinite strength, its own methylation level; none when it
+/// was not kept.
+pub struct RoleRow<'a> {
     pub cell: &'a Cell,
     pub membership: Option<&'a [f32]>,
     pub level: Option<f32>,
 }
 
-/// Every input cell: barcode, batch, its main `name` (a community or role,
-/// 1..), that one's weight, whether it was fitted (kept and in the fit, not
-/// placed after), its level when any cell has one, and its weight in each.
-pub fn communities(rows: &[CommunityRow], k: usize, name: &str, path: &Path) -> anyhow::Result<()> {
+/// Every input cell: barcode, batch, its main cell role (1..), that role's
+/// weight, whether it was fitted (kept and in the fit, not placed after),
+/// its level when any cell has one, and its weight in each of the `k`
+/// roles.
+pub fn cell_roles(rows: &[RoleRow], k: usize, path: &Path) -> anyhow::Result<()> {
     let labels = [
         (
             "barcode",
@@ -196,7 +196,7 @@ pub fn communities(rows: &[CommunityRow], k: usize, name: &str, path: &Path) -> 
         extra.push(("level", Arc::new(Float32Array::from(level))));
     }
     let membership: Vec<Option<&[f32]>> = rows.iter().map(|r| r.membership).collect();
-    memberships(&labels, &membership, extra, k, name, path)
+    memberships(&labels, &membership, extra, k, path)
 }
 
 /// One row per gene: its main gene role (1..), that role's weight, and its
@@ -213,19 +213,18 @@ pub fn gene_roles(
         &membership,
         Vec::new(),
         roles,
-        "role",
         path,
     )
 }
 
-/// One row per member: its `labels` columns, its main `name` (1..), that
-/// one's weight, the `extra` columns, and its weight in each of `k`.
+/// One row per member: its `labels` columns, its main `role` (1..), that
+/// role's weight, the `extra` columns, and its weight in each of `k` roles
+/// (`role_1`..).
 fn memberships(
     labels: &[(&str, Vec<&str>)],
     membership: &[Option<&[f32]>],
     extra: Vec<(&str, ArrayRef)>,
     k: usize,
-    name: &str,
     path: &Path,
 ) -> anyhow::Result<()> {
     let main = |m: &[f32]| super::summary::main_labels(m, k)[0] as usize;
@@ -239,7 +238,7 @@ fn memberships(
         })
         .collect();
     columns.push((
-        name.into(),
+        "role".into(),
         Arc::new(Int32Array::from(
             membership
                 .iter()
@@ -259,7 +258,7 @@ fn memberships(
     columns.extend(extra.into_iter().map(|(n, a)| (n.to_string(), a)));
     for j in 0..k {
         columns.push((
-            format!("{name}_{}", j + 1),
+            format!("role_{}", j + 1),
             Arc::new(Float32Array::from(
                 membership
                     .iter()
@@ -273,74 +272,6 @@ fn memberships(
             .iter()
             .map(|(n, a)| (n.as_str(), a.clone()))
             .collect(),
-        path,
-    )
-}
-
-/// One row per site and community with reads, sorted by gene and position:
-/// the community (1..), its weighted reads and posterior-mean fraction.
-pub fn community_sites(sites: &[Site], profile: &Profile, path: &Path) -> anyhow::Result<()> {
-    let order = site_order(sites);
-    let k = profile.k;
-    let (mut site, mut label) = (vec![], vec![]);
-    let (mut on, mut total, mut mean) = (vec![], vec![], vec![]);
-    for s in order {
-        for j in 0..k {
-            let at = s * k + j;
-            if profile.total[at] <= 0.0 {
-                continue;
-            }
-            site.push(s);
-            label.push(j as i32 + 1);
-            on.push(profile.on[at] as f32);
-            total.push(profile.total[at] as f32);
-            mean.push(profile.mean[at] as f32);
-        }
-    }
-    let mut columns = Vec::from(site_columns(sites, site.into_iter()));
-    columns.extend([
-        ("community", Arc::new(Int32Array::from(label)) as ArrayRef),
-        ("converted", Arc::new(Float32Array::from(on))),
-        ("total", Arc::new(Float32Array::from(total))),
-        ("mean", Arc::new(Float32Array::from(mean))),
-    ]);
-    write(columns, path)
-}
-
-/// One row per gene and community holding any of its links: the gene, the
-/// community (1..), its links, and their share of the gene's.
-/// Genes whose links fall in the same communities across cells form modules.
-pub fn gene_communities(
-    gene_of_link: &[u32],
-    names: &[&str],
-    z: &[u16],
-    k: usize,
-    path: &Path,
-) -> anyhow::Result<()> {
-    let mut count = vec![0u32; names.len() * k];
-    for (&g, &j) in gene_of_link.iter().zip(z) {
-        count[g as usize * k + j as usize] += 1;
-    }
-    let mut order: Vec<usize> = (0..names.len()).collect();
-    order.sort_by_key(|&g| names[g]);
-    let (mut gene, mut label, mut links, mut share) = (vec![], vec![], vec![], vec![]);
-    for g in order {
-        let row = &count[g * k..(g + 1) * k];
-        let total: u32 = row.iter().sum();
-        for (j, &n) in row.iter().enumerate().filter(|(_, &n)| n > 0) {
-            gene.push(names[g]);
-            label.push(j as i32 + 1);
-            links.push(n);
-            share.push(n as f32 / total as f32);
-        }
-    }
-    write(
-        vec![
-            ("gene", Arc::new(StringArray::from(gene))),
-            ("community", Arc::new(Int32Array::from(label))),
-            ("links", Arc::new(arrow::array::UInt32Array::from(links))),
-            ("share", Arc::new(Float32Array::from(share))),
-        ],
         path,
     )
 }

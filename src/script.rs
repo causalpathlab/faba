@@ -1,5 +1,5 @@
 //! The command a run made, saved as a shell script next to its outputs
-//! (`faba_run.cmd.sh`, `{modality}_cluster.cmd.sh`), so it can be read,
+//! (`faba_run.cmd.sh`, `{modality}_cluster.cmd.sh`, `{modality}_blockmodel.cmd.sh`), so it can be read,
 //! edited and run again.
 
 use clap::{Arg, ArgAction, ArgMatches};

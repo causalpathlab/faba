@@ -65,6 +65,11 @@ pub(super) fn ln_sigmoid(x: f64) -> f64 {
     }
 }
 
+/// The logit `ln (p / (1 - p))`, the inverse of the sigmoid.
+pub(super) fn logit(p: f64) -> f64 {
+    (p / (1.0 - p)).ln()
+}
+
 /// `ln Σ exp(v)` over `values`, stable (`-inf` when empty).
 pub(super) fn log_sum_exp(values: impl Iterator<Item = f64> + Clone) -> f64 {
     let max = values.clone().fold(f64::NEG_INFINITY, f64::max);
