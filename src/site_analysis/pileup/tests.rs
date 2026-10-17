@@ -380,3 +380,41 @@ fn resolve(args: &[&str]) -> (PileupArgs, Vec<TrackFiles>) {
 fn labels(groups: &[TrackFiles]) -> Vec<&str> {
     groups.iter().map(|g| &*g.label).collect()
 }
+
+/// `faba pileup`'s first two tracks share a row when both are read tracks
+/// of one measure, in the plain colours; else every track has its own row.
+#[test]
+fn the_pileup_mirrors_its_first_two_alike_tracks() {
+    let args = pileup_args(&["x_m6a_site.zarr"]);
+    let track = |label: &str, total: Option<Vec<(i64, f64)>>| MatrixTrack {
+        label: label.into(),
+        converted: vec![(10, 1.0)],
+        total,
+    };
+    let loaded = |tracks| Loaded {
+        gene: "GENE1".into(),
+        chr: "chr1".into(),
+        modality: "m6a".into(),
+        tracks,
+        sites: None,
+        extent: (0, 100),
+        keys: None,
+        depth: Vec::new(),
+        cursor: None,
+    };
+    let flags = |l: &Loaded| -> Vec<(bool, bool)> {
+        tracks_of(&args, l, "stacked")
+            .iter()
+            .map(|t| (t.mirror_with_next, t.accent))
+            .collect()
+    };
+    let alike = loaded(vec![track("a", None), track("b", None), track("c", None)]);
+    assert_eq!(
+        flags(&alike),
+        [(true, false), (false, false), (false, false)]
+    );
+    // A track with a total is another measure than one without.
+    let apart = loaded(vec![track("a", Some(vec![(10, 2.0)])), track("b", None)]);
+    assert_eq!(flags(&apart), [(false, false); 2]);
+    assert_eq!(flags(&loaded(vec![track("a", None)])), [(false, false)]);
+}

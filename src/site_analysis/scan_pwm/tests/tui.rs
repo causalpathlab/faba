@@ -187,12 +187,16 @@ fn enter_stays_and_esc_leaves() {
 fn a_saved_logo_keeps_the_views_shape() {
     let mut v = PwmView::new("x", &pwm(), 2);
     let size = crate::figure::svg_size;
-    // The height follows the view; five letters stop at 40 points each.
-    let (_, ch) = crate::figure::CELL;
-    screen(&mut v, 120, 30);
-    assert_eq!(size(&v.figure()), (76.0 + 40.0 * 5.0, 30.0 * ch));
-    screen(&mut v, 120, 40);
-    assert_eq!(size(&v.figure()).1, 40.0 * ch);
+    let (cw, ch) = crate::figure::CELL;
+    // The logo's own box on screen: letters at most a few cells wide, so a
+    // wide terminal leaves room beside it that the figure does not take.
+    for (w, h) in [(120, 30), (120, 40), (40, 30)] {
+        screen(&mut v, w, h);
+        assert!(v.drawn.width < w, "{w}x{h}: {:?}", v.drawn);
+        let (fw, fh) = size(&v.figure());
+        let on_screen = v.drawn.width as f64 * cw / (v.drawn.height as f64 * ch);
+        assert!((fw / fh - on_screen).abs() < 1e-6, "{w}x{h}: {fw}x{fh}");
+    }
 }
 
 #[test]

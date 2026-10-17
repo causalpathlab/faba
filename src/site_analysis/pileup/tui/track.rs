@@ -21,23 +21,55 @@ pub struct Track<'a> {
     pub values: Values<'a>,
     /// Bins become `log10(1 + sum)`, as the printed pileup does.
     pub log: bool,
+    /// Scaled to its own tallest bar, not the shared scale, nor counted in
+    /// it: a track that sums the others would only flatten them.
+    pub own_scale: bool,
+    /// Drawn with the track after it as one mirrored row, this one above
+    /// (`v` splits them).
+    pub mirror_with_next: bool,
+    /// Drawn in the converted colour, as converted reads.
+    pub accent: bool,
 }
 
 /// A track binned over the window: front, and the total when there is one.
 pub(super) type Binned = (Vec<f64>, Option<Vec<f64>>);
 
 impl<'a> Track<'a> {
-    /// A read track with no total.
-    pub fn single(label: &'a str, name: &'a str, front: &'a [(i64, f64)], log: bool) -> Self {
+    /// A track of `values`, on the shared scale, in a row of its own.
+    fn of(label: &'a str, name: &'a str, values: Values<'a>, log: bool) -> Self {
         Track {
             label,
             name,
-            values: Values::Reads {
-                front,
-                behind: None,
-            },
+            values,
             log,
+            own_scale: false,
+            mirror_with_next: false,
+            accent: false,
         }
+    }
+
+    /// A read track with no total.
+    pub fn single(label: &'a str, name: &'a str, front: &'a [(i64, f64)], log: bool) -> Self {
+        let values = Values::Reads {
+            front,
+            behind: None,
+        };
+        Self::of(label, name, values, log)
+    }
+
+    /// This track on its own scale (see [`Track::own_scale`]).
+    pub fn on_own_scale(mut self) -> Self {
+        self.own_scale = true;
+        self
+    }
+
+    /// This track as converted reads above the next track's: one mirrored
+    /// row, this half in the accent (see [`Track::mirror_with_next`] and
+    /// [`Track::accent`]).
+    pub fn converted_above(mut self) -> Self {
+        self.mirror_with_next = true;
+        self.accent = true;
+        self
     }
 
     /// This read track drawn in front of `total`.
@@ -50,12 +82,7 @@ impl<'a> Track<'a> {
 
     /// A read-depth track over genomic bins.
     pub fn depth(label: &'a str, ranges: &'a [(i64, i64, f64)]) -> Self {
-        Track {
-            label,
-            name: "reads per depth bin",
-            values: Values::Ranges(ranges),
-            log: false,
-        }
+        Self::of(label, "reads per depth bin", Values::Ranges(ranges), false)
     }
 
     /// The read positions; none for a depth track.
@@ -74,7 +101,8 @@ impl<'a> Track<'a> {
         }
     }
 
-    pub(super) fn is_reads(&self) -> bool {
+    /// Whether it holds reads, not depth bins.
+    pub(in crate::site_analysis::pileup) fn is_reads(&self) -> bool {
         matches!(self.values, Values::Reads { .. })
     }
 

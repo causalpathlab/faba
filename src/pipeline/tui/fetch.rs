@@ -6,7 +6,7 @@
 //! where it left.
 
 use std::fs::File;
-use std::io::{BufReader, BufWriter, Read, Write};
+use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -570,7 +570,8 @@ fn fetch(
 }
 
 /// Fetch `url` into `dest` with curl, by way of `dest.part`, saying how
-/// far it has got as it grows.
+/// far it has got as it grows. A fetch that fails keeps its part file, so
+/// the next one resumes it.
 fn download(
     url: &str,
     dest: &Path,
@@ -578,7 +579,7 @@ fn download(
     stopper: &Stopper,
     said: &Said<'_>,
 ) -> anyhow::Result<()> {
-    let part = PathBuf::from(format!("{}.part", dest.display()));
+    let part = crate::common::part_of(dest);
     let total = content_length(url);
     let mut last = None;
     let args = [
@@ -639,10 +640,9 @@ impl<R: Read> Read for Counted<R> {
     }
 }
 
-/// Unpack `gz` into `dest` by way of `dest.part`, saying how far through
-/// `gz` it is.
+/// Unpack `gz` into `dest` by way of `dest.part` (see
+/// [`crate::common::write_replacing`]), saying how far through `gz` it is.
 fn gunzip(gz: &Path, dest: &Path, stopper: &Stopper, said: &Said<'_>) -> anyhow::Result<()> {
-    let part = PathBuf::from(format!("{}.part", dest.display()));
     let total = std::fs::metadata(gz)?.len();
     let read = std::rc::Rc::new(std::cell::Cell::new(0));
     let counted = Counted {
@@ -650,24 +650,21 @@ fn gunzip(gz: &Path, dest: &Path, stopper: &Stopper, said: &Said<'_>) -> anyhow:
         n: read.clone(),
     };
     let mut from = flate2::read::MultiGzDecoder::new(BufReader::new(counted));
-    let mut to = BufWriter::new(File::create(&part)?);
-    let mut buf = vec![0u8; 1 << 20];
-    let mut last = None;
-    loop {
-        anyhow::ensure!(!stopper.is_stopped(), "stopped");
-        let n = from.read(&mut buf)?;
-        if n == 0 {
-            break;
+    crate::common::write_replacing(dest, |to| {
+        let mut buf = vec![0u8; 1 << 20];
+        let mut last = None;
+        loop {
+            anyhow::ensure!(!stopper.is_stopped(), "stopped");
+            let n = from.read(&mut buf)?;
+            if n == 0 {
+                return Ok(());
+            }
+            to.write_all(&buf[..n])?;
+            if last.replace(read.get() >> 20) != Some(read.get() >> 20) {
+                said("genome: unpacking", Some((read.get(), Some(total))));
+            }
         }
-        to.write_all(&buf[..n])?;
-        if last.replace(read.get() >> 20) != Some(read.get() >> 20) {
-            said("genome: unpacking", Some((read.get(), Some(total))));
-        }
-    }
-    to.flush()?;
-    drop(to);
-    std::fs::rename(&part, dest)?;
-    Ok(())
+    })
 }
 
 /// Whether `bam` names its chromosomes `chr1` rather than `1`, from its

@@ -35,6 +35,8 @@ pub struct Posterior {
     pub chain_agreement: Vec<f64>,
     pub accepted_splits: usize,
     pub accepted_merges: usize,
+    /// Held-out reads' log-likelihood per read, over every kept draw.
+    pub heldout_per_read: Option<f64>,
 }
 
 /// JSON has no infinity: write it as `"inf"`.
@@ -101,6 +103,68 @@ pub fn substantial(s: &Sample, min_cells: usize) -> usize {
     sizes(&s.z, s.k).iter().filter(|&&v| v >= min_cells).count()
 }
 
+/// Split R-hat of a scalar's per-chain series, centred on its overall mean
+/// before the f32 cast (which would round a log joint in the millions to
+/// whole units).
+pub fn centred_rhat(chains: &[Vec<f64>]) -> f64 {
+    let n = chains.iter().map(Vec::len).sum::<usize>().max(1) as f64;
+    let mean = chains.iter().flatten().sum::<f64>() / n;
+    let series: Vec<Vec<f32>> = chains
+        .iter()
+        .map(|c| c.iter().map(|&x| (x - mean) as f32).collect())
+        .collect();
+    split_rhat_chains(&series) as f64
+}
+
+/// `f` of each pair of `xs`, in order.
+pub fn pairwise<T>(xs: &[T], f: impl Fn(&T, &T) -> f64) -> Vec<f64> {
+    let mut out = Vec::new();
+    for a in 0..xs.len() {
+        for b in a + 1..xs.len() {
+            out.push(f(&xs[a], &xs[b]));
+        }
+    }
+    out
+}
+
+/// Adjusted Rand index between each pair of labellings.
+pub fn pairwise_ari(labels: &[Vec<u16>]) -> Vec<f64> {
+    pairwise(labels, |a, b| ari(a, b))
+}
+
+/// Each chain's mean log joint, the split R-hat across chains, and the best
+/// chain (highest mean), from each chain's log joint at its kept draws.
+pub fn chain_scores(log_joint: &[Vec<f64>]) -> (Vec<f64>, f64, usize) {
+    let means: Vec<f64> = log_joint
+        .iter()
+        .map(|c| c.iter().sum::<f64>() / c.len().max(1) as f64)
+        .collect();
+    let best = (0..means.len())
+        .max_by(|&a, &b| means[a].total_cmp(&means[b]))
+        .unwrap_or(0);
+    (means, centred_rhat(log_joint), best)
+}
+
+/// Each row's most weighted column (`k` columns, row-major), ties to the
+/// first.
+pub fn main_labels(weights: &[f32], k: usize) -> Vec<u16> {
+    weights
+        .chunks(k)
+        .map(|row| {
+            (0..k)
+                .max_by(|&a, &b| row[a].total_cmp(&row[b]).then(b.cmp(&a)))
+                .unwrap_or(0) as u16
+        })
+        .collect()
+}
+
+/// Held-out log-likelihood per read from each draw's `(log-likelihood,
+/// reads)`, none without held-out reads.
+pub fn per_read(draws: impl Iterator<Item = (f64, f64)>) -> Option<f64> {
+    let (ll, n) = draws.fold((0.0, 0.0), |(l, n), d| (l + d.0, n + d.1));
+    (n > 0.0).then(|| ll / n)
+}
+
 pub fn posterior(chains: &[Chain], min_cells: usize) -> Posterior {
     let draws: Vec<&Sample> = chains.iter().flat_map(|c| &c.samples).collect();
     // Substantial clusters per draw, per chain, once for both uses.
@@ -118,12 +182,6 @@ pub fn posterior(chains: &[Chain], min_cells: usize) -> Posterior {
         *hist.entry(k as usize).or_default() += 1;
     }
     let t = draws.len().max(1) as f64;
-    let series = |f: &dyn Fn(&Sample) -> f64| -> Vec<Vec<f32>> {
-        chains
-            .iter()
-            .map(|c| c.samples.iter().map(|s| f(s) as f32).collect())
-            .collect()
-    };
     Posterior {
         min_cells,
         k: hist.into_iter().map(|(k, n)| (k, n as f64 / t)).collect(),
@@ -131,10 +189,12 @@ pub fn posterior(chains: &[Chain], min_cells: usize) -> Posterior {
         rhat_k: split_rhat_chains(&ks) as f64,
         // Centred before the f32 cast, which would round a log posterior in
         // the millions to whole units.
-        rhat_log_posterior: {
-            let mean = draws.iter().map(|s| s.log_post).sum::<f64>() / t;
-            split_rhat_chains(&series(&|s| s.log_post - mean)) as f64
-        },
+        rhat_log_posterior: centred_rhat(
+            &chains
+                .iter()
+                .map(|c| c.samples.iter().map(|s| s.log_post).collect())
+                .collect::<Vec<_>>(),
+        ),
         chains: chains.len(),
         draws: draws.len(),
         chain_log_posterior: chains
@@ -143,18 +203,15 @@ pub fn posterior(chains: &[Chain], min_cells: usize) -> Posterior {
                 c.samples.iter().map(|s| s.log_post).sum::<f64>() / c.samples.len().max(1) as f64
             })
             .collect(),
-        chain_agreement: {
-            let last: Vec<&Sample> = chains.iter().filter_map(|c| c.samples.last()).collect();
-            let mut v = Vec::new();
-            for a in 0..last.len() {
-                for b in a + 1..last.len() {
-                    v.push(ari(&last[a].z, &last[b].z));
-                }
-            }
-            v
-        },
+        chain_agreement: pairwise_ari(
+            &chains
+                .iter()
+                .filter_map(|c| c.samples.last().map(|s| s.z.clone()))
+                .collect::<Vec<_>>(),
+        ),
         accepted_splits: chains.iter().map(|c| c.splits).sum(),
         accepted_merges: chains.iter().map(|c| c.merges).sum(),
+        heldout_per_read: per_read(draws.iter().map(|d| d.heldout)),
     }
 }
 

@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{TITLE}}</title>
+<style>
+/* faba's reports: a terminal-like window (a bar with the faba mark, panes,
+   a key footer) above a legend, as the full-screen views draw it. Dark, as
+   a terminal is; nothing is loaded from anywhere. */
+:root {
+  --page: #17191c;
+  --term: #0d0f11;
+  --rule: #2a2e33;
+  --fg: #d5d8dc;
+  --dim: #7d848c;
+  --accent: #d97757;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  color-scheme: dark;
+}
+html, body { background: var(--page); color: var(--fg); }
+body {
+  font-family: var(--sans);
+  padding-block: 24px 40px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+.wrap { max-width: 1180px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
+h1 { font-size: 1.15rem; font-weight: 600; margin: 0; text-wrap: balance; }
+.lede { color: var(--dim); margin: 0; max-width: 70ch; line-height: 1.5; }
+.scroller { overflow-x: auto; border-radius: 8px; }
+.term {
+  min-width: 1080px;
+  background: var(--term);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.bar, .keys { grid-column: 1 / -1; padding: 4px 12px; display: flex; gap: 18px; flex-wrap: wrap; }
+.bar { border-bottom: 1px solid var(--rule); }
+.bar b { color: var(--accent); font-weight: 600; }
+.mark { display: inline-flex; flex-direction: column; line-height: 1; font-size: 10px; white-space: pre; }
+.mark i { font-style: normal; }
+.mark b { font-weight: 700; }
+.keys { border-top: 1px solid var(--rule); color: var(--dim); }
+.keys kbd { color: var(--fg); font-family: inherit; }
+.keys[hidden] { display: none; }
+.pane { position: relative; display: flex; flex-direction: column; min-width: 0; border-right: 1px solid var(--rule); border-bottom: 1px solid var(--rule); cursor: pointer; }
+.pane header { padding: 3px 10px; color: var(--dim); display: flex; justify-content: space-between; gap: 12px; white-space: nowrap; overflow: hidden; }
+.pane header span:first-child { color: var(--fg); }
+.pane.focus { box-shadow: inset 0 0 0 1px var(--accent); }
+.pane.focus header span:first-child { color: var(--accent); }
+.pane canvas { flex: 1; width: 100%; min-height: 0; display: block; }
+.pane:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.legend { display: flex; flex-wrap: wrap; gap: 10px 28px; color: var(--dim); font-size: 0.9rem; align-items: center; }
+.key { display: inline-flex; align-items: center; gap: 8px; }
+.key i { display: inline-block; width: 10px; height: 14px; }
+.key i.up { background: var(--accent); }
+.key i.down { background: var(--fg); }
+.note { color: var(--dim); font-size: 0.85rem; margin: 0; }
+.pane[hidden] { display: none; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+<script id="data" type="application/json">{{DATA}}</script>
+<script>
+// Helpers every report's drawing shares: a CSS token's value, and a canvas
+// sized to its box at the screen's pixel density.
+const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+function fit(canvas) {
+  const r = canvas.getBoundingClientRect(), d = window.devicePixelRatio || 1;
+  canvas.width = Math.round(r.width * d); canvas.height = Math.round(r.height * d);
+  const ctx = canvas.getContext("2d"); ctx.setTransform(d, 0, 0, d, 0, 0);
+  ctx.font = `12px ${css("--mono")}`; ctx.textBaseline = "middle";
+  return [ctx, r.width, r.height];
+}
+</script>
+</head>
+<body>
+{{BODY}}
+</body>
+</html>

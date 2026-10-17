@@ -40,6 +40,27 @@ fn screen(v: &mut PileupView, w: u16, h: u16) -> String {
         .join("\n")
 }
 
+/// A figure's width over its height.
+fn aspect((w, h): (f64, f64)) -> f64 {
+    w / h
+}
+
+#[test]
+fn a_saved_window_has_the_views_shape_even_on_a_short_terminal() {
+    let (m, s) = (positions(), sites());
+    let mut v = view(&m, &s);
+    let (cw, ch) = crate::figure::CELL;
+    for (w, h) in [(120, 40), (120, 12), (60, 50)] {
+        screen(&mut v, w, h);
+        let on_screen = aspect((v.drawn.width as f64 * cw, v.drawn.height as f64 * ch));
+        let saved = aspect(crate::figure::svg_size(&v.figure()));
+        assert!(
+            (saved - on_screen).abs() < 1e-6,
+            "{w}x{h}: {saved} vs {on_screen}"
+        );
+    }
+}
+
 #[test]
 fn bins_hold_exactly_the_window() {
     let (m, s) = (positions(), sites());
@@ -278,7 +299,9 @@ fn contrast_row_compares_the_first_two_tracks() {
     let (m, s) = (positions(), sites());
     let half: Vec<(i64, f64)> = m.iter().map(|&(p, v)| (p, v * 2.0)).collect();
     let quarter: Vec<(i64, f64)> = m.iter().map(|&(p, v)| (p, v * 4.0)).collect();
-    let a = Track::single("wt", "sum", &m, false).with_total(&half);
+    let mut a = Track::single("wt", "sum", &m, false).with_total(&half);
+    // As `faba pileup` flags two alike tracks.
+    a.mirror_with_next = true;
     let b = Track::single("mut", "sum", &m, false).with_total(&quarter);
     let mut v = PileupView::new(
         "GENE1",
@@ -485,7 +508,9 @@ fn read_tracks_share_one_scale() {
 fn like_tracks_share_a_mirrored_row_until_split() {
     let m = positions();
     let half: Vec<(i64, f64)> = m.iter().map(|&(p, v)| (p, v * 2.0)).collect();
-    let a = Track::single("wt", "sum", &m, false).with_total(&half);
+    let mut a = Track::single("wt", "sum", &m, false).with_total(&half);
+    // As `faba pileup` flags two alike tracks.
+    a.mirror_with_next = true;
     let b = Track::single("mut", "sum", &half, false).with_total(&half);
     let mut v = PileupView::new("GENE1", "chr1", vec![a, b], EXTENT);
     let text = screen(&mut v, 160, 30);
@@ -633,4 +658,98 @@ fn only_the_bars_grab_and_any_button_clicks() {
     // The wheel at the start of the span changes nothing, and says so.
     press(&mut v, KeyCode::Char('0'));
     assert!(!v.mouse(at(MouseEventKind::ScrollUp, x, y)));
+}
+
+#[test]
+fn paired_tracks_mirror_in_pairs_and_the_margin_keeps_its_own_scale() {
+    // All cells (the sum) and one group, each converted then unconverted.
+    let all_on = vec![(1_010_000, 30.0), (1_050_000, 40.0)];
+    let all_off = vec![(1_010_000, 10.0), (1_050_000, 20.0)];
+    let one_on = vec![(1_010_000, 3.0), (1_050_000, 4.0)];
+    let one_off = vec![(1_010_000, 1.0), (1_050_000, 2.0)];
+    let view = View {
+        title: "GENE1",
+        chr: "chr1",
+        extent: EXTENT,
+        on: "methylated",
+        off: "unmethylated",
+        keys: None,
+        genes: None,
+        cursor: None,
+        switchable: false,
+    };
+    let tracks = vec![
+        Track::single("all: methylated", "reads", &all_on, false)
+            .on_own_scale()
+            .converted_above(),
+        Track::single("all: unmethylated", "reads", &all_off, false).on_own_scale(),
+        Track::single("C1: methylated", "reads", &one_on, false).converted_above(),
+        Track::single("C1: unmethylated", "reads", &one_off, false),
+    ];
+    let mut b = browser(view, tracks, None);
+    assert_eq!(b.rows(), vec![Row::Mirror(0, 1), Row::Mirror(2, 3)]);
+    let bins = b.bins();
+    // The shared scale is the group's, never the margin's.
+    assert_eq!(bins.shared, Some(4.0));
+    assert_eq!(b.row_max(Row::Mirror(0, 1), &bins), None, "its own");
+    assert_eq!(b.row_max(Row::Mirror(2, 3), &bins), Some(4.0));
+    let accent: Vec<bool> = bins.shown.iter().map(|s| s.accent).collect();
+    assert_eq!(accent, vec![true, false, true, false], "converted above");
+    // Split (`v`), each track a row, the margin still on its own scale.
+    press(&mut b, KeyCode::Char('v'));
+    assert_eq!(b.rows(), (0..4).map(Row::Track).collect::<Vec<_>>());
+    let bins = b.bins();
+    assert_eq!(b.row_max(Row::Track(1), &bins), None);
+    assert_eq!(b.row_max(Row::Track(3), &bins), Some(4.0));
+    // Locked (`Y`), the lock is the group's and the margin stays its own.
+    press(&mut b, KeyCode::Char('Y'));
+    let bins = b.bins();
+    assert_eq!(b.row_max(Row::Track(0), &bins), None);
+    screen(&mut b, 120, 40);
+}
+
+#[test]
+fn a_track_flagged_to_mirror_draws_with_the_next_its_accent_on_top() {
+    let m = positions();
+    let tracks = vec![
+        Track::single("alone", "count", &m, false),
+        Track::single("up", "sum", &m, false).converted_above(),
+        Track::single("down", "sum", &m, false),
+    ];
+    let mut v = PileupView::new("GENE1", "chr1", tracks, EXTENT);
+    assert_eq!(v.rows(), vec![Row::Track(0), Row::Mirror(1, 2)]);
+    let accent: Vec<bool> = v.bins().shown.iter().map(|s| s.accent).collect();
+    assert_eq!(
+        accent,
+        vec![false, true, false],
+        "the upper half in the accent"
+    );
+    let text = screen(&mut v, 160, 30);
+    assert!(text.contains("up above, down below"), "{text}");
+    assert!(text.contains("v split"), "{text}");
+    press(&mut v, KeyCode::Char('v'));
+    assert_eq!(v.rows(), (0..3).map(Row::Track).collect::<Vec<_>>());
+
+    // Tracks are taken as given: the first two, though alike, stay apart.
+    let tracks = vec![
+        Track::single("a", "sum", &m, false),
+        Track::single("b", "sum", &m, false).converted_above(),
+        Track::single("c", "sum", &m, false),
+    ];
+    let v = PileupView::new("GENE1", "chr1", tracks, EXTENT);
+    assert_eq!(v.rows(), vec![Row::Track(0), Row::Mirror(1, 2)]);
+}
+
+/// The last track has none after it to share a row with: its flag is
+/// dropped, so a view of it alone has nothing for `v` to split.
+#[test]
+fn the_last_track_shares_no_row() {
+    let m = positions();
+    let tracks = vec![
+        Track::single("a", "sum", &m, false),
+        Track::single("b", "sum", &m, false).converted_above(),
+    ];
+    let v = PileupView::new("GENE1", "chr1", tracks, EXTENT);
+    assert_eq!(v.rows(), vec![Row::Track(0), Row::Track(1)]);
+    assert!(!v.mirrorable());
 }

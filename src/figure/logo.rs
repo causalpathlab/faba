@@ -6,10 +6,10 @@ use ratatui::style::{Color, Modifier, Style};
 
 /// One bean in quadrant blocks, five columns by two rows; the notches in
 /// its top row are its eyes.
-const BEAN: [&str; 2] = ["▟▛█▜▙", "▝███▘"];
+pub(crate) const BEAN: [&str; 2] = ["▟▛█▜▙", "▝███▘"];
 
 /// Four beans, as in the `--help` logo, in two dried-fava tones.
-const TONES: [Color; 4] = [
+pub(crate) const TONES: [Color; 4] = [
     Color::Rgb(196, 152, 84),
     Color::Rgb(150, 105, 55),
     Color::Rgb(196, 152, 84),

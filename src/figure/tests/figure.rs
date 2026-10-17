@@ -99,6 +99,45 @@ fn prompt_confirms_edits_and_cancels() {
 }
 
 #[test]
+fn a_page_keeps_the_views_shape_when_a_minimum_binds() {
+    let (cw, ch) = CELL;
+    let area = Rect::new(0, 0, 10, 10);
+    assert_eq!(page(area, (0.0, 0.0), CELL), Some((10.0 * cw, 10.0 * ch)));
+    // Too narrow for the least width: both sides grow alike.
+    let (w, h) = page(area, (6.0 * 10.0 * cw, 0.0), CELL).unwrap();
+    assert_eq!((w, h), (6.0 * 10.0 * cw, 6.0 * 10.0 * ch));
+    // Too short: the same.
+    let (w, h) = page(area, (0.0, 2.0 * 10.0 * ch), CELL).unwrap();
+    assert_eq!((w, h), (2.0 * 10.0 * cw, 2.0 * 10.0 * ch));
+    assert_eq!(page(Rect::default(), (1.0, 1.0), CELL), None);
+}
+
+#[test]
+fn a_page_takes_its_cells_shape_from_the_terminals_font() {
+    let area = Rect::new(0, 0, 10, 10);
+    let text = Controls::new("x");
+    assert_eq!(text.page(area, (0.0, 0.0)), page(area, (0.0, 0.0), CELL));
+    // A font 8 by 20 pixels: cells 0.4 as wide as high, as tall as CELL.
+    let (cw, ch) = font_cell(ratatui_image::FontSize {
+        width: 8,
+        height: 20,
+    });
+    assert!((cw / ch - 0.4).abs() < 1e-9 && ch == CELL.1, "{cw}x{ch}");
+    assert_eq!(
+        font_cell(ratatui_image::FontSize {
+            width: 0,
+            height: 0
+        }),
+        CELL
+    );
+    // With a picker, its font's cells.
+    let picker = ratatui_image::picker::Picker::halfblocks();
+    let cell = font_cell(picker.font_size());
+    let images = Controls::new("x").with_picker(picker);
+    assert_eq!(images.page(area, (0.0, 0.0)), page(area, (0.0, 0.0), cell));
+}
+
+#[test]
 fn empty_shapes_are_not_written() {
     let mut c = Canvas::new(100.0, 200.0);
     c.rect(1.0, 1.0, 10.0, 0.0, INK);
@@ -218,4 +257,24 @@ fn figures_tile_in_rows_of_the_given_width() {
     assert_eq!(size(&tile_svgs(&figs, 3)), (300.0, 70.0), "a row");
     assert_eq!(size(&tile_svgs(&figs, 2)), (200.0, 110.0), "two to a row");
     assert!(tile_svgs(&figs, 2).contains(r#"<svg x="100" y="0" "#));
+}
+
+#[test]
+fn panels_fit_at_their_least_and_share_a_taller_page_in_proportion() {
+    let panels = Panels {
+        fixed: 60.0,
+        least: &[280.0, 210.0],
+    };
+    assert_eq!(panels.height(), 550.0);
+    assert_eq!(panels.heights(550.0), vec![280.0, 210.0]);
+    let tall = panels.heights(1040.0 + 60.0);
+    assert!((tall.iter().sum::<f64>() - 1040.0).abs() < 1e-9, "{tall:?}");
+    assert!((tall[0] / tall[1] - 280.0 / 210.0).abs() < 1e-9, "{tall:?}");
+    // Equal panels share alike.
+    let even = Panels {
+        fixed: 50.0,
+        least: &[100.0; 3],
+    };
+    assert_eq!(even.heights(350.0), vec![100.0; 3]);
+    assert_eq!(even.heights(650.0), vec![200.0; 3]);
 }

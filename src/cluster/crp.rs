@@ -27,7 +27,7 @@
 //! whole and the Beta-binomial is taken through Beta functions. The sampler
 //! is exact for that weighted target.
 
-use super::read::Weighted;
+use super::read::{Reads, Weighted};
 use legume_numeric::mcmc::engine::McmcModel;
 use rand::rngs::SmallRng;
 use rand::seq::SliceRandom;
@@ -41,6 +41,49 @@ pub(super) use statrs::function::beta::ln_beta;
 /// a read of pseudocount: the centre of every cluster's prior there.
 pub(super) fn pooled_fraction(on: f64, total: f64) -> f64 {
     (on + 0.5) / (total + 1.0)
+}
+
+/// Each of `sites` sites' [`pooled_fraction`] over entries `(site, on,
+/// off)`.
+pub(super) fn pooled_fractions(site: &[u32], on: &[f64], off: &[f64], sites: usize) -> Vec<f64> {
+    let (mut pon, mut tot) = (vec![0.0f64; sites], vec![0.0f64; sites]);
+    for (i, &s) in site.iter().enumerate() {
+        pon[s as usize] += on[i];
+        tot[s as usize] += on[i] + off[i];
+    }
+    (0..sites)
+        .map(|s| pooled_fraction(pon[s], tot[s]))
+        .collect()
+}
+
+/// `ln sigmoid(x)`, stable at either end.
+pub(super) fn ln_sigmoid(x: f64) -> f64 {
+    if x > 0.0 {
+        -(-x).exp().ln_1p()
+    } else {
+        x - x.exp().ln_1p()
+    }
+}
+
+/// `ln Σ exp(v)` over `values`, stable (`-inf` when empty).
+pub(super) fn log_sum_exp(values: impl Iterator<Item = f64> + Clone) -> f64 {
+    let max = values.clone().fold(f64::NEG_INFINITY, f64::max);
+    if max.is_infinite() {
+        return max;
+    }
+    max + values.map(|v| (v - max).exp()).sum::<f64>().ln()
+}
+
+/// The Dirichlet-multinomial log marginal of counts `row` under
+/// `Dirichlet(conc * base)`.
+pub(super) fn ln_urn(row: &[u32], conc: f64, base: &[f64]) -> f64 {
+    let total: u32 = row.iter().sum();
+    ln_gamma(conc) - ln_gamma(conc + total as f64)
+        + row
+            .iter()
+            .zip(base)
+            .map(|(&x, &b)| ln_gamma(conc * b + x as f64) - ln_gamma(conc * b))
+            .sum::<f64>()
 }
 
 /// `ln B(x + m, y + u) - ln B(x, y)`: the Beta-binomial predictive of `m`
@@ -123,6 +166,8 @@ pub struct Sample {
     pub k: usize,
     pub alpha: f64,
     pub log_post: f64,
+    /// Held-out reads' log-likelihood and read count, at this draw.
+    pub heldout: (f64, f64),
 }
 
 /// One chain's kept draws and its acceptance counts.
@@ -145,18 +190,13 @@ pub struct Model<'a> {
     /// The picture of the cells chains start from.
     picture: legume_numeric::matrix::dmatrix_io::DMatrix<f32>,
     settings: Settings,
+    /// Each fitted cell's held-out reads, scored at every kept draw.
+    heldout: Option<&'a Reads>,
 }
 
 impl<'a> Model<'a> {
     pub fn new(reads: &'a Weighted<'a>, sites: usize, settings: Settings) -> Self {
-        let (mut pon, mut tot) = (vec![0.0f64; sites], vec![0.0f64; sites]);
-        for (i, &s) in reads.reads.site.iter().enumerate() {
-            pon[s as usize] += reads.on[i];
-            tot[s as usize] += reads.on[i] + reads.off[i];
-        }
-        let p0: Vec<f64> = (0..sites)
-            .map(|s| pooled_fraction(pon[s], tot[s]))
-            .collect();
+        let p0 = pooled_fractions(&reads.reads.site, &reads.on, &reads.off, sites);
         let a: Vec<f64> = p0.iter().map(|p| settings.strength * p).collect();
         let b: Vec<f64> = p0.iter().map(|p| settings.strength * (1.0 - p)).collect();
         let ln_b0: Vec<f64> = a.iter().zip(&b).map(|(&x, &y)| ln_beta(x, y)).collect();
@@ -177,7 +217,29 @@ impl<'a> Model<'a> {
             lp_new,
             picture,
             settings,
+            heldout: None,
         }
+    }
+
+    /// Score `heldout` (each fitted cell's held-out reads) at every kept draw.
+    pub fn with_heldout(mut self, heldout: &'a Reads) -> Self {
+        self.heldout = Some(heldout);
+        self
+    }
+
+    /// Held-out reads' log-likelihood and count, each read at the posterior
+    /// mean fraction of its site in its cell's cluster.
+    fn score_heldout(&self, st: &State) -> (f64, f64) {
+        let Some(held) = self.heldout else {
+            return (0.0, 0.0);
+        };
+        super::read::score(held, |c, j| {
+            let cl = st.clusters[st.z[c] as usize]
+                .as_ref()
+                .expect("a cell's cluster is live");
+            let (x, y) = (self.a[j] + cl.on[j], self.b[j] + cl.off[j]);
+            ((x / (x + y)).ln(), (y / (x + y)).ln())
+        })
     }
 
     fn sites(&self) -> usize {
@@ -503,7 +565,7 @@ impl Scratch {
 
 /// Draw an index with probability proportional to `exp(lp)`; `lp` is
 /// overwritten with the unnormalised weights.
-fn sample_log(lp: &mut [f64], rng: &mut SmallRng) -> usize {
+pub(super) fn sample_log(lp: &mut [f64], rng: &mut SmallRng) -> usize {
     let mx = lp.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
     lp.iter_mut().for_each(|l| *l = (*l - mx).exp());
     let mut r = rng.random::<f64>() * lp.iter().sum::<f64>();
@@ -574,6 +636,7 @@ impl McmcModel for Model<'_> {
                 k,
                 alpha: st.alpha,
                 log_post: self.log_prior(st) + self.log_lik(st),
+                heldout: self.score_heldout(st),
             },
             splits: st.accepted.0,
             merges: st.accepted.1,

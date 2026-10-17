@@ -14,7 +14,9 @@ mod pipeline;
 mod qc;
 mod quant;
 mod read_depth;
+mod report;
 mod run_record;
+mod script;
 mod site_analysis;
 mod snp;
 mod tui;
@@ -24,7 +26,7 @@ use crate::qc::{run_qc, QcArgs};
 use apa::run::*;
 use atoi::run::*;
 use clap::{CommandFactory, FromArgMatches};
-use cluster::{run_cluster, ClusterArgs};
+use cluster::{run_cluster, run_modules, ClusterArgs, ModulesArgs};
 use docs::*;
 use gene_count::run::*;
 use m6a::run::*;
@@ -265,25 +267,60 @@ Example:\n  \
 
     #[command(
         name = "cluster",
-        about = "Cluster cells by their own site reads (a Chinese-restaurant-process mixture)",
+        about = "Cluster cells by their own site reads: link communities (default), cell and gene modules (blocks), or a CRP mixture",
         long_about = "Cluster cells by their own site reads\n\n\
-            A Chinese-restaurant-process mixture over cells: at each site a cluster has its own\n\
-            converted fraction, integrated out under a Beta prior toward the site's pooled\n\
-            fraction, so the number of clusters is learned. Several chains run in parallel\n\
-            (single-cell Gibbs and split-merge moves); the reported partition is the\n\
-            least-squares summary of their draws, with each cell's confidence in it.\n\n\
-            Outputs, in the output directory:\n\
-            - {modality}_cell_clusters.parquet: every input cell's cluster, confidence and\n\
-              level offset (null for cells dropped by the filters)\n\
-            - {modality}_site_clusters.parquet: each site's reads and posterior fraction per cluster\n\
-            - {modality}_cluster.run.json: the run record, with the posterior over the number of\n\
-              clusters and split R-hat across chains",
+            Link communities (--model link, the default): a cell's reads at one gene's sites\n\
+            form a link, and each link belongs to one of --communities communities. A\n\
+            community is a methylation profile over sites; a cell has membership weights over\n\
+            the communities, sharing global weights so popular communities draw reads.\n\
+            Site fractions and memberships are integrated out; several chains of collapsed\n\
+            Gibbs and whole-cell swaps run in parallel, each move exact. Cells left out of\n\
+            the fit are placed against the fitted communities.\n\n\
+            Cell and gene modules (--model blocks): each link takes a cell role and a gene\n\
+            role; a (cell role, gene role) block shifts its sites' methylation on top of\n\
+            each site's baseline and each cell's own level, so gene roles are gene modules.\n\n\
+            A Chinese-restaurant-process mixture (--model crp): each cell in one cluster,\n\
+            the number of clusters learned, with split-merge moves and each cell's confidence.\n\n\
+            Outputs, in the output directory (link / crp):\n\
+            - {modality}_cell_communities.parquet / {modality}_cell_clusters.parquet: every input\n\
+              cell's community and memberships / cluster and confidence\n\
+            - {modality}_community_sites.parquet / {modality}_site_clusters.parquet: each site's\n\
+              reads and posterior fraction per community / cluster\n\
+            - {modality}_gene_communities.parquet (link): each gene's links per community\n\
+            - blocks: {modality}_cell_roles.parquet (each cell's roles and level),\n\
+              _gene_roles (each gene's roles), _blocks (each block's shift), and\n\
+              _block_genes, _block_cells, _block_sites (what each block holds, most\n\
+              enriched first), and _site_stats (each site's raw reads and cells)\n\
+            - {modality}_cluster.run.json: the run record, with split R-hat across chains\n\
+              and, with --holdout, held-out reads",
         after_long_help = "\
 Example:\n  \
-  faba cluster out/\n  \
-  faba cluster out/ --fit '*_wt_*' --chains 4 --sweeps 200"
+  faba cluster out/ --fit '*_wt_*' --communities 8\n  \
+  faba cluster out/ --fit '*_wt_*' --model blocks --cell-roles 8 --gene-roles 8\n  \
+  faba cluster out/ --model crp --chains 4 --sweeps 200"
     )]
     Cluster(ClusterArgs),
+
+    #[command(
+        name = "modules",
+        alias = "blocks",
+        about = "Browse the gene modules and cell modules of `faba cluster --model blocks`",
+        long_about = "Browse the gene modules and cell modules of `faba cluster --model blocks`\n\n\
+            Four levels, each a margin of the next. 1 gene modules: every gene module against\n\
+            every cell module. 2 sites: the sites of the module in focus, each with its reads,\n\
+            converted, unconverted and cells over every cell read. 3 genes: the genes you pin\n\
+            (Space on a site, or Alt-drag its row down), side by side under their gene models,\n\
+            an all-cells track above one track per cell module. 4 pileup: one pinned gene's\n\
+            full pileup from the site matrices, every cell with a cell module in it.\n\n\
+            Reads are mirror bars, converted up and unconverted down; `v` shows a grid as a %\n\
+            heatmap or a heatmap of each row's z across the cell modules, diagonally ordered;\n\
+            `/` finds a gene. The tables are written by `faba cluster --model blocks`, which\n\
+            runs first, with these options, when they are missing.\n\
+            Without a terminal (or with --batch-process) the modules are printed instead;\n\
+            --html writes them as one self-contained page instead (`e` in the browser).",
+        after_long_help = "Example:\n  faba modules out/\n  faba modules out/ --fit '*_wt_*' --cell-roles 8 --gene-roles 8\n  faba modules out/ --html modules.html"
+    )]
+    Modules(ModulesArgs),
 
     #[command(
         name = "metagene",
@@ -482,6 +519,27 @@ fn faba_command() -> clap::Command {
     cmd
 }
 
+/// Notes what was given to `faba cluster`'s options (also under `faba
+/// modules`), for the command it saves.
+fn record_given(cli: &mut Cli, matches: &clap::ArgMatches) {
+    let Some((_, m)) = matches.subcommand() else {
+        return;
+    };
+    match &mut cli.commands {
+        Commands::Cluster(args) => args.record_given(m),
+        Commands::Modules(args) => args.record_given(m),
+        _ => {}
+    }
+}
+
+/// Builds `faba`'s arguments from one parse of the command line, noting what
+/// was given, so `main` and the tests take the same path.
+fn parse(matches: &clap::ArgMatches) -> Result<Cli, clap::Error> {
+    let mut cli = Cli::from_arg_matches(matches)?;
+    record_given(&mut cli, matches);
+    Ok(cli)
+}
+
 fn main() -> anyhow::Result<()> {
     if std::env::args().any(|arg| arg == "--help" || arg == "-h") {
         print_logo();
@@ -490,7 +548,7 @@ fn main() -> anyhow::Result<()> {
     // One parse of the command line: `faba run`'s view takes its matches.
     let mut cmd = faba_command();
     let matches = cmd.get_matches_mut();
-    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.format(&mut cmd).exit());
+    let cli = parse(&matches).unwrap_or_else(|e| e.format(&mut cmd).exit());
 
     data_beans::aux::logging::init_logger(cli.verbose);
 
@@ -513,7 +571,10 @@ fn main() -> anyhow::Result<()> {
         Commands::Depth(ref args) => recorded(args.run_record(), || run_read_depth(args))?,
         Commands::Pwm(ref args) => run_scan_pwm(args)?,
         Commands::Pileup(ref args) => run_pileup(args)?,
-        Commands::Cluster(ref args) => run_cluster(args)?,
+        Commands::Cluster(ref args) => {
+            run_cluster(args)?;
+        }
+        Commands::Modules(ref args) => run_modules(args)?,
         Commands::Metagene(ref args) => run_metagene(args)?,
         Commands::Snp(ref args) => recorded(args.run_record(), || run_snp(args))?,
         Commands::Qc(ref args) => run_qc(args)?,
@@ -534,6 +595,19 @@ fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn what_is_given_to_cluster_is_noted_at_parse_time() {
+        for command in ["cluster", "modules"] {
+            let m = faba_command()
+                .try_get_matches_from(["faba", command, "/x.zarr", "--chains", "2"])
+                .unwrap();
+            let cli = parse(&m).unwrap();
+            let noted = format!("{:?}", cli.commands);
+            // Only the set of given ids quotes a name.
+            assert!(noted.contains(r#""chains""#), "{noted}");
+        }
+    }
 
     #[test]
     fn verbose_is_taken_on_either_side_of_run() {

@@ -9,7 +9,9 @@ pub use legume_numeric::matrix::common_io::*;
 pub use log::info;
 pub use rayon::prelude::*;
 
+use arrow::record_batch::RecordBatch;
 use rustc_hash::{FxHashMap, FxHashSet};
+use std::path::Path;
 
 pub struct TripletsRowsCols {
     pub triplets: Vec<(u64, u64, f32)>,
@@ -279,6 +281,38 @@ impl BackendQc for Box<dyn SparseIo<IndexIter = Vec<usize>>> {
 #[cfg(test)]
 mod tests;
 
+/// `path` with `.part` added: where a file is written before it takes
+/// `path`'s place.
+pub fn part_of(path: &Path) -> std::path::PathBuf {
+    let mut part = path.as_os_str().to_owned();
+    part.push(".part");
+    part.into()
+}
+
+/// Write `path` by `write`, to its [`part_of`] file first, put in its place
+/// only once whole: a write that fails leaves what was at `path`, and no
+/// part file.
+pub fn write_replacing(
+    path: &Path,
+    write: impl FnOnce(&mut std::io::BufWriter<std::fs::File>) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    use std::io::Write;
+    let part = part_of(path);
+    let written = std::fs::File::create(&part)
+        .map_err(anyhow::Error::from)
+        .and_then(|f| {
+            let mut w = std::io::BufWriter::new(f);
+            write(&mut w)?;
+            w.flush()?;
+            Ok(())
+        })
+        .and_then(|()| Ok(std::fs::rename(&part, path)?));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&part);
+    }
+    written
+}
+
 /// Whether `text` matches `pattern`, `*` standing for any run of
 /// characters and `?` for one.
 pub fn wildcard(pattern: &str, text: &str) -> bool {
@@ -301,4 +335,29 @@ pub fn wildcard(pattern: &str, text: &str) -> bool {
         }
     }
     p[pi..].iter().all(|&c| c == '*')
+}
+
+/// A parquet file as one Arrow record batch.
+pub fn read_record_batch<P: AsRef<Path>>(path: P) -> anyhow::Result<RecordBatch> {
+    use arrow::record_batch::RecordBatchReader;
+    let reader = parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder::try_new(
+        std::fs::File::open(path)?,
+    )?
+    .build()?;
+    let schema = reader.schema();
+    let batches: Vec<RecordBatch> = reader.collect::<std::result::Result<_, _>>()?;
+    Ok(arrow::compute::concat_batches(&schema, &batches)?)
+}
+
+/// The column `name` of `batch` as an array of type `T`.
+pub fn column<'a, T: arrow::array::Array + 'static>(
+    batch: &'a RecordBatch,
+    name: &str,
+) -> anyhow::Result<&'a T> {
+    batch
+        .column_by_name(name)
+        .ok_or_else(|| anyhow::anyhow!("the table lacks the `{name}` column"))?
+        .as_any()
+        .downcast_ref::<T>()
+        .ok_or_else(|| anyhow::anyhow!("`{name}` column has an unexpected type"))
 }
