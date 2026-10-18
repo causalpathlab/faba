@@ -173,3 +173,21 @@ fn the_verdict_holds_the_traces_against_the_r_hat() {
     assert_eq!(v.status, advice::Status::Lags(vec![1]));
     assert!(!v.converged());
 }
+
+/// Once the chains are pooled, what the pooling found unsettled is the
+/// verdict's too.
+#[test]
+fn the_verdict_holds_what_the_pooling_found() {
+    let p = Progress::traced(2);
+    let _ = p.schedule.set((100, 20));
+    for i in 0..2 {
+        p.trace_of(i)
+            .extend((1..=100).map(|n| (n, (n as f64 * 1.7 + i as f64).sin())));
+    }
+    p.set_rhat(1.02);
+    assert!(p.verdict().unwrap().converged());
+    p.pooled(vec!["cell role 1".into()]);
+    let v = p.verdict().unwrap();
+    assert!(!v.converged());
+    assert!(v.said().contains("cell role 1"), "{}", v.said());
+}

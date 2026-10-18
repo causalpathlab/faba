@@ -109,3 +109,35 @@ fn without_a_trace_the_r_hat_alone_decides() {
         Status::OneChain
     );
 }
+
+/// The chains the tables leave out of the pool are the verdict's lagging
+/// ones, whether the R-hat is within its bound or not; none otherwise.
+#[test]
+fn the_lagging_chains_are_those_the_pool_leaves_out() {
+    assert_eq!(verdict(&[0.0, 0.2, -30.0], 1.04).lagging(), [2]);
+    assert_eq!(verdict(&[0.0, -30.0], 1.31).lagging(), [1]);
+    assert!(verdict(&[0.0, 0.2], 1.02).lagging().is_empty());
+    assert!(verdict(&[0.0, -30.0], f64::NAN).lagging().is_empty());
+}
+
+/// Chains that agree on their traces, with quantities the pooling found
+/// short of convergence, have not converged: those named, more sweeps
+/// advised.
+#[test]
+fn what_the_pooling_found_unsettled_is_not_converged() {
+    for v in [verdict(&[0.0, 0.2], 1.02), verdict(&[0.0], 1.01)] {
+        let v = v.with_unsettled(vec!["shift (0, 1)".into(), "chain 2 left out".into()]);
+        assert!(!v.converged());
+        assert!(v.badge().ends_with("check"), "{}", v.badge());
+        assert!(
+            v.said()
+                .ends_with("; not converged: shift (0, 1), chain 2 left out"),
+            "{}",
+            v.said()
+        );
+        assert!(v.advice().contains("--sweeps 2000"), "{}", v.advice());
+    }
+    let v = verdict(&[0.0, 0.2], 1.02).with_unsettled(Vec::new());
+    assert!(v.converged());
+    assert_eq!(v.said(), "chains agree (R-hat 1.02)");
+}

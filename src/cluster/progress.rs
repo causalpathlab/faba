@@ -57,6 +57,8 @@ pub struct Progress {
     state: AtomicU8,
     /// The chains' split R-hat, once summarised.
     rhat: OnceLock<f64>,
+    /// What pooling the chains found short of convergence, once pooled.
+    unsettled: OnceLock<Vec<String>>,
     /// Draw the chains' sweeps on a bar on stderr while they run.
     bar: bool,
     /// Each chain's log joint so far, by sweep, when traced.
@@ -87,6 +89,7 @@ impl Progress {
             schedule: OnceLock::new(),
             state: AtomicU8::new(RUNNING),
             rhat: OnceLock::new(),
+            unsettled: OnceLock::new(),
             bar: false,
             traces: (0..chains).map(|_| Mutex::default()).collect(),
             tracing: false,
@@ -117,11 +120,18 @@ impl Progress {
     }
 
     /// The verdict on the chains' traces and split R-hat in the schedule
-    /// they ran (see [`advice::Verdict::of`]); none until they are
-    /// summarised.
+    /// they ran (see [`advice::Verdict::of`]), and once they are pooled on
+    /// what that found unsettled; none until they are summarised.
     pub fn verdict(&self) -> Option<advice::Verdict> {
         let ((total, warmup), rhat) = (self.schedule()?, self.rhat()?);
-        Some(advice::Verdict::of(&self.traces(), warmup, total, rhat))
+        let verdict = advice::Verdict::of(&self.traces(), warmup, total, rhat);
+        Some(verdict.with_unsettled(self.unsettled.get().cloned().unwrap_or_default()))
+    }
+
+    /// Once the chains are pooled, note what that found `unsettled` (see
+    /// [`advice::Verdict::with_unsettled`]).
+    pub fn pooled(&self, unsettled: Vec<String>) {
+        let _ = self.unsettled.set(unsettled);
     }
 
     /// Whether a chain's log joint is noted at its sweep `n`: every k-th,

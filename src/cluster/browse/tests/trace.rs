@@ -30,12 +30,18 @@ pub(super) fn chains(levels: [f64; 2]) -> Vec<Vec<(usize, f64)>> {
 /// The fixture's tables in `dir` beside a blocks run's record, split
 /// R-hat `rhat`, burn-in 20 of 200 sweeps, and with `traced` its trace.
 pub(super) fn fitted(dir: &Path, rhat: f64, traced: bool) {
-    fitted_with(dir, rhat, traced.then(|| chains([0.0, 0.5])), "2");
+    fitted_with(dir, rhat, traced.then(|| chains([0.0, 0.5])), "2", &[]);
 }
 
-/// [`fitted`], the trace `traced` (none: no trace) and the run's
-/// `--chains`.
-fn fitted_with(dir: &Path, rhat: f64, traced: Option<Vec<Vec<(usize, f64)>>>, chains: &str) {
+/// [`fitted`], the trace `traced` (none: no trace), the run's `--chains`
+/// and what its pooling found `unsettled`.
+fn fitted_with(
+    dir: &Path,
+    rhat: f64,
+    traced: Option<Vec<Vec<(usize, f64)>>>,
+    chains: &str,
+    unsettled: &[&str],
+) {
     tables(dir);
     let words = ["faba", "/x.zarr", "--model", "blocks", "--chains", chains];
     let a = crate::cluster::tests::parse_args(&words);
@@ -45,6 +51,7 @@ fn fitted_with(dir: &Path, rhat: f64, traced: Option<Vec<Vec<(usize, f64)>>>, ch
     record.set_result("model", &args::recorded(&a));
     record.set_result("blockmodel", &serde_json::json!({"rhat_log_joint": rhat}));
     record.set_result("trace", &serde_json::json!({"sweeps": 200, "burn_in": 20}));
+    record.set_result("pooling", &serde_json::json!({ "unsettled": unsettled }));
     if let Some(t) = traced {
         write::trace(&t, &dir.join("m6a_trace.parquet")).unwrap();
     }
@@ -138,7 +145,7 @@ fn older_tables_without_a_trace_say_why() {
 #[test]
 fn an_older_single_chain_is_one_chain() {
     let tmp = tempfile::tempdir().unwrap();
-    fitted_with(tmp.path(), 1.01, None, "1");
+    fitted_with(tmp.path(), 1.01, None, "1", &[]);
     let m = Modules::load(tmp.path(), "m6a").unwrap();
     let v = m.fit.verdict().unwrap();
     assert_eq!(v.said(), "one chain (R-hat 1.01)");
@@ -151,7 +158,7 @@ fn an_older_single_chain_is_one_chain() {
 fn a_chain_with_no_points_is_left_off_the_page() {
     let tmp = tempfile::tempdir().unwrap();
     let [a, b] = <[_; 2]>::try_from(chains([0.0, 0.5])).unwrap();
-    fitted_with(tmp.path(), 1.01, Some(vec![a, Vec::new(), b]), "3");
+    fitted_with(tmp.path(), 1.01, Some(vec![a, Vec::new(), b]), "3", &[]);
     let m = Modules::load(tmp.path(), "m6a").unwrap();
     assert_eq!(m.fit.trace.as_ref().unwrap().chains[1], Vec::new());
     let data = serde_json::to_value(crate::cluster::browse::report::data(
@@ -165,4 +172,29 @@ fn a_chain_with_no_points_is_left_off_the_page() {
     assert!(drawn
         .iter()
         .all(|c| !c["points"].as_array().unwrap().is_empty()));
+}
+
+/// Chains that agree on their traces, but whose pooling found quantities
+/// short of convergence, are not ok: the header says to check, the trace
+/// names them.
+#[test]
+fn what_the_pooling_found_unsettled_is_checked() {
+    let tmp = tempfile::tempdir().unwrap();
+    fitted_with(
+        tmp.path(),
+        1.02,
+        Some(chains([0.0, 0.5])),
+        "2",
+        &["shift (0, 1)"],
+    );
+    let m = Modules::load(tmp.path(), "m6a").unwrap();
+    let mut v = ModulesView::new("test", &m);
+    let s = screen(&mut v, 120, 30);
+    assert!(
+        s.lines().next().unwrap().contains("R-hat 1.02 check"),
+        "{s}"
+    );
+    press(&mut v, KeyCode::Char('t'));
+    let s = screen(&mut v, 120, 30);
+    assert!(s.contains("shift (0, 1)"), "{s}");
 }

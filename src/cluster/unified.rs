@@ -44,7 +44,9 @@
 //! shift, infinite strength (with the cells' levels) and symmetric weights
 //! (cell and gene modules).
 //! Cells outside the fit are placed against a fitted chain (see [`place`]),
-//! and the chains summarised together (see [`summary`]).
+//! the chains summarised together (see [`summary`]), and their roles
+//! aligned (see [`align`]) and their tallies pooled where they agree (see
+//! [`pool`]).
 
 use super::crp::{ln_beta, ln_pred, ln_sigmoid, logit, pooled_fractions, sample_log};
 use super::read::Reads;
@@ -56,23 +58,31 @@ use resample::slice;
 use std::sync::{Arc, Mutex};
 use swap::Scratch;
 
+mod align;
 #[cfg(test)]
 mod check;
 mod draw;
 mod links;
 mod place;
+mod pool;
 mod resample;
 mod settings;
 mod summary;
 mod swap;
 
+pub use align::Alignment;
+#[cfg(test)]
+pub use align::{align, assign};
 #[cfg(test)]
 pub use check::Held;
 use draw::Tally;
 pub use draw::{Draw, Means};
 pub use links::Links;
+#[cfg(test)]
+pub use pool::pool;
+pub use pool::Pooling;
 pub use settings::{strength, Recorded, Settings, Weights};
-pub use summary::summarize;
+pub use summary::{pooled, summarize};
 
 /// The blockmodel over one set of links, with what the moves share.
 pub struct Model<'a> {

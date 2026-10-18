@@ -40,7 +40,7 @@ pub struct Posterior {
 }
 
 /// JSON has no infinity: write it as `"inf"`.
-fn finite_or_inf<S: serde::Serializer>(v: &f64, s: S) -> Result<S::Ok, S::Error> {
+pub(super) fn finite_or_inf<S: serde::Serializer>(v: &f64, s: S) -> Result<S::Ok, S::Error> {
     if v.is_finite() {
         s.serialize_f64(*v)
     } else {
@@ -103,17 +103,21 @@ pub fn substantial(s: &Sample, min_cells: usize) -> usize {
     sizes(&s.z, s.k).iter().filter(|&&v| v >= min_cells).count()
 }
 
-/// Split R-hat of a scalar's per-chain series, centred on its overall mean
-/// before the f32 cast (which would round a log joint in the millions to
+/// A scalar's per-chain series centred on its overall mean, then cast to
+/// f32 (uncentred, the cast would round a log joint in the millions to
 /// whole units).
-pub fn centred_rhat(chains: &[Vec<f64>]) -> f64 {
+pub fn centred(chains: &[Vec<f64>]) -> Vec<Vec<f32>> {
     let n = chains.iter().map(Vec::len).sum::<usize>().max(1) as f64;
     let mean = chains.iter().flatten().sum::<f64>() / n;
-    let series: Vec<Vec<f32>> = chains
+    chains
         .iter()
         .map(|c| c.iter().map(|&x| (x - mean) as f32).collect())
-        .collect();
-    split_rhat_chains(&series) as f64
+        .collect()
+}
+
+/// Split R-hat of a scalar's per-chain series, [`centred`].
+pub fn centred_rhat(chains: &[Vec<f64>]) -> f64 {
+    split_rhat_chains(&centred(chains)) as f64
 }
 
 /// `f` of each pair of `xs`, in order.
