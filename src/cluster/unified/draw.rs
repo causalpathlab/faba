@@ -1,7 +1,7 @@
 //! A kept draw: the chain's running posterior means, its held-out score and
 //! its scalars.
 
-use super::{ln_mean, Model, State};
+use super::{ln_mean, Alignment, Model, State};
 use crate::cluster::crp::{ln_sigmoid, log_sum_exp, logit};
 use std::sync::{Arc, Mutex};
 
@@ -48,34 +48,84 @@ pub struct Draw {
     /// Held-out reads' log-likelihood and read count, at this draw.
     pub heldout: (f64, f64),
     pub log_joint: f64,
-    tally: Arc<Mutex<Tally>>,
+    /// Each block's shift and each cell role's mean membership over the
+    /// cells, at this draw: the chains' convergence read from them.
+    pub(super) shift: Vec<f64>,
+    pub(super) role_mean: Vec<f64>,
+    pub(super) tally: Arc<Mutex<Tally>>,
+}
+
+/// Each chain's log joint at each kept draw.
+pub(super) fn log_joints(chains: &[Vec<Draw>]) -> Vec<Vec<f64>> {
+    chains
+        .iter()
+        .map(|c| c.iter().map(|d| d.log_joint).collect())
+        .collect()
 }
 
 impl Draw {
     /// The chain's means; with `sites`, also the sites' reads per block,
     /// the largest part of the tally.
     pub fn means(&self, sites: bool) -> Means {
-        let t = self.tally.lock().expect("a chain's tally");
-        let n = t.draws.max(1) as f64;
+        self.tally.lock().expect("a chain's tally").means(sites)
+    }
+}
+
+impl Tally {
+    /// The means over the tallied draws; with `sites`, also the sites'
+    /// reads per block.
+    pub(super) fn means(&self, sites: bool) -> Means {
+        let n = self.draws.max(1) as f64;
         let mean = |v: &[f64]| -> Vec<f64> { v.iter().map(|x| x / n).collect() };
-        let shift = mean(&t.shift);
+        let site = |v: &[f64]| if sites { mean(v) } else { Vec::new() };
+        let shift = mean(&self.shift);
         Means {
-            cell: t.cell.iter().map(|x| (x / n) as f32).collect(),
-            gene: t.gene.iter().map(|x| (x / n) as f32).collect(),
-            beta: mean(&t.beta),
-            shift_sd: t
+            cell: self.cell.iter().map(|x| (x / n) as f32).collect(),
+            gene: self.gene.iter().map(|x| (x / n) as f32).collect(),
+            beta: mean(&self.beta),
+            shift_sd: self
                 .shift_sq
                 .iter()
                 .zip(&shift)
                 .map(|(sq, m)| (sq / n - m * m).max(0.0).sqrt())
                 .collect(),
             shift,
-            level: mean(&t.level),
-            gene_block: mean(&t.gene_block),
-            cell_block: mean(&t.cell_block),
-            site_on: if sites { mean(&t.site_on) } else { Vec::new() },
-            site_off: if sites { mean(&t.site_off) } else { Vec::new() },
+            level: mean(&self.level),
+            gene_block: mean(&self.gene_block),
+            cell_block: mean(&self.cell_block),
+            site_on: site(&self.site_on),
+            site_off: site(&self.site_off),
         }
+    }
+
+    /// `other`'s sums added, its roles renumbered into this tally's by
+    /// `to`.
+    pub(super) fn add_aligned(&mut self, other: &Tally, to: &Alignment) {
+        let blocks = to.blocks();
+        add_columns(&mut self.cell, &other.cell, &to.cell);
+        add_columns(&mut self.gene, &other.gene, &to.gene);
+        add_columns(&mut self.beta, &other.beta, &to.cell);
+        add(&mut self.level, &other.level, |x| x);
+        for (sums, x) in [
+            (&mut self.shift, &other.shift),
+            (&mut self.shift_sq, &other.shift_sq),
+            (&mut self.gene_block, &other.gene_block),
+            (&mut self.cell_block, &other.cell_block),
+            (&mut self.site_on, &other.site_on),
+            (&mut self.site_off, &other.site_off),
+        ] {
+            add_columns(sums, x, &blocks);
+        }
+        self.draws += other.draws;
+    }
+}
+
+/// `sums` grown to `x`'s length, then `x` added, each row's column `j`
+/// (`to.len()` columns per row) into column `to[j]`.
+pub(super) fn add_columns(sums: &mut Vec<f64>, x: &[f64], to: &[usize]) {
+    sums.resize(x.len(), 0.0);
+    for (s, row) in sums.chunks_mut(to.len()).zip(x.chunks(to.len())) {
+        row.iter().zip(to).for_each(|(&v, &j)| s[j] += v);
     }
 }
 
@@ -249,9 +299,19 @@ impl Model<'_> {
             }
             t.draws += 1;
         }
+        let cells = self.links.cells.max(1) as f64;
+        let mut role_mean = vec![0.0f64; self.settings.cell_roles];
+        for row in cell.chunks(role_mean.len()) {
+            role_mean
+                .iter_mut()
+                .zip(row)
+                .for_each(|(m, &w)| *m += w / cells);
+        }
         Draw {
             heldout: self.score_heldout(st, &cell, &gene),
             log_joint: self.log_joint(st),
+            shift: st.delta.clone(),
+            role_mean,
             tally: Arc::clone(&st.tally),
         }
     }

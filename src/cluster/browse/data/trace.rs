@@ -65,9 +65,23 @@ impl Fit {
                     false => Ok(Trace { chains, burn_in }),
                 }),
         };
-        let verdict = rhat.map(|rhat| match &trace {
-            Ok(t) => Verdict::of(&t.chains, t.burn_in, sweeps, rhat),
-            Err(_) => Verdict::of(&vec![Vec::new(); ran], 0, sweeps, rhat),
+        // What pooling the chains found short of convergence: none in an
+        // older record.
+        let unsettled: Vec<String> = at("/results/pooling/unsettled")
+            .and_then(Value::as_array)
+            .map(|v| {
+                v.iter()
+                    .filter_map(Value::as_str)
+                    .map(String::from)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let verdict = rhat.map(|rhat| {
+            match &trace {
+                Ok(t) => Verdict::of(&t.chains, t.burn_in, sweeps, rhat),
+                Err(_) => Verdict::of(&vec![Vec::new(); ran], 0, sweeps, rhat),
+            }
+            .with_unsettled(unsettled)
         });
         Self {
             sweeps,
@@ -78,7 +92,8 @@ impl Fit {
 
     /// The verdict on the fit (see [`Verdict::of`]): its trace's and its
     /// R-hat's, without a trace the R-hat's alone over the chains the
-    /// record gives; none without an R-hat.
+    /// record gives, and on what the record says pooling found unsettled;
+    /// none without an R-hat.
     pub fn verdict(&self) -> Option<&Verdict> {
         self.verdict.as_ref()
     }

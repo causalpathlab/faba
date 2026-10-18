@@ -5,7 +5,6 @@
 //! it (see [`super::advice`]). `q` cancels; once the fit writes, too late
 //! for that, it leaves without opening the browser.
 
-use super::advice::Verdict;
 use super::Progress;
 use crate::tui::{clock, on_thread, run_view, spinner_frame, Pending, View};
 use data_beans::interactive::ui::{header, help_line, panel, Screen, ACCENTED, DIM, HIGHLIGHT};
@@ -80,7 +79,7 @@ impl<T> Fitting<'_, T> {
         (total, warmup): (usize, usize),
         traces: &[Vec<(usize, f64)>],
     ) -> Vec<Line<'static>> {
-        let Some(rhat) = self.progress.rhat() else {
+        let Some(verdict) = self.progress.verdict() else {
             let done = (0..self.progress.chains()).all(|i| self.progress.done(i) >= total);
             return done
                 .then(|| trace::verdict(traces, warmup))
@@ -88,7 +87,6 @@ impl<T> Fitting<'_, T> {
                 .into_iter()
                 .collect();
         };
-        let verdict = Verdict::of(traces, warmup, total, rhat);
         let style = if verdict.converged() { DIM } else { HIGHLIGHT };
         let mut lines = vec![
             Line::raw(""),

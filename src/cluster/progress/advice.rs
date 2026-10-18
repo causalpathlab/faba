@@ -60,13 +60,15 @@ pub enum Status {
 }
 
 /// A fit's convergence: its split R-hat and what the chains say, the
-/// `--sweeps` it ran, which the advice doubles, and its chains.
+/// `--sweeps` it ran, which the advice doubles, its chains, and what else
+/// is short of convergence (see [`Verdict::with_unsettled`]).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Verdict {
     pub rhat: f64,
     pub status: Status,
     sweeps: usize,
     chains: usize,
+    unsettled: Vec<String>,
 }
 
 impl Verdict {
@@ -94,16 +96,43 @@ impl Verdict {
             status,
             sweeps,
             chains: traces.len(),
+            unsettled: Vec::new(),
         }
+    }
+
+    /// The verdict, `unsettled` held against the fit too: what pooling
+    /// the chains found short of convergence (see
+    /// [`crate::cluster::unified::Pooling`]), each named in a few words.
+    pub fn with_unsettled(self, unsettled: Vec<String>) -> Self {
+        Self { unsettled, ..self }
     }
 
     /// Whether the fit can be read as it is.
     pub fn converged(&self) -> bool {
-        matches!(self.status, Status::Agree | Status::OneChain)
+        self.converged_on_traces() && self.unsettled.is_empty()
+    }
+
+    /// The chains whose log joint lags the best's (see [`lagging`]): the
+    /// tables leave them out of the pool. None when the R-hat is not known.
+    pub fn lagging(&self) -> &[usize] {
+        match &self.status {
+            Status::Lags(lag) | Status::Disagree(lag) => lag,
+            _ => &[],
+        }
+    }
+
+    /// The status in a few words, the R-hat in them; then what else is
+    /// short of convergence.
+    pub fn said(&self) -> String {
+        let said = self.status_said();
+        match self.unsettled.is_empty() {
+            true => said,
+            false => format!("{said}; not converged: {}", self.unsettled.join(", ")),
+        }
     }
 
     /// The status in a few words, the R-hat in them.
-    pub fn said(&self) -> String {
+    fn status_said(&self) -> String {
         let rhat = self.rhat;
         match &self.status {
             Status::Agree => format!("chains agree (R-hat {rhat:.2})"),
@@ -123,6 +152,9 @@ impl Verdict {
     /// One line on what to do, naming the flags.
     pub fn advice(&self) -> String {
         let more = 2 * self.sweeps.max(1);
+        if !self.unsettled.is_empty() && self.converged_on_traces() {
+            return format!("run again with --sweeps {more} or more --chains");
+        }
         match self.status {
             Status::Agree => "nothing to rerun: the fit can be read as it is".to_string(),
             Status::OneChain => {
@@ -138,6 +170,11 @@ impl Verdict {
                 format!("too few draws to compare the chains: run longer (--sweeps {more})")
             }
         }
+    }
+
+    /// Whether the traces and the R-hat alone say the fit can be read.
+    fn converged_on_traces(&self) -> bool {
+        matches!(self.status, Status::Agree | Status::OneChain)
     }
 
     /// The R-hat and `ok` or `check`, for a header.

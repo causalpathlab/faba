@@ -414,7 +414,8 @@ fn both_presets_write_the_tables_faba_modules_reads() {
             controls: &controls,
             progress: &crate::cluster::progress::Progress::new(2),
         };
-        let mut record = crate::run_record::RunRecord::start("cluster", "unused");
+        let mut record =
+            crate::run_record::RunRecord::start("cluster", &tmp.path().to_string_lossy());
         let written = crate::cluster::run::blockmodel::blockmodel_fit(
             &args,
             &config(10, 20, 143),
@@ -428,6 +429,43 @@ fn both_presets_write_the_tables_faba_modules_reads() {
             "{model}: its own record"
         );
         assert_eq!(written.modality, "m6a", "{model}");
+        // The record says which chains the tables pool and how well.
+        let saved = record.finish(&Ok(())).expect("the record written");
+        let saved: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(saved).unwrap()).unwrap();
+        let pooling = &saved["results"]["pooling"];
+        let pooled = pooling["pooled"].as_array().expect("pooled chains");
+        assert!(!pooled.is_empty(), "{model}: {pooling}");
+        let excluded = pooling["excluded"].as_array().expect("excluded chains");
+        assert_eq!(pooled.len() + excluded.len(), 2, "{model}: {pooling}");
+        if !pooling["fallback"].is_null() {
+            assert_eq!(pooled.len(), 1, "{model}: the best chain alone");
+        }
+        // The record's shifts are the tables' own.
+        let blocks =
+            crate::common::read_record_batch(tmp.path().join("m6a_blocks.parquet")).unwrap();
+        let sd = blocks
+            .column_by_name("sd")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<arrow::array::Float32Array>()
+            .unwrap()
+            .values()
+            .to_vec();
+        let recorded = saved["results"]["blockmodel"]["shift_sd"]
+            .as_array()
+            .unwrap();
+        assert_eq!(recorded.len(), sd.len(), "{model}");
+        for (r, t) in recorded.iter().zip(&sd) {
+            let r = r.as_f64().unwrap();
+            assert!((r - f64::from(*t)).abs() < 1e-5, "{model}: {r} vs {t}");
+        }
+        let alignment = pooling["alignment"].as_array().unwrap();
+        assert_eq!(alignment.len(), 2, "{model}: each chain's alignment");
+        assert_eq!(alignment[0]["cell_quality"].as_array().unwrap().len(), 3);
+        assert!(pooling["worst_rhat"].is_number() || pooling["worst_rhat"] == "inf");
+        assert!(pooling["worst_ess"].is_number(), "{model}: {pooling}");
+        assert!(pooling["not_converged"].is_array(), "{model}: {pooling}");
         let m = crate::cluster::browse::Modules::load(tmp.path(), "m6a").unwrap();
         assert_eq!((m.cell_roles, m.gene_roles), (3, gene_roles), "{model}");
         assert!(!m.approximate.sizes && !m.approximate.pileup, "{model}");

@@ -167,6 +167,45 @@ faba <COMMAND> [OPTIONS]
 
 Run `faba <COMMAND> --help` for the detailed options of each subcommand.
 
+## Clustering on real data
+
+`faba cluster` and `faba modules` fit by MCMC, so a fit is only worth reading once its chains
+agree. Run several (`--chains`, 4 by default) and give them enough sweeps (`--sweeps`, burn-in
+included; `--burn-in`):
+
+```sh
+# Cell and gene modules from a faba output directory, straight through
+faba cluster out/ --model blocks --chains 4 --sweeps 600 --burn-in 200
+# ...or fit (or reopen) them in the browser, watching the chains as they run
+faba modules out/ --chains 4 --sweeps 600 --burn-in 200
+```
+
+**Watching the chains.** `faba modules` draws each chain's log joint live while it fits. When
+`faba cluster` is done it prints the same traces as one sparkline per chain on one scale, then a
+verdict and one line of advice naming the flags to run again with. Once the tables are open, the
+browser's header carries an `R-hat ... ok` or `check` badge, and `t` opens the trace view;
+`--html` pages carry the trace chart too. Each chain's trace is kept in `{m}_trace.parquet`.
+
+**Judging convergence.** The verdict reads two things: the split R-hat of the log joint across
+the chains, which should be at most 1.05, and each chain's level after the burn-in, where a
+chain well below the best one lags even when the R-hat looks fine. Over the chains the tables
+pool, the block shifts and each cell role's mean membership (of the roles some cell or gene
+takes as its main one) need an R-hat within the same bound and at least 100 effective draws
+summed over the chains. What falls short is listed as not converged, and the fit then is not,
+whatever its traces say; so too when a chain is left out because its roles do not match.
+
+**Pooling.** The chains label their roles in their own order, so each is aligned to the best
+chain's roles before anything is combined. The tables pool the chains that agree: a chain that
+lags on its trace or whose roles in use do not match the best chain's is left out, and if the
+rest still disagree together the tables are the best chain's alone. `{m}_blockmodel.run.json` records which chains were pooled, which were left out and why,
+the R-hat and effective draws, and whether the fit converged.
+
+**When it has not converged.** Do not read the modules yet. Follow the advice: run longer
+(`--sweeps`, often double), add `--chains`, and check the traces again. A chain stuck below the
+others points to a mode the sampler has not left; more sweeps or more chains show whether it is
+one. Chains that keep disagreeing at length often mean more roles than the data support: try
+fewer `--cell-roles` or `--gene-roles`.
+
 ## Methods
 
 The method write-ups are **compiled into the binary** — `include_str!`, not files read at

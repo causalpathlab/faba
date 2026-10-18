@@ -2,7 +2,8 @@
 //! shifts and weights, and how far their strong gene roles name the same
 //! genes.
 
-use super::draw::enrichment;
+use super::draw::{enrichment, log_joints};
+use super::pool::{pool, Pooling};
 use super::{shift_range, Draw, Means, Model};
 use crate::cluster::summary::{chain_scores, main_labels, pairwise, pairwise_ari, per_read};
 
@@ -21,16 +22,17 @@ pub struct Summary {
     /// roles, and genes' main gene roles (posterior-mean weights).
     pub cell_agreement: Vec<f64>,
     pub gene_agreement: Vec<f64>,
-    /// The best chain (highest mean log joint) and its posterior-mean block
-    /// shifts (`A x B`, row-major) with their sds.
+    /// The best chain (highest mean log joint), and the tables'
+    /// posterior-mean block shifts (`A x B`, row-major) with their sds and
+    /// global weights over the cell roles (the best chain's alone from
+    /// [`summarize`]).
     pub best_chain: usize,
     pub shifts: Vec<f64>,
     pub shift_sd: Vec<f64>,
-    /// The best chain's posterior-mean global weights over the cell roles.
     pub global_weights: Vec<f64>,
     /// Held-out reads' log-likelihood per read, over every kept draw.
     pub heldout_per_read: Option<f64>,
-    /// Each chain's strong gene roles (whose shift ranges at least
+    /// Each chain's own strong gene roles (whose shift ranges at least
     /// [`STRONG_SHIFT`] across the cell roles), and for each pair of chains
     /// the mean overlap of a strong role's top genes with the best-matching
     /// strong role's in the other chain.
@@ -88,11 +90,7 @@ fn best_overlap(a: &[Vec<usize>], b: &[Vec<usize>]) -> f64 {
 /// The chains of `model`, summarised together.
 pub fn summarize(model: &Model, chains: &[Vec<Draw>]) -> Summary {
     let (aa, bb) = (model.settings.cell_roles, model.settings.gene_roles);
-    let log_joint: Vec<Vec<f64>> = chains
-        .iter()
-        .map(|c| c.iter().map(|d| d.log_joint).collect())
-        .collect();
-    let (chain_log_joint, rhat_log_joint, best_chain) = chain_scores(&log_joint);
+    let (chain_log_joint, rhat_log_joint, best_chain) = chain_scores(&log_joints(chains));
     let means: Vec<Means> = chains
         .iter()
         .filter_map(|c| c.last().map(|d| d.means(false)))
@@ -126,4 +124,21 @@ pub fn summarize(model: &Model, chains: &[Vec<Draw>]) -> Summary {
         strong_gene_roles: tops.iter().map(Vec::len).collect(),
         top_gene_overlap: pairwise(&tops, |x, y| best_overlap(x, y)),
     }
+}
+
+/// The chains of `model`, `summary` theirs ([`summarize`]), pooled (see
+/// [`pool`]) but for those `lagging` on their traces: the summary's
+/// shifts, their sds and the global weights the tables' means, so the
+/// record and the tables agree; with those means and what was pooled.
+pub fn pooled(
+    model: &Model,
+    chains: &[Vec<Draw>],
+    mut summary: Summary,
+    lagging: &[usize],
+) -> (Summary, Means, Pooling) {
+    let (means, pooling) = pool(model, chains, summary.best_chain, lagging);
+    summary.shifts = means.shift.clone();
+    summary.shift_sd = means.shift_sd.clone();
+    summary.global_weights = means.beta.clone();
+    (summary, means, pooling)
 }

@@ -18,6 +18,7 @@ use statrs::function::gamma::ln_gamma;
 
 mod conditionals;
 mod exact;
+mod pool;
 mod presets;
 
 fn sigmoid(x: f64) -> f64 {

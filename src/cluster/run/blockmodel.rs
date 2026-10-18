@@ -1,10 +1,11 @@
-//! The blockmodel's fit: chains, the cells left out placed against the
-//! best one, and its tables.
+//! The blockmodel's fit: chains, their tallies pooled where they agree
+//! (else the best chain's alone), the cells left out placed against those
+//! means, and its tables.
 
 use super::super::{args, read, record_name, unified, write, FitData, Written};
 use crate::run_record::RunRecord;
 use legume_numeric::mcmc::engine::McmcConfig;
-use log::info;
+use log::{info, warn};
 use rustc_hash::FxHashMap;
 use std::path::Path;
 
@@ -42,6 +43,27 @@ impl<'a> FitData<'a> {
     }
 }
 
+/// Which chains the tables pool, those left out, and the quantities short
+/// of convergence.
+fn report_pooling(pooling: &unified::Pooling) {
+    for e in &pooling.excluded {
+        warn!("chain {} left out of the tables: {}", e.chain, e.reason);
+    }
+    match &pooling.fallback {
+        Some(why) => warn!(
+            "tables from the best chain ({}) alone: {why}",
+            pooling.reference
+        ),
+        None => info!("tables from chains {:?} pooled", pooling.pooled),
+    }
+    if !pooling.not_converged.is_empty() {
+        warn!(
+            "not converged across the chains pooled: {}",
+            pooling.not_converged.join(", ")
+        );
+    }
+}
+
 /// Each site's gene, numbered in order of first appearance, and the genes'
 /// names in that order.
 pub(in crate::cluster) fn number_genes(sites: &[read::Site]) -> (Vec<u32>, Vec<&str>) {
@@ -60,8 +82,10 @@ pub(in crate::cluster) fn number_genes(sites: &[read::Site]) -> (Vec<u32>, Vec<&
 }
 
 /// Fit the blockmodel `args` set (the link or blocks preset, each switch
-/// given overriding it), write its tables from the best chain's posterior
-/// means and each chain's trace, and fill the record; what was written.
+/// given overriding it), write its tables from the chains' pooled
+/// posterior means (the best chain's when they do not pool; never a chain
+/// the convergence verdict finds lagging) and each chain's trace, and fill
+/// the record; what was written.
 pub(in crate::cluster) fn blockmodel_fit(
     args: &args::ClusterArgs,
     config: &McmcConfig,
@@ -90,14 +114,22 @@ pub(in crate::cluster) fn blockmodel_fit(
     }
     let chains = super::super::progress::run(&model, config, args.chains, fit.progress)?;
     let summary = unified::summarize(&model, &chains);
-    // Whether it converged is the traces' and the R-hat's verdict, which
-    // the fitting view, or `progress::spark` after the fit, tells.
+    // Whether it converged is the verdict on the traces and the R-hat, a
+    // chain it finds lagging not pooled, and on what pooling found short of
+    // convergence; the fitting view, or `progress::spark` after the fit,
+    // tells it.
     fit.progress.summarised(summary.rhat_log_joint)?;
-    let best = chains[summary.best_chain]
-        .last()
-        .expect("a chain has draws")
-        .means(true);
-    // Cells kept but not fitted, placed against the best chain.
+    let lagging = fit
+        .progress
+        .verdict()
+        .expect("summarised")
+        .lagging()
+        .to_vec();
+    let (summary, best, pooling) = unified::pooled(&model, &chains, summary, &lagging);
+    report_pooling(&pooling);
+    fit.progress.pooled(pooling.unsettled.clone());
+    let verdict = fit.progress.verdict().expect("summarised");
+    // Cells kept but not fitted, placed against the tables' means.
     let control_reads = data.reads.subset(fit.controls);
     let control_weighted = read::Weighted::new(&control_reads, None);
     let control_links = unified::Links::new(&control_weighted, &gene_of);
@@ -118,7 +150,7 @@ pub(in crate::cluster) fn blockmodel_fit(
         }),
     );
     record.set_result("blockmodel", &summary);
-    let verdict = fit.progress.verdict().expect("summarised");
+    record.set_result("pooling", &pooling);
     record.set_result("converged", &verdict.converged());
     info!(
         "blockmodel: split R-hat of the log joint {:.2}; chain agreement cells {:?}, genes {:?}; strong gene roles {:?}, top-gene overlap {:?}; held-out {:?} per read",
@@ -133,7 +165,7 @@ pub(in crate::cluster) fn blockmodel_fit(
 /// The fit's tables beside the cells' roles, each at `path(name)`: the
 /// genes' (`names`, in `b` gene roles) roles, the blocks, their genes,
 /// cells and sites, the sites' reads per cell role, and the sites' own
-/// statistics, from the best chain's means `best`.
+/// statistics, from the tables' means `best`.
 fn write_tables(
     path: &dyn Fn(&str) -> std::path::PathBuf,
     fit: &FitData,

@@ -1,9 +1,11 @@
 //! Checks against the model's definition: draws of each move with the rest
 //! held, the log joint, and the swap's ratio beside the log joint's change.
 
-use super::{Model, Scratch, State};
+use super::draw::{add_columns, Tally};
+use super::{Alignment, Draw, Model, Scratch, State};
 use legume_numeric::mcmc::engine::McmcModel;
 use rand::rngs::SmallRng;
+use std::sync::{Arc, Mutex};
 
 /// What a check holds the labels at: the global weights, each block's
 /// shift, and each cell's level (all 0 at finite strength, where they are
@@ -164,5 +166,35 @@ impl Model<'_> {
         for k in 0..self.blocks() {
             self.refresh(st, k);
         }
+    }
+}
+
+impl Draw {
+    /// `chain` with its roles renumbered by `to` (its cell role `a` to
+    /// `to.cell[a]`, gene role `b` to `to.gene[b]`; roles numbered alike
+    /// merged, their values added): a tally of its own, each draw's shifts
+    /// and cell roles' means moved alike.
+    pub fn relabelled(chain: &[Draw], to: &Alignment) -> Vec<Draw> {
+        let mut tally = Tally::default();
+        if let Some(d) = chain.last() {
+            tally.add_aligned(&d.tally.lock().expect("a chain's tally"), to);
+        }
+        let tally = Arc::new(Mutex::new(tally));
+        let blocks = to.blocks();
+        let moved = |x: &[f64], to: &[usize]| {
+            let mut out = Vec::new();
+            add_columns(&mut out, x, to);
+            out
+        };
+        chain
+            .iter()
+            .map(|d| Draw {
+                heldout: d.heldout,
+                log_joint: d.log_joint,
+                shift: moved(&d.shift, &blocks),
+                role_mean: moved(&d.role_mean, &to.cell),
+                tally: Arc::clone(&tally),
+            })
+            .collect()
     }
 }
