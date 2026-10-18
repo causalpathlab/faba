@@ -530,6 +530,127 @@ fn live_reads_stay_those_the_labels_imply() {
     assert!(empty > 0, "some block's site is empty");
 }
 
+/// Under fractional read weights, the per-entry caches of `ln Gamma` and
+/// `ln B` terms stay, bit for bit, those of the live reads and the current
+/// pseudo-counts after many moves (the shift's draws among them).
+#[test]
+fn cached_gamma_terms_stay_those_of_the_live_reads() {
+    let (reads, gene_of, _, _, _) = planted_blocks(40, 6, 0.0, 155);
+    let mut rng = SmallRng::seed_from_u64(156);
+    let mut weight =
+        |n: usize| -> Vec<f64> { (0..n).map(|_| rng.random_range(0.1..1.9)).collect() };
+    let (on, off) = (weight(reads.on.len()), weight(reads.off.len()));
+    let links = Links::new(&Weighted::new(&reads, Some((&on, &off))), &gene_of);
+    let s = Settings {
+        cell_roles: 3,
+        ..settings(Weights::Hdp(1.0), true, 2.0, 2)
+    };
+    let model = Model::new(&links, &gene_of, gene_of.len(), s).unwrap();
+    let (checked, stale) = model.stale_caches(40, 157);
+    assert!(checked > 0, "no cached entry checked");
+    assert_eq!(stale, 0, "{stale} of {checked} cached entries stale");
+}
+
+/// At infinite strength the cached `exp(-delta_k)` per block and
+/// `exp(-nu_c)` per cell stay, bit for bit, those of the current shifts and
+/// levels after many sweeps, each checked after the moves that draw it.
+#[test]
+fn cached_exponentials_stay_those_of_the_shifts_and_levels() {
+    let (reads, gene_of, _, _, _) = planted_blocks(30, 6, 1.0, 165);
+    let links = Links::new(&Weighted::new(&reads, None), &gene_of);
+    let model = Model::new(&links, &gene_of, gene_of.len(), blocks_preset()).unwrap();
+    let (checked, stale) = model.stale_exponentials(20, 166);
+    assert!(checked > 0, "no cached exponential checked");
+    assert_eq!(stale, 0, "{stale} of {checked} cached exponentials stale");
+}
+
+/// A link's log predictive in every block, as the relabelling scores it,
+/// is the sum over its sites of each site's Beta-binomial predictive given
+/// the block's other reads, at finite strength and infinite: over a link
+/// long enough that the product of its sites' predictives underflows, with
+/// whole reads, many reads and fractional ones mixed.
+#[test]
+fn a_links_predictive_is_its_sites_summed() {
+    let sites = 3000u32;
+    let cell = |shift: u32| -> Vec<(u32, u32, u32)> {
+        (0..sites)
+            .map(|s| {
+                (
+                    s,
+                    (s + shift) % 4,
+                    1 + (s * 7 + shift) % 3 + 20 * u32::from(s % 97 == 0),
+                )
+            })
+            .collect()
+    };
+    let reads = Reads::from_cells(vec![cell(0), cell(1), cell(2)]);
+    let gene_of = vec![0u32; sites as usize];
+    let mut rng = SmallRng::seed_from_u64(161);
+    let weights: Vec<f64> = (0..reads.on.len())
+        .map(|i| {
+            if i % 5 == 0 {
+                rng.random_range(0.2..1.8)
+            } else {
+                1.0
+            }
+        })
+        .collect();
+    let links = Links::new(&Weighted::new(&reads, Some((&weights, &weights))), &gene_of);
+    for strength in [2.0, f64::INFINITY] {
+        let s = Settings {
+            cell_roles: 3,
+            ..settings(Weights::Symmetric, true, strength, 2)
+        };
+        let model = Model::new(&links, &gene_of, sites as usize, s).unwrap();
+        let (a, b) = (vec![0, 1, 0], vec![0, 1, 1]);
+        let held = Held {
+            beta: &[1.0 / 3.0; 3],
+            delta: &[0.4, -0.3, 0.9, -1.2, 0.1, 0.6],
+            nu: &[0.3, -0.2, 0.5],
+        };
+        let (scored, summed) = model.link_check((&a, &b), &held, 1);
+        assert!(scored.iter().all(|x| x.is_finite()), "{scored:?}");
+        for (k, (x, y)) in scored.iter().zip(&summed).enumerate() {
+            assert!(
+                (x - y).abs() < 1e-12 * y.abs(),
+                "strength {strength} block {k}: scored {x}, summed {y}"
+            );
+        }
+    }
+}
+
+/// At infinite strength a link of few whole reads per site, its logits far
+/// below 0 (where `(1 + exp(-z))^n` overflows), is scored as its sites'
+/// Binomials summed: finite and right, not clipped.
+#[test]
+fn a_links_reads_at_extreme_logits_score_right() {
+    let sites = 40u32;
+    let cell =
+        |on: u32, off: u32| -> Vec<(u32, u32, u32)> { (0..sites).map(|s| (s, on, off)).collect() };
+    let reads = Reads::from_cells(vec![cell(16, 0), cell(0, 16), cell(10, 6)]);
+    let gene_of = vec![0u32; sites as usize];
+    let links = Links::new(&Weighted::new(&reads, None), &gene_of);
+    let s = Settings {
+        cell_roles: 3,
+        ..settings(Weights::Symmetric, true, f64::INFINITY, 2)
+    };
+    let model = Model::new(&links, &gene_of, sites as usize, s).unwrap();
+    let held = Held {
+        beta: &[1.0 / 3.0; 3],
+        delta: &[-10.0, -20.0, -5.0, -30.0, -8.0, -12.0],
+        nu: &[-40.0, -35.0, -38.0],
+    };
+    for l in [0, 2] {
+        let (scored, summed) = model.link_check((&[0, 1, 2], &[0, 1, 0]), &held, l);
+        for (k, (x, y)) in scored.iter().zip(&summed).enumerate() {
+            assert!(
+                (x - y).abs() < 1e-12 * y.abs(),
+                "link {l} block {k}: scored {x}, summed {y}"
+            );
+        }
+    }
+}
+
 /// The links counted ahead of the fit, for its memory estimate, are those
 /// built, genes interleaved within a cell or not.
 #[test]

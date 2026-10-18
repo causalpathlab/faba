@@ -96,22 +96,52 @@ pub(super) fn ln_urn(row: &[u32], conc: f64, base: &[f64]) -> f64 {
 /// binomial coefficient (the same for every cluster). Few reads, the usual
 /// case, are summed as logs.
 pub(super) fn ln_pred(x: f64, y: f64, m: f64, u: f64) -> f64 {
-    if m + u > 16.0 || m.fract() != 0.0 || u.fract() != 0.0 {
-        // ln Gamma(z + n) - ln Gamma(z), skipped when n is 0 (one side of
-        // most entries).
-        let rise = |z: f64, n: f64| {
-            if n > 0.0 {
-                ln_gamma(z + n) - ln_gamma(z)
-            } else {
-                0.0
-            }
-        };
-        return rise(x, m) + rise(y, u) - rise(x + y, m + u);
+    if few_whole(m, u) {
+        // Rising factorials as products (at most 16 terms, far from
+        // overflow), then two logs.
+        return (rising(x, m) * rising(y, u)).ln() - rising(x + y, m + u).ln();
     }
-    // Rising factorials as products (at most 16 terms, far from overflow),
-    // then two logs.
-    let rising = |z: f64, n: f64| (0..n as u32).map(|j| z + j as f64).product::<f64>();
-    (rising(x, m) * rising(y, u)).ln() - rising(x + y, m + u).ln()
+    let rise = |z: f64, n: f64| {
+        if n > 0.0 {
+            ln_gamma(z + n) - ln_gamma(z)
+        } else {
+            0.0
+        }
+    };
+    rise(x, m) + rise(y, u) - rise(x + y, m + u)
+}
+
+/// Whether `m` and `u` reads are few and whole, so that [`ln_pred`] takes
+/// them through rising factorials rather than `ln Gamma`.
+pub(super) fn few_whole(m: f64, u: f64) -> bool {
+    m + u <= 16.0 && m.fract() == 0.0 && u.fract() == 0.0
+}
+
+/// The rising factorial `z (z + 1) ... (z + n - 1)` of whole `n`.
+fn rising(z: f64, n: f64) -> f64 {
+    (0..n as u32).map(|j| z + j as f64).product()
+}
+
+/// `exp` of [`ln_pred`] at few whole reads: the ratio of rising factorials
+/// itself, at most 1 (a probability's part), no log taken.
+pub(super) fn rising_ratio(x: f64, y: f64, m: f64, u: f64) -> f64 {
+    rising(x, m) * rising(y, u) / rising(x + y, m + u)
+}
+
+/// Finite `x >= 0` as `(m, e)`, `x = m 2^e` with `m` in `[1, 2)` (0 as
+/// `(0, 0)`): exact, the bits moved between mantissa and exponent, a
+/// subnormal scaled into the normal range first.
+pub(super) fn binary_split(x: f64) -> (f64, i64) {
+    if x < f64::MIN_POSITIVE {
+        if x == 0.0 {
+            return (0.0, 0);
+        }
+        let (m, e) = binary_split(x * 2f64.powi(64));
+        return (m, e - 64);
+    }
+    let bits = x.to_bits();
+    let e = ((bits >> 52) & 0x7ff) as i64 - 1023;
+    (f64::from_bits((bits & !(0x7ff << 52)) | (1023 << 52)), e)
 }
 
 /// The fit's settings.

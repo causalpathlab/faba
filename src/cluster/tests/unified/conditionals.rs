@@ -85,16 +85,17 @@ fn check_shift_conditional(cells: usize, genes: usize, shift_sd: f64, strength: 
             ));
         }
     }
+    let fast = fast_sites(&links, mu.len());
     let (exact, exact_sd) = grid_moments(|d| {
         let reads: f64 = if strength.is_finite() {
             (0..mu.len())
                 .filter(|&j| on[j] + off[j] > 0.0)
-                .map(|j| site_marginal(sigmoid(mu[j] + d), on[j], off[j], strength))
+                .map(|j| site_marginal(sigmoid(mu[j] + d), on[j], off[j], strength, fast[j]))
                 .sum()
         } else {
             entries
                 .iter()
-                .map(|&(x, m, u)| site_marginal(sigmoid(x + d), m, u, strength))
+                .map(|&(x, m, u)| site_marginal(sigmoid(x + d), m, u, strength, false))
                 .sum()
         };
         -d * d / (2.0 * shift_sd * shift_sd) + reads

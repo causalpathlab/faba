@@ -6,11 +6,13 @@ use crate::cluster::crp::ln_urn;
 use rand::rngs::SmallRng;
 use rand::RngExt;
 
-/// Buffers a sweep's moves reuse: the relabelling's log weights per block
-/// and its genes' urn logs per gene role, and a swap's moved links and the
-/// (site, block) entries they touch.
+/// Buffers a sweep's moves reuse: the relabelling's log weights per block,
+/// its running products per block (see [`Model::ln_link_blocks`]) and its
+/// genes' urn logs per gene role, and a swap's moved links and the (site,
+/// block) entries they touch.
 pub(super) struct Scratch {
     pub(super) w: Vec<f64>,
+    pub(super) rising: Vec<(f64, i64)>,
     pub(super) gene: Vec<f64>,
     moved: Vec<usize>,
     touched: Vec<usize>,
@@ -21,6 +23,7 @@ impl Scratch {
     pub(super) fn new(model: &Model) -> Self {
         Self {
             w: vec![0.0; model.blocks()],
+            rising: vec![(1.0, 0); model.blocks()],
             gene: vec![0.0; model.settings.gene_roles],
             moved: Vec::new(),
             touched: Vec::new(),
