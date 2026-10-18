@@ -454,7 +454,8 @@ fn cell_modules_in_the_other_order_keep_their_own_reads_names_and_sizes() {
     press(&mut v, KeyCode::Char(' '));
     press(&mut v, KeyCode::Char('o'));
     assert_eq!(v.sort, Sort::Column(0));
-    let s = screen(&mut v, 180, 40);
+    // Wide enough that the footer keeps to one line.
+    let s = screen(&mut v, 200, 40);
     let line = |text: &str| -> String {
         let l = s.lines().find(|l| l.contains(text)).unwrap();
         l.trim_end().to_string()

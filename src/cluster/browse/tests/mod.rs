@@ -17,6 +17,7 @@ mod model;
 mod posterior;
 mod report;
 mod strip;
+mod trace;
 mod view;
 
 fn site(gene: &str, pos: i64) -> Site {

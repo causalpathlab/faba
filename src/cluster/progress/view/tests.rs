@@ -1,7 +1,9 @@
 //! The fitting view drawn from a made-up progress: a bar per chain with
-//! its burn-in marked, the R-hat once in, `q` cancelling.
+//! its burn-in marked, the chains' log joint traced under them, the
+//! R-hat once in, `q` cancelling.
 
 use super::*;
+use crate::cluster::progress::advice::lagging;
 use crate::tui::screen_text as screen;
 use ratatui::crossterm::event::KeyModifiers;
 use std::sync::atomic::Ordering;
@@ -141,7 +143,7 @@ fn shows_the_r_hat_then_ends() {
     let mut v = fitting(&p, &rx);
     let s = screen(&mut v, 100, 12);
     assert!(
-        s.contains("split R-hat 1.01") && s.contains("the chains agree"),
+        s.contains("chains agree (R-hat 1.01)") && s.contains("nothing to rerun"),
         "{s}"
     );
     assert!(s.contains("writing the tables"), "{s}");
@@ -251,4 +253,189 @@ fn a_cancel_too_late_leaves_without_the_browser() {
         },
     );
     assert_eq!(left.unwrap(), None, "the browser is skipped");
+}
+
+/// A made-up trace: sweeps `from..=to`, the log joint `level` give or
+/// take a fixed wobble under 1.
+fn wobble(level: f64, from: usize, to: usize) -> Vec<(usize, f64)> {
+    (from..=to)
+        .map(|n| (n, level + ((n * 7919) % 13) as f64 / 13.0 - 0.5))
+        .collect()
+}
+
+/// Three chains of 100 sweeps, 40 of them burn-in, all done: each climbs
+/// from far below early in its burn-in, then sits at `levels[i]`.
+fn finished(levels: [f64; 3]) -> Progress {
+    let p = Progress::traced(3);
+    let _ = p.schedule.set((100, 40));
+    for (i, level) in levels.into_iter().enumerate() {
+        let _ = p.started[i].set(Instant::now() - Duration::from_secs(5));
+        p.done[i].0.store(100, Ordering::Relaxed);
+        let mut t = p.traces[i].lock().unwrap();
+        t.extend((1..=40).map(|n| (n, level - 1000.0 * 0.5f64.powi(n as i32))));
+        t.extend(wobble(level, 41, 100));
+    }
+    p
+}
+
+/// The view drawn `w` x `h`, cell by cell.
+fn drawn(v: &mut Fitting<u8>, w: u16, h: u16) -> ratatui::buffer::Buffer {
+    let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
+    t.draw(|f| v.render(f)).unwrap();
+    t.backend().buffer().clone()
+}
+
+/// Where the buffer has a braille dot, with its style.
+fn braille(buf: &ratatui::buffer::Buffer) -> Vec<(u16, u16, ratatui::style::Style)> {
+    let a = buf.area;
+    (a.top()..a.bottom())
+        .flat_map(|y| (a.left()..a.right()).map(move |x| (x, y)))
+        .filter(|&(x, y)| {
+            buf[(x, y)]
+                .symbol()
+                .chars()
+                .any(|c| ('\u{2801}'..='\u{28ff}').contains(&c))
+        })
+        .map(|(x, y)| (x, y, buf[(x, y)].style()))
+        .collect()
+}
+
+/// Post-burn-in means far below the best chain's, against the chains'
+/// own spread, lag: one chain of three, the lower of two, or most of them
+/// stuck below one; burn-in points count for nothing; one chain, or a
+/// chain with too few points, says nothing.
+#[test]
+fn a_chain_lags_when_far_below_the_others() {
+    let low_burn_in = |level| {
+        let mut t = vec![(1, -1e6), (2, -1e5)];
+        t.extend(wobble(level, 3, 60));
+        t
+    };
+    let agree = [low_burn_in(0.0), low_burn_in(0.3), low_burn_in(-0.3)];
+    assert_eq!(lagging(&agree, 2), Some(Vec::new()));
+    let one_low = [low_burn_in(0.0), low_burn_in(-5.0), low_burn_in(0.2)];
+    assert_eq!(lagging(&one_low, 2), Some(vec![1]));
+    // A wobble's sd is under 0.3: 0.7 below is within three of them.
+    let near = [low_burn_in(0.0), low_burn_in(-0.5), low_burn_in(0.2)];
+    assert_eq!(lagging(&near, 2), Some(Vec::new()));
+    // Of two, the lower lags once three sds below, not six.
+    let two = [low_burn_in(0.0), low_burn_in(-1.5)];
+    assert_eq!(lagging(&two, 2), Some(vec![1]));
+    // Most stuck below one: they lag, not the one above.
+    let most = [low_burn_in(0.0), low_burn_in(-5.0), low_burn_in(-5.0)];
+    assert_eq!(lagging(&most, 2), Some(vec![1, 2]));
+    assert_eq!(lagging(&agree[..1], 2), None, "one chain");
+    assert_eq!(lagging(&agree, 59), None, "one point after the burn-in");
+}
+
+/// Under the bars, a line per chain in its label's colour, the burn-in's
+/// end a line down the plot; once done, whether a chain lags.
+#[test]
+fn traces_each_chain_under_the_bars() {
+    let (_tx, rx) = channel_u8();
+    let p = finished([0.0, 10.0, -10.0]);
+    let mut v = fitting(&p, &rx);
+    let buf = drawn(&mut v, 80, 24);
+    let dots = braille(&buf);
+    for i in 0..3 {
+        let colour = chain_style(i).fg;
+        assert!(colour.is_some(), "chain {i} has a colour");
+        assert!(
+            dots.iter().any(|d| d.2.fg == colour),
+            "chain {i}'s trace drawn"
+        );
+        // The bar's label is in the same colour.
+        let label = (0..24).find_map(|y| {
+            let row: String = (0..80).map(|x| buf[(x, y)].symbol()).collect();
+            row.find(&format!("chain {i}")).map(|x| (x as u16, y))
+        });
+        let (x, y) = label.expect("a bar per chain");
+        assert_eq!(buf[(x, y)].style().fg, colour, "chain {i}'s label");
+    }
+    let mark: Vec<u16> = dots
+        .iter()
+        .filter(|d| d.2.fg == Some(trace::MARK))
+        .map(|d| d.0)
+        .collect();
+    assert!(mark.len() >= 3, "the burn-in's end drawn down the plot");
+    assert!(
+        mark.iter().all(|&x| x == mark[0]),
+        "in one column: {mark:?}"
+    );
+    let (left, right) = (
+        dots.iter().map(|d| d.0).min(),
+        dots.iter().map(|d| d.0).max(),
+    );
+    assert!(
+        left < Some(mark[0]) && Some(mark[0]) < right,
+        "inside the plot"
+    );
+    let s = screen(&mut v, 80, 24);
+    for want in [
+        "log joint",
+        "sweep",
+        "log joint after burn-in: chains 0, 2 lag",
+    ] {
+        assert!(s.contains(want), "{want:?} in\n{s}");
+    }
+
+    let p = finished([0.0, 0.3, -0.2]);
+    let mut v = fitting(&p, &rx);
+    let s = screen(&mut v, 80, 24);
+    assert!(s.contains("log joint after burn-in: no chain lags"), "{s}");
+    // While the chains run, no verdict yet.
+    p.done[2].0.store(99, Ordering::Relaxed);
+    assert!(!screen(&mut v, 80, 24).contains("after burn-in"));
+}
+
+/// Too few rows for a plot: the bars stay, the plot goes; the R-hat and
+/// the verdict keep their lines.
+#[test]
+fn a_small_terminal_keeps_the_bars_and_drops_the_plot() {
+    let (_tx, rx) = channel_u8();
+    let p = finished([0.0, 0.3, -0.2]);
+    p.set_rhat(1.01);
+    let mut v = fitting(&p, &rx);
+    for (w, h) in [(80, 12), (30, 24)] {
+        let buf = drawn(&mut v, w, h);
+        assert!(braille(&buf).is_empty(), "{w}x{h}: no plot");
+        let s = screen(&mut v, w, h);
+        assert!(s.contains("chain 2"), "{w}x{h}\n{s}");
+    }
+    let s = screen(&mut v, 80, 14);
+    assert!(s.contains("chains agree (R-hat 1.01)"), "{s}");
+    for (w, h) in [(10, 3), (20, 8), (200, 60)] {
+        screen(&mut v, w, h);
+    }
+}
+
+/// Once the R-hat is in, one line gives the verdict, the lag in it: the
+/// lag line before it goes, so nothing is said twice.
+#[test]
+fn once_the_r_hat_is_in_one_line_gives_the_verdict() {
+    let (_tx, rx) = channel_u8();
+    for (levels, rhat, said) in [
+        ([0.0, 0.3, -0.2], 1.3, "R-hat 1.30: chains disagree"),
+        ([0.0, 0.3, -0.2], 1.01, "chains agree (R-hat 1.01)"),
+        ([0.0, 10.0, -10.0], 1.01, "chains 0, 2 lag (R-hat 1.01)"),
+    ] {
+        let p = finished(levels);
+        p.set_rhat(rhat);
+        let mut v = fitting(&p, &rx);
+        let s = screen(&mut v, 80, 24);
+        assert!(s.contains(said), "{s}");
+        assert!(!s.contains("after burn-in"), "{s}");
+    }
+}
+
+/// Each of many chains has its own colour, on its label and its line.
+#[test]
+fn many_chains_each_have_their_own_colour() {
+    let colours: Vec<_> = (0..16).map(|i| chain_style(i).fg).collect();
+    for (i, a) in colours.iter().enumerate() {
+        assert!(a.is_some(), "chain {i} has a colour");
+        for (j, b) in colours.iter().enumerate().skip(i + 1) {
+            assert_ne!(a, b, "chains {i} and {j}");
+        }
+    }
 }

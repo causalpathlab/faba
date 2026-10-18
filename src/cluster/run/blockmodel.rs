@@ -1,10 +1,10 @@
 //! The blockmodel's fit: chains, the cells left out placed against the
 //! best one, and its tables.
 
-use super::super::{args, read, record_name, unified, write, FitData, Written, RHAT_OK};
+use super::super::{args, read, record_name, unified, write, FitData, Written};
 use crate::run_record::RunRecord;
 use legume_numeric::mcmc::engine::McmcConfig;
-use log::{info, warn};
+use log::info;
 use rustc_hash::FxHashMap;
 use std::path::Path;
 
@@ -42,13 +42,6 @@ impl<'a> FitData<'a> {
     }
 }
 
-/// A warning when the chains disagree.
-fn warn_unconverged(rhat: f64) {
-    if rhat > RHAT_OK {
-        warn!("chains disagree (split R-hat of the log joint {rhat:.2}): run more --sweeps or --chains");
-    }
-}
-
 /// Each site's gene, numbered in order of first appearance, and the genes'
 /// names in that order.
 pub(in crate::cluster) fn number_genes(sites: &[read::Site]) -> (Vec<u32>, Vec<&str>) {
@@ -68,7 +61,7 @@ pub(in crate::cluster) fn number_genes(sites: &[read::Site]) -> (Vec<u32>, Vec<&
 
 /// Fit the blockmodel `args` set (the link or blocks preset, each switch
 /// given overriding it), write its tables from the best chain's posterior
-/// means, and fill the record; what was written.
+/// means and each chain's trace, and fill the record; what was written.
 pub(in crate::cluster) fn blockmodel_fit(
     args: &args::ClusterArgs,
     config: &McmcConfig,
@@ -97,7 +90,8 @@ pub(in crate::cluster) fn blockmodel_fit(
     }
     let chains = super::super::progress::run(&model, config, args.chains, fit.progress)?;
     let summary = unified::summarize(&model, &chains);
-    warn_unconverged(summary.rhat_log_joint);
+    // Whether it converged is the traces' and the R-hat's verdict, which
+    // the fitting view, or `progress::spark` after the fit, tells.
     fit.progress.summarised(summary.rhat_log_joint)?;
     let best = chains[summary.best_chain]
         .last()
@@ -114,8 +108,18 @@ pub(in crate::cluster) fn blockmodel_fit(
     let path = |name: &str| dir.join(format!("{m}_{name}.parquet"));
     write::cell_roles(&rows, a, &path("cell_roles"))?;
     write_tables(&path, &fit, (&names, b), &best, &model)?;
+    // Each chain's log joint as it ran, and the schedule it ran in.
+    write::trace(&fit.progress.traces(), &path("trace"))?;
+    record.set_result(
+        "trace",
+        &serde_json::json!({
+            "sweeps": super::super::progress::sweeps(config),
+            "burn_in": config.warmup,
+        }),
+    );
     record.set_result("blockmodel", &summary);
-    record.set_result("converged", &(summary.rhat_log_joint <= RHAT_OK));
+    let verdict = fit.progress.verdict().expect("summarised");
+    record.set_result("converged", &verdict.converged());
     info!(
         "blockmodel: split R-hat of the log joint {:.2}; chain agreement cells {:?}, genes {:?}; strong gene roles {:?}, top-gene overlap {:?}; held-out {:?} per read",
         summary.rhat_log_joint, summary.cell_agreement, summary.gene_agreement, summary.strong_gene_roles, summary.top_gene_overlap, summary.heldout_per_read

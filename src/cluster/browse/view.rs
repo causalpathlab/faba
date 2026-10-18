@@ -11,8 +11,9 @@
 //! grid can show its blocks as bars, a % heatmap or a z heatmap (see
 //! [`grid`]); the strip is in [`strip`]. The sites list is in [`list`], the
 //! pins in [`pins`], the cell modules shown in [`columns`], the `/` search
-//! in [`find`], keys and the mouse in [`input`], and the panes' titles and
-//! the footer in [`chrome`].
+//! in [`find`], keys and the mouse in [`input`], the panes' titles and the
+//! footer in [`chrome`], and the fit's trace, full pane on `t`, in
+//! [`trace`].
 
 use super::Modules;
 use crate::site_analysis::miami::genemodel::GeneModel;
@@ -36,6 +37,7 @@ mod input;
 mod list;
 mod pins;
 mod strip;
+mod trace;
 
 #[cfg(test)]
 pub use bars::{eighths, hanging};
@@ -168,6 +170,8 @@ pub struct ModulesView<'a> {
     /// for (see [`ModulesView::site_label_w`]).
     pub(super) site_labels: Kept<usize, Vec<usize>>,
     hits: Hits<Spot>,
+    /// The fit's trace is open, full pane.
+    tracing: bool,
     done: bool,
 }
 
@@ -206,6 +210,7 @@ impl<'a> ModulesView<'a> {
             module_stretch: Kept::default(),
             site_labels: Kept::default(),
             hits: Hits::default(),
+            tracing: false,
             done: false,
         };
         view.relist();
@@ -371,9 +376,27 @@ impl Screen for ModulesView<'_> {
     fn render(&mut self, frame: &mut Frame) {
         self.hits.clear();
         let area = frame.area();
+        let m = self.m;
+        let mut extra = format!(
+            "{} gene modules × {} cell modules",
+            m.order.len(),
+            m.cell_roles
+        );
+        if let Some(badge) = self.badge() {
+            extra.push_str(&format!(" · {badge}"));
+        }
+        if self.tracing {
+            let [head, body, foot] = Layout::vertical([
+                Constraint::Length(1),
+                Constraint::Fill(1),
+                Constraint::Length(1),
+            ])
+            .areas(area);
+            frame.render_widget(header("modules", &self.title, &extra), head);
+            return self.draw_trace(frame, body, foot);
+        }
         self.fit_columns(area.width);
         let help = self.footer(area.width);
-        let m = self.m;
         // Half the screen for the grids, more when the modules need it,
         // and room left for the strip.
         let modules_h = 2 * m.order.len() as u16 + 3;
@@ -395,11 +418,6 @@ impl Screen for ModulesView<'_> {
         ])
         .areas(top);
 
-        let extra = format!(
-            "{} gene modules × {} cell modules",
-            m.order.len(),
-            m.cell_roles
-        );
         frame.render_widget(header("modules", &self.title, &extra), head);
         frame.render_widget(Paragraph::new(self.levels()), levels);
         // Keep the mark clear of the header's text.

@@ -48,7 +48,7 @@ fn record_name(m: &str, model: ModelKind) -> String {
     }
 }
 
-/// Split R-hat above this is reported as not converged.
+/// Split R-hat above this, 1.05, counts as not converged.
 const RHAT_OK: f64 = 1.05;
 
 /// Bytes the fit (not the reading) will hold at its peak, roughly: the
@@ -102,9 +102,13 @@ fn memory_estimate(
 }
 
 /// Cluster as `args` say; the modality fitted, none when no inputs were
-/// chosen.
+/// chosen. A blockmodel fit ends with its chains' traces, R-hat and advice
+/// on stderr (see [`progress::spark`]).
 pub fn run_cluster(args: &ClusterArgs) -> anyhow::Result<Option<String>> {
-    run_cluster_watched(args, &progress::Progress::on_stderr(args.chains))
+    let progress = progress::Progress::on_stderr(args.chains);
+    let fitted = run_cluster_watched(args, &progress)?;
+    progress::spark::tell(&progress);
+    Ok(fitted)
 }
 
 /// [`run_cluster`], the chains counting their sweeps on `progress`.

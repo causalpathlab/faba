@@ -23,8 +23,10 @@ use tables::{BlockSites, SiteRows};
 mod run;
 mod sites;
 mod tables;
+mod trace;
 
 pub(super) use run::model as run_model;
+pub use trace::Fit;
 
 #[cfg(test)]
 pub(super) use tables::role_at;
@@ -168,6 +170,8 @@ pub struct Modules {
     /// The model the tables come from, from their run record; why not
     /// when there is none (see [`run::model`]).
     pub run: Result<Recorded, String>,
+    /// Whether the fit converged, and its trace (see [`Fit`]).
+    pub fit: Fit,
 }
 
 impl Modules {
@@ -215,6 +219,7 @@ impl Modules {
                 path("site_stats").display()
             );
         }
+        let record = run::record(dir, modality);
         let mut modules = Self {
             modality: modality.to_string(),
             cell_roles,
@@ -232,7 +237,11 @@ impl Modules {
             diagonal: Vec::new(),
             columns: (0..cell_roles).collect(),
             stats,
-            run: run::model(dir, modality),
+            run: record
+                .as_ref()
+                .map_err(Clone::clone)
+                .and_then(run::settings),
+            fit: Fit::read(dir, modality, &record),
         };
         modules.set_orders();
         modules.put_in_columns();

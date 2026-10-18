@@ -1,6 +1,7 @@
-//! Sampling progress: counting the sweeps leaves every chain's draws as
-//! they were, the count is the engine's schedule, a cancel turns the sweeps
-//! left into no-ops, and a cancelled fit writes nothing.
+//! Sampling progress: counting the sweeps and tracing the log joint leave
+//! every chain's draws as they were, the count is the engine's schedule, a
+//! cancel turns the sweeps left into no-ops, and a cancelled fit writes
+//! nothing.
 
 use super::unified::{planted_blocks, planted_site_data, settings};
 use super::{config, small_cells};
@@ -49,6 +50,8 @@ impl McmcModel for Counting<'_> {
         kept.len()
     }
 }
+
+impl progress::Traced for Counting<'_> {}
 
 /// Each chain counts the sweeps the engine runs, and keeps the draws it
 /// would keep, whatever the schedule.
@@ -162,11 +165,60 @@ fn counting_the_sweeps_leaves_the_draws_as_they_were() {
     }
 }
 
-/// Each model's fit under `progress`, into `dir`: what it returned.
-fn fit_each(
+/// The same seed gives the same draws with the log joint traced as
+/// without, and the trace is the chain's log joint: at each kept draw's
+/// sweep, that draw's, bit for bit, in both blockmodel settings; a short
+/// run traced every sweep, a long one every other.
+#[test]
+fn tracing_the_log_joint_leaves_the_draws_as_they_were() {
+    let (reads, gene_of, _, _, _) = planted_blocks(30, 6, 1.0, 161);
+    let links = Links::new(&Weighted::new(&reads, None), &gene_of);
+    // Draw j is kept after sweep warmup + j * thin + 1: even in the long
+    // run, so traced.
+    for (cfg, every) in [(config(6, 8, 163), 1), (config(6, 199, 163), 2)] {
+        let cfg = McmcConfig { thin: 2, ..cfg };
+        let total = progress::sweeps(&cfg);
+        for s in both_settings() {
+            let model = Model::new(&links, &gene_of, gene_of.len(), s).unwrap();
+            let bare = run_mcmc_parallel(&model, &cfg, 2);
+            let p = Progress::traced(2);
+            let traced = progress::run(&model, &cfg, 2, &p).unwrap();
+            for (i, (a, b)) in bare.iter().zip(&traced).enumerate() {
+                let joint = |c: &Vec<crate::cluster::unified::Draw>| -> Vec<u64> {
+                    c.iter().map(|d| d.log_joint.to_bits()).collect()
+                };
+                assert_eq!(joint(a), joint(b), "chain {i}");
+                assert_eq!(
+                    a.last().unwrap().means(true).cell,
+                    b.last().unwrap().means(true).cell
+                );
+                let trace = p.trace(i);
+                assert_eq!(
+                    trace.iter().map(|t| t.0).collect::<Vec<_>>(),
+                    (every..=total).step_by(every).collect::<Vec<_>>(),
+                    "traced every {every} of {total} sweeps"
+                );
+                for (j, d) in b.iter().enumerate() {
+                    let at = cfg.warmup + j * cfg.thin + 1;
+                    let v = trace.iter().find(|t| t.0 == at).map(|t| t.1);
+                    assert_eq!(
+                        v.map(f64::to_bits),
+                        Some(d.log_joint.to_bits()),
+                        "draw {j} at sweep {at}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Each model's fit under `progress`, into `dir`, filling `record`: what
+/// it returned.
+fn fit_each_recorded(
     model: &str,
     progress: &Progress,
     dir: &std::path::Path,
+    record: &mut crate::run_record::RunRecord,
 ) -> anyhow::Result<crate::cluster::Written> {
     let (data, fit_reads) = planted_site_data(30, 25, 6, 171);
     let weighted = Weighted::new(&fit_reads, None);
@@ -184,11 +236,76 @@ fn fit_each(
         controls: &controls,
         progress,
     };
-    let mut record = crate::run_record::RunRecord::start("cluster", "unused");
     let cfg = config(4, 6, 173);
     match model {
-        "crp" => crate::cluster::run::crp::crp_fit(&args, &cfg, dir, &mut record, fit, &fit_reads),
-        _ => crate::cluster::run::blockmodel::blockmodel_fit(&args, &cfg, dir, &mut record, fit),
+        "crp" => crate::cluster::run::crp::crp_fit(&args, &cfg, dir, record, fit, &fit_reads),
+        _ => crate::cluster::run::blockmodel::blockmodel_fit(&args, &cfg, dir, record, fit),
+    }
+}
+
+/// [`fit_each_recorded`], its record thrown away.
+fn fit_each(
+    model: &str,
+    progress: &Progress,
+    dir: &std::path::Path,
+) -> anyhow::Result<crate::cluster::Written> {
+    let mut record = crate::run_record::RunRecord::start("cluster", "unused");
+    fit_each_recorded(model, progress, dir, &mut record)
+}
+
+/// A blockmodel fit saves each chain's traced log joint beside its
+/// tables, a row per point as the progress noted it, and its record says
+/// the schedule the points ran in; its R-hat is the summary's, and
+/// whether it converged is the verdict's.
+#[test]
+fn a_blockmodel_fit_saves_its_trace() {
+    use crate::common::column;
+    use arrow::array::{Float64Array, Int32Array, Int64Array};
+    for model in ["blocks", "link"] {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("out");
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = Progress::traced(2);
+        let mut record = crate::run_record::RunRecord::start("cluster", &dir.to_string_lossy());
+        let written = fit_each_recorded(model, &p, &dir, &mut record).unwrap();
+        record.finish(&Ok(()));
+        let path = dir.join(format!("{}_trace.parquet", written.modality));
+        let t = crate::common::read_record_batch(&path).unwrap();
+        let chain: &Int32Array = column(&t, "chain").unwrap();
+        let sweep: &Int64Array = column(&t, "sweep").unwrap();
+        let joint: &Float64Array = column(&t, "log_joint").unwrap();
+        let rows: Vec<(usize, usize, u64)> = (0..t.num_rows())
+            .map(|i| {
+                (
+                    chain.value(i) as usize,
+                    sweep.value(i) as usize,
+                    joint.value(i).to_bits(),
+                )
+            })
+            .collect();
+        let want: Vec<(usize, usize, u64)> = (p.traces().iter().enumerate())
+            .flat_map(|(i, t)| t.iter().map(move |&(n, v)| (i, n, v.to_bits())))
+            .collect();
+        assert!(!want.is_empty(), "{model}: traced");
+        assert_eq!(rows, want, "{model}");
+        let text = std::fs::read_to_string(dir.join("cluster.run.json")).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let total = progress::sweeps(&config(4, 6, 173));
+        assert_eq!(
+            json["results"]["trace"],
+            serde_json::json!({"sweeps": total, "burn_in": 6}),
+            "{model}"
+        );
+        assert_eq!(
+            json["results"]["blockmodel"]["rhat_log_joint"].as_f64(),
+            p.rhat(),
+            "{model}"
+        );
+        assert_eq!(
+            json["results"]["converged"].as_bool(),
+            p.verdict().map(|v| v.converged()),
+            "{model}: the verdict the views show"
+        );
     }
 }
 
