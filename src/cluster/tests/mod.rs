@@ -9,6 +9,7 @@ use rustc_hash::FxHashMap;
 use statrs::function::gamma::ln_gamma;
 
 mod command;
+mod fast;
 mod progress;
 mod unified;
 
@@ -99,6 +100,29 @@ fn predictive_as_logs_matches_beta_functions() {
     // Weighted reads are not whole: the Beta-function path.
     let exact = ln_beta(1.3 + 0.7, 2.0 + 1.4) - ln_beta(1.3, 2.0);
     assert!((ln_pred(1.3, 2.0, 0.7, 1.4) - exact).abs() < 1e-12);
+}
+
+/// A number split into a mantissa in `[1, 2)` and a power of 2 is
+/// rebuilt from them exactly, subnormals and 0 included.
+#[test]
+fn binary_splits_rebuild_exactly() {
+    for x in [
+        1.0,
+        0.75,
+        3.0e-12,
+        1.7e300,
+        2.2e-308,
+        4.9e-320,
+        f64::MIN_POSITIVE,
+    ] {
+        let (m, e) = crp::binary_split(x);
+        assert!((1.0..2.0).contains(&m), "{x}: mantissa {m}");
+        // Rebuilt in two halves, so a subnormal's 2^e does not underflow.
+        let half = e as i32 / 2;
+        let rebuilt = m * 2f64.powi(half) * 2f64.powi(e as i32 - half);
+        assert_eq!(rebuilt, x, "{x}: {m} 2^{e}");
+    }
+    assert_eq!(crp::binary_split(0.0), (0.0, 0));
 }
 
 /// Every partition of `0..n`, as labels by first appearance.

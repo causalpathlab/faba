@@ -60,6 +60,7 @@ impl Model<'_> {
         let mut st = self.state(a.to_vec(), b.to_vec());
         if !self.finite() {
             st.nu = nu.to_vec();
+            (0..self.links.cells).for_each(|c| self.relevel(&mut st, c));
         }
         (0..draws)
             .map(|_| {
@@ -148,6 +149,122 @@ impl Model<'_> {
         (st.a, st.b, st.on, st.off)
     }
 
+    /// After each of `sweeps` full sweeps from a random start, a
+    /// fingerprint of the chain: a hash of the labels, the log joint's
+    /// bits, and a hash of the shifts' bits and of the levels'.
+    pub fn fingerprints(&self, sweeps: usize, seed: u64) -> Vec<[u64; 4]> {
+        let mut rng = <SmallRng as rand::SeedableRng>::seed_from_u64(seed);
+        let mut st = self.init(&mut rng);
+        (0..sweeps)
+            .map(|_| {
+                self.sweep(&mut st, &mut rng);
+                let labels = st.a.iter().chain(&st.b).map(|&x| u64::from(x));
+                let bits = |x: &[f64]| fnv(x.iter().map(|v| v.to_bits()));
+                [
+                    fnv(labels),
+                    self.log_joint(&st).to_bits(),
+                    bits(&st.delta),
+                    bits(&st.nu),
+                ]
+            })
+            .collect()
+    }
+
+    /// After `sweeps` full sweeps from a random start and then the label
+    /// moves alone (the shifts' refresh would hide a stale entry), the
+    /// cached entries checked and those not, bit for bit, what their
+    /// pseudo-counts and live reads give (finite strength): each entry's
+    /// `ln B` of its pseudo-counts, and at the Gamma sites its `ln Gamma`
+    /// terms (both there by the fast `ln Gamma`).
+    pub fn stale_caches(&self, sweeps: usize, seed: u64) -> (usize, usize) {
+        use crate::cluster::fast;
+        let mut rng = <SmallRng as rand::SeedableRng>::seed_from_u64(seed);
+        let mut st = self.init(&mut rng);
+        for _ in 0..sweeps {
+            self.sweep(&mut st, &mut rng);
+        }
+        self.label_moves(&mut st, &mut Scratch::new(self), &mut rng);
+        let (mut checked, mut stale) = (0, 0);
+        for (at, &(x, y)) in st.prior.iter().enumerate() {
+            let s = at / self.blocks();
+            let prior = self.ln_beta_at(s, x, y);
+            let mut fresh = st.prior_beta[at].to_bits() == prior.to_bits();
+            if self.gamma_site[s] {
+                let (x, y) = (x + st.on[at], y + st.off[at]);
+                let lg = [fast::ln_gamma(x), fast::ln_gamma(y), fast::ln_gamma(x + y)];
+                fresh &= st.lgamma[at].map(f64::to_bits) == lg.map(f64::to_bits);
+            }
+            checked += 1;
+            stale += usize::from(!fresh);
+        }
+        (checked, stale)
+    }
+
+    /// For labels `a`, `b` at `held`, link `l` counted out: its reads' log
+    /// predictive in each block as the relabelling scores it, and as the
+    /// sum over its sites of each one's predictive by the definition (the
+    /// Beta-binomial through `ln B`, by the fast `ln Gamma` at the Gamma
+    /// sites; at infinite strength the Binomial).
+    pub fn link_check(
+        &self,
+        labels: (&[u16], &[u16]),
+        held: &Held,
+        l: usize,
+    ) -> (Vec<f64>, Vec<f64>) {
+        use crate::cluster::crp::ln_sigmoid;
+        let mut st = self.held_state(labels, held);
+        self.put(&mut st, l, false);
+        let kk = self.blocks();
+        let mut scored = vec![0.0; kk];
+        self.ln_link_blocks(&st, l, &mut scored, &mut Scratch::new(self).rising);
+        let (s, m, u) = self.links.of(l);
+        let nu = st.nu[self.links.cell[l] as usize];
+        let summed = (0..kk)
+            .map(|k| {
+                (0..s.len())
+                    .map(|i| {
+                        let j = s[i] as usize;
+                        if self.finite() {
+                            let (x, y) = st.prior[j * kk + k];
+                            let held = (x + st.on[j * kk + k], y + st.off[j * kk + k]);
+                            self.marginal(j, held, m[i], u[i])
+                        } else {
+                            let z = self.mu[j] + st.delta[k] + nu;
+                            m[i] * ln_sigmoid(z) + u[i] * ln_sigmoid(-z)
+                        }
+                    })
+                    .sum()
+            })
+            .collect();
+        (scored, summed)
+    }
+
+    /// After each of `sweeps` full sweeps from a random start, its moves
+    /// one at a time (the cached exponentials checked after each), the
+    /// exponentials checked and those not, bit for bit, `exp(-x)` of the
+    /// current shifts and levels.
+    pub fn stale_exponentials(&self, sweeps: usize, seed: u64) -> (usize, usize) {
+        let mut rng = <SmallRng as rand::SeedableRng>::seed_from_u64(seed);
+        let mut st = self.init(&mut rng);
+        let mut scratch = Scratch::new(self);
+        let (mut checked, mut stale) = (0, 0);
+        let mut check = |st: &State| {
+            let pairs = st.delta.iter().zip(&st.delta_exp);
+            for (x, e) in pairs.chain(st.nu.iter().zip(&st.nu_exp)) {
+                checked += 1;
+                stale += usize::from((-x).exp().to_bits() != e.to_bits());
+            }
+        };
+        for _ in 0..sweeps {
+            self.label_moves(&mut st, &mut scratch, &mut rng);
+            self.resample_shifts(&mut st, &mut rng);
+            check(&st);
+            self.resample_levels(&mut st, &mut rng);
+            check(&st);
+        }
+        (checked, stale)
+    }
+
     /// The state of labels `a`, `b` at `held`.
     fn held_state(&self, (a, b): (&[u16], &[u16]), held: &Held) -> State {
         let mut st = self.state(a.to_vec(), b.to_vec());
@@ -162,6 +279,7 @@ impl Model<'_> {
         st.delta = held.delta.to_vec();
         if !self.finite() {
             st.nu = held.nu.to_vec();
+            (0..self.links.cells).for_each(|c| self.relevel(st, c));
         }
         for k in 0..self.blocks() {
             self.refresh(st, k);
@@ -197,4 +315,12 @@ impl Draw {
             })
             .collect()
     }
+}
+
+/// The FNV-1a hash of `words`, stable across builds and platforms (what
+/// it hashes need not be).
+fn fnv(words: impl Iterator<Item = u64>) -> u64 {
+    words.fold(0xcbf2_9ce4_8422_2325, |h, w| {
+        (h ^ w).wrapping_mul(0x0000_0100_0000_01b3)
+    })
 }

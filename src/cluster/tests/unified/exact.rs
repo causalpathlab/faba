@@ -6,16 +6,18 @@ use super::*;
 
 /// The label moves (link relabels, cell and gene swaps, the global weights
 /// under HDP), the shifts and the cells' levels held, match the enumerated
-/// posterior on the tiny fixture for every allowed switch combination (the
-/// levels unequal at infinite strength); under HDP, so does the mean global
-/// weight of link 0's role.
+/// posterior on the tiny fixture, as read and fractionally weighted, for
+/// every allowed switch combination (the levels unequal at infinite
+/// strength); under HDP, so does the mean global weight of link 0's role.
 #[test]
 fn every_switch_matches_the_exact_posterior_given_shifts_and_levels() {
-    let links = tiny_links();
-    for s in combinations() {
-        let model = Model::new(&links, &TINY_GENES, 3, s.clone()).expect("an allowed setting");
+    for (links, s) in tiny_fixtures()
+        .iter()
+        .flat_map(|links| combinations().into_iter().map(move |s| (links, s)))
+    {
+        let model = Model::new(links, &TINY_GENES, 3, s.clone()).expect("an allowed setting");
         let (delta, nu) = (fixed_shifts(&s), fixed_levels(&s, links.cells));
-        let (exact, weight) = exact(&links, &TINY_GENES, model.baseline(), &s, (&delta, &nu));
+        let (exact, weight) = exact(links, &TINY_GENES, model.baseline(), &s, (&delta, &nu));
         let draws: Vec<_> = [131, 132]
             .iter()
             .flat_map(|&seed| model.label_draws((&delta, &nu), 500, 40_000, seed))
@@ -46,7 +48,7 @@ fn pairs(roles: usize) -> Vec<(u16, u16)> {
 /// The cell swap's and the gene swap's Metropolis-Hastings ratio is exactly
 /// the change in log joint, for every labelling, unit and pair of roles,
 /// under HDP and symmetric weights, finite strength and infinite (the
-/// cells' levels unequal).
+/// cells' levels unequal), over reads as read and fractionally weighted.
 #[test]
 fn swap_ratios_are_the_change_in_log_joint() {
     let reads = Reads::from_cells(vec![
@@ -54,10 +56,20 @@ fn swap_ratios_are_the_change_in_log_joint() {
         vec![(0, 0, 3), (1, 2, 0), (2, 2, 0), (3, 0, 1)],
     ]);
     let gene_of = [0, 0, 1, 2];
-    let links = Links::new(&Weighted::new(&reads, None), &gene_of);
-    let n = links.len();
+    let (on, off) = (
+        [0.6, 1.0, 1.4, 0.7, 1.0, 0.8, 1.0, 1.3],
+        [1.0, 1.7, 0.5, 1.1, 0.9, 1.0, 1.2, 0.6],
+    );
+    let fixtures = [
+        Links::new(&Weighted::new(&reads, None), &gene_of),
+        Links::new(&Weighted::new(&reads, Some((&on, &off))), &gene_of),
+    ];
+    let n = fixtures[0].len();
     let mut checked = [0usize; 2];
-    for weights in [Weights::Hdp(1.0), Weights::Symmetric] {
+    for (links, weights) in fixtures
+        .iter()
+        .flat_map(|links| [Weights::Hdp(1.0), Weights::Symmetric].map(|w| (links, w)))
+    {
         for strength in [2.0, f64::INFINITY] {
             for (cell_roles, gene_roles, shift) in [(2, 2, true), (3, 1, strength.is_infinite())] {
                 let s = Settings {
@@ -71,7 +83,7 @@ fn swap_ratios_are_the_change_in_log_joint() {
                     cell_sd: 0.8,
                 };
                 let nu = fixed_levels(&s, links.cells);
-                let model = Model::new(&links, &gene_of, 4, s).expect("an allowed setting");
+                let model = Model::new(links, &gene_of, 4, s).expect("an allowed setting");
                 let beta: Vec<f64> = match (weights, cell_roles) {
                     (Weights::Hdp(_), 2) => vec![0.7, 0.3],
                     (Weights::Hdp(_), _) => vec![0.5, 0.3, 0.2],
@@ -142,16 +154,19 @@ fn fixed_weights(s: &Settings) -> Vec<f64> {
 
 /// The log joint the chains report (which R-hat and the choice of the best
 /// chain read) is the model's definition, for every labelling of the tiny
-/// fixture at two sets of shifts under every allowed switch combination:
+/// fixture (as read and fractionally weighted) at two sets of shifts under
+/// every allowed switch combination:
 /// each cell's urn at the global weights, each gene's, each block's sites'
 /// marginals (at infinite strength each link's reads, its cell's level
 /// in), the shifts' Normal prior and the levels' (binomial coefficients
 /// and the Normals' normalisers left out of both).
 #[test]
 fn the_log_joint_is_the_models_definition() {
-    let links = tiny_links();
-    for s in combinations() {
-        let model = Model::new(&links, &TINY_GENES, 3, s.clone()).expect("an allowed setting");
+    for (links, s) in tiny_fixtures()
+        .iter()
+        .flat_map(|links| combinations().into_iter().map(move |s| (links, s)))
+    {
+        let model = Model::new(links, &TINY_GENES, 3, s.clone()).expect("an allowed setting");
         let mu = model.baseline().to_vec();
         let beta = fixed_weights(&s);
         let (fixed, nu) = (fixed_shifts(&s), fixed_levels(&s, links.cells));
@@ -166,8 +181,8 @@ fn the_log_joint_is_the_models_definition() {
                 let prior = s.shift_sd.map_or(0.0, |sd| {
                     delta.iter().map(|d| -d * d / (2.0 * sd * sd)).sum()
                 });
-                let defined = genes_and_reads(&links, &TINY_GENES, &mu, &s, (&a, &b), (delta, nu))
-                    + cell_counts(&links, 2, &a)
+                let defined = genes_and_reads(links, &TINY_GENES, &mu, &s, (&a, &b), (delta, nu))
+                    + cell_counts(links, 2, &a)
                         .iter()
                         .map(|c| urn(c, s.alpha, &beta))
                         .sum::<f64>()

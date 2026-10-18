@@ -34,6 +34,14 @@
 //! at infinite strength each cell's level through its links' reads. Every
 //! move leaves the posterior invariant.
 //!
+//! At a site some link reaches with fractional reads (batch weights) or
+//! more than 16, its blocks' Beta functions are taken through a fast
+//! `ln Gamma` (the cluster's `fast` module: f32 below 16, about `1e-3`
+//! error per term) in every term a move reads, the log joint's included.
+//! The target there is the Beta-binomial through that `ln Gamma`, a small
+//! shift from the exact one, and the moves leave it invariant exactly;
+//! elsewhere the library's `ln Gamma`.
+//!
 //! Gene roles need the shift: a site belongs to one gene, so without it a
 //! gene's role never reaches its reads, and is refused. So does infinite
 //! strength: without the shift every block's reads are Binomial at
@@ -48,13 +56,17 @@
 //! aligned (see [`align`]) and their tallies pooled where they agree (see
 //! [`pool`]).
 
-use super::crp::{ln_beta, ln_pred, ln_sigmoid, logit, pooled_fractions, sample_log};
+use super::crp::{
+    binary_split, few_whole, ln_beta, ln_sigmoid, logit, pooled_fractions, rising_ratio, sample_log,
+};
+use super::fast;
 use super::read::Reads;
 use legume_numeric::mcmc::engine::McmcModel;
 use rand::rngs::SmallRng;
 use rand::seq::SliceRandom;
 use rand::RngExt;
 use resample::slice;
+use std::f64::consts::LN_2;
 use std::sync::{Arc, Mutex};
 use swap::Scratch;
 
@@ -94,10 +106,18 @@ pub struct Model<'a> {
     /// Gene `g`'s links are `gene_link[gene_ptr[g]..gene_ptr[g + 1]]`.
     gene_ptr: Vec<usize>,
     gene_link: Vec<usize>,
-    /// Each site's baseline, the logit of its pooled fraction.
+    /// Each site's baseline, the logit of its pooled fraction, and
+    /// `exp(-mu_s)`.
     mu: Vec<f64>,
+    mu_exp: Vec<f64>,
+    /// Each link's unconverted reads, and those times their sites'
+    /// baselines summed: the linear part of its Binomial log-likelihood.
+    link_off: Vec<(f64, f64)>,
     /// The genes' urn base, `1 / B` each.
     gene_base: Vec<f64>,
+    /// Sites some link reaches with reads not few and whole, whose
+    /// entries' `ln Gamma` terms are cached (finite strength).
+    gamma_site: Vec<bool>,
     settings: Settings,
     /// Each cell's held-out reads, scored at every kept draw.
     heldout: Option<&'a Reads>,
@@ -119,15 +139,25 @@ pub struct State {
     /// block's reads there are set to exactly 0, so adding and taking
     /// away fractional reads leaves no residue.
     holders: Vec<u32>,
-    /// Each block's shift.
+    /// Each block's shift, and `exp(-delta_k)`.
     delta: Vec<f64>,
-    /// Each cell's level (all 0 at finite strength, where there is none).
+    delta_exp: Vec<f64>,
+    /// Each cell's level (all 0 at finite strength, where there is none),
+    /// and `exp(-nu_c)`.
     nu: Vec<f64>,
+    nu_exp: Vec<f64>,
     /// Global cell-role weights.
     beta: Vec<f64>,
     /// Each site's profile pseudo-counts in each block (`sites x K`; empty
     /// at infinite strength).
     prior: Vec<(f64, f64)>,
+    /// Each entry's `ln B` of its pseudo-counts (`sites x K`; empty at
+    /// infinite strength).
+    prior_beta: Vec<f64>,
+    /// At the model's Gamma sites, each entry's `ln Gamma` of its
+    /// posterior pseudo-counts `x + on`, `y + off` and their sum (`sites x
+    /// K`, kept current there alone; empty at infinite strength).
+    lgamma: Vec<[f64; 3]>,
     tally: Arc<Mutex<Tally>>,
 }
 
@@ -141,9 +171,16 @@ impl<'a> Model<'a> {
         settings: Settings,
     ) -> anyhow::Result<Self> {
         settings.check()?;
-        let mu = pooled_fractions(&links.site, &links.on, &links.off, sites)
+        let mu: Vec<f64> = pooled_fractions(&links.site, &links.on, &links.off, sites)
             .into_iter()
             .map(logit)
+            .collect();
+        let link_off = (0..links.len())
+            .map(|l| {
+                let (s, _, u) = links.of(l);
+                let total = u.iter().sum();
+                (total, (0..s.len()).map(|i| u[i] * mu[s[i] as usize]).sum())
+            })
             .collect();
         let link_gene = links.genes_of(gene_of);
         let genes = gene_of.iter().max().map_or(0, |&g| g as usize + 1);
@@ -166,8 +203,11 @@ impl<'a> Model<'a> {
             link_gene,
             gene_ptr,
             gene_link,
+            mu_exp: mu.iter().map(|&x| (-x).exp()).collect(),
             mu,
+            link_off,
             gene_base: vec![1.0 / settings.gene_roles as f64; settings.gene_roles],
+            gamma_site: gamma_sites(links, sites),
             settings,
             heldout: None,
         })
@@ -215,15 +255,54 @@ impl<'a> Model<'a> {
         }
     }
 
-    /// Block `k`'s pseudo-counts at every site, from its shift.
+    /// Block `k`'s `exp(-delta_k)` and pseudo-counts at every site, from
+    /// its shift.
     fn refresh(&self, st: &mut State, k: usize) {
+        st.delta_exp[k] = (-st.delta[k]).exp();
         if !self.finite() {
             return;
         }
         let kk = self.blocks();
         for s in 0..self.mu.len() {
-            st.prior[s * kk + k] = self.pseudo(s, st.delta[k]);
+            let at = s * kk + k;
+            let (x, y) = self.pseudo(s, st.delta[k]);
+            st.prior[at] = (x, y);
+            st.prior_beta[at] = self.ln_beta_at(s, x, y);
+            self.recache(st, s, at);
         }
+    }
+
+    /// Entry `at`'s (at site `s`) `ln Gamma` terms from its pseudo-counts
+    /// and reads, at the model's Gamma sites (by [`fast::ln_gamma`]).
+    fn recache(&self, st: &mut State, s: usize, at: usize) {
+        if !self.gamma_site[s] {
+            return;
+        }
+        let (x, y) = st.prior[at];
+        let (x, y) = (x + st.on[at], y + st.off[at]);
+        st.lgamma[at] = [fast::ln_gamma(x), fast::ln_gamma(y), fast::ln_gamma(x + y)];
+    }
+
+    /// `ln B(x, y)` as site `s` takes it: by [`fast::ln_gamma`] at the
+    /// model's Gamma sites, the library's elsewhere.
+    fn ln_beta_at(&self, s: usize, x: f64, y: f64) -> f64 {
+        if self.gamma_site[s] {
+            fast::ln_beta(x, y)
+        } else {
+            ln_beta(x, y)
+        }
+    }
+
+    /// A block's Beta-binomial log marginal at site `s` with profile
+    /// pseudo-counts `(x, y)` holding reads `(on, off)` there (see
+    /// [`Self::ln_beta_at`]).
+    fn marginal(&self, s: usize, (x, y): (f64, f64), on: f64, off: f64) -> f64 {
+        self.ln_beta_at(s, x + on, y + off) - self.ln_beta_at(s, x, y)
+    }
+
+    /// Cell `c`'s `exp(-nu_c)`, from its level.
+    fn relevel(&self, st: &mut State, c: usize) {
+        st.nu_exp[c] = (-st.nu[c]).exp();
     }
 
     /// Site `s`'s Binomial log-likelihood of reads `(on, off)` at offset
@@ -243,7 +322,12 @@ impl<'a> Model<'a> {
         if st.holders[at] == 0 {
             return 0.0;
         }
-        marginal(st.prior[at], st.on[at], st.off[at])
+        if self.gamma_site[at / self.blocks()] {
+            let lg = st.lgamma[at];
+            return lg[0] + lg[1] - lg[2] - st.prior_beta[at];
+        }
+        let (x, y) = st.prior[at];
+        ln_beta(x + st.on[at], y + st.off[at]) - st.prior_beta[at]
     }
 
     /// Link `l`'s labels counted in (`add`) or out: its cell's and gene's
@@ -286,34 +370,97 @@ impl<'a> Model<'a> {
                     st.off[at] -= off[i];
                 }
             }
+            self.recache(st, s[i] as usize, at);
         }
     }
 
-    /// Link `l`'s reads' log predictive in block `k` given the other links
-    /// (`l` counted out).
+    /// Link `l`'s reads' Binomial log-likelihood in block `k` at its cell's
+    /// level (infinite strength).
     fn ln_link(&self, st: &State, l: usize, k: usize) -> f64 {
+        let c = self.links.cell[l] as usize;
+        self.link_reads(l, (st.nu_exp[c], st.nu[c]), (st.delta_exp[k], st.delta[k]))
+    }
+
+    /// Link `l`'s reads' log predictive in each block (`out`, one per
+    /// block) given the other links (`l` counted out): sites outer, each
+    /// site's blocks inner over contiguous entries, the path taken once per
+    /// site. Away from the model's Gamma sites (every link there has few
+    /// whole reads), each block takes a ratio of rising factorials,
+    /// multiplied into its running product in `rising` (kept as a mantissa
+    /// and a power of 2, so it never underflows) and one log taken per
+    /// block at the end. At a Gamma site each block adds its site term's
+    /// change, by [`fast::ln_gamma`] from the cached terms, its arguments
+    /// formed as [`Self::put`] and [`Self::recache`] would form them with
+    /// the link in, so that the weights are the log joint's.
+    fn ln_link_blocks(&self, st: &State, l: usize, out: &mut [f64], rising: &mut [(f64, i64)]) {
+        if !self.finite() {
+            return self.link_reads_blocks(st, l, out, rising);
+        }
         let kk = self.blocks();
         let (s, m, u) = self.links.of(l);
-        if self.finite() {
-            (0..s.len())
-                .map(|i| {
-                    let at = s[i] as usize * kk + k;
-                    let (x, y) = st.prior[at];
-                    ln_pred(x + st.on[at], y + st.off[at], m[i], u[i])
-                })
-                .sum()
-        } else {
-            self.link_reads(l, st.delta[k] + st.nu[self.links.cell[l] as usize])
+        out.fill(0.0);
+        rising.fill((1.0, 0));
+        for i in 0..s.len() {
+            let row = s[i] as usize * kk..(s[i] as usize + 1) * kk;
+            let (on, off) = (&st.on[row.clone()], &st.off[row.clone()]);
+            let prior = &st.prior[row.clone()];
+            if !self.gamma_site[s[i] as usize] {
+                for (k, r) in rising.iter_mut().enumerate() {
+                    let (px, py) = prior[k];
+                    scale(r, rising_ratio(px + on[k], py + off[k], m[i], u[i]));
+                }
+            } else {
+                let lg = &st.lgamma[row];
+                for (k, x) in out.iter_mut().enumerate() {
+                    *x += pred_gamma(prior[k], (on[k], off[k]), lg[k], (m[i], u[i]));
+                }
+            }
+        }
+        for (x, &r) in out.iter_mut().zip(rising.iter()) {
+            *x += ln_split(r);
         }
     }
 
-    /// Link `l`'s reads' Binomial log-likelihood at offset `d` from the
-    /// baseline (infinite strength).
-    fn link_reads(&self, l: usize, d: f64) -> f64 {
+    /// Link `l`'s reads' Binomial log-likelihood at its cell's level `nu`
+    /// and block shift `delta`, each given with its `exp(-x)` (infinite
+    /// strength). With `z = mu_s + nu + delta` a site's logit, `n` its reads
+    /// and `u` its unconverted ones, each site gives `n ln sigmoid(z) - u z`
+    /// with `ln sigmoid(z) = -ln (1 + exp(-mu_s) exp(-nu) exp(-delta))`: few
+    /// whole reads as `(1 + ...)^n` multiplied into a running product kept
+    /// as a mantissa and a power of 2 (one log at the end), others each
+    /// through `ln_1p`, the linear part from the link's constants. The
+    /// relabelling's every block ([`Self::link_reads_blocks`]) takes the
+    /// same steps in the same order, so the two agree bit for bit.
+    fn link_reads(&self, l: usize, nu: (f64, f64), delta: (f64, f64)) -> f64 {
         let (s, m, u) = self.links.of(l);
-        (0..s.len())
-            .map(|i| self.binomial(s[i] as usize, m[i], u[i], d))
-            .sum()
+        let (mut product, mut ones) = ((1.0, 0), 0.0);
+        for i in 0..s.len() {
+            let e = self.mu_exp[s[i] as usize] * nu.0;
+            entry_reads(e * delta.0, m[i], u[i], &mut product, &mut ones);
+        }
+        let (off, off_mu) = self.link_off[l];
+        -ln_split(product) - ones - (off_mu + off * (nu.1 + delta.1))
+    }
+
+    /// [`Self::link_reads`] in every block at once (`out`, one per block),
+    /// at link `l`'s cell's level and each block's shift: sites outer, each
+    /// site's `exp(-mu_s - nu_c)` once and the blocks inner, the running
+    /// products in `rising`.
+    fn link_reads_blocks(&self, st: &State, l: usize, out: &mut [f64], rising: &mut [(f64, i64)]) {
+        let c = self.links.cell[l] as usize;
+        let (s, m, u) = self.links.of(l);
+        out.fill(0.0);
+        rising.fill((1.0, 0));
+        for i in 0..s.len() {
+            let e = self.mu_exp[s[i] as usize] * st.nu_exp[c];
+            for ((x, r), &d) in out.iter_mut().zip(rising.iter_mut()).zip(&st.delta_exp) {
+                entry_reads(e * d, m[i], u[i], r, x);
+            }
+        }
+        let (off, off_mu) = self.link_off[l];
+        for (k, (x, &r)) in out.iter_mut().zip(rising.iter()).enumerate() {
+            *x = -ln_split(r) - *x - (off_mu + off * (st.nu[c] + st.delta[k]));
+        }
     }
 
     /// Link `l`'s pair of roles from its conditional, `scratch`'s weights
@@ -323,14 +470,17 @@ impl<'a> Model<'a> {
         let (c, g) = (self.links.cell[l] as usize, self.link_gene[l] as usize);
         self.put(st, l, false);
         let gb = self.settings.gene_alpha / bb as f64;
-        let Scratch { w, gene, .. } = scratch;
+        let Scratch {
+            w, rising, gene, ..
+        } = scratch;
         for (b, x) in gene.iter_mut().enumerate() {
             *x = (st.m[g * bb + b] as f64 + gb).ln();
         }
+        self.ln_link_blocks(st, l, w, rising);
         for a in 0..aa {
             let cell = (st.n[c * aa + a] as f64 + self.settings.alpha * st.beta[a]).ln();
             for b in 0..bb {
-                w[a * bb + b] = cell + gene[b] + self.ln_link(st, l, a * bb + b);
+                w[a * bb + b] += cell + gene[b];
             }
         }
         let k = sample_log(w, rng);
@@ -405,9 +555,13 @@ impl<'a> Model<'a> {
             off: vec![0.0; per_block],
             holders: vec![0; per_block],
             delta: vec![0.0; kk],
+            delta_exp: vec![1.0; kk],
             nu: vec![0.0; self.links.cells],
+            nu_exp: vec![1.0; self.links.cells],
             beta: vec![1.0 / aa as f64; aa],
             prior: vec![(0.0, 0.0); per_block],
+            prior_beta: vec![0.0; per_block],
+            lgamma: vec![[0.0; 3]; per_block],
             tally: Arc::default(),
         };
         for k in 0..kk {
@@ -420,10 +574,53 @@ impl<'a> Model<'a> {
     }
 }
 
-/// A block's Beta-binomial log marginal at a site with profile
-/// pseudo-counts `(x, y)` holding reads `(on, off)` there.
-fn marginal((x, y): (f64, f64), on: f64, off: f64) -> f64 {
-    ln_beta(x + on, y + off) - ln_beta(x, y)
+/// One link entry's `m` converted and `u` unconverted reads at a site of
+/// `exp(-z) = e` (see [`Model::link_reads`]): few whole reads multiply
+/// `(1 + e)^n` into `product` (a mantissa and a power of 2), others add
+/// `n ln (1 + e)` to `ones`, as do few whole ones from [`E_OVERFLOWS`] on
+/// (or at a NaN), where the power would not be finite.
+fn entry_reads(e: f64, m: f64, u: f64, product: &mut (f64, i64), ones: &mut f64) {
+    if few_whole(m, u) && e < E_OVERFLOWS {
+        scale(product, (1.0 + e).powi((m + u) as i32));
+    } else {
+        *ones += (m + u) * e.ln_1p();
+    }
+}
+
+/// A running product kept as a mantissa and a power of 2, multiplied by
+/// `x` and split again, so that it never underflows.
+fn scale(product: &mut (f64, i64), x: f64) {
+    let (mantissa, e) = binary_split(product.0 * x);
+    *product = (mantissa, product.1 + e);
+}
+
+/// The log of a running product kept as a mantissa and a power of 2.
+fn ln_split((mantissa, e): (f64, i64)) -> f64 {
+    mantissa.ln() + e as f64 * LN_2
+}
+
+/// The `exp(-z)` from which [`entry_reads`] takes few whole reads by
+/// `ln_1p`: below it `(1 + e)^16` times a mantissa under 2 is finite.
+const E_OVERFLOWS: f64 = (1u64 << 60) as f64;
+
+/// Each of `sites` sites: whether some link reaches it with reads not few
+/// and whole.
+fn gamma_sites(links: &Links, sites: usize) -> Vec<bool> {
+    let mut out = vec![false; sites];
+    for (i, &s) in links.site.iter().enumerate() {
+        out[s as usize] |= !few_whole(links.on[i], links.off[i]);
+    }
+    out
+}
+
+/// At a Gamma site with pseudo-counts `(x, y)` holding reads `(on, off)`,
+/// `lg` their cached `ln Gamma` terms: the change in the site's term (by
+/// [`fast::ln_gamma`]) as a link's `m` converted and `u` unconverted reads
+/// join, each side's skipped when it adds none.
+fn pred_gamma((x, y): (f64, f64), (on, off): (f64, f64), lg: [f64; 3], (m, u): (f64, f64)) -> f64 {
+    let (x2, y2) = (x + (on + m), y + (off + u));
+    let side = |z: f64, lz: f64, n: f64| if n > 0.0 { fast::ln_gamma(z) - lz } else { 0.0 };
+    side(x2, lg[0], m) + side(y2, lg[1], u) - (fast::ln_gamma(x2 + y2) - lg[2])
 }
 
 /// The log fractions `(ln p, ln (1 - p))` of the posterior-mean profile at

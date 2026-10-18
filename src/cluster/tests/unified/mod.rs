@@ -7,6 +7,7 @@
 
 use super::{config, draw_cells};
 use crate::cluster::crp::ln_beta;
+use crate::cluster::fast;
 use crate::cluster::read::{self, Reads, Weighted};
 use crate::cluster::summary::{self, ari};
 use crate::cluster::unified::{self, Held, Links, Model, Settings, Weights};
@@ -18,6 +19,7 @@ use statrs::function::gamma::ln_gamma;
 
 mod conditionals;
 mod exact;
+mod golden;
 mod pool;
 mod presets;
 
@@ -40,6 +42,24 @@ fn tiny_links() -> Links {
 
 /// Each tiny-fixture site's gene.
 const TINY_GENES: [u32; 3] = [0, 0, 1];
+
+/// The tiny link fixture with its reads fractionally weighted (each
+/// entry's converted and unconverted reads their own weight), and the
+/// fixture as read: the two the exact checks run over.
+fn tiny_fixtures() -> [Links; 2] {
+    let reads = Reads::from_cells(vec![
+        vec![(0, 3, 0), (1, 0, 2), (2, 1, 1)],
+        vec![(0, 0, 3), (1, 2, 0), (2, 2, 0)],
+    ]);
+    let (on, off) = (
+        [0.6, 1.0, 1.4, 1.0, 0.8, 1.0],
+        [1.0, 1.7, 0.5, 0.9, 1.0, 1.2],
+    );
+    [
+        tiny_links(),
+        Links::new(&Weighted::new(&reads, Some((&on, &off))), &TINY_GENES),
+    ]
+}
 
 /// Today's link model on the tiny fixture (two communities, alpha 0.7,
 /// gamma 2, prior strength 2), enumerated by that model before the
@@ -332,12 +352,26 @@ fn urn(counts: &[f64], conc: f64, base: &[f64]) -> f64 {
             .sum::<f64>()
 }
 
+/// Each of `sites` sites: whether the model takes its Beta functions by
+/// the fast `ln Gamma`, which it does where some link holds fractional
+/// reads or more than 16.
+fn fast_sites(links: &Links, sites: usize) -> Vec<bool> {
+    let mut out = vec![false; sites];
+    for (i, &s) in links.site.iter().enumerate() {
+        let (m, u) = (links.on[i], links.off[i]);
+        out[s as usize] |= m.fract() != 0.0 || u.fract() != 0.0 || m + u > 16.0;
+    }
+    out
+}
+
 /// A block's log marginal at one site holding `on` and `off` reads, centred
-/// on `p`: Beta-binomial at strength `strength`, Binomial at infinity.
-fn site_marginal(p: f64, on: f64, off: f64, strength: f64) -> f64 {
+/// on `p`: Beta-binomial at strength `strength` (its Beta functions by the
+/// fast `ln Gamma` if `fast`), Binomial at infinity.
+fn site_marginal(p: f64, on: f64, off: f64, strength: f64, fast: bool) -> f64 {
     if strength.is_finite() {
         let (x, y) = (strength * p, strength * (1.0 - p));
-        ln_beta(x + on, y + off) - ln_beta(x, y)
+        let beta = if fast { fast::ln_beta } else { ln_beta };
+        beta(x + on, y + off) - beta(x, y)
     } else {
         on * p.ln() + off * (1.0 - p).ln()
     }
@@ -345,9 +379,9 @@ fn site_marginal(p: f64, on: f64, off: f64, strength: f64) -> f64 {
 
 /// The labelling's terms that do not hang on the global weights, from the
 /// model's definition: each gene's Dirichlet-multinomial urn and each
-/// block's sites' marginals around `sigmoid(mu + delta)`; at infinite
-/// strength each link's Binomial reads at `sigmoid(mu + nu_c + delta)`,
-/// its cell's level `nu` in.
+/// block's sites' marginals around `sigmoid(mu + delta)` (see
+/// [`fast_sites`]); at infinite strength each link's Binomial reads at
+/// `sigmoid(mu + nu_c + delta)`, its cell's level `nu` in.
 fn genes_and_reads(
     links: &Links,
     gene_of: &[u32],
@@ -375,16 +409,17 @@ fn genes_and_reads(
             let (ss, m, u) = links.of(l);
             for i in 0..ss.len() {
                 let p = sigmoid(mu[ss[i] as usize] + z);
-                out += site_marginal(p, m[i], u[i], s.strength);
+                out += site_marginal(p, m[i], u[i], s.strength, false);
             }
         }
         return out;
     }
     let (on, off) = block_reads(links, s, (a, b), sites);
+    let fast = fast_sites(links, sites);
     for at in 0..sites * kk {
         if on[at] + off[at] > 0.0 {
             let p = sigmoid(mu[at / kk] + delta[at % kk]);
-            out += site_marginal(p, on[at], off[at], s.strength);
+            out += site_marginal(p, on[at], off[at], s.strength, fast[at / kk]);
         }
     }
     out

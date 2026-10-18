@@ -17,6 +17,7 @@ mod browse;
 mod command;
 mod crp;
 mod embed;
+mod fast;
 mod fit;
 mod progress;
 mod read;
@@ -72,24 +73,26 @@ fn memory_estimate(
             sites * 16 * 32 + sites * 33 + cells * 4 + kept * cells * 2,
         ),
         // The links: their own copy of the weighted reads, each link's
-        // cell, entries and gene, and the genes' links; the sites'
-        // baselines. Per chain: role counts (u32) and their sums (f64) for
-        // cells and genes (at most one gene per site), two labels per link,
-        // at finite strength reads, profile and holders per site and block
-        // (with the shifts' list of each block's sites), at infinite
-        // strength the shifts' list of each block's links; and the tally's
-        // links per cell and gene and reads per site in each block.
+        // cell, entries and gene, its unconverted reads and their baselines
+        // summed, and the genes' links; the sites' baselines with their
+        // exponentials and whether each is a Gamma site. Per chain: role
+        // counts (u32) and their sums (f64) for cells and genes (at most
+        // one gene per site), two labels per link, at finite strength
+        // reads, profile, its `ln B`, the `ln Gamma` cache and holders per
+        // site and block (with the shifts' list of each block's sites), at
+        // infinite strength the shifts' list of each block's links; and the
+        // tally's links per cell and gene and reads per site in each block.
         ModelKind::Link | ModelKind::Blocks => {
             let s = args::blockmodel(args);
             let k = s.cell_roles * s.gene_roles;
             let blocks = sites * k;
             let per_block = if s.strength.is_finite() {
-                blocks * (16 + 16 + 4 + 8)
+                blocks * (16 + 16 + 8 + 24 + 4 + 8)
             } else {
                 links * 8
             };
             (
-                entries * 20 + links * (12 + 12) + sites * 8,
+                entries * 20 + links * (12 + 16 + 12) + sites * (8 + 8 + 1),
                 (cells * s.cell_roles + sites * s.gene_roles) * 12
                     + links * 4
                     + per_block

@@ -1,7 +1,7 @@
 //! The conditional draws beside the labels: the global weights, the block
 //! shifts and the cells' levels, the last two by slice sampling.
 
-use super::{marginal, Model, State, Weights};
+use super::{Model, State, Weights};
 use rand::rngs::SmallRng;
 use rand::RngExt;
 use rand_distr::Distribution;
@@ -67,12 +67,19 @@ impl Model<'_> {
                     + if self.finite() {
                         members
                             .iter()
-                            .map(|&at| marginal(self.pseudo(at / kk, d), st.on[at], st.off[at]))
+                            .map(|&at| {
+                                let s = at / kk;
+                                self.marginal(s, self.pseudo(s, d), st.on[at], st.off[at])
+                            })
                             .sum::<f64>()
                     } else {
+                        let e = (-d).exp();
                         members
                             .iter()
-                            .map(|&l| self.link_reads(l, d + st.nu[self.links.cell[l] as usize]))
+                            .map(|&l| {
+                                let c = self.links.cell[l] as usize;
+                                self.link_reads(l, (st.nu_exp[c], st.nu[c]), (e, d))
+                            })
                             .sum::<f64>()
                     }
             };
@@ -93,14 +100,19 @@ impl Model<'_> {
         for c in 0..self.links.cells {
             let own = self.links.cell_ptr[c]..self.links.cell_ptr[c + 1];
             let target = |v: f64| {
+                let e = (-v).exp();
                 -v * v / (2.0 * var)
                     + own
                         .clone()
-                        .map(|l| self.link_reads(l, st.delta[self.block(st, l)] + v))
+                        .map(|l| {
+                            let k = self.block(st, l);
+                            self.link_reads(l, (e, v), (st.delta_exp[k], st.delta[k]))
+                        })
                         .sum::<f64>()
             };
             let v = slice(st.nu[c], &target, 1.0, rng);
             st.nu[c] = v;
+            self.relevel(st, c);
         }
     }
 }
