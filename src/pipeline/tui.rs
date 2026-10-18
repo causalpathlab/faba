@@ -23,7 +23,7 @@ use crate::figure::LineInput;
 use crate::pipeline::args::PipelineArgs;
 use crate::tui::View;
 use child::{Failed, Progress, Said, Stopper};
-use form::{Form, OWN};
+use form::Form;
 use inputs::{Browser, FileRow, Inputs, Picked, Role};
 use steps::Steps;
 
@@ -186,7 +186,7 @@ impl App {
             page: Page::Inputs,
             inputs: Inputs::new(cwd),
             steps: Steps::default(),
-            form: Form::new(&run_cmd, OWN),
+            form: form::flags(&run_cmd),
             run_cmd,
             preview: false,
             editing: None,

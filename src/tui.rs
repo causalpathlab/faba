@@ -5,6 +5,7 @@
 
 pub mod browser;
 pub mod busy;
+pub mod form;
 
 pub use busy::{busy, busy_counting};
 

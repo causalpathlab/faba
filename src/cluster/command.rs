@@ -13,7 +13,7 @@ use serde_json::{Map, Value};
 pub struct Given(FxHashSet<String>);
 
 /// `faba cluster`'s options alone, as clap defines them.
-fn definition() -> clap::Command {
+pub(super) fn definition() -> clap::Command {
     ClusterArgs::augment_args(clap::Command::new("cluster"))
 }
 
@@ -70,10 +70,21 @@ fn words(v: &Value) -> Vec<String> {
     }
 }
 
+/// The words option `id` (its clap id) has in `args`, as the saved
+/// command says them: none when unset.
+pub(super) fn value_words(args: &ClusterArgs, id: &str) -> Vec<String> {
+    fields(args).get(id).map(words).unwrap_or_default()
+}
+
 /// `args` as a `faba cluster` command: its inputs as absolute paths, then
 /// each option given or away from its default, by the flag clap names it,
 /// with the value this run had, paths among them absolute too.
 pub(super) fn command(args: &ClusterArgs) -> Vec<String> {
+    command_except(args, &[])
+}
+
+/// [`command`] without the options whose long flags are in `skip`.
+pub(super) fn command_except(args: &ClusterArgs, skip: &[&str]) -> Vec<String> {
     let cmd = definition();
     let ran = fields(args);
     let default = cmd
@@ -94,6 +105,9 @@ pub(super) fn command(args: &ClusterArgs) -> Vec<String> {
         let (Some(long), Some(value)) = (arg.get_long(), ran.get(id)) else {
             continue;
         };
+        if skip.contains(&long) {
+            continue;
+        }
         let changed = default.get(id) != Some(value);
         let flag = format!("--{long}");
         if !arg.get_action().takes_values() {

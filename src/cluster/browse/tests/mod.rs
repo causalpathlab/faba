@@ -11,6 +11,7 @@ use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use ratatui::Terminal;
 
+mod ask;
 mod data;
 mod gene;
 mod model;
