@@ -256,7 +256,7 @@ fn an_older_shared_record_is_still_read() {
 
 /// `words` after `faba modules <dir>`, parsed as it parses them, what was
 /// given recorded.
-fn modules(dir: &Path, words: &[&str]) -> ModulesArgs {
+pub(super) fn modules(dir: &Path, words: &[&str]) -> ModulesArgs {
     use clap::{Args, FromArgMatches};
     let dir = dir.to_string_lossy();
     let all = ["faba", &dir].into_iter().chain(words.iter().copied());

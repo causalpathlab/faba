@@ -6,7 +6,7 @@ use clap::FromArgMatches;
 #[test]
 fn every_flag_but_the_owned_ones_is_a_row() {
     let cmd = run();
-    let form = Form::new(&cmd, OWN);
+    let form = flags(&cmd);
     let longs: Vec<&str> = form.fields.iter().map(|f| f.long.as_str()).collect();
     for a in cmd.get_arguments() {
         let Some(l) = a.get_long() else { continue };
@@ -25,7 +25,7 @@ fn every_flag_but_the_owned_ones_is_a_row() {
 #[test]
 fn changed_values_round_trip_through_clap() {
     let cmd = run();
-    let mut form = Form::new(&cmd, OWN);
+    let mut form = flags(&cmd);
     // Every switch flipped and every whole-number text bumped by one: the
     // parsed arguments differ from the defaults in exactly those fields.
     for f in &mut form.fields {
@@ -61,7 +61,7 @@ fn changed_values_round_trip_through_clap() {
 #[test]
 fn a_rejected_value_is_blamed_on_its_row() {
     let cmd = run();
-    let mut form = Form::new(&cmd, OWN);
+    let mut form = flags(&cmd);
     let i = form
         .fields
         .iter()
@@ -80,7 +80,7 @@ fn a_rejected_value_is_blamed_on_its_row() {
 #[test]
 fn prefill_takes_what_the_command_line_gave() {
     let cmd = run();
-    let mut form = Form::new(&cmd, OWN);
+    let mut form = flags(&cmd);
     let m = cmd
         .clone()
         .try_get_matches_from(["run", "--max-threads", "3", "--no-zip"])
@@ -94,7 +94,7 @@ fn prefill_takes_what_the_command_line_gave() {
 #[test]
 fn headings_follow_the_pipeline_order() {
     let cmd = run();
-    let form = Form::new(&cmd, OWN);
+    let form = flags(&cmd);
     let headings = form.headings();
     let steps = ["Common", "SNP", "count", "ATOI", "m6A", "APA"];
     assert_eq!(headings[..steps.len()], steps, "{headings:?}");

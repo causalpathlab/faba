@@ -352,31 +352,15 @@ fn draw_flags(app: &App, frame: &mut Frame, body: Rect) {
             if Some(i) == sel {
                 sel_line = lines.len();
             }
-            let changed = !f.is_default();
             let style = if dim { DIM } else { PLAIN };
             let shown = match f.kind {
                 Kind::Choice(_) => format!("‹ {} ›", f.shown()),
                 _ => f.shown(),
             };
-            let mut spans = vec![
-                marker(Some(i) == sel),
-                Span::styled(if changed { "* " } else { "  " }, ACCENTED),
-                Span::styled(format!("{:<24}", f.long), style),
-                Span::styled(format!("{shown:<16}"), style),
-            ];
-            if changed {
-                let d = if f.default.is_empty() {
-                    "(unset)"
-                } else {
-                    &f.default
-                };
-                spans.push(Span::styled(format!("  (default {d})"), DIM));
-            }
-            if blamed == Some(f.long.as_str()) {
-                let c = complaint.as_deref().unwrap_or_default();
-                spans.push(Span::styled(format!("  {c}"), ACCENTED));
-            }
-            lines.push(Line::from(spans));
+            let said = complaint
+                .as_deref()
+                .filter(|_| blamed == Some(f.long.as_str()));
+            lines.push(form::row_line(f, Some(i) == sel, 24, style, shown, said));
             flag_of.push(visible.iter().position(|&v| v == i));
         }
     }

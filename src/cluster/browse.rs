@@ -2,7 +2,8 @@
 //!
 //! Reads the tables `faba cluster`'s blockmodel writes (see [`data`]),
 //! fitting them first when they are missing or of other settings than those
-//! given (see [`plan`]), and opens a view of four linked levels, each a margin of the next over the posterior-mean reads by gene
+//! given (see [`plan`]), in a terminal with the settings asked in a form
+//! first (see [`ask`]), and opens a view of four linked levels, each a margin of the next over the posterior-mean reads by gene
 //! role, site and cell role (see [`view`]): every gene module against every
 //! cell module, the sites of the module in focus, the genes pinned side by
 //! side (each in its main gene module), and one gene's full pileup over
@@ -15,6 +16,7 @@ use crate::site_analysis::miami::genemodel::load_gene_models_where;
 use clap::Args;
 use std::path::Path;
 
+mod ask;
 mod data;
 mod gene;
 mod order;
@@ -146,10 +148,6 @@ pub fn run_modules(args: &ModulesArgs) -> anyhow::Result<()> {
     let dir = super::output_dir(&args.cluster);
     // A cancelled fit is an error: nothing was written.
     let Some(modality) = ensure_tables(args, &dir, !batch)? else {
-        eprintln!(
-            "faba modules: the tables are written in {}; not opening the modules, as asked",
-            dir.display()
-        );
         return Ok(());
     };
     // Shared with the thread that writes the report on `e`.
@@ -219,10 +217,13 @@ fn plan(args: &ModulesArgs, dir: &Path) -> anyhow::Result<Plan> {
 }
 
 /// The modality of the block tables in `dir`: those there (see [`plan`]),
-/// else those `faba cluster` writes now (the blocks preset, or the
-/// settings given), its chains drawn in a view when `view` (and there is a
-/// terminal), where `q` cancels the fit, else on a bar on stderr. None
-/// when a cancel came too late to stop the fit: the browser is not to open.
+/// else those `faba cluster` writes now. With `view` (and a terminal) the
+/// settings are asked first (see [`ask`]), prefilled from those given and
+/// the preset, and the chains drawn in a view, where `q` cancels the fit;
+/// else the settings given are fitted, on a bar on stderr. Esc on the form
+/// opens the old tables, as its footer says, if there are any. None, said
+/// so, when the form was left by Ctrl+C or with no tables to open, or a
+/// cancel came too late to stop the fit: the browser is not to open.
 fn ensure_tables(args: &ModulesArgs, dir: &Path, view: bool) -> anyhow::Result<Option<String>> {
     let why = match plan(args, dir)? {
         Plan::Open(m) => {
@@ -234,13 +235,29 @@ fn ensure_tables(args: &ModulesArgs, dir: &Path, view: bool) -> anyhow::Result<O
         }
         Plan::Fit(why) => why,
     };
-    let cluster = args.blockmodel()?;
+    let interactive = view && data_beans::interactive::tui_available();
+    let title = format!("the blockmodel's settings for {}", dir.display());
+    let old = tables(dir, args.cluster.modality.as_deref());
+    let leave = match &old {
+        Some(m) => format!("open the old {m} tables without fitting"),
+        None => "quit without fitting".to_string(),
+    };
+    let cluster = match ask::chosen(args.blockmodel()?, interactive, |c| {
+        ask::ask(c, &title, &why, &leave)
+    })? {
+        ask::Asked::Fit(cluster) => *cluster,
+        ask::Asked::Back if old.is_some() => return Ok(old),
+        ask::Asked::Back | ask::Asked::Quit => {
+            eprintln!("faba modules: not fitting, as asked");
+            return Ok(None);
+        }
+    };
     log::info!(
         "{why}: running `faba cluster --model {}` in {} first",
         cluster.model.name(),
         dir.display()
     );
-    let fitted = if view && data_beans::interactive::tui_available() {
+    let fitted = if interactive {
         let title = format!(
             "fitting the {} model in {}",
             cluster.model.name(),
@@ -250,6 +267,10 @@ fn ensure_tables(args: &ModulesArgs, dir: &Path, view: bool) -> anyhow::Result<O
             super::run_cluster_watched(&cluster, p)
         })?;
         let Some(fitted) = watched else {
+            eprintln!(
+                "faba modules: the tables are written in {}; not opening the modules, as asked",
+                dir.display()
+            );
             return Ok(None);
         };
         fitted
