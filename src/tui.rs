@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
-use data_beans::interactive::ui::{panel, Screen, DIM, HIGHLIGHT};
+use data_beans::interactive::ui::{panel, Screen, Tui, DIM, HIGHLIGHT};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 use ratatui::layout::Rect;
 use ratatui::style::Style;
@@ -476,6 +476,14 @@ pub trait View: Screen {
     fn takes_chord(&self, _key: &KeyEvent) -> bool {
         false
     }
+
+    /// `faba kill` asked the view to stop: leave as its quit key does,
+    /// without asking, unsaved edits dropped; work that must finish (a
+    /// write under way) is let finish, [`run_view`] waiting until the
+    /// view is done. By default as Ctrl-C ([`Screen::interrupt`]).
+    fn quit(&mut self) {
+        self.interrupt();
+    }
 }
 
 /// The ↑/↓ a turn of the wheel stands for.
@@ -561,10 +569,254 @@ pub fn feed(view: &mut impl View, key: KeyEvent) {
     }
 }
 
-/// Run `view` full screen until it is done (data_beans' `run_screen`), its
-/// keys fed by [`feed`].
+/// The tool faba's views belong to: their sessions are named
+/// `faba-pileup-1`, `faba-qc-2`, and `faba attach` finds them.
+pub const TOOL: legume_tui::Tool = legume_tui::Tool::new("faba");
+
+/// A command's views were stopped by `faba kill`: its quit path was taken
+/// (work under way finished, edits dropped) and nothing after the view
+/// runs. `main` ends quietly on it.
+#[derive(Debug)]
+pub struct Stopped;
+
+impl std::fmt::Display for Stopped {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("stopped by `faba kill`")
+    }
+}
+
+impl std::error::Error for Stopped {}
+
+/// Whether `error` is (or wraps) [`Stopped`].
+pub fn is_stopped(error: &anyhow::Error) -> bool {
+    error.chain().any(|e| e.is::<Stopped>())
+}
+
+/// The paragraph a view's long help ends with about its session: how it
+/// runs, what goes on while detached (`what_goes_on`, with its verb), the
+/// keys, how to return (started again with nothing named, the live
+/// sessions are offered), and `more` at the end.
+pub fn session_help(what_goes_on: &str, more: &str) -> String {
+    let help = legume_tui::cli::SessionHelp::new()
+        .what_goes_on(what_goes_on)
+        .more(more);
+    legume_tui::cli::session_help(&TOOL, help)
+}
+
+/// How the views' session starts a child that runs on its own (`faba
+/// run`'s pipeline, a download): the user's opt-out passed on; none
+/// outside a session (in tests).
+pub fn child_env() -> legume_tui::ChildEnv {
+    legume_tui::current()
+        .map(legume_tui::Session::child_env)
+        .unwrap_or_default()
+}
+
+thread_local! {
+    /// The screen the command's views share while its session is up (see
+    /// [`run_view`]), from the first view until [`end_views`].
+    static VIEWS: std::cell::RefCell<Option<Tui<'static>>> = const { std::cell::RefCell::new(None) };
+
+    /// Columns the session keys take at the right end of the title row of
+    /// the view being drawn ([`Framed`]); 0 outside such a draw.
+    static TITLE_KEYS: std::cell::Cell<u16> = const { std::cell::Cell::new(0) };
+}
+
+/// Run `view` full screen until it is done, in the command's session
+/// (`legume_tui::current`, opened as the command started; a plain one
+/// where there is none), its keys fed by [`feed`]. In a session the
+/// screen stays up from the first view to [`end_views`], so the command's
+/// views follow one another on it. The title row ends with the session
+/// keys. A `faba kill` takes the view's quit path ([`View::quit`]): work
+/// it must finish (a write under way) is waited for, off the screen, and
+/// then the view ends with [`Stopped`].
 pub fn run_view<V: View>(view: &mut V) -> anyhow::Result<()> {
-    data_beans::interactive::ui::run_screen_with(view, |v, key| feed(v, key))
+    let Some(session) = legume_tui::current() else {
+        let plain = legume_tui::Session::plain(&TOOL);
+        return run_framed(&mut Tui::new(&plain), view);
+    };
+    // Taken out while the view runs, so a view started from inside another
+    // gets a screen of its own rather than a second borrow.
+    let mut tui = VIEWS
+        .with_borrow_mut(Option::take)
+        .unwrap_or_else(|| Tui::new(session));
+    let shown = run_framed(&mut tui, view);
+    VIEWS.with_borrow_mut(|views| {
+        views.get_or_insert(tui);
+    });
+    shown
+}
+
+/// [`run_view`] on `tui`.
+fn run_framed<V: View>(tui: &mut Tui<'_>, view: &mut V) -> anyhow::Result<()> {
+    let session = tui.session();
+    let mut framed = Framed {
+        view,
+        session,
+        keys: data_beans::interactive::session_keys(),
+    };
+    // A stop interrupts the view, which takes its quit path (see
+    // `Framed::interrupt`), before the loop ends.
+    tui.run_with(&mut framed, feed)?;
+    if !session.stop_requested() {
+        return Ok(());
+    }
+    let view = framed.view;
+    tui.work(|| {
+        while !view.done() {
+            view.tick();
+            std::thread::sleep(data_beans::interactive::ui::TICK);
+        }
+    })?;
+    Err(Stopped.into())
+}
+
+/// Bring the views' screen down, with the log records held while it was
+/// up: before the command prints or writes on the normal screen, and as it
+/// ends. A later view brings it up again.
+pub fn end_views() {
+    drop(VIEWS.with_borrow_mut(Option::take));
+}
+
+/// [`end_views`] as it is dropped: as a command ends, however it ends.
+pub struct ViewsEnd;
+
+impl Drop for ViewsEnd {
+    fn drop(&mut self) {
+        end_views();
+    }
+}
+
+/// Run `f`, the command's own work between or after its views (what it
+/// prints, say), on the normal screen, the views' screen coming back for
+/// the next view; where no view has run, as it is. A `faba kill` meanwhile
+/// lets `f` finish.
+pub fn work<T>(f: impl FnOnce() -> T) -> anyhow::Result<T> {
+    let mut tui = VIEWS.with_borrow_mut(Option::take);
+    let out = match tui.as_mut() {
+        Some(t) => t.work(f),
+        None => Ok(f()),
+    };
+    if let Some(t) = tui {
+        VIEWS.with_borrow_mut(|views| {
+            views.get_or_insert(t);
+        });
+    }
+    out
+}
+
+/// Columns the session keys take at the right end of the title row of the
+/// view being drawn, so a mark there can stand clear of them; 0 when none.
+pub fn title_keys_width() -> u16 {
+    TITLE_KEYS.get()
+}
+
+/// A view as [`run_view`] shows it: its own screen with the session keys
+/// (`keys`) at the right end of its title row, and a stop taken as its
+/// quit path.
+pub(crate) struct Framed<'a, V> {
+    pub(crate) view: &'a mut V,
+    pub(crate) session: &'a legume_tui::Session,
+    pub(crate) keys: Vec<(String, String)>,
+}
+
+/// The session keys as drawn on a title row: the line, and the columns it
+/// takes there, one more for a space before it.
+fn keys_line(keys: &[(String, String)]) -> Option<Line<'static>> {
+    if keys.is_empty() {
+        return None;
+    }
+    let pairs: Vec<_> = keys.iter().map(|(k, w)| (k.as_str(), w.as_str())).collect();
+    Some(data_beans::interactive::ui::help_line(&pairs))
+}
+
+/// The session keys drawn over the right end of `area`'s top row, the
+/// title there giving way, so the detach key is always on screen.
+pub fn draw_session_keys(frame: &mut Frame, area: Rect, keys: &[(String, String)]) {
+    let Some(line) = keys_line(keys).filter(|_| area.height > 0) else {
+        return;
+    };
+    let width = (line.width() as u16).min(area.width);
+    let at = Rect::new(area.right() - width, area.y, width, 1);
+    frame.render_widget(Clear, at);
+    frame.render_widget(Paragraph::new(line), at);
+}
+
+impl<V: View> View for Framed<'_, V> {
+    fn stray_enter(&mut self) {
+        self.view.stray_enter();
+    }
+
+    fn takes_apply(&self) -> bool {
+        self.view.takes_apply()
+    }
+
+    fn takes_chord(&self, key: &KeyEvent) -> bool {
+        self.view.takes_chord(key)
+    }
+
+    fn quit(&mut self) {
+        self.view.quit();
+    }
+}
+
+impl<V: View> Screen for Framed<'_, V> {
+    fn render(&mut self, frame: &mut Frame) {
+        let keys = keys_line(&self.keys).map_or(0, |l| l.width() as u16 + 1);
+        TITLE_KEYS.set(keys);
+        self.view.render(frame);
+        TITLE_KEYS.set(0);
+        draw_session_keys(frame, frame.area(), &self.keys);
+    }
+
+    fn handle_key(&mut self, key: KeyEvent) {
+        self.view.handle_key(key);
+    }
+
+    /// Ctrl-C as the view takes it; a `kill` as its quit path.
+    fn interrupt(&mut self) {
+        if self.session.stop_requested() {
+            self.view.quit();
+        } else {
+            self.view.interrupt();
+        }
+    }
+
+    fn done(&self) -> bool {
+        self.view.done()
+    }
+
+    fn pending_work(&self) -> Option<String> {
+        self.view.pending_work()
+    }
+
+    fn do_work(&mut self) {
+        self.view.do_work();
+    }
+
+    fn tick(&mut self) -> bool {
+        self.view.tick()
+    }
+
+    fn takes_mouse(&self) -> bool {
+        self.view.takes_mouse()
+    }
+
+    fn mouse(&mut self, event: MouseEvent) -> bool {
+        self.view.mouse(event)
+    }
+
+    fn reports_chords(&self) -> bool {
+        self.view.reports_chords()
+    }
+
+    fn take_notice(&mut self) -> Option<String> {
+        self.view.take_notice()
+    }
+
+    fn status(&self) -> Option<String> {
+        self.view.status()
+    }
 }
 
 /// Whether a mouse event is one the views act on: a left click or a turn of

@@ -19,13 +19,21 @@ pub(crate) const TONES: [Color; 4] = [
 /// Columns the mark takes: four beans a column apart, a space, the name.
 const WIDTH: u16 = 4 * 5 + 3 + 1 + 4;
 
-/// Draw the mark at the right end of the first two rows of `area`, when it
-/// leaves `reserve` columns free on its left for the rows' own text.
+/// Draw the mark at the right end of the first two rows of `area`, left of
+/// the session keys when they end the title row (see
+/// [`crate::tui::title_keys_width`]), when it leaves `reserve` columns free
+/// on its left for the rows' own text.
 pub fn draw_mini_logo(buf: &mut Buffer, area: Rect, reserve: u16) {
-    if area.height < 2 || area.width < WIDTH + reserve + 1 {
+    draw_beside(buf, area, reserve, crate::tui::title_keys_width());
+}
+
+/// [`draw_mini_logo`], `keys` columns at the right end of the top row taken.
+fn draw_beside(buf: &mut Buffer, area: Rect, reserve: u16, keys: u16) {
+    let right = WIDTH + 1 + keys;
+    if area.height < 2 || area.width < right.saturating_add(reserve) {
         return;
     }
-    let x = area.right() - WIDTH - 1;
+    let x = area.right() - right;
     for (b, &tone) in TONES.iter().enumerate() {
         let style = Style::default().fg(tone);
         for (dy, row) in BEAN.iter().enumerate() {

@@ -8,8 +8,14 @@ RNA modifications (DART-seq m6A, A-to-I editing), alternative polyadenylation
 
 ## A quick look
 
-Run in a terminal, `run`, `qc`, `pileup`, `metagene` and `pwm` open full-screen views;
-`--batch-process` skips them for scripts and clusters.
+Run in a terminal, `run`, `qc`, `pileup`, `metagene`, `pwm` and `modules` open full-screen
+views; `--batch-process` skips them for scripts and clusters.
+
+Each view runs as a detachable session: Ctrl+Alt+D leaves it running (as does a dropped
+connection), and starting the command again with nothing named, or `faba attach`, returns
+to it; Ctrl+Alt+S switches to another session. `faba sessions` lists them, `faba kill`
+stops one as its quit key does (a write under way finishes first) and `faba rename`
+labels one. `--no-detach` runs a view in the terminal only.
 
 **`faba run`**: pick the BAMs (signal and control), steps and flags, preview the command, and run it.
 
@@ -164,6 +170,7 @@ faba <COMMAND> [OPTIONS]
 | `pileup` (`inspect`)      | ASCII pileup, or a faceted Miami plot, for one gene |
 | `metagene` (`mg`)         | Metagene histogram of site positions across gene features |
 | `docs`                    | Print the method write-ups compiled into this binary |
+| `attach`, `sessions`, `kill`, `rename` | Return to, list, stop and label the views' detached sessions |
 
 Run `faba <COMMAND> --help` for the detailed options of each subcommand.
 

@@ -11,7 +11,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 
-use super::child::{ended_word, Failed};
+use super::ended_word;
 use super::form::{self, Kind};
 use super::inputs::{InputsFocus, OutState, Role, Row};
 use super::steps::Step;
@@ -19,6 +19,7 @@ use super::{script, App, Hit, Page, Target};
 use crate::tui::{
     button_popup, clock, first_visible, marker, popup_frame, tab_bar, tilde, window, APPLY_KEYS,
 };
+use legume_tui::child::Failed;
 
 /// Width of the inputs panel on the Inputs screen.
 const INPUTS_WIDTH: u16 = 48;
@@ -420,6 +421,7 @@ fn draw_run(app: &App, frame: &mut Frame, body: Rect) {
         Some(Ok(())) => " done ".into(),
         Some(Err(Failed::Stopped)) => " stopped ".into(),
         Some(Err(Failed::Start(r) | Failed::Exit(r))) => format!(" exit: {r} "),
+        Some(Err(_)) => " failed ".into(),
     };
     let inner = framed(frame, body, title, true);
     let bar = log

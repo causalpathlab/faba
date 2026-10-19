@@ -105,6 +105,10 @@ pub struct ScanPwmArgs {
                      sequence logo in a view (when there is a terminal)."
     )]
     batch_process: bool,
+
+    /// `--no-detach` and `--session`: how the view runs as a session.
+    #[command(flatten)]
+    pub session: legume_tui::cli::SessionArgs,
 }
 
 /// Swap A<->T and G<->C counts to complement a DnaBaseCount.
@@ -329,6 +333,14 @@ fn is_bam(path: &str) -> bool {
 type Inputs = (Vec<Box<str>>, Vec<Box<str>>);
 
 impl ScanPwmArgs {
+    /// The session the logo's view runs in; none under --batch-process.
+    /// Sites named start a new one; with none, live sessions are offered
+    /// first.
+    pub fn view_session(&self) -> Option<legume_tui::Options> {
+        let target = !self.input.is_empty() || self.sites.is_some();
+        (!self.batch_process).then(|| self.session.options(target))
+    }
+
     /// The site tables and the BAM files: `-s`, then the positional inputs
     /// that are not BAMs, each of which may name an output directory (or a
     /// run record in it) holding one; with neither, those chosen in a

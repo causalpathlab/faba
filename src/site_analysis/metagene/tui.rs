@@ -357,6 +357,11 @@ impl crate::tui::View for MetageneView<'_> {
 }
 
 impl Screen for MetageneView<'_> {
+    /// For `faba sessions` and the session picker.
+    fn status(&self) -> Option<String> {
+        Some(format!("metagene of {}", self.title))
+    }
+
     fn done(&self) -> bool {
         self.done
     }
@@ -388,6 +393,7 @@ impl Screen for MetageneView<'_> {
     }
 
     fn render(&mut self, frame: &mut Frame) {
+        self.controls.refresh();
         self.drawn = frame.area();
         let mut keys = vec![
             ("←/→", "bar"),

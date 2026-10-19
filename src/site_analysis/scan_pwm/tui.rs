@@ -425,6 +425,11 @@ impl crate::tui::View for PwmView {
 }
 
 impl Screen for PwmView {
+    /// For `faba sessions` and the session picker.
+    fn status(&self) -> Option<String> {
+        Some(format!("sequence logo of {}", self.title))
+    }
+
     fn done(&self) -> bool {
         self.done
     }
@@ -457,6 +462,7 @@ impl Screen for PwmView {
     }
 
     fn render(&mut self, frame: &mut Frame) {
+        self.controls.refresh();
         let help = self.controls.footer().unwrap_or_else(|| {
             let mut keys = vec![
                 ("←/→", "position"),

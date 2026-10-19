@@ -4,9 +4,17 @@
 pub use crate::tui::form::*;
 use clap::{Arg, Command};
 
-/// Flags with no help heading that are never passed. The Inputs and Steps
-/// screens own every flag under [`OWNED_HEADINGS`].
-pub const OWN: &[&str] = &["batch-process", "help", "version", "verbose"];
+/// Flags with no help heading that are never passed: the setup view's
+/// own, its session's among them. The Inputs and Steps screens own every
+/// flag under [`OWNED_HEADINGS`].
+pub const OWN: &[&str] = &[
+    "batch-process",
+    "help",
+    "version",
+    "verbose",
+    "no-detach",
+    "session",
+];
 
 /// The help headings whose flags the Inputs and Steps screens own.
 pub const OWNED_HEADINGS: &[&str] = &["Inputs", "Steps"];

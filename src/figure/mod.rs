@@ -908,7 +908,13 @@ pub enum Key {
 pub struct Controls {
     save: SavePrompt,
     picker: Option<Picker>,
+    /// Images wanted (`i`), where the terminal has them.
     images: bool,
+    /// Ask the attached terminal for images ([`Controls::detect`]).
+    detecting: bool,
+    /// The attach ([`legume_tui::attaches`]) the picker was asked at;
+    /// none before the first ask.
+    picked_at: Option<u64>,
     /// Which view saves, for the gallery: the default name's first word.
     what: String,
     /// The saves here, read when the prompt first opens.
@@ -928,7 +934,9 @@ impl Controls {
         Self {
             save: SavePrompt::new(default_name),
             picker: None,
-            images: false,
+            images: true,
+            detecting: false,
+            picked_at: None,
             what: default_name
                 .split_once('_')
                 .map_or(default_name, |(view, _)| view)
@@ -939,10 +947,11 @@ impl Controls {
         }
     }
 
-    /// Use images if the terminal has them. Call before the view opens.
+    /// Use images if the terminal has them: asked of the terminal attached
+    /// at the first draw ([`Controls::refresh`]), and again after each
+    /// attach.
     pub fn detect(mut self) -> Self {
-        self.picker = term::picker();
-        self.images = self.picker.is_some();
+        self.detecting = true;
         self
     }
 
@@ -951,6 +960,24 @@ impl Controls {
         self.picker = Some(picker);
         self.images = true;
         self
+    }
+
+    /// Ask the terminal attached now for images, once per attach: call it
+    /// first in a view's `render`, with the screen up. A new terminal (or
+    /// the same one back: kitty's images were deleted as it attached) has
+    /// the thumbnails made again; plots made with the old picker are made
+    /// again by [`term::PlotImage`] itself.
+    pub fn refresh(&mut self) {
+        if !self.detecting {
+            return;
+        }
+        let attach = legume_tui::attaches();
+        if self.picked_at == Some(attach) {
+            return;
+        }
+        self.picked_at = Some(attach);
+        self.picker = legume_tui::current().and_then(term::picker);
+        self.thumbs.clear();
     }
 
     /// The size of a figure saved from a view that took `area`, as
@@ -981,7 +1008,7 @@ impl Controls {
                     .map(|d| crate::tui::tilde(&d))
                     .unwrap_or_default();
             }
-            KeyCode::Char('i') if self.picker.is_some() => self.images ^= true,
+            KeyCode::Char('i') if self.picker.is_some() => self.images = !self.images_on(),
             _ => return Key::Pass,
         }
         Key::Used
@@ -1082,7 +1109,7 @@ impl Controls {
 
     /// Header suffix naming the plot mode, when there is a choice.
     pub fn tag(&self) -> &'static str {
-        match (&self.picker, self.images) {
+        match (&self.picker, self.images_on()) {
             (None, _) => "",
             (Some(_), true) => " · image",
             (Some(_), false) => " · text",
@@ -1104,13 +1131,13 @@ impl Controls {
 
     /// Whether plots draw as images (`i`), where the terminal can.
     pub fn images_on(&self) -> bool {
-        self.images
+        self.images && self.picker.is_some()
     }
 
     /// Draw plots as images or not, as a view kept from before; text
     /// only where the terminal has no images.
     pub fn set_images(&mut self, on: bool) {
-        self.images = on && self.picker.is_some();
+        self.images = on;
     }
 
     /// Whether the save prompt is open, where the apply key submits.

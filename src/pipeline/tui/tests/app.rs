@@ -524,7 +524,7 @@ fn the_run_page_and_pop_ups_draw_at_any_size() {
         .unwrap();
     assert!(matches!(
         a.job.as_ref().unwrap().log.lock().unwrap().ended,
-        Some(Err(child::Failed::Exit(_)))
+        Some(Err(Failed::Exit(_)))
     ));
     press(&mut a, KeyCode::Up);
     for (w, h) in [(140, 44), (60, 16), (20, 6)] {
@@ -601,10 +601,7 @@ fn q_is_refused_while_a_run_goes() {
     assert!(job.stopper.is_stopped());
     job.stopper.stop();
     job.handle.take().unwrap().join().unwrap();
-    assert_eq!(
-        job.log.lock().unwrap().ended,
-        Some(Err(child::Failed::Stopped))
-    );
+    assert_eq!(job.log.lock().unwrap().ended, Some(Err(Failed::Stopped)));
     press(&mut a, KeyCode::Char('q'));
     assert!(a.quit, "q leaves once the run is over");
 }
@@ -896,4 +893,119 @@ fn ctrl_c_and_reset_all_ask_first() {
     assert!(a.note.as_deref().is_some_and(|n| n.contains("R again")));
     press(&mut a, KeyCode::Char('R'));
     assert!(a.form.fields[i].is_default());
+}
+
+/// `script` as the program a run starts, in `tmp`.
+fn fake_faba(tmp: &tempfile::TempDir, script: &str) -> PathBuf {
+    let fake = tmp.path().join("fake-faba");
+    std::fs::write(&fake, format!("#!/bin/sh\n{script}\n")).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    fake
+}
+
+#[test]
+fn a_kill_leaves_a_setup_without_asking() {
+    let (_tmp, mut a) = app_with_bams();
+    assert!(a.set_up(), "a setup to lose");
+    View::quit(&mut a);
+    assert!(a.quit && !a.leaving, "left at once, not asked");
+    assert!(a.printed.is_none(), "nothing printed or run");
+}
+
+/// Wait until `job`'s script has said `ready`, past its `trap` line, so a
+/// stop reaches the trap rather than a shell still starting.
+fn wait_until_ready(job: &Job) {
+    let until = Instant::now() + std::time::Duration::from_secs(20);
+    while !job.log.lock().unwrap().lines.iter().any(|l| l == "ready") {
+        assert!(Instant::now() < until, "the script never got past its trap");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn a_kill_interrupts_a_run_and_lets_it_wrap_up() {
+    let (tmp, mut a) = app_with_bams();
+    a.program = fake_faba(
+        &tmp,
+        "trap 'echo wrapped up >&2; exit 3' INT\necho ready >&2\nsleep 30",
+    );
+    a.start().unwrap();
+    wait_until_ready(a.job.as_ref().unwrap());
+    View::quit(&mut a);
+    assert!(a.quit);
+    let job = a.job.as_mut().unwrap();
+    let start = Instant::now();
+    job.wind_up(Some(std::time::Duration::from_secs(20)));
+    assert!(start.elapsed() < std::time::Duration::from_secs(10));
+    let log = job.log.lock().unwrap();
+    assert_eq!(log.ended, Some(Err(Failed::Stopped)));
+    assert!(
+        log.lines.iter().any(|l| l == "wrapped up"),
+        "{:?}",
+        log.lines
+    );
+}
+
+#[test]
+fn a_run_that_will_not_stop_is_killed_after_the_grace() {
+    let (tmp, mut a) = app_with_bams();
+    a.program = fake_faba(&tmp, "trap '' INT\necho ready >&2\nsleep 30");
+    a.start().unwrap();
+    wait_until_ready(a.job.as_ref().unwrap());
+    let job = a.job.as_mut().unwrap();
+    let start = Instant::now();
+    let grace = std::time::Duration::from_millis(300);
+    job.wind_up(Some(grace));
+    assert!(start.elapsed() >= grace, "killed only after the grace");
+    assert!(start.elapsed() < std::time::Duration::from_secs(10));
+    assert!(!job.running());
+    assert_eq!(job.log.lock().unwrap().ended, Some(Err(Failed::Stopped)));
+}
+
+#[test]
+fn a_run_ends_with_the_view_when_it_was_not_stopped() {
+    let (tmp, mut a) = app_with_bams();
+    a.program = fake_faba(&tmp, "sleep 30");
+    a.start().unwrap();
+    let job = a.job.as_mut().unwrap();
+    let start = Instant::now();
+    job.wind_up(None);
+    assert!(start.elapsed() < std::time::Duration::from_secs(10));
+    assert!(!job.running());
+}
+
+#[test]
+fn the_mark_stands_clear_of_the_session_keys() {
+    let (_t, mut a) = app_with_bams();
+    let session = legume_tui::Session::plain(&crate::tui::TOOL);
+    let keys = vec![
+        ("ctrl+alt+d".to_string(), "detach".to_string()),
+        ("ctrl+alt+s".to_string(), "switch".to_string()),
+    ];
+    let mut framed = crate::tui::Framed {
+        view: &mut a,
+        session: &session,
+        keys,
+    };
+    let screen = crate::tui::screen_text(&mut framed, 160, 40);
+    let rows: Vec<&str> = screen.lines().collect();
+    let top = rows[0].trim_end();
+    assert!(top.ends_with("ctrl+alt+s switch"), "{top:?}");
+    assert!(
+        top.contains("▟▛█▜▙ ▟▛█▜▙ ▟▛█▜▙ ▟▛█▜▙"),
+        "the mark's top row whole: {top:?}"
+    );
+    assert!(
+        rows[1].contains("▝███▘ ▝███▘ ▝███▘ ▝███▘ faba"),
+        "{:?}",
+        rows[1]
+    );
+    // Drawn plain, it is where it always was.
+    let plain = crate::tui::screen_text(framed.view, 160, 40);
+    let top = plain.lines().next().unwrap().trim_end();
+    assert!(top.ends_with("▟▛█▜▙ ▟▛█▜▙ ▟▛█▜▙ ▟▛█▜▙"), "{top:?}");
 }

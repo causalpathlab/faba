@@ -269,3 +269,48 @@ fn ctrl_c_asks_first_as_q_does() {
     p.interrupt();
     assert!(p.done(), "the second leaves");
 }
+
+#[test]
+fn a_kill_leaves_changed_thresholds_without_asking() {
+    let t = table(M6A, 300);
+    let changed = || {
+        let mut p = picker(&t, None, SiteFilterArgs::default_values());
+        focus_on(&mut p, Criterion::MinCoverage);
+        press(&mut p, KeyCode::Right);
+        assert_ne!(qc_flags(&p.filter), qc_flags(&p.initial), "changed");
+        p
+    };
+    // Ctrl-C asks first, the thresholds having changed ...
+    let mut asked = changed();
+    asked.interrupt();
+    assert!(matches!(asked.mode, Mode::Leave(_)) && !asked.done());
+    // ... a kill does not: the change is dropped and nothing written.
+    let mut killed = changed();
+    View::quit(&mut killed);
+    assert!(killed.done());
+    assert!(matches!(killed.decision, Some(Picked::Cancelled)));
+}
+
+#[test]
+fn a_kill_lets_a_write_under_way_finish() {
+    let progress = Progress::default();
+    let t = table(M6A, 300);
+    let start = SiteFilterArgs::default_values();
+    let mut p = picker(&t, None, start);
+    p.writer = Writer {
+        output: "out_qc",
+        progress: &progress,
+        start: Some(Box::new(|_, _| {})),
+    };
+    apply_key(&mut p);
+    apply_key(&mut p);
+    assert!(p.tick() && matches!(p.mode, Mode::Writing));
+    // The kill waits for the write: the view is done once it is, with
+    // the thresholds it wrote.
+    View::quit(&mut p);
+    assert!(matches!(p.mode, Mode::Writing) && !p.done());
+    progress.finish();
+    p.tick();
+    assert!(p.done());
+    assert!(matches!(p.decision, Some(Picked::Apply(_))));
+}

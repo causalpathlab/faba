@@ -278,3 +278,42 @@ fn panels_fit_at_their_least_and_share_a_taller_page_in_proportion() {
     assert_eq!(even.heights(350.0), vec![100.0; 3]);
     assert_eq!(even.heights(650.0), vec![200.0; 3]);
 }
+
+#[test]
+fn images_are_asked_of_the_terminal_attached_once_per_attach() {
+    use ratatui_image::picker::Picker;
+    // Outside a session (no terminal to ask) a detecting view draws text.
+    let mut c = Controls::new("x").detect();
+    c.refresh();
+    assert!(c.images().is_none());
+    assert_eq!(c.picked_at, Some(legume_tui::attaches()));
+    // Another attach: asked again, the thumbnails made again.
+    c.thumbs.insert("thumb.png".into(), None);
+    c.picked_at = Some(u64::MAX);
+    c.refresh();
+    assert!(c.thumbs.is_empty());
+    assert_eq!(c.picked_at, Some(legume_tui::attaches()));
+    // The same attach: nothing asked.
+    c.thumbs.insert("thumb.png".into(), None);
+    c.refresh();
+    assert_eq!(c.thumbs.len(), 1);
+    // A picker handed in is kept.
+    let mut given = Controls::new("x").with_picker(Picker::halfblocks());
+    given.refresh();
+    assert!(given.images().is_some());
+}
+
+#[test]
+fn turning_images_off_outlives_another_terminal() {
+    use ratatui_image::picker::Picker;
+    let mut c = Controls::new("x");
+    assert!(!c.images_on(), "no picker: text");
+    c.picker = Some(Picker::halfblocks());
+    assert!(c.images_on(), "a terminal with images: pictures");
+    assert_eq!(c.key(key(KeyCode::Char('i'))), Key::Used);
+    assert!(!c.images_on());
+    c.picker = Some(Picker::halfblocks());
+    assert!(!c.images_on(), "off stays off for the next terminal");
+    c.set_images(true);
+    assert!(c.images_on());
+}

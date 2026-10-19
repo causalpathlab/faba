@@ -75,9 +75,22 @@ pub struct ModulesArgs {
         help = "Print the modules instead of browsing them full screen"
     )]
     batch_process: bool,
+
+    /// `--no-detach` and `--session`: how the view runs as a session.
+    #[command(flatten)]
+    pub session: legume_tui::cli::SessionArgs,
 }
 
 impl ModulesArgs {
+    /// The session the browser runs in; none under --batch-process or
+    /// --html. Matrices named start a new one; with none, live sessions
+    /// are offered first.
+    pub fn view_session(&self) -> Option<legume_tui::Options> {
+        let target = !self.cluster.data_files.is_empty();
+        let batch = self.batch_process || self.html.is_some();
+        (!batch).then(|| self.session.options(target))
+    }
+
     /// Notes which clustering options `matches` were given, for the
     /// command `faba cluster` saves.
     pub fn record_given(&mut self, matches: &clap::ArgMatches) {
@@ -248,7 +261,7 @@ fn ensure_tables(args: &ModulesArgs, dir: &Path, view: bool) -> anyhow::Result<O
         ask::Asked::Fit(cluster) => *cluster,
         ask::Asked::Back if old.is_some() => return Ok(old),
         ask::Asked::Back | ask::Asked::Quit => {
-            eprintln!("faba modules: not fitting, as asked");
+            crate::tui::work(|| eprintln!("faba modules: not fitting, as asked"))?;
             return Ok(None);
         }
     };
@@ -267,10 +280,12 @@ fn ensure_tables(args: &ModulesArgs, dir: &Path, view: bool) -> anyhow::Result<O
             super::run_cluster_watched(&cluster, p)
         })?;
         let Some(fitted) = watched else {
-            eprintln!(
-                "faba modules: the tables are written in {}; not opening the modules, as asked",
-                dir.display()
-            );
+            crate::tui::work(|| {
+                eprintln!(
+                    "faba modules: the tables are written in {}; not opening the modules, as asked",
+                    dir.display()
+                )
+            })?;
             return Ok(None);
         };
         fitted
