@@ -213,6 +213,10 @@ pub struct PileupArgs {
     )]
     batch_process: bool,
 
+    /// `--no-detach` and `--session`: how the view runs as a session.
+    #[command(flatten)]
+    pub session: legume_tui::cli::SessionArgs,
+
     #[arg(
         long = "separate",
         default_value_t = false,
@@ -967,6 +971,17 @@ fn interactive(base: &PileupArgs, source: Source, first: Option<Loaded>) -> anyh
 }
 
 impl PileupArgs {
+    /// The session the browser runs in; none under --batch-process, nor
+    /// with a figure flag and matrices named, which write and stop (with
+    /// none named, a figure's inputs are asked for in the input browser
+    /// first). Matrices named start a new one; with none, live sessions are
+    /// offered first.
+    pub fn view_session(&self) -> Option<legume_tui::Options> {
+        let figure = !self.bam_files.is_empty() || self.format.is_some() || self.svg || self.png;
+        let target = !self.data_files.is_empty();
+        (!self.batch_process && (!figure || !target)).then(|| self.session.options(target))
+    }
+
     /// These arguments with each output directory (or run record) among
     /// the inputs replaced by its site matrices of `--modality` and its
     /// site table as `-s` when none was given; and the tracks: `--track`'s,
@@ -1049,6 +1064,10 @@ pub fn run_pileup(args: &PileupArgs) -> anyhow::Result<()> {
         !a.bam_files.is_empty() || a.format.is_some() || a.svg || a.png
     };
     let interactive = !figure_flags && !crate::tui::batch(source.args.batch_process, "pileup");
+    if !interactive {
+        // The input browser's screen comes down: the rest writes and prints.
+        crate::tui::end_views();
+    }
     // In the browser, an annotation not given nor recorded here is asked
     // for (or downloaded); any GTF of the assembly draws the genes.
     if interactive && source.args.annotation().is_none() {

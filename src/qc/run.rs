@@ -329,10 +329,8 @@ fn filter_fileset(
             Ok(Some(f))
         }
         Picked::PrintOnly(f) => {
-            println!(
-                "{}",
-                batch_command(args, input, out_dir, &f, gff.as_deref())
-            );
+            let command = batch_command(args, input, out_dir, &f, gff.as_deref());
+            crate::tui::work(|| println!("{command}"))?;
             Ok(None)
         }
         Picked::Cancelled => anyhow::bail!("cancelled at the site thresholds; nothing written"),

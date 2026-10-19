@@ -185,6 +185,11 @@ pub struct QcArgs {
     )]
     pub batch_process: bool,
 
+    /// `--no-detach` and `--session`: how the view runs as a session.
+    #[command(flatten)]
+    #[serde(skip)]
+    pub session: legume_tui::cli::SessionArgs,
+
     #[arg(
         long = "gff",
         help = "Annotation for the view's metagene (default: the one recorded in the input directory)",
@@ -208,4 +213,14 @@ pub struct QcArgs {
 
     #[command(flatten)]
     pub site: SiteFilterArgs,
+}
+
+impl QcArgs {
+    /// The session the threshold view runs in; none under --batch-process.
+    /// An input directory named starts a new one; with none, live sessions
+    /// are offered first.
+    pub fn view_session(&self) -> Option<legume_tui::Options> {
+        let target = self.input_dir.is_some();
+        (!self.batch_process).then(|| self.session.options(target))
+    }
 }

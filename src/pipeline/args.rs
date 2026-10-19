@@ -71,6 +71,11 @@ pub struct PipelineArgs {
     )]
     pub batch_process: bool,
 
+    /// `--no-detach` and `--session`: how the view runs as a session.
+    #[command(flatten)]
+    #[serde(skip)]
+    pub session: legume_tui::cli::SessionArgs,
+
     ///////////////////////
     // Shared parameters //
     ///////////////////////
@@ -531,6 +536,14 @@ pub struct PipelineArgs {
 }
 
 impl PipelineArgs {
+    /// The session the setup view runs in; none under --batch-process.
+    /// BAMs named start a new one; with none, live sessions are offered
+    /// first.
+    pub fn view_session(&self) -> Option<legume_tui::Options> {
+        let target = !self.bam_files.is_empty();
+        (!self.batch_process).then(|| self.session.options(target))
+    }
+
     /// Under `--batch-process`, every input the run needs, or what is missing.
     pub fn check_batch(&self) -> anyhow::Result<()> {
         let mut missing = Vec::new();

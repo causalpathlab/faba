@@ -207,7 +207,7 @@ Example:\n  \
 
     #[command(name = "pwm", aliases = ["scan-pwm"],
         about = "Build position weight matrix around genomic sites",
-        long_about = "Build position weight matrix around genomic sites\n\
+        long_about = view_help("Build position weight matrix around genomic sites\n\
                       \n\
                       Reads site-level parquet files from dartseq, atoi or apa output,\n\
                       collects base frequencies in a +/- window around each site,\n\
@@ -217,7 +217,7 @@ Example:\n  \
                       that directory's site table of --modality against its recorded genome.\n\
                       With no sites named, a browser asks for them; with no genome recorded\n\
                       (or found here), another asks for a FASTA, or downloads one. It then shows the PWM\n\
-                      as a sequence logo full screen, unless --batch-process.",
+                      as a sequence logo full screen, unless --batch-process."),
         after_long_help = "\
 	Example:\n\
 	# an output directory's m6A sites against its recorded genome, then the logo\n\
@@ -231,7 +231,7 @@ Example:\n  \
         name = "pileup",
         alias = "inspect",
         about = "Browse a gene's sites full screen; or an ASCII pileup, or a Miami plot (SVG/PDF)",
-        long_about = "Pileup of a gene's (or region's) modification sites.\n\
+        long_about = view_help("Pileup of a gene's (or region's) modification sites.\n\
                       \n\
                       Give it a faba output directory (or a run record in it) and it takes\n\
                       the site matrices of --modality (m6a, else atoi), one track per batch,\n\
@@ -251,7 +251,7 @@ Example:\n  \
                       (or --gtf with --batch-process) renders a publication SVG/PDF instead —\n\
                       a mirrored Manhattan with epi sites up, a GTF gene model in the middle,\n\
                       and BAM read depth down,\n\
-                      faceted into one panel per cell type (--cell-membership).",
+                      faceted into one panel per cell type (--cell-membership)."),
         after_long_help = "\
 	Examples:\n\
 	# browse an output directory's m6A sites, from its gene list\n\
@@ -327,7 +327,7 @@ Example:\n  \
         name = "modules",
         alias = "blocks",
         about = "Browse the gene modules and cell modules of `faba cluster --model blocks`",
-        long_about = "Browse the gene modules and cell modules of `faba cluster --model blocks`\n\n\
+        long_about = view_help("Browse the gene modules and cell modules of `faba cluster --model blocks`\n\n\
             Four levels, each a margin of the next, all posterior-mean reads of the fitted\n\
             cells. 1 gene modules: every gene module against every cell module. 2 sites: the\n\
             sites of the module in focus, each with its reads, converted, unconverted and\n\
@@ -351,7 +351,7 @@ Example:\n  \
             `t` shows each chain's log joint as it ran ({modality}_trace), with what to do\n\
             about it. Without a terminal (or with --batch-process) the modules are printed\n\
             instead; --html writes them as one self-contained page instead (`e` in the\n\
-            browser), the trace drawn in its Model section.",
+            browser), the trace drawn in its Model section."),
         after_long_help = "Example:\n  faba modules out/\n  faba modules out/ --fit '*_wt_*' --cell-roles 8 --gene-roles 8\n  faba modules out/ --html modules.html"
     )]
     Modules(ModulesArgs),
@@ -360,7 +360,7 @@ Example:\n  \
         name = "metagene",
         alias = "mg",
         about = "Metagene histogram of site positions across gene features",
-        long_about = "Metagene histogram of site positions across gene features\n\n\
+        long_about = view_help("Metagene histogram of site positions across gene features\n\n\
             Follows the MetaPlotR convention, so a profile can be held against a published one.\n\
             Each site is placed on every coding isoform containing it, 1/k on each of k\n\
             (Guitar's procedure; `--isoforms all` counts it in full on each).\n\
@@ -387,7 +387,7 @@ Example:\n  \
             Reference:\n\
             Olarerin-George and Jaffrey, \"MetaPlotR: a Perl/R pipeline for plotting metagenes of nucleotide modifications and other transcriptomic sites\",\n\
             Bioinformatics, 33(10):1563-1564, 2017.\n\
-            https://doi.org/10.1093/bioinformatics/btx002",
+            https://doi.org/10.1093/bioinformatics/btx002"),
         after_long_help = "\
 	Example:\n\
 	# an output directory's m6A sites against its recorded GFF, then the view\n\
@@ -462,7 +462,7 @@ Example:\n  \
     #[command(
         name = "qc",
         about = "Filter a faba output directory into a new fileset: cells, features and editing sites",
-        long_about = "Filter a faba output directory into a NEW fileset (never in place).\n\
+        long_about = view_help("Filter a faba output directory into a NEW fileset (never in place).\n\
                       \n\
                       The producers are inclusive: they write every called cell, every gene with a count,\n\
                       and every putative editing site with its statistics, and apply no p-value,\n\
@@ -478,7 +478,7 @@ Example:\n  \
                       Site thresholds are picked in a full-screen view that shows what each one keeps;\n\
                       Ctrl+R (or the [ ✓ apply ] button) asks to confirm, and the fileset is written with progress shown.\n\
                       Left out, the input and output directories are asked for in a pop-up first.\n\
-                      --batch-process skips the view and cuts with the --site-* values as given.",
+                      --batch-process skips the view and cuts with the --site-* values as given."),
         after_long_help = "\
 	Example:\n\
 	faba qc out/ -o out_qc/\n\
@@ -498,7 +498,7 @@ Example:\n  \
     #[command(
         name = "run",
         about = "Set up and run the pipeline: SNP → count → ATOI → m6A → APA",
-        long_about = "Set up and run the pipeline: SNP → count → ATOI → m6A → APA\n\
+        long_about = run_help("Set up and run the pipeline: SNP → count → ATOI → m6A → APA\n\
                       \n\
                       Opens a view to pick the BAMs (fg = signal, bg = control), the steps, the flags\n\
                       and the output directory (asked for, never assumed), previews the exact command\n\
@@ -535,7 +535,7 @@ Example:\n  \
                       so every modality is produced for them too.\n\
                       The gene and cell sets from step 1 apply to every later step.\n\
                       No step masks another and no step applies a p-value or effect-size cutoff:\n\
-                      run `faba qc` on the output directory for that.",
+                      run `faba qc` on the output directory for that."),
         after_long_help = "\
 	Example:\n\
 	faba run\n\
@@ -543,6 +543,63 @@ Example:\n  \
 	faba run --batch-process sample.bam -g genes.gff -f genome.fa -o out/"
     )]
     Run(PipelineArgs),
+
+    #[command(
+        about = "Return to a detached faba view",
+        long_about = legume_tui::cli::about(&tui::TOOL, legume_tui::cli::QUIT_KEY).attach
+    )]
+    Attach(legume_tui::cli::AttachArgs),
+
+    #[command(
+        about = "List the live faba sessions",
+        long_about = legume_tui::cli::about(&tui::TOOL, legume_tui::cli::QUIT_KEY).sessions
+    )]
+    Sessions,
+
+    #[command(
+        about = "Stop a faba session",
+        long_about = "Stop a `faba` session as its quit key does: an open view is left\n\
+                      as by q, without asking, and changes not applied are dropped, while\n\
+                      a write under way (a fileset, a report) finishes first. `faba run`\n\
+                      interrupts the pipeline it runs, as its stop key does, and ends it\n\
+                      if it has not stopped within a few seconds. Waits up to a minute for\n\
+                      the session to end. --force kills it at once, and a pipeline it\n\
+                      started may then keep running."
+    )]
+    Kill(legume_tui::cli::KillArgs),
+
+    #[command(
+        about = "Give a faba session a label",
+        long_about = legume_tui::cli::about(&tui::TOOL, legume_tui::cli::QUIT_KEY).rename
+    )]
+    Rename(legume_tui::cli::RenameArgs),
+}
+
+/// `text`, a view's long help, with the paragraph about its session.
+fn view_help(text: &str) -> String {
+    format!(
+        "{text}\n\n{}",
+        tui::session_help(
+            "its work goes on",
+            "A `faba kill` leaves the view as its quit key does: changes not \
+             applied are dropped, and a write under way finishes first. \
+             --batch-process runs no session."
+        )
+    )
+}
+
+/// `text`, `faba run`'s long help, with the paragraph about its session.
+fn run_help(text: &str) -> String {
+    format!(
+        "{text}\n\n{}",
+        tui::session_help(
+            "the run goes on",
+            "A `faba kill` interrupts a run under way, as its stop key does, \
+             ending it if it has not stopped within a few seconds; a setup not \
+             started is dropped. \
+             --batch-process runs no session."
+        )
+    )
 }
 
 /// `faba`'s command, built, so each subcommand carries `faba`'s global
@@ -575,6 +632,10 @@ fn parse(matches: &clap::ArgMatches) -> Result<Cli, clap::Error> {
 }
 
 fn main() -> anyhow::Result<()> {
+    // A session's host runs this binary again: it serves the session and
+    // exits here, before any of faba's own work.
+    legume_tui::serve_if_host();
+
     if std::env::args().any(|arg| arg == "--help" || arg == "-h") {
         print_logo();
     }
@@ -585,15 +646,78 @@ fn main() -> anyhow::Result<()> {
     let cli = parse(&matches).unwrap_or_else(|e| e.format(&mut cmd).exit());
 
     data_beans::aux::logging::init_logger(cli.verbose);
+    match run(cli, cmd, &matches) {
+        // `faba kill` took the quit path: nothing more to say.
+        Err(e) if tui::is_stopped(&e) => Ok(()),
+        Err(e) => {
+            hold_error(&e);
+            Err(e)
+        }
+        ok => ok,
+    }
+}
 
-    // Install the Ctrl+C handler up front, so one keypress means one thing for the whole run.
+/// Hold `error`, which ends the command, where it will be seen when its
+/// session runs detached: drawn on its screen until a terminal attaches
+/// and a key is pressed, else left for whoever looks next. Attached or
+/// plain, the error is said as usual, on return.
+fn hold_error(error: &anyhow::Error) {
+    let Some(session) = legume_tui::current().filter(|s| s.is_hosted() && !s.attached()) else {
+        return;
+    };
+    match session.terminal() {
+        Ok(mut terminal) => {
+            let _ = session.hold_error(&mut terminal, error);
+            session.restore();
+        }
+        Err(_) => session.leave(&format!("{error:#}")),
+    }
+}
+
+/// The session of `command`'s views: its screen's name and how it opens;
+/// none for a command that shows no view (a producer, or a view's
+/// command under --batch-process). `faba cluster` shows only the input
+/// browser before its fit, which writes its progress as a plain program
+/// does, so it opens none and never detaches (the browser runs plain).
+fn view_session(command: &Commands) -> Option<(&'static str, legume_tui::Options)> {
+    match command {
+        Commands::Pwm(args) => Some(("pwm", args.view_session()?)),
+        Commands::Pileup(args) => Some(("pileup", args.view_session()?)),
+        Commands::Modules(args) => Some(("modules", args.view_session()?)),
+        Commands::Metagene(args) => Some(("metagene", args.view_session()?)),
+        Commands::Qc(args) => Some(("qc", args.view_session()?)),
+        Commands::Run(args) => Some(("run", args.view_session()?)),
+        _ => None,
+    }
+}
+
+/// Run the command `cli` names; `cmd` and `matches` are the command line
+/// as parsed, for `faba run`'s view.
+fn run(cli: Cli, cmd: clap::Command, matches: &clap::ArgMatches) -> anyhow::Result<()> {
+    // The views' session, opened before any of the command's work: hosted,
+    // this process goes no further (it relays the terminal and exits with
+    // the command, which runs again in the session's host).
+    let session = view_session(&cli.commands)
+        .map(|(screen, opts)| tui::TOOL.session(screen, &opts))
+        .transpose()?;
+    // The views' screen comes down as the command ends, however it ends,
+    // before the session (declared before it, so dropped after) closes.
+    let _views = tui::ViewsEnd;
+    // On a batch path (no view, or `faba cluster`'s fit), install the
+    // Ctrl+C handler up front, so one keypress means one thing for the
+    // whole run.
     //
     // It used to be installed lazily, by whichever library function first asked for the flag —
     // which made the *same* keypress behave three different ways depending on when you pressed
     // it: a hard kill before the handler existed, a graceful stop while a loop was polling, and —
     // worst — a silent no-op afterwards, where the flag was set, nothing was watching it, and the
     // process simply appeared to ignore you until you pressed it a second time.
-    let _stop = legume_numeric::matrix::stop::stop_flag();
+    //
+    // A view's session takes Ctrl+C as a key and `faba kill`'s SIGTERM as
+    // its quit path; the handler would take both, so it is left out there.
+    let _stop = session
+        .is_none()
+        .then(legume_numeric::matrix::stop::stop_flag);
 
     // Each producer leaves `{job}.run.json` in its output directory: the inputs
     // it read, the files it wrote, and every effective option.
@@ -621,6 +745,10 @@ fn main() -> anyhow::Result<()> {
             };
             run_or_view(args, run_cmd, m)?
         }
+        Commands::Attach(ref args) => legume_tui::cli::attach(&tui::TOOL, args)?,
+        Commands::Sessions => legume_tui::cli::sessions(&tui::TOOL)?,
+        Commands::Kill(ref args) => legume_tui::cli::kill(&tui::TOOL, args)?,
+        Commands::Rename(ref args) => legume_tui::cli::rename(&tui::TOOL, args)?,
     }
 
     Ok(())
@@ -641,6 +769,95 @@ mod tests {
             // Only the set of given ids quotes a name.
             assert!(noted.contains(r#""chains""#), "{noted}");
         }
+    }
+
+    /// The session `line` opens: its screen, whether something was named
+    /// (no resume picker), and whether it runs plain; none without one.
+    fn session_of(line: &[&str]) -> Option<(&'static str, bool, bool)> {
+        let m = faba_command().try_get_matches_from(line).unwrap();
+        let cli = parse(&m).unwrap();
+        view_session(&cli.commands).map(|(screen, o)| (screen, o.target, o.no_detach))
+    }
+
+    #[test]
+    fn a_named_input_starts_a_view_anew_and_a_bare_start_offers_the_live_ones() {
+        for (line, want) in [
+            (vec!["faba", "pwm"], Some(("pwm", false, false))),
+            (
+                vec!["faba", "pwm", "-s", "s.parquet"],
+                Some(("pwm", true, false)),
+            ),
+            (vec!["faba", "pwm", "out/"], Some(("pwm", true, false))),
+            (vec!["faba", "pileup"], Some(("pileup", false, false))),
+            // A figure's inputs not named: the input browser asks first.
+            (
+                vec!["faba", "pileup", "--svg"],
+                Some(("pileup", false, false)),
+            ),
+            (
+                vec!["faba", "pileup", "a.zarr"],
+                Some(("pileup", true, false)),
+            ),
+            (
+                vec!["faba", "metagene", "-s", "s.parquet"],
+                Some(("metagene", true, false)),
+            ),
+            (vec!["faba", "qc"], Some(("qc", false, false))),
+            (vec!["faba", "qc", "out/"], Some(("qc", true, false))),
+            (
+                vec!["faba", "modules", "out/"],
+                Some(("modules", true, false)),
+            ),
+            (vec!["faba", "run"], Some(("run", false, false))),
+            (vec!["faba", "run", "a.bam"], Some(("run", true, false))),
+            (
+                vec!["faba", "run", "--no-detach"],
+                Some(("run", false, true)),
+            ),
+        ] {
+            assert_eq!(session_of(&line), want, "{line:?}");
+        }
+    }
+
+    #[test]
+    fn what_shows_no_view_opens_no_session_and_cluster_never_detaches() {
+        for line in [
+            vec!["faba", "pwm", "-s", "s.parquet", "--batch-process"],
+            vec!["faba", "pileup", "a.zarr", "--svg"],
+            vec!["faba", "pileup", "a.zarr", "--batch-process"],
+            vec!["faba", "metagene", "--batch-process"],
+            vec!["faba", "qc", "out/", "--batch-process"],
+            vec!["faba", "modules", "out/", "--html", "m.html"],
+            vec!["faba", "run", "--batch-process"],
+            vec!["faba", "count", "a.bam", "-g", "g.gff", "-o", "out/"],
+            vec!["faba", "sessions"],
+        ] {
+            assert_eq!(session_of(&line), None, "{line:?}");
+        }
+        assert_eq!(session_of(&["faba", "cluster", "out/"]), None);
+        let m = faba_command()
+            .try_get_matches_from(["faba", "qc", "out/", "--session", "first"])
+            .unwrap();
+        let (_, opts) = view_session(&parse(&m).unwrap().commands).unwrap();
+        assert_eq!(opts.name.as_deref(), Some("first"));
+    }
+
+    #[test]
+    fn the_views_long_help_ends_with_their_session() {
+        let mut cmd = faba_command();
+        for name in ["pwm", "pileup", "modules", "metagene", "qc", "run"] {
+            let sub = cmd.find_subcommand_mut(name).unwrap();
+            let help = sub.render_long_help().to_string();
+            assert!(help.contains("detachable session"), "{name}: {help}");
+            assert!(help.contains("faba kill"), "{name}");
+            assert!(help.contains("--no-detach"), "{name}");
+        }
+        let help = cmd
+            .find_subcommand_mut("kill")
+            .unwrap()
+            .render_long_help()
+            .to_string();
+        assert!(help.contains("quit key"), "{help}");
     }
 
     #[test]

@@ -158,6 +158,10 @@ pub struct MetageneArgs {
     )]
     batch_process: bool,
 
+    /// `--no-detach` and `--session`: how the view runs as a session.
+    #[command(flatten)]
+    pub session: legume_tui::cli::SessionArgs,
+
     #[arg(
         long = "max-width",
         default_value_t = 60,
@@ -920,6 +924,14 @@ fn non_coding_bodies(records: &[GffRecord]) -> Vec<NonCodingBody> {
 }
 
 impl MetageneArgs {
+    /// The session the profile's view runs in; none under
+    /// --batch-process. Sites named start a new one; with none, live
+    /// sessions are offered first.
+    pub fn view_session(&self) -> Option<legume_tui::Options> {
+        let target = !self.input.is_empty() || self.sites.is_some();
+        (!self.batch_process).then(|| self.session.options(target))
+    }
+
     /// The site tables: `-s`, then the positional inputs, each of which may
     /// name an output directory (or a run record in it) holding one; with
     /// neither, those chosen in a browser. `None` when that is cancelled.

@@ -66,3 +66,48 @@ fn only_known_image_terminals_are_queried() {
     assert!(!likely_images(env(&[("TERM", "screen-256color")])));
     assert!(!likely_images(env(&[("KITTY_WINDOW_ID", "")])));
 }
+
+#[test]
+fn plot_image_is_made_again_after_an_attach_or_for_another_picker() {
+    let blocks = Picker::halfblocks();
+    #[allow(deprecated)]
+    let mut kitty = Picker::from_fontsize(ratatui_image::FontSize {
+        width: 10,
+        height: 20,
+    });
+    kitty.set_protocol_type(ProtocolType::Kitty);
+    let mut plot = PlotImage::default();
+    let mut term = Terminal::new(TestBackend::new(40, 10)).unwrap();
+    let area = Rect::new(0, 0, 20, 5);
+    let mut calls = 0;
+    let mut frame = |picker: &Picker, attach: u64, calls: &mut i32| {
+        term.draw(|f| {
+            plot.render_at(f, area, picker, attach, |w, h| {
+                *calls += 1;
+                svg(w, h)
+            });
+        })
+        .unwrap();
+    };
+    frame(&blocks, 0, &mut calls);
+    frame(&blocks, 0, &mut calls);
+    assert_eq!(calls, 1, "same terminal: cached");
+    frame(&blocks, 1, &mut calls);
+    assert_eq!(calls, 2, "a terminal attached: made again");
+    frame(&kitty, 1, &mut calls);
+    assert_eq!(calls, 3, "another protocol: made again");
+    frame(&kitty, 1, &mut calls);
+    assert_eq!(calls, 3);
+}
+
+#[test]
+fn the_override_says_whether_the_terminal_is_asked() {
+    let none = |_: &str| None;
+    let kitty = |k: &str| (k == "TERM").then(|| "xterm-kitty".to_string());
+    assert!(!asks(Some("0"), kitty), "0: never");
+    assert!(asks(Some("1"), none), "1: always");
+    assert!(
+        asks(None, kitty) && !asks(None, none),
+        "else by the terminal"
+    );
+}

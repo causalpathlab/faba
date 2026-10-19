@@ -3,9 +3,8 @@
 //! the export writes, rasterised to the area's exact pixel size; elsewhere
 //! the views keep their text plots, which beat half-block images.
 
-use std::sync::OnceLock;
-
 use image::{DynamicImage, RgbaImage};
+use legume_tui::graphics::Fallback;
 use ratatui::layout::{Rect, Size};
 use ratatui::Frame;
 use ratatui_image::picker::{Picker, ProtocolType};
@@ -19,8 +18,8 @@ use super::options;
 const UNITS_PER_CELL: f32 = 12.0;
 
 /// Whether the environment names a terminal with an image protocol. The
-/// query is only sent then: a terminal that never answers it would lose the
-/// next keystroke to the query's reader.
+/// query is only sent then, so a terminal without one never waits for its
+/// answer.
 fn likely_images(var: impl Fn(&str) -> Option<String>) -> bool {
     let has = |k: &str| var(k).is_some_and(|v| !v.is_empty());
     let term = var("TERM").unwrap_or_default();
@@ -37,25 +36,34 @@ fn likely_images(var: impl Fn(&str) -> Option<String>) -> bool {
             .any(|t| term.contains(t))
 }
 
-/// The terminal's image support, queried once. `None` without an image
-/// protocol, in a terminal not known to have one (`FABA_TUI_IMAGES=1`
-/// queries anyway), or when `FABA_TUI_IMAGES=0`. Call it before a view
-/// opens: the query talks to the terminal.
-pub fn picker() -> Option<Picker> {
-    static PICKER: OnceLock<Option<Picker>> = OnceLock::new();
-    PICKER
-        .get_or_init(|| {
-            let var = |k: &str| std::env::var(k).ok();
-            match var("FABA_TUI_IMAGES").as_deref() {
-                Some("0") => return None,
-                Some("1") => {}
-                _ if !likely_images(var) => return None,
-                _ => {}
-            }
-            let p = Picker::from_query_stdio().ok()?;
-            (p.protocol_type() != ProtocolType::Halfblocks).then_some(p)
-        })
-        .clone()
+/// Whether to ask the terminal for its image protocol, by
+/// `FABA_TUI_IMAGES` (`images`) and the terminal's environment (`var`):
+/// never with `0`, always with `1`, else where the environment names a
+/// terminal that has one.
+fn asks(images: Option<&str>, var: impl Fn(&str) -> Option<String>) -> bool {
+    match images {
+        Some("0") => false,
+        Some("1") => true,
+        _ => likely_images(var),
+    }
+}
+
+/// The image support of the terminal `session` is attached to now,
+/// asked of it (`legume_tui::graphics`, with a timeout). `None` without
+/// an image protocol (block characters, where the text plots do better),
+/// in a terminal not known to have one (`FABA_TUI_IMAGES=1` asks anyway),
+/// or when `FABA_TUI_IMAGES=0`. Call it with the screen up: the query
+/// talks to the terminal, and the answer is the attached terminal's,
+/// asked again after every attach (see [`Controls::refresh`]).
+///
+/// [`Controls::refresh`]: super::Controls::refresh
+pub fn picker(session: &legume_tui::Session) -> Option<Picker> {
+    let images = std::env::var("FABA_TUI_IMAGES").ok();
+    if !asks(images.as_deref(), |k| session.terminal_env(k)) {
+        return None;
+    }
+    let (p, _) = legume_tui::graphics::pick_protocol(session, None, Fallback::Probe);
+    (p.protocol_type() != ProtocolType::Halfblocks).then_some(p)
 }
 
 /// `tree` rendered at `scale` pixels per unit, on white.
@@ -92,13 +100,26 @@ pub(super) fn protocol(picker: &Picker, img: DynamicImage, area: Rect) -> Option
         .ok()
 }
 
-/// One plot area drawn as an image: rebuilt only when marked stale or when
-/// the area changes size.
+/// One plot area drawn as an image: rebuilt only when marked stale, when
+/// the area changes size, or after a terminal attached (its picker may be
+/// another, and kitty's images were deleted by the attach).
 #[derive(Default)]
 pub struct PlotImage {
     stale: bool,
     size: Option<(u16, u16)>,
     protocol: Option<Protocol>,
+    /// The attach ([`legume_tui::attaches`]) the image was made at, and
+    /// the picker's [`kind`].
+    made: Option<(u64, PickerKind)>,
+}
+
+/// What an image made with a picker depends on: its protocol and cell size.
+type PickerKind = (ProtocolType, u16, u16);
+
+/// `picker`'s [`PickerKind`].
+fn kind(picker: &Picker) -> PickerKind {
+    let font = picker.font_size();
+    (picker.protocol_type(), font.width, font.height)
 }
 
 impl PlotImage {
@@ -123,10 +144,29 @@ impl PlotImage {
         picker: &Picker,
         draw: impl FnOnce(f64, f64) -> String,
     ) -> bool {
+        self.render_at(frame, area, picker, legume_tui::attaches(), draw)
+    }
+
+    /// [`PlotImage::render`] after `attach` attaches: an image made at
+    /// another, or with a picker of another protocol or cell size, is
+    /// made again.
+    fn render_at(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        picker: &Picker,
+        attach: u64,
+        draw: impl FnOnce(f64, f64) -> String,
+    ) -> bool {
         if area.width == 0 || area.height == 0 {
             return true;
         }
         let size = (area.width, area.height);
+        let made = (attach, kind(picker));
+        if self.made != Some(made) {
+            self.invalidate();
+            self.made = Some(made);
+        }
         if self.stale || self.size != Some(size) || self.protocol.is_none() {
             let font = picker.font_size();
             let scale = font.height.max(1) as f32 / UNITS_PER_CELL;

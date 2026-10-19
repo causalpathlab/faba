@@ -254,3 +254,108 @@ fn the_spinner_turns_with_the_time() {
     assert_eq!(at(200), frames[1]);
     assert_eq!(at(200 * frames.len() as u64), frames[0]);
 }
+
+#[test]
+fn a_stop_is_known_through_the_context_it_gathers() {
+    let e = anyhow::Error::from(Stopped).context("picking the inputs");
+    assert!(is_stopped(&e));
+    assert!(!is_stopped(&anyhow::anyhow!("no such file")));
+}
+
+/// Row `y` of what `draw` drew `w` wide.
+fn row(w: u16, y: u16, draw: impl FnOnce(&mut Frame)) -> String {
+    let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, 3)).unwrap();
+    t.draw(draw).unwrap();
+    let buf = t.backend().buffer();
+    (0..w).map(|x| buf[(x, y)].symbol()).collect()
+}
+
+#[test]
+fn the_session_keys_end_the_title_row_whole() {
+    let keys = vec![
+        ("ctrl+alt+d".to_string(), "detach".to_string()),
+        ("ctrl+alt+s".to_string(), "switch".to_string()),
+    ];
+    let title = "T".repeat(200);
+    for w in [60, 120] {
+        let top = row(w, 0, |f| {
+            f.render_widget(Paragraph::new(title.as_str()), f.area());
+            draw_session_keys(f, f.area(), &keys);
+        });
+        let shown = top.trim_end();
+        assert!(shown.ends_with("ctrl+alt+s switch"), "{top:?}");
+        assert!(shown.contains("ctrl+alt+d detach"), "{top:?}");
+        assert!(top.starts_with('T'), "the title gives way: {top:?}");
+    }
+    // Plain, no keys: the title row as the view drew it.
+    let top = row(40, 0, |f| {
+        f.render_widget(Paragraph::new(title.as_str()), f.area());
+        draw_session_keys(f, f.area(), &[]);
+    });
+    assert_eq!(top, "T".repeat(40));
+}
+
+/// A view that notes how it was asked to stop.
+#[derive(Default)]
+struct Stoppable {
+    interrupted: bool,
+    quit: bool,
+}
+
+impl Screen for Stoppable {
+    fn render(&mut self, _: &mut Frame) {}
+    fn handle_key(&mut self, _: KeyEvent) {}
+    fn interrupt(&mut self) {
+        self.interrupted = true;
+    }
+    fn done(&self) -> bool {
+        self.interrupted || self.quit
+    }
+}
+
+impl View for Stoppable {}
+
+/// [`Stoppable`] with a quit path of its own.
+#[derive(Default)]
+struct Quits(Stoppable);
+
+impl Screen for Quits {
+    fn render(&mut self, _: &mut Frame) {}
+    fn handle_key(&mut self, _: KeyEvent) {}
+    fn interrupt(&mut self) {
+        self.0.interrupt();
+    }
+    fn done(&self) -> bool {
+        self.0.done()
+    }
+}
+
+impl View for Quits {
+    fn quit(&mut self) {
+        self.0.quit = true;
+    }
+}
+
+#[test]
+fn a_kill_takes_ctrl_c_s_path_unless_the_view_has_its_own() {
+    let mut v = Stoppable::default();
+    View::quit(&mut v);
+    assert!(v.interrupted, "by default as Ctrl-C");
+    let mut q = Quits::default();
+    View::quit(&mut q);
+    assert!(q.0.quit && !q.0.interrupted);
+}
+
+#[test]
+fn outside_a_kill_a_framed_view_takes_ctrl_c_as_ever() {
+    let session = legume_tui::Session::plain(&TOOL);
+    let mut q = Quits::default();
+    let mut framed = Framed {
+        view: &mut q,
+        session: &session,
+        keys: data_beans::interactive::session_keys(),
+    };
+    framed.interrupt();
+    assert!(framed.keys.is_empty(), "plain: no session keys");
+    assert!(q.0.interrupted && !q.0.quit);
+}

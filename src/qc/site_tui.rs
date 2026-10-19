@@ -443,9 +443,26 @@ impl View for SitePicker<'_> {
     fn takes_chord(&self, key: &KeyEvent) -> bool {
         is_report(key) && self.browsing()
     }
+
+    /// `faba kill`: leave without asking, changed thresholds dropped and
+    /// nothing written; a write under way finishes first, the view done
+    /// once it is.
+    fn quit(&mut self) {
+        if !matches!(self.mode, Mode::Writing) {
+            self.decide(Picked::Cancelled);
+        }
+    }
 }
 
 impl Screen for SitePicker<'_> {
+    /// For `faba sessions` and the session picker.
+    fn status(&self) -> Option<String> {
+        Some(match self.mode {
+            Mode::Writing => format!("writing {}", self.writer.output),
+            _ => format!("picking site thresholds for {}", self.title),
+        })
+    }
+
     fn takes_mouse(&self) -> bool {
         true
     }
@@ -529,6 +546,7 @@ impl Screen for SitePicker<'_> {
     }
 
     fn render(&mut self, frame: &mut Frame) {
+        self.controls.refresh();
         self.render_frame(frame);
     }
 }
@@ -587,7 +605,13 @@ pub fn run_site_picker(
     picker.annotation = annotation;
     picker.writer = writer;
     picker.controls = Controls::new("qc_sites").detect();
-    run_view(&mut picker)?;
+    match run_view(&mut picker) {
+        // Stopped by `faba kill` once the fileset was written: it is
+        // recorded as any other.
+        Err(e)
+            if crate::tui::is_stopped(&e) && matches!(picker.decision, Some(Picked::Apply(_))) => {}
+        shown => shown?,
+    }
     let gff = picker.gff().map(Box::from);
     Ok((picker.decision.unwrap_or(Picked::Cancelled), gff))
 }

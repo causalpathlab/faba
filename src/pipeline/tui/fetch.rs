@@ -19,8 +19,8 @@ use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::Frame;
 
-use super::child::Stopper;
 use crate::tui::{filled, marker, moved, popup, tilde, window, FindList};
+use legume_tui::child::Stopper;
 
 const GENCODE: &str = "https://ftp.ebi.ac.uk/pub/databases/gencode";
 const ENSEMBL: &str = "https://ftp.ensembl.org/pub/current";
@@ -110,12 +110,34 @@ fn curl(
     // Read both pipes on threads, so neither can fill and stall curl.
     let out = child.stdout.take().map(read_on_thread);
     let err = child.stderr.take().map(read_on_thread);
-    let status = stopper.wait(child, each)?;
+    let status = wait(stopper, child, each)?;
     let text = |h: Option<JoinHandle<String>>| h.and_then(|h| h.join().ok()).unwrap_or_default();
     let (out, err) = (text(out), text(err));
     anyhow::ensure!(!stopper.is_stopped(), "stopped");
     anyhow::ensure!(status.success(), "{}", err.trim());
     Ok(out)
+}
+
+/// Wait for `child` where `stopper` reaches it, calling `each` as it waits
+/// (often at first, then about every 300 ms) until it ends; how it ended.
+fn wait(
+    stopper: &Stopper,
+    child: std::process::Child,
+    mut each: impl FnMut(),
+) -> std::io::Result<std::process::ExitStatus> {
+    stopper.hold(child);
+    let mut pause = std::time::Duration::from_millis(20);
+    loop {
+        each();
+        if let Some(status) = stopper.try_wait()? {
+            return Ok(status);
+        }
+        if stopper.id().is_none() {
+            return Err(std::io::Error::other("no child"));
+        }
+        std::thread::sleep(pause);
+        pause = (pause * 2).min(std::time::Duration::from_millis(300));
+    }
 }
 
 /// A listing's names, read with curl; `stopper` stops it.

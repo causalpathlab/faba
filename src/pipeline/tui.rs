@@ -1,7 +1,6 @@
 //! `faba run`'s setup view: pick the inputs, steps and flags, preview the
 //! exact command, save it as a script and run it with its log on screen.
 
-mod child;
 mod draw;
 pub(crate) mod fetch;
 mod form;
@@ -22,10 +21,13 @@ use ratatui::Frame;
 use crate::figure::LineInput;
 use crate::pipeline::args::PipelineArgs;
 use crate::tui::View;
-use child::{Failed, Progress, Said, Stopper};
 use form::Form;
 use inputs::{Browser, FileRow, Inputs, Picked, Role};
+use legume_tui::child::{Failed, Progress, Said, Stopper};
 use steps::Steps;
+
+/// How long a run `faba kill` interrupted has to end before it is killed.
+const STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Lines of the child's log kept for the Run screen.
 const LOG_CAP: usize = 2000;
@@ -107,6 +109,26 @@ impl Job {
     /// The child's thread is still going.
     pub fn running(&self) -> bool {
         self.handle.as_ref().is_some_and(|h| !h.is_finished())
+    }
+
+    /// End the run as the view goes: with a `grace` (a `faba kill`), a
+    /// run still going is interrupted as `s` does and given that long to
+    /// wrap up; then, or without one, a run still going is killed, with
+    /// all it started. Returns once its thread is done.
+    pub fn wind_up(&mut self, grace: Option<std::time::Duration>) {
+        if let Some(grace) = grace.filter(|_| self.running()) {
+            self.stopper.quit();
+            let until = Instant::now() + grace;
+            while self.running() && Instant::now() < until {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+        if self.running() {
+            self.stopper.kill();
+        }
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
     }
 }
 
@@ -378,10 +400,13 @@ impl App {
             "RUST_LOG",
             std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into()),
         );
+        // In a process group of its own, as the session starts it: a stop
+        // reaches all it starts, and a hangup of a hosted faba reaches it.
+        crate::tui::child_env().apply(&mut cmd, legume_tui::Group::Own);
         let handle = {
             let (log, stopper) = (Arc::clone(&log), Arc::clone(&stopper));
             std::thread::spawn(move || {
-                let result = child::run_one(cmd, &stopper, |said| {
+                let result = legume_tui::child::run_one(cmd, &stopper, |said| {
                     let Ok(mut log) = log.lock() else { return };
                     match said {
                         Said::Line(l) => {
@@ -394,6 +419,7 @@ impl App {
                             }
                         }
                         Said::Progress(p) => log.progress = Some(p),
+                        _ => {}
                     }
                 });
                 if let Ok(mut log) = log.lock() {
@@ -442,7 +468,7 @@ impl App {
             .log
             .lock()
             .ok()
-            .and_then(|l| l.ended.as_ref().map(child::ended_word));
+            .and_then(|l| l.ended.as_ref().map(ended_word));
         let Some(word) = word else {
             return false;
         };
@@ -524,6 +550,12 @@ impl View for App {
         true
     }
 
+    /// `faba kill`: leave without asking, a setup not started dropped; a
+    /// run under way is stopped as the view ends (see [`run_view`]).
+    fn quit(&mut self) {
+        self.quit = true;
+    }
+
     fn stray_enter(&mut self) {
         // The preview says what the apply key does there too.
         if self.preview || !self.popped() {
@@ -533,6 +565,17 @@ impl View for App {
 }
 
 impl Screen for App {
+    /// For `faba sessions` and the session picker.
+    fn status(&self) -> Option<String> {
+        let job = self.job.as_ref()?;
+        let log = job.log.lock().ok()?;
+        Some(match &log.ended {
+            None if log.step.is_empty() => "running".to_string(),
+            None => format!("running: {}", log.step),
+            Some(ended) => format!("the run {}", ended_word(ended)),
+        })
+    }
+
     fn takes_mouse(&self) -> bool {
         true
     }
@@ -589,6 +632,15 @@ impl Screen for App {
     }
 }
 
+/// How a run ended, in a word: "finished", "was stopped" or "failed".
+pub fn ended_word(ended: &Result<(), Failed>) -> &'static str {
+    match ended {
+        Ok(()) => "finished",
+        Err(Failed::Stopped) => "was stopped",
+        Err(_) => "failed",
+    }
+}
+
 /// Open the setup view in `faba run`'s flags, pre-filled from a command
 /// line when one is given.
 pub(crate) fn run_view(
@@ -601,17 +653,12 @@ pub(crate) fn run_view(
     }
     let shown = crate::tui::run_view(&mut app);
     if let Some(job) = app.job.as_mut() {
-        if job.running() {
-            job.stopper.stop();
-            job.stopper.stop();
-        }
-        if let Some(h) = job.handle.take() {
-            let _ = h.join();
-        }
+        let stopped = shown.as_ref().is_err_and(crate::tui::is_stopped);
+        crate::tui::work(|| job.wind_up(stopped.then_some(STOP_GRACE)))?;
     }
     shown?;
     if let Some(command) = app.printed {
-        println!("{command}");
+        crate::tui::work(|| println!("{command}"))?;
     }
     Ok(())
 }
