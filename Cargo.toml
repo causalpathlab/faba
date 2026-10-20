@@ -54,7 +54,7 @@ mcp = ["dep:legume-mcp"]
 hdf5 = ["data-beans/hdf5"]
 
 [dependencies]
-data-beans = { version = "0.9", default-features = false, features = ["aux", "tui"] }
+data-beans = { version = "0.10", default-features = false, features = ["aux", "tui"] }
 # Detachable sessions for the views, the image protocol of the attached
 # terminal, and the runner of the child `faba run` follows.
 legume-tui = "0.3.3"
