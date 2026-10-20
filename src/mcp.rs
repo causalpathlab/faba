@@ -49,6 +49,9 @@ cluster's block tables.
 5. cluster fits cells by their own site reads (link, blocks or crp) and \
 writes its tables to `out`.
 
+The producers (count, depth, atoi, dartseq, apa, snp, run, qc, cluster) take \
+`background`: on large BAMs set it, and the call returns a job id at once.
+
 Every write goes to `out`, which must not exist. Leave `out` out and the \
 output goes in today's results folder, named after the input and the tool. \
 Paths resolve against the server's working directory. Further flags go in \
@@ -104,7 +107,7 @@ fn tools() -> Vec<ToolSpec> {
             "description": "A faba output directory (from a producer, `run` or `qc`)"
         })
     };
-    vec![
+    let mut specs = vec![
         ToolSpec::new(
             "docs",
             "The method write-ups compiled into faba. Without `query`, the list of topics and sections; with it, those sections (a topic, a command named in a heading, or a section number).",
@@ -277,8 +280,26 @@ fn tools() -> Vec<ToolSpec> {
                 &["data"],
             ),
         ),
-    ]
+    ];
+    // A producer on large BAMs outlasts a client's wait on one call: it can
+    // run as a job instead.
+    for s in specs
+        .iter_mut()
+        .filter(|s| PRODUCERS.contains(&s.name.as_str()))
+    {
+        s.input_schema["properties"]["background"] = json!({
+            "type": "boolean",
+            "description": "Run as a background job: the call returns its id at once; follow it with job_wait or job_status, and use `written` only once it is done"
+        });
+    }
+    specs
 }
+
+/// The tools that write a directory with a long run of faba's, which may run
+/// as a job ([`run_out`]).
+const PRODUCERS: [&str; 9] = [
+    "count", "depth", "atoi", "dartseq", "apa", "snp", "run", "qc", "cluster",
+];
 
 /// `qc`'s arguments: the directory in, the directory out, and the site cuts.
 fn qc_properties(dir: &Value, out: &Value, options: &Value) -> Value {
@@ -599,10 +620,25 @@ fn entries(path: &str) -> Vec<String> {
     v
 }
 
-/// Run `argv` so that it writes `out` (made of `what`) with `-o`.
-fn run_out(cx: &Call, mut argv: Vec<String>, out: &str, what: &str) -> Result<Value> {
+/// Run `argv` so that it writes `out` (made of `what`) with `-o`; with
+/// `background`, as a job whose id comes back at once.
+fn run_out(
+    a: &Arguments,
+    cx: &Call,
+    mut argv: Vec<String>,
+    out: &str,
+    what: &str,
+) -> Result<Value> {
     fresh(out)?;
     argv.extend(["-o".into(), out.into()]);
+    if a.flag("background")? {
+        let job = cx.spawn_job(command(&argv)?, &[PathBuf::from(out)], what)?;
+        return Ok(json!({
+            "job": job,
+            "written": absolute(out),
+            "note": "running as a background job: job_wait or job_status until it is done, then use `written`",
+        }));
+    }
     let printed = cx.run_making(command(&argv)?, &[PathBuf::from(out)], what)?;
     Ok(outcome(out, &printed))
 }
@@ -646,7 +682,7 @@ fn count(a: &Arguments, cx: &Call) -> Result<Value> {
     push_flag(&mut argv, "-g", &gff);
     argv.extend(a.options(&[])?);
     let what = format!("gene counts of {}", bam.join(", "));
-    run_out(cx, argv, &out, &what)
+    run_out(a, cx, argv, &out, &what)
 }
 
 fn depth(a: &Arguments, cx: &Call) -> Result<Value> {
@@ -664,7 +700,7 @@ fn depth(a: &Arguments, cx: &Call) -> Result<Value> {
     }
     argv.extend(a.options(&[])?);
     let what = format!("read depth of {}", bam.join(", "));
-    run_out(cx, argv, &out, &what)
+    run_out(a, cx, argv, &out, &what)
 }
 
 fn atoi(a: &Arguments, cx: &Call) -> Result<Value> {
@@ -679,7 +715,7 @@ fn atoi(a: &Arguments, cx: &Call) -> Result<Value> {
     push_flag(&mut argv, "-f", &genome);
     argv.extend(a.options(&[])?);
     let what = format!("A-to-I sites of {}", bam.join(", "));
-    run_out(cx, argv, &out, &what)
+    run_out(a, cx, argv, &out, &what)
 }
 
 fn dartseq(a: &Arguments, cx: &Call) -> Result<Value> {
@@ -697,7 +733,7 @@ fn dartseq(a: &Arguments, cx: &Call) -> Result<Value> {
     push_flag(&mut argv, "-f", &genome);
     argv.extend(a.options(&[])?);
     let what = format!("DART-seq m6A sites of {}", bam.join(", "));
-    run_out(cx, argv, &out, &what)
+    run_out(a, cx, argv, &out, &what)
 }
 
 fn apa(a: &Arguments, cx: &Call) -> Result<Value> {
@@ -729,7 +765,7 @@ fn apa(a: &Arguments, cx: &Call) -> Result<Value> {
     }
     argv.extend(opts);
     let what = format!("alternative polyadenylation of {}", bam.join(", "));
-    run_out(cx, argv, &out, &what)
+    run_out(a, cx, argv, &out, &what)
 }
 
 fn snp(a: &Arguments, cx: &Call) -> Result<Value> {
@@ -755,7 +791,7 @@ fn snp(a: &Arguments, cx: &Call) -> Result<Value> {
     }
     argv.extend(a.options(&[])?);
     let what = format!("SNP genotypes of {}", bam.join(", "));
-    run_out(cx, argv, &out, &what)
+    run_out(a, cx, argv, &out, &what)
 }
 
 fn run(a: &Arguments, cx: &Call) -> Result<Value> {
@@ -779,7 +815,7 @@ fn run(a: &Arguments, cx: &Call) -> Result<Value> {
     argv.extend(a.options(&[])?);
     argv.push("--batch-process".into());
     let what = format!("the pipeline on {}", bam.join(", "));
-    run_out(cx, argv, &out, &what)
+    run_out(a, cx, argv, &out, &what)
 }
 
 fn qc(a: &Arguments, cx: &Call) -> Result<Value> {
@@ -808,7 +844,7 @@ fn qc(a: &Arguments, cx: &Call) -> Result<Value> {
     argv.extend(a.options(&[])?);
     argv.push("--batch-process".into());
     let what = format!("qc of {input}");
-    run_out(cx, argv, &out, &what)
+    run_out(a, cx, argv, &out, &what)
 }
 
 fn cluster(a: &Arguments, cx: &Call) -> Result<Value> {
@@ -828,7 +864,7 @@ fn cluster(a: &Arguments, cx: &Call) -> Result<Value> {
     argv.extend(a.numbers(&["cell_roles", "gene_roles", "chains", "sweeps", "burn_in"])?);
     argv.extend(a.options(&[])?);
     let what = format!("clusters of {}", data.join(", "));
-    run_out(cx, argv, &out, &what)
+    run_out(a, cx, argv, &out, &what)
 }
 
 /// Flags that would make `modules` fit again, over the tables it was asked
