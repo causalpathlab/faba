@@ -1,6 +1,6 @@
 [package]
 name = "faba"
-version = "0.18.1"
+version = "0.18.2"
 edition = "2021"
 rust-version = "1.91"
 license = "MIT"
@@ -54,12 +54,12 @@ mcp = ["dep:legume-mcp"]
 hdf5 = ["data-beans/hdf5"]
 
 [dependencies]
-data-beans = { version = "0.9", default-features = false, features = ["aux", "tui"] }
+data-beans = { version = "0.10", default-features = false, features = ["aux", "tui"] }
 # Detachable sessions for the views, the image protocol of the attached
 # terminal, and the runner of the child `faba run` follows.
 legume-tui = "0.3.3"
 # `faba mcp`.
-legume-mcp = { version = "0.3.1", optional = true }
+legume-mcp = { version = "0.4", optional = true }
 ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
 crossterm = { version = "0.29", default-features = false, features = ["osc52"] }
 # Figures: one SVG per view, converted to PDF and PNG.
