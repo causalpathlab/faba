@@ -30,7 +30,7 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all --check
 
-  # Default features (none) and with `hdf5`, whose paths a plain build never
+  # Default features (`mcp`) and with `hdf5`, whose paths a plain build never
   # compiles.
   clippy:
     name: clippy (-D warnings) ${{ matrix.features }}

@@ -9,6 +9,8 @@ mod editing;
 mod figure;
 mod gene_count;
 mod m6a;
+#[cfg(feature = "mcp")]
+mod mcp;
 mod mixture;
 mod pipeline;
 mod qc;
@@ -544,6 +546,19 @@ Example:\n  \
     )]
     Run(PipelineArgs),
 
+    #[cfg(feature = "mcp")]
+    #[command(
+        about = "Serve faba to an agent over MCP (stdio)",
+        long_about = "Serve faba to an agent as Model Context Protocol tools over stdio\n\
+                      (`claude mcp add faba -- faba mcp`). The tools run the commands:\n\
+                      the producers and `run` write a new directory, `qc` filters one\n\
+                      into another, `cluster` writes its tables to a new directory, and\n\
+                      `pileup`, `metagene`, `pwm`, `modules` and `docs` read what was\n\
+                      written. No tool replaces an existing directory or file, and no\n\
+                      tool opens a view."
+    )]
+    Mcp(mcp::McpArgs),
+
     #[command(
         about = "Return to a detached faba view",
         long_about = legume_tui::cli::about(&tui::TOOL, legume_tui::cli::QUIT_KEY).attach
@@ -691,6 +706,17 @@ fn view_session(command: &Commands) -> Option<(&'static str, legume_tui::Options
     }
 }
 
+/// Whether Ctrl+C should finish the command's work in flight rather than
+/// kill the process. `faba mcp` stays on the default: the first interrupt
+/// ends the server.
+fn stop_on_interrupt(command: &Commands) -> bool {
+    match command {
+        #[cfg(feature = "mcp")]
+        Commands::Mcp(_) => false,
+        _ => true,
+    }
+}
+
 /// Run the command `cli` names; `cmd` and `matches` are the command line
 /// as parsed, for `faba run`'s view.
 fn run(cli: Cli, cmd: clap::Command, matches: &clap::ArgMatches) -> anyhow::Result<()> {
@@ -705,7 +731,8 @@ fn run(cli: Cli, cmd: clap::Command, matches: &clap::ArgMatches) -> anyhow::Resu
     let _views = tui::ViewsEnd;
     // On a batch path (no view, or `faba cluster`'s fit), install the
     // Ctrl+C handler up front, so one keypress means one thing for the
-    // whole run.
+    // whole run. `faba mcp` is the exception: the handler would swallow
+    // the first interrupt, and a server has to die on it.
     //
     // It used to be installed lazily, by whichever library function first asked for the flag —
     // which made the *same* keypress behave three different ways depending on when you pressed
@@ -715,8 +742,7 @@ fn run(cli: Cli, cmd: clap::Command, matches: &clap::ArgMatches) -> anyhow::Resu
     //
     // A view's session takes Ctrl+C as a key and `faba kill`'s SIGTERM as
     // its quit path; the handler would take both, so it is left out there.
-    let _stop = session
-        .is_none()
+    let _stop = (session.is_none() && stop_on_interrupt(&cli.commands))
         .then(legume_numeric::matrix::stop::stop_flag);
 
     // Each producer leaves `{job}.run.json` in its output directory: the inputs
@@ -745,6 +771,8 @@ fn run(cli: Cli, cmd: clap::Command, matches: &clap::ArgMatches) -> anyhow::Resu
             };
             run_or_view(args, run_cmd, m)?
         }
+        #[cfg(feature = "mcp")]
+        Commands::Mcp(ref args) => mcp::run_mcp(args)?,
         Commands::Attach(ref args) => legume_tui::cli::attach(&tui::TOOL, args)?,
         Commands::Sessions => legume_tui::cli::sessions(&tui::TOOL)?,
         Commands::Kill(ref args) => legume_tui::cli::kill(&tui::TOOL, args)?,

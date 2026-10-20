@@ -94,6 +94,7 @@ cargo install --path .
 
 | Feature | Enables | Extra requirement |
 |---------|---------|-------------------|
+| `mcp` (default) | `faba mcp`, the commands as tools for an agent | none |
 | `hdf5`  | HDF5 backend + `.h5`/`.h5ad` readers | `libhdf5` on the build host |
 
 There is no `cuda` / `metal` feature: nothing on the BAM-to-matrix path touches a
@@ -170,9 +171,22 @@ faba <COMMAND> [OPTIONS]
 | `pileup` (`inspect`)      | ASCII pileup, or a faceted Miami plot, for one gene |
 | `metagene` (`mg`)         | Metagene histogram of site positions across gene features |
 | `docs`                    | Print the method write-ups compiled into this binary |
+| `mcp`                     | Serve the commands to an agent over the Model Context Protocol |
 | `attach`, `sessions`, `kill`, `rename` | Return to, list, stop and label the views' detached sessions |
 
 Run `faba <COMMAND> --help` for the detailed options of each subcommand.
+
+## For an agent (MCP)
+
+`faba mcp` serves the commands as [Model Context Protocol](https://modelcontextprotocol.io) tools over stdio:
+
+```sh
+claude mcp add faba -- faba mcp
+```
+
+`docs` prints the method write-ups. The producers `count`, `atoi`, `dartseq`, `apa`, `depth` and `snp`, and `run` for the whole pipeline, each write a new directory. `qc` filters one directory into another. `cluster` writes its tables to a new directory. `pileup`, `metagene`, `pwm` and `modules` read what was written; `modules` needs the block tables `cluster` already wrote.
+
+Every write goes to an `out` that must not exist yet: no tool replaces a directory or a file, and no tool opens a view. The server keeps the project's records the way legume-mcp lays them out, after [Noble (2009), *A quick guide to organizing computational biology projects*, PLoS Comput Biol 5(7):e1000424](https://doi.org/10.1371/journal.pcbi.1000424): every step that writes goes into the day's `results/<date>/runall.sh`, which replays the session, and into `results/INDEX.tsv`; outputs the agent does not name go in `results/<date>/`. `LEGUME_MCP_RECORDS=off` turns the records off.
 
 ## Clustering on real data
 
