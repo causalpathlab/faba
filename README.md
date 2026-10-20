@@ -178,15 +178,67 @@ Run `faba <COMMAND> --help` for the detailed options of each subcommand.
 
 ## For an agent (MCP)
 
-`faba mcp` serves the commands as [Model Context Protocol](https://modelcontextprotocol.io) tools over stdio:
+`faba mcp` serves the commands as [Model Context Protocol](https://modelcontextprotocol.io) tools over stdio, so any MCP client can drive them, with any model behind it (Claude, GPT, Gemini, or a local one). faba sends nothing anywhere itself: the model sees what the tools return, and where that goes is up to the client and model you choose.
 
-```sh
-claude mcp add faba -- faba mcp
+### Connect a client
+
+The server is one command, `faba mcp`. A client also needs to know where the project is: the server keeps its records (below) in its working directory, or in `LEGUME_MCP_PROJECT` when set. Set it whenever the client may start servers elsewhere, as desktop apps usually do. If the client cannot find `faba`, give its full path (`which faba`).
+
+Most clients (Claude Desktop, Cursor's `.cursor/mcp.json`, Gemini CLI's `settings.json`, and others) take this shape:
+
+```json
+{
+  "mcpServers": {
+    "faba": {
+      "command": "faba",
+      "args": ["mcp"],
+      "env": { "LEGUME_MCP_PROJECT": "/path/to/project" }
+    }
+  }
+}
 ```
 
-`docs` prints the method write-ups. The producers `count`, `atoi`, `dartseq`, `apa`, `depth` and `snp`, and `run` for the whole pipeline, each write a new directory. `qc` filters one directory into another. `cluster` writes its tables to a new directory. `pileup`, `metagene`, `pwm` and `modules` read what was written; `modules` needs the block tables `cluster` already wrote.
+Claude Code: `claude mcp add faba -e LEGUME_MCP_PROJECT="$PWD" -- faba mcp`. VS Code takes `"servers"` with `"type": "stdio"` in `.vscode/mcp.json`; Codex CLI takes `[mcp_servers.faba]` with `command`, `args` and `env` in `~/.codex/config.toml`. Key names differ between clients; the server needs only the command, its argument and, optionally, the environment.
 
-Every write goes to an `out` that must not exist yet: no tool replaces a directory or a file, and no tool opens a view. The server keeps the project's records the way legume-mcp lays them out, after [Noble (2009), *A quick guide to organizing computational biology projects*, PLoS Comput Biol 5(7):e1000424](https://doi.org/10.1371/journal.pcbi.1000424): every step that writes goes into the day's `results/<date>/runall.sh`, which replays the session, and into `results/INDEX.tsv`; outputs the agent does not name go in `results/<date>/`. `LEGUME_MCP_RECORDS=off` turns the records off.
+### What the agent does
+
+The server tells the agent how to work when it connects (the MCP `instructions`). Some clients do not pass those to the model; with one of them, put this in the agent's own instructions (an `AGENTS.md`, a system prompt):
+
+```text
+faba turns coordinate-sorted BAM alignments into per-cell feature matrices: gene counts, read depth, A-to-I editing, DART-seq m6A, alternative polyadenylation and SNP genotypes. Row names are {gene_key}/{modality}/{detail}.
+
+Producers write every candidate and apply no p-value cutoff. qc is where cells, features and sites are cut, and it writes a new directory.
+
+1. docs lists the method write-ups. With `query` it prints the sections named (a topic such as profiling, a command such as qc, or a section number).
+2. count, atoi, dartseq, apa, depth and snp each write one modality. run writes the pipeline (SNP, then count, A-to-I, m6A, APA) into one directory. dartseq needs control BAMs; without them, run skips m6A.
+3. qc filters a directory into a new one, with the site thresholds given. It does not edit the input.
+4. pileup, metagene and pwm read a directory's sites. pileup returns a binned table for a gene or region (and, with `figure`, a Miami SVG). modules prints the gene and cell modules of a directory that already holds cluster's block tables.
+5. cluster fits cells by their own site reads (link, blocks or crp) and writes its tables to `out`.
+
+The producers (count, depth, atoi, dartseq, apa, snp, run, qc, cluster) take `background`: on large BAMs set it, and the call returns a job id at once.
+
+Every write goes to `out`, which must not exist. Leave `out` out and the output goes in today's results folder, named after the input and the tool. Paths resolve against the server's working directory. Further flags go in `options`, as `faba <command> --help` lists them; `options` cannot name the output or open a view. Results give the paths written.
+```
+
+legume-mcp adds where the records are, the `notebook` tool (open with a plan: the question, the data, how the result will be checked) and the background jobs below.
+
+| Tool | Does |
+|---|---|
+| `docs` | the method write-ups |
+| `count`, `atoi`, `dartseq`, `apa`, `depth`, `snp` | one modality each, into a new directory |
+| `run` | the pipeline (SNP, then count, A-to-I, m6A, APA) into one directory |
+| `qc` | filters a directory into a new one |
+| `cluster` | fits cells by their own site reads; writes its tables to a new directory |
+| `pileup`, `metagene`, `pwm`, `modules` | read what was written |
+| `notebook`, `job_status`, `job_wait`, `job_cancel` | from legume-mcp |
+
+### Long runs in the background
+
+On large BAMs a producer can outlast a client's wait on one call. Give it `background: true` and it returns at once with `{job, written}`; the agent follows the job with `job_wait` or `job_status` (or stops it with `job_cancel`), and uses `written` only once it is done. A job that succeeds is recorded like any step. Jobs end with their server: a run longer than a client session is for `faba` on the command line.
+
+### Records and watching
+
+Every write goes to an `out` that must not exist yet: no tool replaces a directory or a file, and no tool opens a view. The server keeps the project's records the way legume-mcp lays them out, after [Noble (2009), *A quick guide to organizing computational biology projects*, PLoS Comput Biol 5(7):e1000424](https://doi.org/10.1371/journal.pcbi.1000424): every step that writes goes into the day's `results/<date>/runall.sh`, which replays the session, and into `results/INDEX.tsv`; outputs the agent does not name go in `results/<date>/`. `LEGUME_MCP_RECORDS=off` turns the records off. While an agent works, the server also writes a live feed a person can follow and steer (stop a call or a job, leave the agent a note) with legume-mcp's `watch`; `LEGUME_MCP_WATCH=off` writes none.
 
 ## Clustering on real data
 

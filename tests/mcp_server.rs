@@ -167,3 +167,64 @@ fn unnamed_outputs_are_recorded_and_inputs_keep_their_source() {
     let readme = std::fs::read_to_string(dir.path().join("data/README.md")).unwrap();
     assert!(readme.contains("the test's fixture"));
 }
+
+#[test]
+fn a_producer_runs_as_a_background_job() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = Client::start(dir.path());
+    c.request("initialize", json!({}));
+    let listed = c.request("tools/list", json!({}));
+    let tools = listed["result"]["tools"].as_array().unwrap();
+    let count = tools.iter().find(|t| t["name"] == "count").unwrap();
+    assert_eq!(
+        count["inputSchema"]["properties"]["background"]["type"],
+        "boolean"
+    );
+    for builtin in ["job_status", "job_wait", "job_cancel"] {
+        assert!(tools.iter().any(|t| t["name"] == builtin), "{builtin}");
+    }
+
+    // It returns at once with a job; waiting tells how it went.
+    let started = c
+        .call(
+            "count",
+            json!({ "bam": ["no-such.bam"], "gff": "genes.gff", "background": true }),
+        )
+        .unwrap();
+    let job = started["job"].as_str().unwrap().to_string();
+    assert!(started["written"]
+        .as_str()
+        .unwrap()
+        .contains("no-such.count"));
+    let ended = c
+        .call("job_wait", json!({ "id": job, "seconds": 60 }))
+        .unwrap();
+    assert_eq!(ended["state"], "failed", "{ended}");
+    assert!(
+        ended["error"].as_str().unwrap().contains("no-such.bam"),
+        "{ended}"
+    );
+}
+
+#[test]
+fn the_readme_gives_an_agent_the_servers_own_instructions() {
+    // For clients that do not pass the MCP instructions on to their model:
+    // the README's block is faba's own text, before the notes legume-mcp
+    // adds (records, jobs).
+    let dir = tempfile::tempdir().unwrap();
+    let mut c = Client::start(dir.path());
+    let init = c.request("initialize", json!({}));
+    let told = init["result"]["instructions"].as_str().unwrap();
+    let own = told
+        .split("\n\nRecords (after Noble")
+        .next()
+        .unwrap()
+        .split("\n\nA tool may run a long step")
+        .next()
+        .unwrap();
+    let readme = include_str!("../README.md");
+    assert!(
+        readme.contains(own),
+        "README's agent block differs from faba's instructions"
+    );
+}
