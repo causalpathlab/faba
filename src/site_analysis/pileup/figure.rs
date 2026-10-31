@@ -136,11 +136,10 @@ pub(super) fn run_miami_figure(args: &PileupArgs, selector: &Selector) -> anyhow
         });
     }
 
-    // Output: SVG only (PNG/PDF previously came from plot-utils).
-    if args.format.is_some() || args.png || args.svg || args.no_pdf {
-        log::warn!(
-            "Miami figure writes SVG only; `--format` / `--png` / `--svg` / `--no-pdf` are ignored"
-        );
+    // Output: SVG only (PNG/PDF previously came from plot-utils). `--svg`
+    // asks for what is written, so it is not one of those ignored.
+    if args.format.is_some() || args.png || args.no_pdf {
+        log::warn!("Miami figure writes SVG only; `--format` / `--png` / `--no-pdf` are ignored");
     }
 
     let out_prefix: Box<str> = args

@@ -13,6 +13,7 @@ use std::borrow::Cow;
 use std::path::Path;
 
 mod args;
+pub(crate) use args::MODEL_OPTIONS;
 mod browse;
 mod command;
 mod crp;
