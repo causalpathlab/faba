@@ -234,7 +234,7 @@ fn tools() -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "pileup",
-            "A gene's or region's sites (`faba pileup --batch-process`). Returns a binned TSV. The ASCII histogram is the call's progress. With `figure` (and `gtf` or `bam`), write a Miami SVG instead; `out` is then the figure prefix (`{out}.miami.svg`).",
+            "A gene's or region's sites (`faba pileup --batch-process`). Returns a binned TSV. The ASCII histogram is the call's progress. With `figure` (or `gtf` or `bam`), write a Miami SVG instead; `out` is then the figure prefix (`{out}.miami.svg`). A `gtf` draws the gene model (else the annotation recorded with the data, if any), `bam` the read-depth track.",
             schema(
                 json!({
                     "data": { "type": "array", "items": { "type": "string" }, "minItems": 1, "description": "Site matrices, or a faba output directory" },
@@ -868,20 +868,36 @@ fn cluster(a: &Arguments, cx: &Call) -> Result<Value> {
 }
 
 /// Flags that would make `modules` fit again, over the tables it was asked
-/// to read.
-const MODULES_TAKEN: &[&str] = &[
-    "--model",
-    "--cell-roles",
-    "--communities",
-    "--gene-roles",
-    "--shift",
-    "--global",
-    "--profile-strength",
-    "--prior-strength",
-    "--chains",
-    "--sweeps",
-    "--burn-in",
-];
+/// to read: every flag and alias of the blockmodel options
+/// ([`crate::cluster::MODEL_OPTIONS`], what `modules` holds against the
+/// tables' record), read off the command itself so none is missed, and the
+/// sampler's.
+fn modules_taken() -> Vec<String> {
+    use clap::CommandFactory;
+    let cli = crate::Cli::command();
+    let modules = cli
+        .find_subcommand("modules")
+        .expect("`faba modules` is a command");
+    let mut taken: Vec<String> = ["--chains", "--sweeps", "--burn-in"]
+        .map(String::from)
+        .into();
+    for arg in modules
+        .get_arguments()
+        .filter(|a| crate::cluster::MODEL_OPTIONS.contains(&a.get_id().as_str()))
+    {
+        let longs = arg
+            .get_long()
+            .into_iter()
+            .chain(arg.get_all_aliases().into_iter().flatten());
+        taken.extend(longs.map(|l| format!("--{l}")));
+        let shorts = arg
+            .get_short()
+            .into_iter()
+            .chain(arg.get_all_short_aliases().into_iter().flatten());
+        taken.extend(shorts.map(|s| format!("-{s}")));
+    }
+    taken
+}
 
 fn modules(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
     let data = a.path("data")?;
@@ -891,7 +907,9 @@ fn modules(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
     if let Some(gtf) = a.path_opt("gtf")? {
         push_flag(&mut argv, "--gtf", &gtf);
     }
-    argv.extend(a.options(MODULES_TAKEN)?);
+    let taken = modules_taken();
+    let taken: Vec<&str> = taken.iter().map(String::as_str).collect();
+    argv.extend(a.options(&taken)?);
     argv.push("--batch-process".into());
     if let Some(html) = a.path_opt("html")? {
         fresh(&html)?;
@@ -929,7 +947,9 @@ fn block_tables(dir: &str, modality: Option<&str>) -> Result<()> {
 /// their own, because the figure writes an SVG and does not write the TSV.
 const PILEUP_TAKEN: &[&str] = &["--gtf", "--bam", "--svg", "--png", "--format", "--no-pdf"];
 
-fn pileup(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
+/// `faba pileup`'s command line for a call, and whether it draws the
+/// figure.
+fn pileup_argv(a: &Arguments) -> Result<(Vec<String>, bool)> {
     let data = a.paths_req("data")?;
     let genes = a.strings("genes")?;
     let regions = a.strings("regions")?;
@@ -952,6 +972,11 @@ fn pileup(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
     argv.extend(a.options(PILEUP_TAKEN)?);
     argv.push("--batch-process".into());
     if figure {
+        // Neither a gene model nor a depth track makes the command draw:
+        // `--svg` asks for the figure.
+        if gtf.is_none() && bam.is_empty() {
+            argv.push("--svg".into());
+        }
         if let Some(gtf) = &gtf {
             push_flag(&mut argv, "--gtf", gtf);
         }
@@ -959,6 +984,14 @@ fn pileup(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
             argv.push("--bam".into());
             argv.extend(bam);
         }
+    }
+    Ok((argv, figure))
+}
+
+fn pileup(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
+    let data = a.paths_req("data")?;
+    let (mut argv, figure) = pileup_argv(a)?;
+    if figure {
         // `--out` is the prefix; the file written is `{prefix}.miami.svg`.
         let prefix = a.out_or(cx, (&named(&data[0], "pileup"), ""), |p| {
             Path::new(&format!("{p}.miami.svg")).exists()
@@ -1031,4 +1064,64 @@ fn pwm(a: &Arguments, cx: &Call) -> Result<Value> {
 
 fn exists(path: &str) -> bool {
     Path::new(path).exists()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{modules_taken, pileup_argv, Arguments};
+    use serde_json::json;
+
+    /// Every blockmodel option, under any of its flags, is refused, so
+    /// `modules` can never fit again (and write over its tables) through
+    /// `options`.
+    #[test]
+    fn modules_refuses_every_option_that_would_fit_again() {
+        let taken = modules_taken();
+        for flag in [
+            "--model",
+            "--cell-roles",
+            "--communities",
+            "--prior-strength",
+            "--gene-roles",
+            "--shift",
+            "--global",
+            "--profile-strength",
+            "--membership-alpha",
+            "--community-gamma",
+            "--gene-alpha",
+            "--shift-sd",
+            "--cell-sd",
+        ] {
+            assert!(
+                taken.iter().any(|t| t == flag),
+                "{flag} not refused: {taken:?}"
+            );
+        }
+        // Each of the options names a flag of the command.
+        assert!(
+            taken.len() > crate::cluster::MODEL_OPTIONS.len(),
+            "{taken:?}"
+        );
+        let taken: Vec<&str> = taken.iter().map(String::as_str).collect();
+        let a = Arguments(json!({ "options": ["--membership-alpha=2"] }));
+        assert!(a.options(&taken).is_err());
+        let a = Arguments(json!({ "options": ["--community-gamma", "3"] }));
+        assert!(a.options(&taken).is_err());
+    }
+
+    /// `figure` alone draws: the command gets `--svg`, which puts it in
+    /// figure mode (a GTF or BAMs would, so it is not added then).
+    #[test]
+    fn a_pileup_figure_asked_alone_is_drawn() {
+        let call = |args| pileup_argv(&Arguments(args)).unwrap();
+        let (argv, figure) = call(json!({ "data": ["s.zarr"], "genes": ["G1"], "figure": true }));
+        assert!(figure && argv.contains(&"--svg".to_string()), "{argv:?}");
+        let (argv, figure) = call(json!({ "data": ["s.zarr"], "genes": ["G1"], "gtf": "g.gtf" }));
+        assert!(figure && !argv.contains(&"--svg".to_string()), "{argv:?}");
+        let (argv, _) =
+            call(json!({ "data": ["s.zarr"], "genes": ["G1"], "figure": true, "bam": ["a.bam"] }));
+        assert!(!argv.contains(&"--svg".to_string()), "{argv:?}");
+        let (argv, figure) = call(json!({ "data": ["s.zarr"], "genes": ["G1"] }));
+        assert!(!figure && !argv.contains(&"--svg".to_string()), "{argv:?}");
+    }
 }

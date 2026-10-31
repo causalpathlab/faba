@@ -368,8 +368,10 @@ pub(super) fn recorded(args: &ClusterArgs) -> unified::Recorded {
 }
 
 /// The options (clap ids) that set the blockmodel's settings: the preset
-/// and every switch and concentration [`blockmodel`] reads.
-const MODEL_OPTIONS: [&str; 11] = [
+/// and every switch and concentration [`blockmodel`] reads. Given at other
+/// values than a run's record, they make `modules` fit again, so the MCP
+/// `modules` tool refuses them.
+pub(crate) const MODEL_OPTIONS: [&str; 11] = [
     "model",
     "cell_roles",
     "gene_roles",
