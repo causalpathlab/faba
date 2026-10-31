@@ -754,7 +754,7 @@ Ctrl+Enter, so a stray key cannot start a write; Enter there shows a hint naming
 gives the command to run instead. Once applied, the fileset is written
 with the view still up, under a pop-up showing each file as it goes. The view's figure for every
 modality and every knob, as set when the cut was applied (scales, selected gene, bar measure),
-is saved beside it in `qc_plots/{modality}_{knob}.pdf`. `p` prints the matching
+is saved beside it in `qc_plots/{modality}_{knob}.pdf` and `.png` (`--batch-process --plots` draws the same figures, at the values given, without the view; `--dry-run` prints what each threshold would remove and writes nothing). `p` prints the matching
 `faba qc --batch-process` command, with every cell, feature and site option, and writes nothing; `s` saves the view as a PDF under a name it asks for, in a pop-up listing the figures saved before (§7).
 `q` leaves without writing. With any threshold changed, `q` and `p` first ask, and only the same
 key again leaves; Esc closes pop-ups and never leaves the view.

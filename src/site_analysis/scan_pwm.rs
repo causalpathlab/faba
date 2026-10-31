@@ -96,6 +96,15 @@ pub struct ScanPwmArgs {
     output: Option<Box<str>>,
 
     #[arg(
+        long = "figure",
+        value_name = "PREFIX",
+        help = "Also write the sequence logo as `{PREFIX}.pdf` and `{PREFIX}.png`",
+        long_help = "Also write the sequence logo as `{PREFIX}.pdf` and `{PREFIX}.png`, as the\n\
+                     view first shows it. Works with --batch-process: no terminal needed."
+    )]
+    figure: Option<Box<str>>,
+
+    #[arg(
         long = "batch-process",
         visible_alias = "batch-mode",
         default_value_t = false,
@@ -416,8 +425,13 @@ pub fn run_scan_pwm(args: &ScanPwmArgs) -> anyhow::Result<()> {
         write_pwm(&pwm, args.window, output)?;
         info!("wrote PWM to {output}");
     }
+    let title = output_dir::title(&site_files);
+    if let Some(prefix) = &args.figure {
+        let paths = crate::figure::save_with_png(&tui::figure(&title, &pwm, args.window), prefix)?;
+        info!("wrote sequence logo to {}", paths.join(", "));
+    }
     if !batch {
-        tui::show_pwm(&output_dir::title(&site_files), &pwm, args.window)?;
+        tui::show_pwm(&title, &pwm, args.window)?;
     }
 
     Ok(())

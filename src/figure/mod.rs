@@ -715,6 +715,27 @@ pub fn save(svg: &str, prefix: &str) -> anyhow::Result<Vec<String>> {
     Ok(vec![write_pdf(&tree, prefix)?])
 }
 
+/// `svg` as PNG bytes, `scale` pixels per point, on white.
+pub fn png(svg: &str, scale: f32) -> anyhow::Result<Vec<u8>> {
+    let pixmap = term::pixmap(&usvg::Tree::from_str(svg, &options())?, scale)?;
+    let (w, h) = (pixmap.width(), pixmap.height());
+    let picture = image::RgbaImage::from_raw(w, h, pixmap.take())
+        .ok_or_else(|| anyhow::anyhow!("pixel buffer size mismatch"))?;
+    let mut out = std::io::Cursor::new(Vec::new());
+    picture.write_to(&mut out, image::ImageFormat::Png)?;
+    Ok(out.into_inner())
+}
+
+/// [`save`], and `{prefix}.png` at two pixels per point beside it: what
+/// `--figure` writes without a view.
+pub fn save_with_png(svg: &str, prefix: &str) -> anyhow::Result<Vec<String>> {
+    let mut paths = save(svg, prefix)?;
+    let path = format!("{}.png", strip_extension(prefix));
+    std::fs::write(&path, png(svg, 2.0)?)?;
+    paths.push(path);
+    Ok(paths)
+}
+
 /// The PDF of `tree` under `prefix`.
 fn write_pdf(tree: &usvg::Tree, prefix: &str) -> anyhow::Result<String> {
     let path = pdf_path(prefix);

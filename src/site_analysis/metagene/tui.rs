@@ -477,6 +477,11 @@ impl Screen for MetageneView<'_> {
 }
 
 /// Show the profile full screen until the user quits.
+/// The profile as the view first shows it, drawn without a terminal.
+pub fn figure(title: &str, hist: &GeneFeatureHistogram) -> String {
+    MetageneView::new(title, hist).figure()
+}
+
 pub fn show_metagene(title: &str, hist: &GeneFeatureHistogram) -> anyhow::Result<()> {
     let mut view = MetageneView::new(title, hist);
     view.controls = Controls::new("metagene").detect();

@@ -332,3 +332,104 @@ fn qc_filters_cells_sites_and_repools_gene_level() {
     assert!(std::path::Path::new(&format!("{output}/b1_cells.tsv.gz")).exists());
     assert!(std::path::Path::new(&format!("{output}/qc_summary.tsv")).exists());
 }
+
+const CUT: [&str; 9] = [
+    "--no-cell-qc",
+    "--column-nnz-cutoff",
+    "2",
+    "--site-max-pv",
+    "0.05",
+    "--site-min-coverage",
+    "3",
+    "--site-min-cells",
+    "2",
+];
+
+/// `--dry-run` prints what the cut above keeps and removes, and writes
+/// nothing.
+#[test]
+fn qc_dry_run_counts_without_writing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let input = format!("{}/in", tmp.path().display());
+    std::fs::create_dir_all(&input).unwrap();
+    build_fixture(&input);
+    let before = std::fs::read_dir(tmp.path()).unwrap().count();
+    let out = faba()
+        .args(["qc", &input, "--dry-run"])
+        .args(CUT)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), before);
+    let text = String::from_utf8(out.stdout).unwrap();
+    let rows: Vec<Vec<&str>> = text.lines().map(|l| l.split('\t').collect()).collect();
+    assert_eq!(
+        rows[0],
+        [
+            "level",
+            "name",
+            "rule",
+            "threshold",
+            "removes",
+            "only_this",
+            "kept",
+            "of"
+        ]
+    );
+    // C5 and C6 drop, as in the cut itself.
+    let cells = rows.iter().find(|r| r[0] == "cells").expect("a cells row");
+    assert_eq!(
+        (cells[1], cells[4], cells[6], cells[7]),
+        ("b1", "2", "4", "6")
+    );
+    // One site of four is kept, whichever threshold the row is for.
+    let sites: Vec<_> = rows.iter().filter(|r| r[0] == "sites").collect();
+    assert!(!sites.is_empty());
+    for r in &sites {
+        assert_eq!((r[6], r[7]), ("1", "4"), "{r:?}");
+    }
+    let cells_rule = sites
+        .iter()
+        .find(|r| r[2] == "--site-min-cells")
+        .expect("a --site-min-cells row");
+    assert_eq!(cells_rule[5], "1", "only S2 falls to the cells rule alone");
+}
+
+/// `--plots` draws the view's figures in batch: one PDF and PNG per
+/// modality and knob.
+#[test]
+fn qc_plots_are_drawn_in_batch() {
+    let tmp = tempfile::tempdir().unwrap();
+    let input = format!("{}/in", tmp.path().display());
+    let output = format!("{}/out", tmp.path().display());
+    std::fs::create_dir_all(&input).unwrap();
+    build_fixture(&input);
+    let status = faba()
+        .args([
+            "qc",
+            &input,
+            "--batch-process",
+            "--plots",
+            "--no-zip",
+            "-o",
+            &output,
+        ])
+        .args(CUT)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let mut plots: Vec<String> = std::fs::read_dir(format!("{output}/qc_plots"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    plots.sort();
+    assert!(plots.iter().any(|p| p.ends_with(".png")), "{plots:?}");
+    for png in plots.iter().filter(|p| p.ends_with(".png")) {
+        let pdf = png.replace(".png", ".pdf");
+        assert!(plots.contains(&pdf), "{png} without {pdf}");
+    }
+}

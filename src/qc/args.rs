@@ -191,6 +191,27 @@ pub struct QcArgs {
     pub session: legume_tui::cli::SessionArgs,
 
     #[arg(
+        long = "plots",
+        default_value_t = false,
+        help = "With --batch-process, also draw the view's figures under qc_plots/",
+        long_help = "With --batch-process, also draw the figures the view writes on apply:\n\
+                     for every site modality and knob, `qc_plots/{modality}_{knob}.{pdf,png}`,\n\
+                     at the --site-* values given, with the metagene when an annotation is found."
+    )]
+    pub plots: bool,
+
+    #[arg(
+        long = "dry-run",
+        default_value_t = false,
+        help = "Print what the cell QC and each --site-* threshold would remove; write nothing",
+        long_help = "Print, as TSV on stdout, what the cell QC keeps per batch and what each\n\
+                     --site-* threshold removes per modality (alone, and only by it), at the\n\
+                     values given; write nothing. Needs INPUT_DIR only."
+    )]
+    #[serde(skip)]
+    pub dry_run: bool,
+
+    #[arg(
         long = "gff",
         help = "Annotation for the view's metagene (default: the one recorded in the input directory)",
         long_help = "Gene annotation GFF/GTF for the view's metagene.\n\
