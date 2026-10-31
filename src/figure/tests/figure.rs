@@ -317,3 +317,17 @@ fn turning_images_off_outlives_another_terminal() {
     c.set_images(true);
     assert!(c.images_on());
 }
+
+/// `--figure` writes the PDF and a PNG at two pixels per point beside it.
+#[test]
+fn save_with_png_writes_both() {
+    let dir = tempfile::tempdir().unwrap();
+    let prefix = dir.path().join("fig").to_string_lossy().into_owned();
+    let svg = svg(100.0, 50.0, |c| c.rect(10.0, 10.0, 20.0, 20.0, INK));
+    let paths = save_with_png(&svg, &prefix).unwrap();
+    assert_eq!(paths, [format!("{prefix}.pdf"), format!("{prefix}.png")]);
+    let png = std::fs::read(&paths[1]).unwrap();
+    assert!(png.starts_with(b"\x89PNG"));
+    let image = image::load_from_memory(&png).unwrap();
+    assert_eq!((image.width(), image.height()), (200, 100));
+}

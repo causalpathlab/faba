@@ -144,6 +144,15 @@ impl Meta {
         if !handle.is_finished() {
             return false;
         }
+        self.wait();
+        true
+    }
+
+    /// Block until the thread's result arrives, and take it.
+    pub(super) fn wait(&mut self) {
+        if !matches!(self, Meta::Pending(_)) {
+            return;
+        }
         let Meta::Pending(handle) = std::mem::replace(self, Meta::Unavailable(String::new()))
         else {
             unreachable!()
@@ -153,7 +162,6 @@ impl Meta {
             Ok(Err(e)) => Meta::Unavailable(e),
             Err(_) => Meta::Unavailable("reading the annotation panicked".into()),
         };
-        true
     }
 }
 

@@ -31,7 +31,9 @@ use super::matrix::{
 use super::path_tui::ask_paths;
 use super::progress::{FinishOnDrop, Progress};
 use super::repool::repool_gene_level;
-use super::site_tui::{qc_flags, run_site_picker, Figure, Picked, Writer};
+use super::site_tui::{
+    qc_flags, run_site_picker, site_figures, threshold_counts, Figure, Picked, Writer,
+};
 use super::sites::{
     accumulate_site_cells, read_site_table, site_matrix_rows, write_site_tables, SiteTable,
 };
@@ -222,6 +224,9 @@ fn resolve_paths(args: &QcArgs) -> anyhow::Result<(String, String)> {
 }
 
 pub fn run_qc(args: &QcArgs) -> anyhow::Result<()> {
+    if args.dry_run {
+        return dry_run(args);
+    }
     anyhow::ensure!(
         args.batch_process || tui_available(),
         "`faba qc` picks the site thresholds in a full-screen view, which needs stdin and \
@@ -262,6 +267,38 @@ pub fn run_qc(args: &QcArgs) -> anyhow::Result<()> {
     outcome.map(|_| ())
 }
 
+/// `faba qc --dry-run`: the cell verdicts per batch and each site
+/// threshold's counts per modality, as TSV on stdout; nothing written.
+fn dry_run(args: &QcArgs) -> anyhow::Result<()> {
+    let input = args
+        .input_dir
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("`faba qc --dry-run` needs INPUT_DIR"))?;
+    let prep = prepare(args, input)?;
+    let mut out = String::from("level\tname\trule\tthreshold\tremoves\tonly_this\tkept\tof\n");
+    for d in &prep.decisions {
+        let (n, kept) = (d.names.len(), d.kept.len());
+        out.push_str(&format!(
+            "cells\t{}\tcell QC\t{}\t{}\t\t{kept}\t{n}\n",
+            d.batch,
+            if args.no_cell_qc {
+                "floor only".to_string()
+            } else {
+                format!("{} MADs", args.qc_mads)
+            },
+            n - kept,
+        ));
+    }
+    for t in threshold_counts(&prep.tables, &prep.site_cells, &args.site) {
+        out.push_str(&format!(
+            "sites\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+            t.modality, t.flag, t.threshold, t.removes, t.only, t.kept, t.sites
+        ));
+    }
+    print!("{out}");
+    Ok(())
+}
+
 /// Everything read before the site thresholds are decided: the input's
 /// layout, the cell verdicts, the site tables and the `_site` matrices with
 /// their kept cells per site.
@@ -291,7 +328,27 @@ fn filter_fileset(
                 "no editing site table to pick thresholds on; cutting cells and features only"
             );
         }
-        write_fileset(&prep, args, out_dir, &args.site, &[], &Progress::default())?;
+        let figures = if args.plots && has_sites {
+            let pinned = &args.genes;
+            site_figures(
+                input,
+                &prep.tables,
+                &prep.site_cells,
+                &args.site,
+                gff.as_deref(),
+                pinned,
+            )?
+        } else {
+            Vec::new()
+        };
+        write_fileset(
+            &prep,
+            args,
+            out_dir,
+            &args.site,
+            &figures,
+            &Progress::default(),
+        )?;
         return Ok(Some(args.site.clone()));
     }
     let progress = Progress::default();
@@ -627,7 +684,9 @@ fn write_fileset(
         for f in figures {
             progress.next(format!("qc_plots/{}", f.stem));
             let saved = match &made {
-                Ok(()) => crate::figure::save(&f.svg, &format!("{dir}/{}", f.stem)).map(|_| ()),
+                Ok(()) => {
+                    crate::figure::save_with_png(&f.svg, &format!("{dir}/{}", f.stem)).map(|_| ())
+                }
                 Err(e) => Err(anyhow::anyhow!("{e}")),
             };
             if let Err(e) = saved {

@@ -144,6 +144,15 @@ pub struct MetageneArgs {
     )]
     dist_measures: Option<Box<str>>,
 
+    #[arg(
+        long = "figure",
+        value_name = "PREFIX",
+        help = "Also write the profile as `{PREFIX}.pdf` and `{PREFIX}.png`",
+        long_help = "Also write the profile as `{PREFIX}.pdf` and `{PREFIX}.png`, as the\n\
+                     view first shows it. Works with --batch-process: no terminal needed."
+    )]
+    figure: Option<Box<str>>,
+
     #[arg(long = "print", help = "Print ASCII histogram to stderr")]
     print_histogram: bool,
 
@@ -962,8 +971,13 @@ pub fn run_metagene(args: &MetageneArgs) -> anyhow::Result<()> {
     if args.print_histogram {
         histogram.print(args.max_width as usize);
     }
+    let title = output_dir::title(&site_files);
+    if let Some(prefix) = &args.figure {
+        let paths = crate::figure::save_with_png(&tui::figure(&title, &histogram), prefix)?;
+        info!("wrote metagene figure to {}", paths.join(", "));
+    }
     if !batch {
-        tui::show_metagene(&output_dir::title(&site_files), &histogram)?;
+        tui::show_metagene(&title, &histogram)?;
     }
 
     Ok(())

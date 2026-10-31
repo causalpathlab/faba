@@ -388,3 +388,53 @@ fn only_is_what_turning_the_threshold_off_keeps() {
     assert!(!text.contains("rescued"));
     assert!(!text.contains("reason"));
 }
+
+/// `--dry-run`'s counts are the qc rule's: what each threshold removes
+/// alone, what it alone removes, and what all of them keep.
+#[test]
+fn threshold_counts_agree_with_the_qc_rule() {
+    let t = table(M6A, 1500);
+    let f = SiteFilterArgs::default_values();
+    let tables: FxHashMap<Box<str>, SiteTable> =
+        [(Box::from(M6A), table(M6A, 1500))].into_iter().collect();
+    let rows = threshold_counts(&tables, &FxHashMap::default(), &f);
+    assert!(!rows.is_empty());
+    let kept = kept_linear(&t, None, &f);
+    for r in &rows {
+        let c = *Criterion::ALL
+            .iter()
+            .find(|c| c.flag() == r.flag)
+            .expect("a criterion's flag");
+        assert_eq!((r.kept, r.sites), (kept, t.len()), "{r:?}");
+        assert_eq!(
+            r.removes,
+            t.len() - kept_linear(&t, None, &only(c, &f)),
+            "{r:?}"
+        );
+        let mut without = f.clone();
+        c.set(&mut without, c.permissive());
+        assert_eq!(r.only, kept_linear(&t, None, &without) - kept, "{r:?}");
+    }
+}
+
+/// Without a terminal or an annotation, every modality and knob still
+/// gets its figure, named as the view names it.
+#[test]
+fn site_figures_draw_every_knob_without_a_view() {
+    let tables: FxHashMap<Box<str>, SiteTable> = [
+        (Box::from(M6A), table(M6A, 400)),
+        (Box::from(ATOI), table(ATOI, 300)),
+    ]
+    .into_iter()
+    .collect();
+    let f = SiteFilterArgs::default_values();
+    let figures = site_figures("in", &tables, &FxHashMap::default(), &f, None, &[]).unwrap();
+    let expected = threshold_counts(&tables, &FxHashMap::default(), &f).len();
+    assert_eq!(figures.len(), expected);
+    for fig in &figures {
+        assert!(fig.svg.starts_with("<svg"), "{}", fig.stem);
+        assert!(crate::figure::png(&fig.svg, 1.0).is_ok(), "{}", fig.stem);
+    }
+    assert!(figures.iter().any(|f| f.stem.starts_with(M6A)));
+    assert!(figures.iter().any(|f| f.stem.starts_with(ATOI)));
+}

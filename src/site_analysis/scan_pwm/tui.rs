@@ -520,6 +520,11 @@ impl Screen for PwmView {
 }
 
 /// Show the logo full screen until the user quits.
+/// The logo as the view first shows it, drawn without a terminal.
+pub fn figure(title: &str, pwm: &[DnaBaseCount], window: i64) -> String {
+    PwmView::new(title, pwm, window).figure()
+}
+
 pub fn show_pwm(title: &str, pwm: &[DnaBaseCount], window: i64) -> anyhow::Result<()> {
     let mut view = PwmView::new(title, pwm, window);
     view.controls = Controls::new("pwm_logo").detect();

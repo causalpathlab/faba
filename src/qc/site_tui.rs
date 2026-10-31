@@ -566,16 +566,14 @@ pub enum Picked {
 /// gave them. Needs a terminal and at least one non-empty site table.
 /// Returns how it ended and the annotation it ended on, which `g` may have
 /// changed from `gff`.
-pub fn run_site_picker(
-    input_dir: &str,
-    tables: &FxHashMap<Box<str>, SiteTable>,
+/// The non-empty site tables as views, in [`SITE_MODALITIES`] order, with
+/// each modality's kept cells per site where `_site` matrices gave them.
+fn site_views<'a>(
+    tables: &'a FxHashMap<Box<str>, SiteTable>,
     site_cells: &FxHashMap<Box<str>, FxHashMap<Box<str>, usize>>,
     filter: &SiteFilterArgs,
-    gff: Option<&str>,
-    pinned: &[Box<str>],
-    writer: Writer<'_>,
-) -> anyhow::Result<(Picked, Option<Box<str>>)> {
-    let views: Vec<SiteView> = SITE_MODALITIES
+) -> Vec<SiteView<'a>> {
+    SITE_MODALITIES
         .iter()
         .filter_map(|m| tables.get(*m))
         .filter(|t| !t.is_empty())
@@ -583,7 +581,19 @@ pub fn run_site_picker(
             let n_cells = site_cells.get(&t.modality).map(|acc| t.cells_per_site(acc));
             SiteView::new(t, n_cells, filter)
         })
-        .collect();
+        .collect()
+}
+
+/// The picker over the site tables, its annotation being read.
+fn picker<'a>(
+    input_dir: &str,
+    tables: &'a FxHashMap<Box<str>, SiteTable>,
+    site_cells: &FxHashMap<Box<str>, FxHashMap<Box<str>, usize>>,
+    filter: &SiteFilterArgs,
+    gff: Option<&str>,
+    pinned: &[Box<str>],
+) -> anyhow::Result<SitePicker<'a>> {
+    let views = site_views(tables, site_cells, filter);
     anyhow::ensure!(
         !views.is_empty(),
         "no editing site table to pick thresholds on"
@@ -603,6 +613,79 @@ pub fn run_site_picker(
     let mut picker =
         SitePicker::new(&file_name(input_dir), views, filter.clone(), meta).pin_genes(pinned);
     picker.annotation = annotation;
+    Ok(picker)
+}
+
+/// The figures the view writes under `qc_plots/` on apply, drawn without a
+/// terminal at `filter`: every modality and knob, the metagene once the
+/// annotation is read.
+pub fn site_figures(
+    input_dir: &str,
+    tables: &FxHashMap<Box<str>, SiteTable>,
+    site_cells: &FxHashMap<Box<str>, FxHashMap<Box<str>, usize>>,
+    filter: &SiteFilterArgs,
+    gff: Option<&str>,
+    pinned: &[Box<str>],
+) -> anyhow::Result<Vec<Figure>> {
+    let mut picker = picker(input_dir, tables, site_cells, filter, gff, pinned)?;
+    picker.meta.wait();
+    if let Meta::Unavailable(why) = &picker.meta {
+        log::warn!("qc_plots without a metagene: {why}");
+    }
+    Ok(picker.figures())
+}
+
+/// What one site threshold does to one modality, for `faba qc --dry-run`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThresholdCount {
+    pub modality: Box<str>,
+    pub flag: &'static str,
+    /// The threshold as given, `off` when it is not set.
+    pub threshold: String,
+    /// Sites failing it, whatever the others say.
+    pub removes: usize,
+    /// Sites failing it and no other.
+    pub only: usize,
+    /// Sites passing every threshold.
+    pub kept: usize,
+    pub sites: usize,
+}
+
+/// Every applicable threshold's counts at `filter`, modality by modality.
+pub fn threshold_counts(
+    tables: &FxHashMap<Box<str>, SiteTable>,
+    site_cells: &FxHashMap<Box<str>, FxHashMap<Box<str>, usize>>,
+    filter: &SiteFilterArgs,
+) -> Vec<ThresholdCount> {
+    let mut out = Vec::new();
+    for v in site_views(tables, site_cells, filter) {
+        let kept = v.fails.iter().filter(|&&f| f == 0).count();
+        for &c in &v.criteria {
+            let bit = c.bit();
+            out.push(ThresholdCount {
+                modality: v.table.modality.clone(),
+                flag: c.flag(),
+                threshold: c.shown(filter).unwrap_or_else(|| "off".into()),
+                removes: v.fails.iter().filter(|&&f| f & bit != 0).count(),
+                only: v.fails.iter().filter(|&&f| f == bit).count(),
+                kept,
+                sites: v.fails.len(),
+            });
+        }
+    }
+    out
+}
+
+pub fn run_site_picker(
+    input_dir: &str,
+    tables: &FxHashMap<Box<str>, SiteTable>,
+    site_cells: &FxHashMap<Box<str>, FxHashMap<Box<str>, usize>>,
+    filter: &SiteFilterArgs,
+    gff: Option<&str>,
+    pinned: &[Box<str>],
+    writer: Writer<'_>,
+) -> anyhow::Result<(Picked, Option<Box<str>>)> {
+    let mut picker = picker(input_dir, tables, site_cells, filter, gff, pinned)?;
     picker.writer = writer;
     picker.controls = Controls::new("qc_sites").detect();
     match run_view(&mut picker) {

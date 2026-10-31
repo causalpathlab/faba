@@ -211,13 +211,13 @@ Producers write every candidate and apply no p-value cutoff. qc is where cells, 
 
 1. docs lists the method write-ups. With `query` it prints the sections named (a topic such as profiling, a command such as qc, or a section number).
 2. count, atoi, dartseq, apa, depth and snp each write one modality. run writes the pipeline (SNP, then count, A-to-I, m6A, APA) into one directory. dartseq needs control BAMs; without them, run skips m6A.
-3. qc filters a directory into a new one, with the site thresholds given. It does not edit the input.
-4. pileup, metagene and pwm read a directory's sites. pileup returns a binned table for a gene or region (and, with `figure`, a Miami SVG). modules prints the gene and cell modules of a directory that already holds cluster's block tables.
+3. qc filters a directory into a new one, with the site thresholds given. It does not edit the input. With `dry_run` it writes nothing and returns what the cell QC keeps and what each threshold removes: try thresholds that way first.
+4. pileup, metagene and pwm read a directory's sites. metagene and pwm return their table and its figure as an image. pileup returns a binned table for a gene or region (and, with `figure`, a Miami SVG, as an image too). modules prints the gene and cell modules of a directory that already holds cluster's block tables.
 5. cluster fits cells by their own site reads (link, blocks or crp) and writes its tables to `out`.
 
 The producers (count, depth, atoi, dartseq, apa, snp, run, qc, cluster) take `background`: on large BAMs set it, and the call returns a job id at once.
 
-Every write goes to `out`, which must not exist. Leave `out` out and the output goes in today's results folder, named after the input and the tool. Paths resolve against the server's working directory. Further flags go in `options`, as `faba <command> --help` lists them; `options` cannot name the output or open a view. Results give the paths written.
+Every write goes to `out`, which must not exist. Leave `out` out and the output goes in today's results folder, named after the input and the tool. Paths resolve against the server's working directory. Common flags have their own arguments; further flags go in `options`, as `faba <command> --help` lists them; `options` cannot name the output or open a view. Results give the paths written and what the run recorded (`results`: a fit's R-hat, its cluster sizes).
 ```
 
 legume-mcp adds where the records are, the `notebook` tool (open with a plan: the question, the data, how the result will be checked) and the background jobs below.
