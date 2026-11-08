@@ -1,7 +1,8 @@
 //! A kept draw: the chain's running posterior means, its held-out score and
 //! its scalars.
 
-use super::{ln_mean, Alignment, Model, State};
+use super::urn::role_weights;
+use super::{ln_mean, Alignment, Chain, Model, State};
 use crate::cluster::crp::{ln_sigmoid, log_sum_exp, logit};
 use std::sync::{Arc, Mutex};
 
@@ -205,20 +206,6 @@ fn add(sums: &mut Vec<f64>, x: &[f64], f: fn(f64) -> f64) {
 }
 
 impl Model<'_> {
-    /// Row-major role weights given the counts: each row's share of its
-    /// links in each role around `conc * base`.
-    fn weights(counts: &[u32], conc: f64, base: &[f64]) -> Vec<f64> {
-        counts
-            .chunks(base.len())
-            .flat_map(|row| {
-                let total = row.iter().sum::<u32>() as f64 + conc;
-                row.iter()
-                    .zip(base)
-                    .map(move |(&x, &b)| (x as f64 + conc * b) / total)
-            })
-            .collect()
-    }
-
     /// Site `s`'s log fractions `(ln p, ln (1 - p))` in block `k` for cell
     /// `c`: the block's posterior-mean profile, or at infinite strength the
     /// baseline shifted by the block's shift and the cell's level.
@@ -257,16 +244,17 @@ impl Model<'_> {
     }
 
     /// The draw at `st`, its chain's tally brought up to date.
-    pub(super) fn draw(&self, st: &State) -> Draw {
+    pub(super) fn draw(&self, ch: &Chain) -> Draw {
+        let Chain { urn, st } = ch;
         let kk = self.blocks();
-        let cell = Self::weights(&st.n, self.settings.alpha, &st.beta);
-        let gene = Self::weights(&st.m, self.settings.gene_alpha, &self.gene_base);
+        let cell = self.cells.means(urn);
+        let gene = role_weights(&st.m, self.settings.gene_alpha, &self.gene_base);
         {
             let mut t = st.tally.lock().expect("a chain's tally");
             let same = |x: f64| x;
             add(&mut t.cell, &cell, same);
             add(&mut t.gene, &gene, same);
-            add(&mut t.beta, &st.beta, same);
+            add(&mut t.beta, &urn.beta, same);
             add(&mut t.shift, &st.delta, same);
             add(&mut t.shift_sq, &st.delta, |x| x * x);
             if !self.finite() {
@@ -309,7 +297,7 @@ impl Model<'_> {
         }
         Draw {
             heldout: self.score_heldout(st, &cell, &gene),
-            log_joint: self.log_joint(st),
+            log_joint: self.log_joint(urn, st),
             shift: st.delta.clone(),
             role_mean,
             tally: Arc::clone(&st.tally),

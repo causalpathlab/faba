@@ -2,7 +2,7 @@
 //! held, the log joint, and the swap's ratio beside the log joint's change.
 
 use super::draw::{add_columns, Tally};
-use super::{Alignment, Draw, Model, Scratch, State};
+use super::{Alignment, Chain, Draw, Model, Scratch, State};
 use legume_numeric::mcmc::engine::McmcModel;
 use rand::rngs::SmallRng;
 use std::sync::{Arc, Mutex};
@@ -28,10 +28,10 @@ impl Model<'_> {
         seed: u64,
     ) -> Vec<(Vec<u16>, Vec<u16>, Vec<f64>)> {
         let mut rng = <SmallRng as rand::SeedableRng>::seed_from_u64(seed);
-        let mut st = self.init(&mut rng);
-        let beta = st.beta.clone();
+        let mut ch = self.init(&mut rng);
+        let beta = ch.urn.beta.clone();
         self.hold(
-            &mut st,
+            &mut ch,
             &Held {
                 beta: &beta,
                 delta,
@@ -41,8 +41,9 @@ impl Model<'_> {
         let mut scratch = Scratch::new(self);
         (0..warmup + draws)
             .filter_map(|sweep| {
-                self.label_moves(&mut st, &mut scratch, &mut rng);
-                (sweep >= warmup).then(|| (st.a.clone(), st.b.clone(), st.beta.clone()))
+                self.label_moves(&mut ch, &mut scratch, &mut rng);
+                let Chain { urn, st } = &ch;
+                (sweep >= warmup).then(|| (st.a.clone(), st.b.clone(), urn.beta.clone()))
             })
             .collect()
     }
@@ -57,7 +58,7 @@ impl Model<'_> {
         seed: u64,
     ) -> Vec<f64> {
         let mut rng = <SmallRng as rand::SeedableRng>::seed_from_u64(seed);
-        let mut st = self.state(a.to_vec(), b.to_vec());
+        let mut st = self.state(a.to_vec(), b.to_vec()).st;
         if !self.finite() {
             st.nu = nu.to_vec();
             (0..self.links.cells).for_each(|c| self.relevel(&mut st, c));
@@ -80,7 +81,7 @@ impl Model<'_> {
         seed: u64,
     ) -> Vec<f64> {
         let mut rng = <SmallRng as rand::SeedableRng>::seed_from_u64(seed);
-        let mut st = self.state(a.to_vec(), b.to_vec());
+        let mut st = self.state(a.to_vec(), b.to_vec()).st;
         st.delta = delta.to_vec();
         for k in 0..self.blocks() {
             self.refresh(&mut st, k);
@@ -97,18 +98,19 @@ impl Model<'_> {
     /// labels held at `a`, `b`.
     pub fn beta_draws(&self, a: &[u16], b: &[u16], draws: usize, seed: u64) -> Vec<f64> {
         let mut rng = <SmallRng as rand::SeedableRng>::seed_from_u64(seed);
-        let mut st = self.state(a.to_vec(), b.to_vec());
+        let mut urn = self.state(a.to_vec(), b.to_vec()).urn;
         (0..draws)
             .map(|_| {
-                self.resample_beta(&mut st, &mut rng);
-                st.beta[0]
+                self.cells.resample(&mut urn, &mut rng);
+                urn.beta[0]
             })
             .collect()
     }
 
     /// The log joint of labels `a`, `b` at `held`.
     pub fn log_joint_at(&self, labels: (&[u16], &[u16]), held: &Held) -> f64 {
-        self.log_joint(&self.held_state(labels, held))
+        let ch = self.held_state(labels, held);
+        self.log_joint(&ch.urn, &ch.st)
     }
 
     /// The held-out score of a draw at labels `a`, `b` and `held`.
@@ -128,12 +130,14 @@ impl Model<'_> {
         cell: bool,
         (r, r2): (u16, u16),
     ) -> Option<(f64, f64)> {
-        let before = self.log_joint(&self.held_state((a, b), held));
-        let mut st = self.held_state((a, b), held);
-        let computed = self.exchange(&mut st, (unit, cell), (r, r2), &mut Scratch::new(self))?;
+        let joint = |ch: &Chain| self.log_joint(&ch.urn, &ch.st);
+        let before = joint(&self.held_state((a, b), held));
+        let Chain { mut urn, mut st } = self.held_state((a, b), held);
+        let scratch = &mut Scratch::new(self);
+        let computed = self.exchange(&mut urn, &mut st, (unit, cell), (r, r2), scratch)?;
         Some((
             computed,
-            self.log_joint(&self.held_state((&st.a, &st.b), held)) - before,
+            joint(&self.held_state((&st.a, &st.b), held)) - before,
         ))
     }
 
@@ -142,10 +146,11 @@ impl Model<'_> {
     /// start.
     pub fn live_reads(&self, sweeps: usize, seed: u64) -> (Vec<u16>, Vec<u16>, Vec<f64>, Vec<f64>) {
         let mut rng = <SmallRng as rand::SeedableRng>::seed_from_u64(seed);
-        let mut st = self.init(&mut rng);
+        let mut ch = self.init(&mut rng);
         for _ in 0..sweeps {
-            self.sweep(&mut st, &mut rng);
+            self.sweep(&mut ch, &mut rng);
         }
+        let st = ch.st;
         (st.a, st.b, st.on, st.off)
     }
 
@@ -154,15 +159,16 @@ impl Model<'_> {
     /// bits, and a hash of the shifts' bits and of the levels'.
     pub fn fingerprints(&self, sweeps: usize, seed: u64) -> Vec<[u64; 4]> {
         let mut rng = <SmallRng as rand::SeedableRng>::seed_from_u64(seed);
-        let mut st = self.init(&mut rng);
+        let mut ch = self.init(&mut rng);
         (0..sweeps)
             .map(|_| {
-                self.sweep(&mut st, &mut rng);
+                self.sweep(&mut ch, &mut rng);
+                let Chain { urn, st } = &ch;
                 let labels = st.a.iter().chain(&st.b).map(|&x| u64::from(x));
                 let bits = |x: &[f64]| fnv(x.iter().map(|v| v.to_bits()));
                 [
                     fnv(labels),
-                    self.log_joint(&st).to_bits(),
+                    self.log_joint(urn, st).to_bits(),
                     bits(&st.delta),
                     bits(&st.nu),
                 ]
@@ -179,11 +185,12 @@ impl Model<'_> {
     pub fn stale_caches(&self, sweeps: usize, seed: u64) -> (usize, usize) {
         use crate::cluster::fast;
         let mut rng = <SmallRng as rand::SeedableRng>::seed_from_u64(seed);
-        let mut st = self.init(&mut rng);
+        let mut ch = self.init(&mut rng);
         for _ in 0..sweeps {
-            self.sweep(&mut st, &mut rng);
+            self.sweep(&mut ch, &mut rng);
         }
-        self.label_moves(&mut st, &mut Scratch::new(self), &mut rng);
+        self.label_moves(&mut ch, &mut Scratch::new(self), &mut rng);
+        let st = &ch.st;
         let (mut checked, mut stale) = (0, 0);
         for (at, &(x, y)) in st.prior.iter().enumerate() {
             let s = at / self.blocks();
@@ -212,8 +219,8 @@ impl Model<'_> {
         l: usize,
     ) -> (Vec<f64>, Vec<f64>) {
         use crate::cluster::crp::ln_sigmoid;
-        let mut st = self.held_state(labels, held);
-        self.put(&mut st, l, false);
+        let Chain { mut urn, mut st } = self.held_state(labels, held);
+        self.put(&mut urn, &mut st, l, false);
         let kk = self.blocks();
         let mut scored = vec![0.0; kk];
         self.ln_link_blocks(&st, l, &mut scored, &mut Scratch::new(self).rising);
@@ -245,7 +252,7 @@ impl Model<'_> {
     /// current shifts and levels.
     pub fn stale_exponentials(&self, sweeps: usize, seed: u64) -> (usize, usize) {
         let mut rng = <SmallRng as rand::SeedableRng>::seed_from_u64(seed);
-        let mut st = self.init(&mut rng);
+        let mut ch = self.init(&mut rng);
         let mut scratch = Scratch::new(self);
         let (mut checked, mut stale) = (0, 0);
         let mut check = |st: &State| {
@@ -256,26 +263,27 @@ impl Model<'_> {
             }
         };
         for _ in 0..sweeps {
-            self.label_moves(&mut st, &mut scratch, &mut rng);
-            self.resample_shifts(&mut st, &mut rng);
-            check(&st);
-            self.resample_levels(&mut st, &mut rng);
-            check(&st);
+            self.label_moves(&mut ch, &mut scratch, &mut rng);
+            self.resample_shifts(&mut ch.st, &mut rng);
+            check(&ch.st);
+            self.resample_levels(&mut ch.st, &mut rng);
+            check(&ch.st);
         }
         (checked, stale)
     }
 
     /// The state of labels `a`, `b` at `held`.
-    fn held_state(&self, (a, b): (&[u16], &[u16]), held: &Held) -> State {
-        let mut st = self.state(a.to_vec(), b.to_vec());
-        self.hold(&mut st, held);
-        st
+    fn held_state(&self, (a, b): (&[u16], &[u16]), held: &Held) -> Chain {
+        let mut ch = self.state(a.to_vec(), b.to_vec());
+        self.hold(&mut ch, held);
+        ch
     }
 
     /// `st` at `held` (the levels only at infinite strength, where there
     /// are any).
-    fn hold(&self, st: &mut State, held: &Held) {
-        st.beta = held.beta.to_vec();
+    fn hold(&self, ch: &mut Chain, held: &Held) {
+        ch.urn.beta = held.beta.to_vec();
+        let st = &mut ch.st;
         st.delta = held.delta.to_vec();
         if !self.finite() {
             st.nu = held.nu.to_vec();

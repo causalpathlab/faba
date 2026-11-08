@@ -1,7 +1,7 @@
 //! The Metropolis-Hastings swaps: two roles exchanged on all of a cell's
 //! or a gene's links, each swap its own inverse.
 
-use super::{Model, State};
+use super::{Model, State, Urn};
 use crate::cluster::crp::ln_urn;
 use rand::rngs::SmallRng;
 use rand::RngExt;
@@ -58,35 +58,43 @@ impl Model<'_> {
         }
     }
 
-    /// A cell's or gene's urn: its links per role under its Dirichlet.
-    pub(super) fn unit_term(&self, st: &State, unit: usize, cell: bool) -> f64 {
-        let (aa, bb) = (self.settings.cell_roles, self.settings.gene_roles);
+    /// A gene's urn: its links per role under its Dirichlet.
+    pub(super) fn gene_term(&self, st: &State, g: usize) -> f64 {
+        let bb = self.settings.gene_roles;
+        ln_urn(
+            &st.m[g * bb..(g + 1) * bb],
+            self.settings.gene_alpha,
+            &self.gene_base,
+        )
+    }
+
+    /// A cell's urn (`cell` true) or a gene's.
+    fn unit_term(&self, urn: &Urn, st: &State, unit: usize, cell: bool) -> f64 {
         if cell {
-            ln_urn(
-                &st.n[unit * aa..(unit + 1) * aa],
-                self.settings.alpha,
-                &st.beta,
-            )
+            self.cells.term(urn, unit)
         } else {
-            ln_urn(
-                &st.m[unit * bb..(unit + 1) * bb],
-                self.settings.gene_alpha,
-                &self.gene_base,
-            )
+            self.gene_term(st, unit)
         }
     }
 
     /// Roles `r` and `r2` exchanged on links `moved` (each holding one of
     /// them) of a cell (`cell` true) or a gene, their counts moved with
     /// them: its own inverse.
-    fn flip(&self, st: &mut State, moved: &[usize], cell: bool, (r, r2): (u16, u16)) {
+    fn flip(
+        &self,
+        urn: &mut Urn,
+        st: &mut State,
+        moved: &[usize],
+        cell: bool,
+        (r, r2): (u16, u16),
+    ) {
         for &l in moved {
-            self.put(st, l, false);
+            self.put(urn, st, l, false);
             let x = if cell { &mut st.a[l] } else { &mut st.b[l] };
             *x = if *x == r { r2 } else { r };
         }
         for &l in moved {
-            self.put(st, l, true);
+            self.put(urn, st, l, true);
         }
     }
 
@@ -99,6 +107,7 @@ impl Model<'_> {
     /// the block it leaves (none: no link holds either role).
     pub(super) fn exchange(
         &self,
+        urn: &mut Urn,
         st: &mut State,
         (unit, cell): (usize, bool),
         (r, r2): (u16, u16),
@@ -135,16 +144,16 @@ impl Model<'_> {
         }
         touched.sort_unstable();
         touched.dedup();
-        let terms = |st: &State| {
-            self.unit_term(st, unit, cell)
+        let terms = |urn: &Urn, st: &State| {
+            self.unit_term(urn, st, unit, cell)
                 + touched
                     .iter()
                     .map(|&at| self.site_term(st, at))
                     .sum::<f64>()
         };
-        let before = terms(st);
-        self.flip(st, moved, cell, (r, r2));
-        Some(terms(st) - before + reads)
+        let before = terms(urn, st);
+        self.flip(urn, st, moved, cell, (r, r2));
+        Some(terms(urn, st) - before + reads)
     }
 
     /// A swap of two roles drawn uniformly on all of cell `unit`'s links
@@ -153,6 +162,7 @@ impl Model<'_> {
     /// Rejected, the labels are flipped back, unscored.
     pub(super) fn swap(
         &self,
+        urn: &mut Urn,
         st: &mut State,
         (unit, cell): (usize, bool),
         scratch: &mut Scratch,
@@ -169,9 +179,9 @@ impl Model<'_> {
         let r = rng.random_range(0..roles);
         let r2 = (r + rng.random_range(1..roles)) % roles;
         let pair = (r as u16, r2 as u16);
-        if let Some(delta) = self.exchange(st, (unit, cell), pair, scratch) {
+        if let Some(delta) = self.exchange(urn, st, (unit, cell), pair, scratch) {
             if rng.random::<f64>().ln() >= delta {
-                self.flip(st, &scratch.moved, cell, pair);
+                self.flip(urn, st, &scratch.moved, cell, pair);
             }
         }
     }

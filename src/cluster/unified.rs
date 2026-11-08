@@ -81,6 +81,7 @@ mod resample;
 mod settings;
 mod summary;
 mod swap;
+mod urn;
 
 pub use align::Alignment;
 #[cfg(test)]
@@ -95,10 +96,13 @@ pub use pool::pool;
 pub use pool::Pooling;
 pub use settings::{strength, Recorded, Settings, Weights};
 pub use summary::{pooled, summarize};
+pub use urn::{Cells, Urn};
 
 /// The blockmodel over one set of links, with what the moves share.
 pub struct Model<'a> {
     links: &'a Links,
+    /// The cells' side: what a link's cell role touches beyond its reads.
+    cells: Cells,
     /// Each site's gene, numbered from 0.
     gene_of: &'a [u32],
     /// Each link's gene.
@@ -123,15 +127,20 @@ pub struct Model<'a> {
     heldout: Option<&'a Reads>,
 }
 
-/// A chain's labels and what they imply: links per cell and cell role
-/// (`cells x A`), per gene and gene role (`genes x B`), and reads per site
-/// and block (`sites x K`, `K = A x B` blocks, block `a B + b`) with the
-/// links holding them (finite strength only: at infinite strength the
-/// reads factor by link and none are kept per block).
+/// A chain: the cells' side ([`Urn`]) and the rest of its state.
+pub struct Chain {
+    urn: Urn,
+    st: State,
+}
+
+/// A chain's labels and what they imply beyond the cells' side: links per
+/// gene and gene role (`genes x B`), and reads per site and block (`sites x
+/// K`, `K = A x B` blocks, block `a B + b`) with the links holding them
+/// (finite strength only: at infinite strength the reads factor by link and
+/// none are kept per block).
 pub struct State {
     a: Vec<u16>,
     b: Vec<u16>,
-    n: Vec<u32>,
     m: Vec<u32>,
     on: Vec<f64>,
     off: Vec<f64>,
@@ -146,8 +155,6 @@ pub struct State {
     /// and `exp(-nu_c)`.
     nu: Vec<f64>,
     nu_exp: Vec<f64>,
-    /// Global cell-role weights.
-    beta: Vec<f64>,
     /// Each site's profile pseudo-counts in each block (`sites x K`; empty
     /// at infinite strength).
     prior: Vec<(f64, f64)>,
@@ -197,8 +204,15 @@ impl<'a> Model<'a> {
             gene_link[next[g as usize]] = l;
             next[g as usize] += 1;
         }
+        let cells = Cells {
+            cells: links.cells,
+            roles: settings.cell_roles,
+            alpha: settings.alpha,
+            weights: settings.weights,
+        };
         Ok(Self {
             links,
+            cells,
             gene_of,
             link_gene,
             gene_ptr,
@@ -330,24 +344,16 @@ impl<'a> Model<'a> {
         ln_beta(x + st.on[at], y + st.off[at]) - st.prior_beta[at]
     }
 
-    /// Link `l`'s labels counted in (`add`) or out: its cell's and gene's
-    /// role counts, and at finite strength its reads in its block.
-    fn put(&self, st: &mut State, l: usize, add: bool) {
-        let (aa, bb, kk) = (
-            self.settings.cell_roles,
-            self.settings.gene_roles,
-            self.blocks(),
-        );
+    /// Link `l`'s labels counted in (`add`) or out: its cell's role count
+    /// in `urn`, its gene's, and at finite strength its reads in its block.
+    fn put(&self, urn: &mut Urn, st: &mut State, l: usize, add: bool) {
+        let (bb, kk) = (self.settings.gene_roles, self.blocks());
         let (c, g) = (self.links.cell[l] as usize, self.link_gene[l] as usize);
-        let (n, m) = (
-            &mut st.n[c * aa + st.a[l] as usize],
-            &mut st.m[g * bb + st.b[l] as usize],
-        );
+        self.cells.count(urn, c, st.a[l] as usize, add);
+        let m = &mut st.m[g * bb + st.b[l] as usize];
         if add {
-            *n += 1;
             *m += 1;
         } else {
-            *n -= 1;
             *m -= 1;
         }
         if !self.finite() {
@@ -465,10 +471,17 @@ impl<'a> Model<'a> {
 
     /// Link `l`'s pair of roles from its conditional, `scratch`'s weights
     /// and gene logs its buffers.
-    fn relabel(&self, st: &mut State, l: usize, scratch: &mut Scratch, rng: &mut SmallRng) {
+    fn relabel(
+        &self,
+        urn: &mut Urn,
+        st: &mut State,
+        l: usize,
+        scratch: &mut Scratch,
+        rng: &mut SmallRng,
+    ) {
         let (aa, bb) = (self.settings.cell_roles, self.settings.gene_roles);
         let (c, g) = (self.links.cell[l] as usize, self.link_gene[l] as usize);
-        self.put(st, l, false);
+        self.put(urn, st, l, false);
         let gb = self.settings.gene_alpha / bb as f64;
         let Scratch {
             w, rising, gene, ..
@@ -478,7 +491,7 @@ impl<'a> Model<'a> {
         }
         self.ln_link_blocks(st, l, w, rising);
         for a in 0..aa {
-            let cell = (st.n[c * aa + a] as f64 + self.settings.alpha * st.beta[a]).ln();
+            let cell = self.cells.ln_weight(urn, c, a);
             for b in 0..bb {
                 w[a * bb + b] += cell + gene[b];
             }
@@ -486,20 +499,16 @@ impl<'a> Model<'a> {
         let k = sample_log(w, rng);
         st.a[l] = (k / bb) as u16;
         st.b[l] = (k % bb) as u16;
-        self.put(st, l, true);
+        self.put(urn, st, l, true);
     }
 
     /// Log joint of the labels, the shifts, the cells' levels and the reads
     /// given the global weights (role weights and profiles integrated out;
     /// the weights' prior not included).
-    fn log_joint(&self, st: &State) -> f64 {
+    fn log_joint(&self, urn: &Urn, st: &State) -> f64 {
         let kk = self.blocks();
-        let cells: f64 = (0..self.links.cells)
-            .map(|c| self.unit_term(st, c, true))
-            .sum();
-        let genes: f64 = (0..self.genes())
-            .map(|g| self.unit_term(st, g, false))
-            .sum();
+        let cells = self.cells.ln_joint(urn);
+        let genes: f64 = (0..self.genes()).map(|g| self.gene_term(st, g)).sum();
         let normal =
             |x: &[f64], sd: f64| -> f64 { x.iter().map(|d| -d * d / (2.0 * sd * sd)).sum() };
         let shifts = self
@@ -520,36 +529,32 @@ impl<'a> Model<'a> {
 
     /// Relabel every link once in random order, then a swap per cell and
     /// per gene, then the global weights.
-    fn label_moves(&self, st: &mut State, scratch: &mut Scratch, rng: &mut SmallRng) {
+    fn label_moves(&self, ch: &mut Chain, scratch: &mut Scratch, rng: &mut SmallRng) {
+        let Chain { urn, st } = ch;
         let mut order: Vec<usize> = (0..self.links.len()).collect();
         order.shuffle(rng);
         for l in order {
-            self.relabel(st, l, scratch, rng);
+            self.relabel(urn, st, l, scratch, rng);
         }
         for c in 0..self.links.cells {
-            self.swap(st, (c, true), scratch, rng);
+            self.swap(urn, st, (c, true), scratch, rng);
         }
         for g in 0..self.genes() {
-            self.swap(st, (g, false), scratch, rng);
+            self.swap(urn, st, (g, false), scratch, rng);
         }
-        self.resample_beta(st, rng);
+        self.cells.resample(urn, rng);
     }
 
     /// The counts implied by labels `a`, `b`, at shift 0 and uniform global
     /// weights.
-    fn state(&self, a: Vec<u16>, b: Vec<u16>) -> State {
-        let (aa, bb, kk) = (
-            self.settings.cell_roles,
-            self.settings.gene_roles,
-            self.blocks(),
-        );
+    fn state(&self, a: Vec<u16>, b: Vec<u16>) -> Chain {
+        let (bb, kk) = (self.settings.gene_roles, self.blocks());
         let sites = self.mu.len();
         // Reads per site and block are kept at finite strength alone.
         let per_block = if self.finite() { sites * kk } else { 0 };
         let mut st = State {
             a,
             b,
-            n: vec![0; self.links.cells * aa],
             m: vec![0; self.genes() * bb],
             on: vec![0.0; per_block],
             off: vec![0.0; per_block],
@@ -558,7 +563,6 @@ impl<'a> Model<'a> {
             delta_exp: vec![1.0; kk],
             nu: vec![0.0; self.links.cells],
             nu_exp: vec![1.0; self.links.cells],
-            beta: vec![1.0 / aa as f64; aa],
             prior: vec![(0.0, 0.0); per_block],
             prior_beta: vec![0.0; per_block],
             lgamma: vec![[0.0; 3]; per_block],
@@ -567,10 +571,11 @@ impl<'a> Model<'a> {
         for k in 0..kk {
             self.refresh(&mut st, k);
         }
+        let mut urn = self.cells.urn();
         for l in 0..self.links.len() {
-            self.put(&mut st, l, true);
+            self.put(&mut urn, &mut st, l, true);
         }
-        st
+        Chain { urn, st }
     }
 }
 
@@ -639,13 +644,13 @@ pub fn shift_range(shift: &[f64], cell_roles: usize, gene_roles: usize, b: usize
 }
 
 impl McmcModel for Model<'_> {
-    type State = State;
+    type State = Chain;
     type Sample = Draw;
     type Result = Vec<Draw>;
 
     /// Each cell's links in one cell role, each gene's in one gene role,
     /// drawn at random.
-    fn init(&self, rng: &mut SmallRng) -> State {
+    fn init(&self, rng: &mut SmallRng) -> Chain {
         let (aa, bb) = (self.settings.cell_roles, self.settings.gene_roles);
         let cell: Vec<u16> = (0..self.links.cells)
             .map(|_| rng.random_range(0..aa) as u16)
@@ -659,14 +664,14 @@ impl McmcModel for Model<'_> {
     }
 
     /// The label moves, then the shifts, then the cells' levels.
-    fn sweep(&self, st: &mut State, rng: &mut SmallRng) {
-        self.label_moves(st, &mut Scratch::new(self), rng);
-        self.resample_shifts(st, rng);
-        self.resample_levels(st, rng);
+    fn sweep(&self, ch: &mut Chain, rng: &mut SmallRng) {
+        self.label_moves(ch, &mut Scratch::new(self), rng);
+        self.resample_shifts(&mut ch.st, rng);
+        self.resample_levels(&mut ch.st, rng);
     }
 
-    fn collect(&self, st: &State) -> Draw {
-        self.draw(st)
+    fn collect(&self, ch: &Chain) -> Draw {
+        self.draw(ch)
     }
 
     fn summarize(&self, draws: Vec<Draw>) -> Vec<Draw> {
@@ -676,7 +681,7 @@ impl McmcModel for Model<'_> {
 
 impl crate::cluster::progress::Traced for Model<'_> {
     /// The kept draws' log joint, at any sweep.
-    fn log_joint_of(&self, st: &State) -> Option<f64> {
-        Some(self.log_joint(st))
+    fn log_joint_of(&self, ch: &Chain) -> Option<f64> {
+        Some(self.log_joint(&ch.urn, &ch.st))
     }
 }

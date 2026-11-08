@@ -1,44 +1,12 @@
-//! The conditional draws beside the labels: the global weights, the block
-//! shifts and the cells' levels, the last two by slice sampling.
+//! The conditional draws beside the labels: the block shifts and the cells'
+//! levels, by slice sampling (the global weights are the cells' side's, in
+//! [`super::urn`]).
 
-use super::{Model, State, Weights};
+use super::{Model, State};
 use rand::rngs::SmallRng;
 use rand::RngExt;
-use rand_distr::Distribution;
 
 impl Model<'_> {
-    /// The global weights from their conditional (HDP only): each cell's
-    /// table counts in each role (an Antoniak draw), then
-    /// `beta ~ Dirichlet(gamma / A + tables)`.
-    pub(super) fn resample_beta(&self, st: &mut State, rng: &mut SmallRng) {
-        let Weights::Hdp(gamma) = self.settings.weights else {
-            return;
-        };
-        let aa = self.settings.cell_roles;
-        let mut tables = vec![0.0f64; aa];
-        for c in 0..self.links.cells {
-            for (a, t) in tables.iter_mut().enumerate() {
-                let ab = self.settings.alpha * st.beta[a];
-                for j in 0..st.n[c * aa + a] {
-                    if rng.random::<f64>() < ab / (ab + j as f64) {
-                        *t += 1.0;
-                    }
-                }
-            }
-        }
-        let draws: Vec<f64> = tables
-            .iter()
-            .map(|&t| {
-                rand_distr::Gamma::new(gamma / aa as f64 + t, 1.0)
-                    .unwrap()
-                    .sample(rng)
-                    .max(1e-300)
-            })
-            .collect();
-        let total: f64 = draws.iter().sum();
-        st.beta = draws.iter().map(|d| d / total).collect();
-    }
-
     /// Each block's shift from its conditional (its Normal prior times its
     /// sites' marginals, at infinite strength its links' reads each at its
     /// cell's level), by slice sampling (Neal 2003). Each block's sites
