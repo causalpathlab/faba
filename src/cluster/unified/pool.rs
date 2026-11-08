@@ -73,7 +73,7 @@ pub fn pool(
     reference: usize,
     lagging: &[usize],
 ) -> (Means, Pooling) {
-    let (aa, bb) = (model.settings.cell_roles, model.settings.gene_roles);
+    let (aa, bb) = (model.cells.roles, model.settings.gene_roles);
     let last = |c: usize| chains[c].last().expect("a chain has draws");
     let means: Vec<Means> = (0..chains.len()).map(|c| last(c).means(false)).collect();
     let alignment: Vec<Alignment> = (0..chains.len())
@@ -200,7 +200,7 @@ fn diagnose(
     (pooled, reference): (&[usize], usize),
     alignment: &[Alignment],
 ) -> Vec<(String, f64, f64)> {
-    let (aa, bb) = (model.settings.cell_roles, model.settings.gene_roles);
+    let (aa, bb) = (model.cells.roles, model.settings.gene_roles);
     // Chain `c`'s series of `f` at each kept draw.
     let series = |f: &dyn Fn(usize, &Draw) -> f64| -> Vec<Vec<f64>> {
         pooled

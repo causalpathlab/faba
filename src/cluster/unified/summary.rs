@@ -89,7 +89,7 @@ fn best_overlap(a: &[Vec<usize>], b: &[Vec<usize>]) -> f64 {
 
 /// The chains of `model`, summarised together.
 pub fn summarize(model: &Model, chains: &[Vec<Draw>]) -> Summary {
-    let (aa, bb) = (model.settings.cell_roles, model.settings.gene_roles);
+    let (aa, bb) = (model.cells.roles, model.settings.gene_roles);
     let (chain_log_joint, rhat_log_joint, best_chain) = chain_scores(&log_joints(chains));
     let means: Vec<Means> = chains
         .iter()

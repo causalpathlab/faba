@@ -1,7 +1,7 @@
 //! The Metropolis-Hastings swaps: two roles exchanged on all of a cell's
 //! or a gene's links, each swap its own inverse.
 
-use super::{Model, State};
+use super::{Model, State, Urn};
 use crate::cluster::crp::ln_urn;
 use rand::rngs::SmallRng;
 use rand::RngExt;
@@ -58,58 +58,86 @@ impl Model<'_> {
         }
     }
 
-    /// A cell's or gene's urn: its links per role under its Dirichlet.
-    pub(super) fn unit_term(&self, st: &State, unit: usize, cell: bool) -> f64 {
-        let (aa, bb) = (self.settings.cell_roles, self.settings.gene_roles);
+    /// A gene's urn: its links per role under its Dirichlet.
+    pub(super) fn gene_term(&self, st: &State, g: usize) -> f64 {
+        let bb = self.settings.gene_roles;
+        ln_urn(
+            &st.m[g * bb..(g + 1) * bb],
+            self.settings.gene_alpha,
+            &self.gene_base,
+        )
+    }
+
+    /// A cell's urn (`cell` true) or a gene's.
+    fn unit_term(&self, urn: &Urn, st: &State, unit: usize, cell: bool) -> f64 {
         if cell {
-            ln_urn(
-                &st.n[unit * aa..(unit + 1) * aa],
-                self.settings.alpha,
-                &st.beta,
-            )
+            self.cells.term(urn, unit)
         } else {
-            ln_urn(
-                &st.m[unit * bb..(unit + 1) * bb],
-                self.settings.gene_alpha,
-                &self.gene_base,
-            )
+            self.gene_term(st, unit)
         }
     }
 
     /// Roles `r` and `r2` exchanged on links `moved` (each holding one of
     /// them) of a cell (`cell` true) or a gene, their counts moved with
     /// them: its own inverse.
-    fn flip(&self, st: &mut State, moved: &[usize], cell: bool, (r, r2): (u16, u16)) {
+    fn flip(
+        &self,
+        urn: &mut Urn,
+        st: &mut State,
+        moved: &[usize],
+        cell: bool,
+        (r, r2): (u16, u16),
+    ) {
         for &l in moved {
-            self.put(st, l, false);
+            self.put(urn, st, l, false);
             let x = if cell { &mut st.a[l] } else { &mut st.b[l] };
             *x = if *x == r { r2 } else { r };
         }
         for &l in moved {
-            self.put(st, l, true);
+            self.put(urn, st, l, true);
         }
     }
 
     /// Exchanges roles `r` and `r2` on cell `unit`'s links (`cell` true) or
     /// gene `unit`'s, in place (see [`Self::flip`]), and returns the change
-    /// in log joint, the links moved left in `scratch`: the unit's urn and
-    /// the site terms of every block a moved link leaves or enters, or at
-    /// infinite strength (the reads factoring by link, each at its cell's
-    /// level) each moved link's reads in the block it enters less those in
-    /// the block it leaves (none: no link holds either role).
+    /// in log joint, the links moved left in `scratch`: the unit's urn
+    /// (counted once, whatever holds its links) and this model's part (see
+    /// [`Self::exchange_links`]); none when no link holds either role.
     pub(super) fn exchange(
         &self,
+        urn: &mut Urn,
         st: &mut State,
         (unit, cell): (usize, bool),
-        (r, r2): (u16, u16),
+        pair: (u16, u16),
         scratch: &mut Scratch,
     ) -> Option<f64> {
-        let (bb, kk) = (self.settings.gene_roles, self.blocks());
-        let Scratch { moved, touched, .. } = scratch;
-        self.holding(st, (unit, cell), (r, r2), moved);
-        if moved.is_empty() {
+        self.holding(st, (unit, cell), pair, &mut scratch.moved);
+        if scratch.moved.is_empty() {
             return None;
         }
+        let before = self.unit_term(urn, st, unit, cell);
+        let (sites_before, sites_after, reads) = self.exchange_links(urn, st, cell, pair, scratch);
+        let after = self.unit_term(urn, st, unit, cell);
+        Some((after + sites_after) - (before + sites_before) + reads)
+    }
+
+    /// This model's part of [`Self::exchange`]: roles `r` and `r2`
+    /// exchanged, in place, on the links in `scratch`'s moved list (a cell's,
+    /// `cell` true, or a gene's, each holding one of them), and the site
+    /// terms of every block a moved link leaves or enters before and after,
+    /// or at infinite strength (the reads factoring by link, each at its
+    /// cell's level) each moved link's reads in the block it enters less
+    /// those in the block it leaves.
+    fn exchange_links(
+        &self,
+        urn: &mut Urn,
+        st: &mut State,
+        cell: bool,
+        (r, r2): (u16, u16),
+        scratch: &mut Scratch,
+    ) -> (f64, f64, f64) {
+        let (bb, kk) = (self.settings.gene_roles, self.blocks());
+        let Scratch { moved, touched, .. } = scratch;
         // The block a link enters from block `k`.
         let other = |k: usize| {
             let (a, b) = ((k / bb) as u16, (k % bb) as u16);
@@ -135,16 +163,15 @@ impl Model<'_> {
         }
         touched.sort_unstable();
         touched.dedup();
-        let terms = |st: &State| {
-            self.unit_term(st, unit, cell)
-                + touched
-                    .iter()
-                    .map(|&at| self.site_term(st, at))
-                    .sum::<f64>()
+        let sites = |st: &State| {
+            touched
+                .iter()
+                .map(|&at| self.site_term(st, at))
+                .sum::<f64>()
         };
-        let before = terms(st);
-        self.flip(st, moved, cell, (r, r2));
-        Some(terms(st) - before + reads)
+        let before = sites(st);
+        self.flip(urn, st, moved, cell, (r, r2));
+        (before, sites(st), reads)
     }
 
     /// A swap of two roles drawn uniformly on all of cell `unit`'s links
@@ -153,13 +180,14 @@ impl Model<'_> {
     /// Rejected, the labels are flipped back, unscored.
     pub(super) fn swap(
         &self,
+        urn: &mut Urn,
         st: &mut State,
         (unit, cell): (usize, bool),
         scratch: &mut Scratch,
         rng: &mut SmallRng,
     ) {
         let roles = if cell {
-            self.settings.cell_roles
+            self.cells.roles
         } else {
             self.settings.gene_roles
         };
@@ -169,9 +197,9 @@ impl Model<'_> {
         let r = rng.random_range(0..roles);
         let r2 = (r + rng.random_range(1..roles)) % roles;
         let pair = (r as u16, r2 as u16);
-        if let Some(delta) = self.exchange(st, (unit, cell), pair, scratch) {
+        if let Some(delta) = self.exchange(urn, st, (unit, cell), pair, scratch) {
             if rng.random::<f64>().ln() >= delta {
-                self.flip(st, &scratch.moved, cell, pair);
+                self.flip(urn, st, &scratch.moved, cell, pair);
             }
         }
     }

@@ -61,7 +61,7 @@ impl Model<'_> {
             .iter()
             .map(|&w| (w as f64).max(1e-300).ln())
             .collect();
-        let prior: Vec<f64> = means.beta.iter().map(|b| self.settings.alpha * b).collect();
+        let prior: Vec<f64> = means.beta.iter().map(|b| self.cells.alpha * b).collect();
         // Link `l`'s reads' log-likelihood in cell role `a` at level `v`
         // (read at infinite strength only), its gene role summed out, each
         // gene role's term put in `terms` first.
@@ -107,7 +107,7 @@ impl Model<'_> {
         prior: &[f64],
         seed: u64,
     ) -> (Vec<f32>, f64) {
-        let aa = self.settings.cell_roles;
+        let aa = self.cells.roles;
         let mut rng = cell_rng(seed, c);
         let own: Vec<usize> = (links.cell_ptr[c]..links.cell_ptr[c + 1]).collect();
         let terms = RefCell::new(vec![0.0f64; self.settings.gene_roles]);
@@ -131,7 +131,7 @@ impl Model<'_> {
         let mut row = vec![0u32; aa];
         let mut z: Vec<usize> = own.iter().map(|_| rng.random_range(0..aa)).collect();
         z.iter().for_each(|&a| row[a] += 1);
-        let total = z.len() as f64 + self.settings.alpha;
+        let total = z.len() as f64 + self.cells.alpha;
         let var = self.settings.cell_sd * self.settings.cell_sd;
         let (mut v, mut level) = (0.0f64, 0.0f64);
         let mut weights = vec![0.0f64; aa];
