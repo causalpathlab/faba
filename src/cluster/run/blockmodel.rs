@@ -149,6 +149,7 @@ pub(in crate::cluster) fn blockmodel_fit(
             "burn_in": config.warmup,
         }),
     );
+    record.set_result("tables", &tables_entry(&m));
     record.set_result("blockmodel", &summary);
     record.set_result("pooling", &pooling);
     record.set_result("converged", &verdict.converged());
@@ -231,4 +232,21 @@ fn write_tables(
         &read::SiteStats::of(&data.reads, data.sites.len()),
         &path("site_stats"),
     )
+}
+
+/// The tables a blockmodel fit of modality `m` writes, as its run record
+/// names them (under `tables` in its results): the cells' side (each cell's
+/// roles, each block's cells), the genes' side (each gene's roles, the
+/// blocks' shifts, genes and sites, the sites' pileups and counts) and the
+/// chains' trace, file names beside the record.
+pub(crate) fn tables_entry(m: &str) -> serde_json::Value {
+    let names = |names: &[&str]| -> Vec<String> {
+        names.iter().map(|n| format!("{m}_{n}.parquet")).collect()
+    };
+    serde_json::json!({
+        "modality": m,
+        "cells": names(&["cell_roles", "block_cells"]),
+        "genes": names(&["gene_roles", "blocks", "block_genes", "block_sites", "site_cells", "site_stats"]),
+        "trace": format!("{m}_trace.parquet"),
+    })
 }

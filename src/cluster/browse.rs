@@ -13,6 +13,7 @@
 use super::{ClusterArgs, ModelKind};
 use crate::site_analysis::input_picker::{ask_reference, Reference};
 use crate::site_analysis::miami::genemodel::load_gene_models_where;
+use anyhow::Context;
 use clap::Args;
 use std::path::Path;
 
@@ -113,60 +114,99 @@ impl ModulesArgs {
     }
 }
 
-/// The run records of a blockmodel fit, `{m}_blockmodel.run.json` (and the
-/// older `{m}_cluster.run.json`, which a blockmodel fit wrote before the
-/// crp's record had a name of its own): the modality `m`, none for another
-/// file name.
-fn record_modality(name: &str) -> Option<&str> {
-    ["_blockmodel.run.json", "_cluster.run.json"]
-        .iter()
-        .find_map(|tail| name.strip_suffix(tail))
-        .filter(|m| crate::qc::layout::SITE_MODALITIES.contains(m))
-}
-
 /// What the browser offers to open: a fit's run record, or site matrices
 /// (or their output directory), clustered first when they have no tables.
 fn is_view_input(name: &str) -> bool {
-    record_modality(name).is_some() || crate::qc::layout::is_site_matrix_name(name)
+    crate::run_record::is_run_record(name) || crate::qc::layout::is_site_matrix_name(name)
 }
 
-/// `args` with its input, asked for in a browser when none is named (see
-/// [`is_view_input`]).
-fn with_view_inputs(args: &ClusterArgs, batch: bool) -> anyhow::Result<Option<ClusterArgs>> {
-    let mut args = args.clone();
-    if args.data_files.is_empty() {
-        let ask = crate::site_analysis::input_picker::ask_inputs(
-            "cluster-view",
-            batch,
-            "a fit's run record or site matrices",
-            is_view_input,
-            false,
-        );
-        let Some(chosen) = ask? else { return Ok(None) };
-        args.data_files = chosen.paths;
-    }
-    Ok(Some(args))
+/// A blockmodel fit as its run record names it: the record's directory,
+/// its file name and contents, and the fit's modality.
+#[derive(Debug)]
+pub(crate) struct FitRecord {
+    pub dir: std::path::PathBuf,
+    pub record: (String, serde_json::Value),
+    pub modality: String,
 }
 
-/// The fit `inputs` name when it is one run record of a blockmodel fit
-/// (see [`record_modality`]): its directory and modality. A record with
+/// The fit `inputs` name when they are one `faba cluster` run record (see
+/// [`read_fit_record`]); none for other inputs, another command's record
+/// among them (a faba output directory's, taken as before). A record with
 /// other inputs is refused, as one view shows one fit.
-fn fit_record(inputs: &[Box<str>]) -> anyhow::Result<Option<(std::path::PathBuf, String)>> {
-    let of = |p: &str| {
-        let path = Path::new(p);
-        let name = path.file_name()?.to_str()?;
-        let m = record_modality(name)?;
-        path.is_file().then(|| {
-            let dir = path.parent().filter(|d| !d.as_os_str().is_empty());
-            (dir.unwrap_or(Path::new(".")).to_path_buf(), m.to_string())
-        })
+fn fit_record(inputs: &[Box<str>]) -> anyhow::Result<Option<FitRecord>> {
+    let named = |p: &str| {
+        Path::new(p)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(crate::run_record::is_run_record)
+            && Path::new(p).is_file()
     };
-    let records: Vec<_> = inputs.iter().filter_map(|p| of(p)).collect();
-    match (records.len(), inputs.len()) {
-        (0, _) => Ok(None),
-        (1, 1) => Ok(records.into_iter().next()),
-        _ => anyhow::bail!("name one fit's run record alone, not with other inputs"),
+    match inputs {
+        [one] if named(one) => read_fit_record(Path::new(one.as_ref())),
+        _ if inputs.iter().any(|p| named(p)) => {
+            anyhow::bail!("name one fit's run record alone, not with other inputs")
+        }
+        _ => Ok(None),
     }
+}
+
+/// The blockmodel fit the run record at `path` describes, from its
+/// contents: none for another command's record, refused for a fit that
+/// holds no blockmodel (a crp fit's); the modality its `tables` say (records older than them: the
+/// one in the file name, `{m}_blockmodel.run.json`), and each table it
+/// names found beside it.
+pub(crate) fn read_fit_record(path: &Path) -> anyhow::Result<Option<FitRecord>> {
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default()
+        .to_string();
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let record: serde_json::Value =
+        serde_json::from_str(&text).with_context(|| format!("reading {}", path.display()))?;
+    if record["job"].as_str() != Some("cluster") {
+        return Ok(None);
+    }
+    anyhow::ensure!(
+        record.pointer("/results/model").is_some(),
+        "{} is the record of a `faba cluster --model crp` fit, which has no modules: \
+         name a blockmodel fit's (--model link or blocks)",
+        path.display()
+    );
+    let dir = crate::run_record::output_dir_of(&path.to_string_lossy())
+        .with_context(|| format!("{} is not a run record", path.display()))?;
+    let entry = record.pointer("/results/tables");
+    let modality = match entry.and_then(|t| t["modality"].as_str()) {
+        Some(m) => m.to_string(),
+        None => crate::qc::layout::SITE_MODALITIES
+            .iter()
+            .find(|m| name.starts_with(&format!("{m}_")))
+            .map(|m| m.to_string())
+            .with_context(|| format!("{name} names no modality"))?,
+    };
+    let listed = entry
+        .into_iter()
+        .flat_map(|t| ["cells", "genes"].map(|side| &t[side]))
+        .filter_map(|v| v.as_array())
+        .flatten()
+        .filter_map(|v| v.as_str());
+    for table in listed {
+        // Older fits wrote fewer tables: those still read approximately.
+        if !dir.join(table).is_file() {
+            log::warn!("{table}, named in {name}, is not beside it");
+        }
+    }
+    anyhow::ensure!(
+        tables(&dir, Some(&modality)).is_some(),
+        "no {modality} block tables beside {}",
+        path.display()
+    );
+    Ok(Some(FitRecord {
+        dir,
+        record: (name, record),
+        modality,
+    }))
 }
 
 /// The modality whose block tables `dir` holds: the one asked for, else
@@ -207,27 +247,26 @@ fn print(m: &Modules) {
 pub fn run_modules(args: &ModulesArgs) -> anyhow::Result<()> {
     // No inputs named: browse for them, as `faba pileup` does.
     let batch = args.batch_process || args.html.is_some();
-    let Some(cluster) = with_view_inputs(&args.cluster, batch)? else {
+    let offered = (
+        "a fit's run record or site matrices",
+        is_view_input as fn(&str) -> bool,
+    );
+    let Some(cluster) = super::with_inputs(&args.cluster, "cluster-view", batch, offered)? else {
         return Ok(());
     };
     let args = &ModulesArgs {
         cluster,
         ..args.clone()
     };
-    let (dir, modality) = match fit_record(&args.cluster.data_files)? {
+    let (dir, modality, record) = match fit_record(&args.cluster.data_files)? {
         // A fit's run record: its tables, as they are.
-        Some((dir, modality)) => {
+        Some(fit) => {
             anyhow::ensure!(
                 !args.refit && !super::args::asks_model(&args.cluster),
                 "a run record opens its fit as it is: to fit again, run `faba cluster` \
                  (or name the fit's input directory with --refit)"
             );
-            anyhow::ensure!(
-                tables(&dir, Some(&modality)).is_some(),
-                "no {modality} block tables beside {}",
-                args.cluster.data_files[0]
-            );
-            (dir, modality)
+            (fit.dir, fit.modality, Some(fit.record))
         }
         None => {
             let dir = super::output_dir(&args.cluster);
@@ -235,11 +274,11 @@ pub fn run_modules(args: &ModulesArgs) -> anyhow::Result<()> {
             let Some(modality) = ensure_tables(args, &dir, !batch)? else {
                 return Ok(());
             };
-            (dir, modality)
+            (dir, modality, None)
         }
     };
     // Shared with the thread that writes the report on `e`.
-    let modules = std::sync::Arc::new(Modules::load(&dir, &modality)?);
+    let modules = std::sync::Arc::new(Modules::load(&dir, &modality, record)?);
     let gtf = crate::run_record::explicit_or_recorded(
         args.gtf.as_deref(),
         &dir.to_string_lossy(),

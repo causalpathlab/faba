@@ -121,7 +121,11 @@ fn run_cluster_watched(
     args: &ClusterArgs,
     progress: &progress::Progress,
 ) -> anyhow::Result<Option<String>> {
-    let Some(args) = &with_inputs(args, "cluster", false)? else {
+    let site_matrices = (
+        "site matrices",
+        crate::qc::layout::is_site_matrix_name as fn(&str) -> bool,
+    );
+    let Some(args) = &with_inputs(args, "cluster", false, site_matrices)? else {
         return Ok(None);
     };
     let dir = output_dir(args);

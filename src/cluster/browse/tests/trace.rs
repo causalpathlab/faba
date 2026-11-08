@@ -62,7 +62,7 @@ fn fitted_with(
 pub(super) fn load(rhat: f64, traced: bool) -> Modules {
     let tmp = tempfile::tempdir().unwrap();
     fitted(tmp.path(), rhat, traced);
-    Modules::load(tmp.path(), "m6a").unwrap()
+    Modules::load(tmp.path(), "m6a", None).unwrap()
 }
 
 #[test]
@@ -146,7 +146,7 @@ fn older_tables_without_a_trace_say_why() {
 fn an_older_single_chain_is_one_chain() {
     let tmp = tempfile::tempdir().unwrap();
     fitted_with(tmp.path(), 1.01, None, "1", &[]);
-    let m = Modules::load(tmp.path(), "m6a").unwrap();
+    let m = Modules::load(tmp.path(), "m6a", None).unwrap();
     let v = m.fit.verdict().unwrap();
     assert_eq!(v.said(), "one chain (R-hat 1.01)");
     assert!(v.advice().contains("--chains"), "{}", v.advice());
@@ -159,7 +159,7 @@ fn a_chain_with_no_points_is_left_off_the_page() {
     let tmp = tempfile::tempdir().unwrap();
     let [a, b] = <[_; 2]>::try_from(chains([0.0, 0.5])).unwrap();
     fitted_with(tmp.path(), 1.01, Some(vec![a, Vec::new(), b]), "3", &[]);
-    let m = Modules::load(tmp.path(), "m6a").unwrap();
+    let m = Modules::load(tmp.path(), "m6a", None).unwrap();
     assert_eq!(m.fit.trace.as_ref().unwrap().chains[1], Vec::new());
     let data = serde_json::to_value(crate::cluster::browse::report::data(
         &m,
@@ -187,7 +187,7 @@ fn what_the_pooling_found_unsettled_is_checked() {
         "2",
         &["shift (0, 1)"],
     );
-    let m = Modules::load(tmp.path(), "m6a").unwrap();
+    let m = Modules::load(tmp.path(), "m6a", None).unwrap();
     let mut v = ModulesView::new("test", &m);
     let s = screen(&mut v, 120, 30);
     assert!(

@@ -227,7 +227,7 @@ fn tools() -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "cluster_view",
-            "View a `cluster` fit: print the gene and cell modules it wrote (`faba cluster-view --batch-process`). `data` is the fit's run record (`{m}_blockmodel.run.json`, which names both sides' tables and the modality) or the directory holding its tables; this does not fit. With `html`, write one self-contained page to a new file instead.",
+            "View a `cluster` fit: print the gene and cell modules it wrote (`faba cluster-view --batch-process`). `data` is the fit's run record or the directory holding its tables; this does not fit. With `html`, write one self-contained page to a new file instead.",
             schema(
                 json!({
                     "data": { "type": "string", "description": "A `cluster` fit: its run record `{m}_blockmodel.run.json`, or the output directory holding its block tables" },
@@ -1242,12 +1242,8 @@ fn cluster_view_taken() -> Vec<String> {
 
 fn cluster_view(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
     let data = a.path("data")?;
-    if Path::new(&data).is_file() {
-        ensure!(
-            data.ends_with("_blockmodel.run.json") || data.ends_with("_cluster.run.json"),
-            "{data} is not a `cluster` run record ({{m}}_blockmodel.run.json)"
-        );
-    } else {
+    // A run record is checked by the command, which reads it.
+    if !Path::new(&data).is_file() {
         block_tables(&data, a.str("modality"))?;
     }
     let mut argv = vec!["cluster-view".into(), data.clone()];

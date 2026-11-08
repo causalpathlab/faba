@@ -4,7 +4,7 @@
 
 use super::tables;
 use crate::cluster::browse::{
-    fit_record, plan, record_modality, report, run_modules, title, Modules, ModulesArgs, Plan,
+    fit_record, plan, report, run_modules, title, Modules, ModulesArgs, Plan,
 };
 use crate::cluster::{args, record_name, ClusterArgs};
 use crate::run_record::RunRecord;
@@ -31,7 +31,7 @@ fn recorded(dir: &Path, words: &[&str]) {
 
 /// The page's model section for the tables in `dir`.
 fn section(dir: &Path) -> Value {
-    let m = Modules::load(dir, "m6a").unwrap();
+    let m = Modules::load(dir, "m6a", None).unwrap();
     let data = serde_json::to_value(report::data(&m, &Default::default())).unwrap();
     data["model"].clone()
 }
@@ -286,7 +286,7 @@ fn modules_opens_the_recorded_tables_unless_asked_for_other_settings() {
     assert_eq!(at(&[]), open);
     assert_eq!(at(&["--chains", "2"]), open, "not a model option");
     assert_eq!(at(&["--model", "link"]), open);
-    let head = title(dir, &Modules::load(dir, "m6a").unwrap());
+    let head = title(dir, &Modules::load(dir, "m6a", None).unwrap());
     assert!(head.ends_with("m6a · link preset"), "{head}");
     let Plan::Fit(why) = at(&["--model", "blocks"]) else {
         panic!("another preset opened as it is");
@@ -307,27 +307,43 @@ fn modules_opens_the_recorded_tables_unless_asked_for_other_settings() {
         dir,
         &["--model", "link", "--shift", "on", "--gene-roles", "2"],
     );
-    let head = title(dir, &Modules::load(dir, "m6a").unwrap());
+    let head = title(dir, &Modules::load(dir, "m6a", None).unwrap());
     assert!(head.ends_with("custom settings"), "{head}");
 }
 
-/// A fit's run record names its modality and, beside it, its tables: it
-/// opens them alone, never with other inputs, and never fits again.
+/// A fit's run record says, by its contents, which fit to open: its
+/// modality from its `tables` (an older record's from its name), refused
+/// for a crp fit; another command's record is an input as before. It opens
+/// alone, never with other inputs, and never fits again.
 #[test]
 fn a_run_record_names_the_fit_to_open() {
-    assert_eq!(record_modality("m6a_blockmodel.run.json"), Some("m6a"));
-    assert_eq!(record_modality("atoi_cluster.run.json"), Some("atoi"));
-    assert_eq!(record_modality("pipeline.run.json"), None);
-    assert_eq!(record_modality("count_blockmodel.run.json"), None);
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
+    let path = |name: &str| -> Box<str> { dir.join(name).to_string_lossy().into() };
+    let fit = |p: &str| fit_record(&[p.into()]);
+    // An older record: the modality in its name.
     recorded(dir, &["--model", "blocks"]);
-    let record = dir.join(record_name("m6a", crate::cluster::ModelKind::Blocks));
-    let record: Box<str> = record.to_string_lossy().into();
-    let got = fit_record(std::slice::from_ref(&record)).unwrap();
-    assert_eq!(got, Some((dir.to_path_buf(), "m6a".to_string())));
+    let record = path(&record_name("m6a", crate::cluster::ModelKind::Blocks));
+    let got = fit(&record).unwrap().unwrap();
+    assert_eq!((got.dir.as_path(), got.modality.as_str()), (dir, "m6a"));
+    // The record's own `tables` say the modality, whatever its name.
+    let mut json: Value =
+        serde_json::from_str(&std::fs::read_to_string(&*record).unwrap()).unwrap();
+    json["results"]["tables"] = crate::cluster::run::blockmodel::tables_entry("m6a");
+    std::fs::write(dir.join("renamed.run.json"), json.to_string()).unwrap();
+    assert_eq!(
+        fit(&path("renamed.run.json")).unwrap().unwrap().modality,
+        "m6a"
+    );
+    // A crp fit's record is refused; another command's is no fit.
+    crp_record(dir);
+    let crp = path(&record_name("m6a", crate::cluster::ModelKind::Crp));
+    let err = fit(&crp).unwrap_err().to_string();
+    assert!(err.contains("--model crp"), "{err}");
+    std::fs::write(dir.join("pipeline.run.json"), r#"{"job":"run"}"#).unwrap();
+    assert!(fit(&path("pipeline.run.json")).unwrap().is_none());
     let dir_only: Box<str> = dir.to_string_lossy().into();
-    assert_eq!(fit_record(std::slice::from_ref(&dir_only)).unwrap(), None);
+    assert!(fit(&dir_only).unwrap().is_none());
     assert!(fit_record(&[record.clone(), dir_only]).is_err());
     run_modules(&modules(Path::new(&*record), &["--batch-process"])).unwrap();
     for words in [&["--refit"][..], &["--cell-roles", "4"]] {
@@ -349,7 +365,7 @@ fn modules_opens_unrecorded_tables_as_they_are() {
         plan(&args, tmp.path()).unwrap(),
         Plan::Open("m6a".to_string())
     );
-    let head = title(tmp.path(), &Modules::load(tmp.path(), "m6a").unwrap());
+    let head = title(tmp.path(), &Modules::load(tmp.path(), "m6a", None).unwrap());
     assert!(head.ends_with("settings not recorded"), "{head}");
 }
 

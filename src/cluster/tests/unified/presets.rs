@@ -433,6 +433,19 @@ fn both_presets_write_the_tables_faba_cluster_view_reads() {
         let saved = record.finish(&Ok(())).expect("the record written");
         let saved: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(saved).unwrap()).unwrap();
+        // The record names every table it wrote, of both sides.
+        let tables = &saved["results"]["tables"];
+        assert_eq!(tables["modality"], "m6a", "{model}");
+        for side in ["cells", "genes"] {
+            for t in tables[side].as_array().expect("a side's tables") {
+                let t = t.as_str().unwrap();
+                assert!(
+                    tmp.path().join(t).is_file(),
+                    "{model}: {t} named, not written"
+                );
+            }
+        }
+        assert!(tmp.path().join(tables["trace"].as_str().unwrap()).is_file());
         let pooling = &saved["results"]["pooling"];
         let pooled = pooling["pooled"].as_array().expect("pooled chains");
         assert!(!pooled.is_empty(), "{model}: {pooling}");
@@ -466,7 +479,7 @@ fn both_presets_write_the_tables_faba_cluster_view_reads() {
         assert!(pooling["worst_rhat"].is_number() || pooling["worst_rhat"] == "inf");
         assert!(pooling["worst_ess"].is_number(), "{model}: {pooling}");
         assert!(pooling["not_converged"].is_array(), "{model}: {pooling}");
-        let m = crate::cluster::browse::Modules::load(tmp.path(), "m6a").unwrap();
+        let m = crate::cluster::browse::Modules::load(tmp.path(), "m6a", None).unwrap();
         assert_eq!((m.cell_roles, m.gene_roles), (3, gene_roles), "{model}");
         assert!(!m.approximate.sizes && !m.approximate.pileup, "{model}");
         let fitted_size: f64 = m.cell_sizes.iter().sum();
