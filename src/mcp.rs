@@ -1242,10 +1242,7 @@ fn cluster_view_taken() -> Vec<String> {
 
 fn cluster_view(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
     let data = a.path("data")?;
-    // A run record is checked by the command, which reads it.
-    if !Path::new(&data).is_file() {
-        block_tables(&data, a.str("modality"))?;
-    }
+    viewable(&data, a.str("modality"))?;
     let mut argv = vec!["cluster-view".into(), data.clone()];
     push_opt(&mut argv, "--modality", a.str("modality"));
     if let Some(gtf) = a.path_opt("gtf")? {
@@ -1264,6 +1261,16 @@ fn cluster_view(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
     }
     let text = cx.run_reading(command(&argv)?)?;
     Ok(vec![Content::Text(text)])
+}
+
+/// `data` is what `cluster_view` may open: a blockmodel fit's run record,
+/// or a directory with its block tables; nothing else, so the command
+/// never fits from here.
+fn viewable(data: &str, modality: Option<&str>) -> Result<()> {
+    if crate::cluster::read_fit_record(Path::new(data))?.is_none() {
+        block_tables(data, modality)?;
+    }
+    Ok(())
 }
 
 /// `dir` holds the block tables `cluster` writes, so `cluster_view` has nothing
@@ -1440,7 +1447,7 @@ fn exists(path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        cluster_view_taken, pileup_argv, recorded_results, tools, tsv_rows, typed_flags,
+        cluster_view_taken, pileup_argv, recorded_results, tools, tsv_rows, typed_flags, viewable,
         with_typed, Arguments, TYPED,
     };
     use clap::CommandFactory;
@@ -1595,6 +1602,26 @@ sites	m6A	10	2
         assert!(a.options(&taken).is_err());
         let a = Arguments(json!({ "options": ["--community-gamma", "3"] }));
         assert!(a.options(&taken).is_err());
+    }
+
+    /// `cluster_view` opens a fit's record or its tables, never anything
+    /// it would have to fit first: another file, another command's record
+    /// or a directory without tables are refused.
+    #[test]
+    fn cluster_view_opens_only_what_needs_no_fit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let d = tmp.path();
+        let at = |name: &str| d.join(name).to_string_lossy().into_owned();
+        std::fs::write(at("pipeline.run.json"), r#"{"job":"run"}"#).unwrap();
+        std::fs::write(at("x.zarr"), "").unwrap();
+        for refused in [at("pipeline.run.json"), at("x.zarr"), at("")] {
+            assert!(viewable(&refused, None).is_err(), "{refused}");
+        }
+        std::fs::write(at("m6a_block_sites.parquet"), "").unwrap();
+        assert!(viewable(&at(""), None).is_ok());
+        let fit = r#"{"job":"cluster","results":{"model":{},"tables":{"modality":"m6a"}}}"#;
+        std::fs::write(at("m6a_blockmodel.run.json"), fit).unwrap();
+        assert!(viewable(&at("m6a_blockmodel.run.json"), None).is_ok());
     }
 
     /// `figure` alone draws: the command gets `--svg`, which puts it in

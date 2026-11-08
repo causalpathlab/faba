@@ -21,6 +21,7 @@ use tables::{main_roles, posterior_sizes, read_shifts, role_sizes, site_counts};
 use tables::{BlockSites, SiteRows};
 
 mod run;
+pub(in crate::cluster) use run::read as read_record;
 mod sites;
 mod tables;
 mod trace;

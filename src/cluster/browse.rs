@@ -129,67 +129,71 @@ pub(crate) struct FitRecord {
     pub modality: String,
 }
 
-/// The fit `inputs` name when they are one `faba cluster` run record (see
+/// The fit `inputs` name when one is a `faba cluster` run record (see
 /// [`read_fit_record`]); none for other inputs, another command's record
-/// among them (a faba output directory's, taken as before). A record with
-/// other inputs is refused, as one view shows one fit.
+/// among them (a faba output directory's, taken as before). A fit's record
+/// with other inputs is refused, as one view shows one fit.
 fn fit_record(inputs: &[Box<str>]) -> anyhow::Result<Option<FitRecord>> {
-    let named = |p: &str| {
-        Path::new(p)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .is_some_and(crate::run_record::is_run_record)
-            && Path::new(p).is_file()
-    };
-    match inputs {
-        [one] if named(one) => read_fit_record(Path::new(one.as_ref())),
-        _ if inputs.iter().any(|p| named(p)) => {
-            anyhow::bail!("name one fit's run record alone, not with other inputs")
+    let mut fits = Vec::new();
+    for p in inputs {
+        if let Some(fit) = read_fit_record(Path::new(p.as_ref()))? {
+            fits.push(fit);
         }
-        _ => Ok(None),
     }
+    anyhow::ensure!(
+        fits.is_empty() || inputs.len() == 1,
+        "name one fit's run record alone, not with other inputs"
+    );
+    Ok(fits.pop())
 }
 
-/// The blockmodel fit the run record at `path` describes, from its
-/// contents: none for another command's record, refused for a fit that
-/// holds no blockmodel (a crp fit's); the modality its `tables` say (records older than them: the
-/// one in the file name, `{m}_blockmodel.run.json`), and each table it
-/// names found beside it.
+/// The blockmodel fit the file at `path` describes when it is a `faba
+/// cluster` run record, from its contents: none for any other file
+/// (another command's record among them), refused for a crp fit's record,
+/// which has no modules. The modality is the one its `tables` say; an older
+/// record's, the one its name begins with, else the one whose tables are
+/// beside it. Each table it names is looked for beside it.
 pub(crate) fn read_fit_record(path: &Path) -> anyhow::Result<Option<FitRecord>> {
     let name = path
         .file_name()
         .and_then(|n| n.to_str())
-        .unwrap_or_default()
-        .to_string();
-    let text =
-        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-    let record: serde_json::Value =
-        serde_json::from_str(&text).with_context(|| format!("reading {}", path.display()))?;
+        .unwrap_or_default();
+    if !crate::run_record::is_run_record(name) || !path.is_file() {
+        return Ok(None);
+    }
+    let dir = crate::run_record::output_dir_of(&path.to_string_lossy())
+        .with_context(|| format!("{} is not a run record", path.display()))?;
+    let record = data::read_record(&dir, name).map_err(anyhow::Error::msg)?;
     if record["job"].as_str() != Some("cluster") {
         return Ok(None);
     }
+    let results = &record["results"];
+    let blockmodel = !results["model"].is_null() || !results["blockmodel"].is_null();
     anyhow::ensure!(
-        record.pointer("/results/model").is_some(),
+        blockmodel || results["posterior"].is_null(),
         "{} is the record of a `faba cluster --model crp` fit, which has no modules: \
          name a blockmodel fit's (--model link or blocks)",
         path.display()
     );
-    let dir = crate::run_record::output_dir_of(&path.to_string_lossy())
-        .with_context(|| format!("{} is not a run record", path.display()))?;
-    let entry = record.pointer("/results/tables");
-    let modality = match entry.and_then(|t| t["modality"].as_str()) {
-        Some(m) => m.to_string(),
-        None => crate::qc::layout::SITE_MODALITIES
-            .iter()
-            .find(|m| name.starts_with(&format!("{m}_")))
-            .map(|m| m.to_string())
-            .with_context(|| format!("{name} names no modality"))?,
-    };
-    let listed = entry
+    anyhow::ensure!(blockmodel, "{} records no blockmodel fit", path.display());
+    let entry = &results["tables"];
+    let modality = entry["modality"]
+        .as_str()
+        .map(str::to_string)
+        .or_else(|| {
+            crate::qc::layout::SITE_MODALITIES
+                .iter()
+                .find(|m| name.starts_with(&format!("{m}_")))
+                .map(|m| m.to_string())
+        })
+        .or_else(|| tables(&dir, None))
+        .with_context(|| format!("{name} names no modality, and no tables are beside it"))?;
+    let sides = ["cells", "genes"].map(|side| entry[side].as_array());
+    let listed = sides
         .into_iter()
-        .flat_map(|t| ["cells", "genes"].map(|side| &t[side]))
-        .filter_map(|v| v.as_array())
         .flatten()
+        .flatten()
+        .chain(Some(&entry["trace"]))
         .filter_map(|v| v.as_str());
     for table in listed {
         // Older fits wrote fewer tables: those still read approximately.
@@ -204,7 +208,7 @@ pub(crate) fn read_fit_record(path: &Path) -> anyhow::Result<Option<FitRecord>> 
     );
     Ok(Some(FitRecord {
         dir,
-        record: (name, record),
+        record: (name.to_string(), record),
         modality,
     }))
 }
@@ -261,11 +265,19 @@ pub fn run_modules(args: &ModulesArgs) -> anyhow::Result<()> {
     let (dir, modality, record) = match fit_record(&args.cluster.data_files)? {
         // A fit's run record: its tables, as they are.
         Some(fit) => {
+            let c = &args.cluster;
             anyhow::ensure!(
-                !args.refit && !super::args::asks_model(&args.cluster),
-                "a run record opens its fit as it is: to fit again, run `faba cluster` \
-                 (or name the fit's input directory with --refit)"
+                !args.refit && !super::args::asks_model(c) && c.output.is_none() && c.fit.is_none(),
+                "a run record opens its fit as it is (no --refit, -o, --fit or model \
+                 options): to fit again, run `faba cluster`"
             );
+            if let Some(m) = &c.modality {
+                anyhow::ensure!(
+                    m.eq_ignore_ascii_case(&fit.modality),
+                    "the run record is of a {} fit, not --modality {m}",
+                    fit.modality
+                );
+            }
             (fit.dir, fit.modality, Some(fit.record))
         }
         None => {

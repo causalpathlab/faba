@@ -33,6 +33,8 @@ mod write;
 
 use args::{check, inputs, output_dir, with_inputs};
 pub use args::{ClusterArgs, ModelKind};
+#[cfg(feature = "mcp")]
+pub(crate) use browse::read_fit_record;
 pub use browse::{run_modules, ModulesArgs};
 use command::command;
 

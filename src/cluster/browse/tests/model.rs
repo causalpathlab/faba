@@ -335,22 +335,48 @@ fn a_run_record_names_the_fit_to_open() {
         fit(&path("renamed.run.json")).unwrap().unwrap().modality,
         "m6a"
     );
-    // A crp fit's record is refused; another command's is no fit.
-    crp_record(dir);
-    let crp = path(&record_name("m6a", crate::cluster::ModelKind::Crp));
-    let err = fit(&crp).unwrap_err().to_string();
+    // A crp fit's record is refused, by what it holds; another command's
+    // is no fit, alone or with other inputs, as before.
+    let crp = r#"{"job":"cluster","results":{"posterior":{},"cluster_sizes":[]}}"#;
+    std::fs::write(dir.join("m6a_cluster.run.json"), crp).unwrap();
+    let err = fit(&path("m6a_cluster.run.json")).unwrap_err().to_string();
     assert!(err.contains("--model crp"), "{err}");
+    // An older blockmodel record, before its `model` result: still a fit.
+    let older = r#"{"job":"cluster","results":{"blockmodel":{}}}"#;
+    std::fs::write(dir.join("m6a_old.run.json"), older).unwrap();
+    assert_eq!(
+        fit(&path("m6a_old.run.json")).unwrap().unwrap().modality,
+        "m6a"
+    );
     std::fs::write(dir.join("pipeline.run.json"), r#"{"job":"run"}"#).unwrap();
     assert!(fit(&path("pipeline.run.json")).unwrap().is_none());
+    let pipeline_and_more = [path("pipeline.run.json"), "x.zarr".into()];
+    assert!(fit_record(&pipeline_and_more).unwrap().is_none());
     let dir_only: Box<str> = dir.to_string_lossy().into();
     assert!(fit(&dir_only).unwrap().is_none());
     assert!(fit_record(&[record.clone(), dir_only]).is_err());
     run_modules(&modules(Path::new(&*record), &["--batch-process"])).unwrap();
-    for words in [&["--refit"][..], &["--cell-roles", "4"]] {
+    for words in [
+        &["--refit"][..],
+        &["--cell-roles", "4"],
+        &["-o", "elsewhere"],
+        &["--fit", "*_wt_*"],
+    ] {
         let all: Vec<&str> = words.iter().copied().chain(["--batch-process"]).collect();
         let err = run_modules(&modules(Path::new(&*record), &all)).unwrap_err();
         assert!(err.to_string().contains("opens its fit as it is"), "{err}");
     }
+    let other = run_modules(&modules(
+        Path::new(&*record),
+        &["--modality", "atoi", "--batch-process"],
+    ))
+    .unwrap_err();
+    assert!(other.to_string().contains("not --modality atoi"), "{other}");
+    run_modules(&modules(
+        Path::new(&*record),
+        &["--modality", "M6A", "--batch-process"],
+    ))
+    .unwrap();
 }
 
 /// Without a blockmodel record the options given cannot be compared: the
