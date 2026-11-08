@@ -100,19 +100,38 @@ impl Model<'_> {
 
     /// Exchanges roles `r` and `r2` on cell `unit`'s links (`cell` true) or
     /// gene `unit`'s, in place (see [`Self::flip`]), and returns the change
-    /// in log joint, the links moved left in `scratch`: the unit's urn and
-    /// the site terms of every block a moved link leaves or enters, or at
+    /// in log joint, the links moved left in `scratch`: the unit's urn
+    /// (counted once, whatever holds its links) and this model's part (see
+    /// [`Self::exchange_links`]); none when no link holds either role.
+    pub(super) fn exchange(
+        &self,
+        urn: &mut Urn,
+        st: &mut State,
+        (unit, cell): (usize, bool),
+        pair: (u16, u16),
+        scratch: &mut Scratch,
+    ) -> Option<f64> {
+        let before = self.unit_term(urn, st, unit, cell);
+        let (sites_before, sites_after, reads) =
+            self.exchange_links(urn, st, (unit, cell), pair, scratch)?;
+        let after = self.unit_term(urn, st, unit, cell);
+        Some((after + sites_after) - (before + sites_before) + reads)
+    }
+
+    /// This model's part of [`Self::exchange`]: roles `r` and `r2`
+    /// exchanged on the unit's links here, in place, and the site terms of
+    /// every block a moved link leaves or enters before and after, or at
     /// infinite strength (the reads factoring by link, each at its cell's
     /// level) each moved link's reads in the block it enters less those in
-    /// the block it leaves (none: no link holds either role).
-    pub(super) fn exchange(
+    /// the block it leaves; none when no link here holds either role.
+    fn exchange_links(
         &self,
         urn: &mut Urn,
         st: &mut State,
         (unit, cell): (usize, bool),
         (r, r2): (u16, u16),
         scratch: &mut Scratch,
-    ) -> Option<f64> {
+    ) -> Option<(f64, f64, f64)> {
         let (bb, kk) = (self.settings.gene_roles, self.blocks());
         let Scratch { moved, touched, .. } = scratch;
         self.holding(st, (unit, cell), (r, r2), moved);
@@ -144,16 +163,15 @@ impl Model<'_> {
         }
         touched.sort_unstable();
         touched.dedup();
-        let terms = |urn: &Urn, st: &State| {
-            self.unit_term(urn, st, unit, cell)
-                + touched
-                    .iter()
-                    .map(|&at| self.site_term(st, at))
-                    .sum::<f64>()
+        let sites = |st: &State| {
+            touched
+                .iter()
+                .map(|&at| self.site_term(st, at))
+                .sum::<f64>()
         };
-        let before = terms(urn, st);
+        let before = sites(st);
         self.flip(urn, st, moved, cell, (r, r2));
-        Some(terms(urn, st) - before + reads)
+        Some((before, sites(st), reads))
     }
 
     /// A swap of two roles drawn uniformly on all of cell `unit`'s links
@@ -169,7 +187,7 @@ impl Model<'_> {
         rng: &mut SmallRng,
     ) {
         let roles = if cell {
-            self.settings.cell_roles
+            self.cells.roles
         } else {
             self.settings.gene_roles
         };

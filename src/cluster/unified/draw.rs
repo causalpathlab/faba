@@ -227,7 +227,7 @@ impl Model<'_> {
         let Some(held) = self.heldout else {
             return (0.0, 0.0);
         };
-        let (aa, bb) = (self.settings.cell_roles, self.settings.gene_roles);
+        let (aa, bb) = (self.cells.roles, self.settings.gene_roles);
         let (mut on, mut off) = (vec![0.0f64; aa * bb], vec![0.0f64; aa * bb]);
         super::super::read::score(held, |c, j| {
             let g = self.gene_of[j] as usize;
@@ -243,7 +243,7 @@ impl Model<'_> {
         })
     }
 
-    /// The draw at `st`, its chain's tally brought up to date.
+    /// The draw at `ch`, its chain's tally brought up to date.
     pub(super) fn draw(&self, ch: &Chain) -> Draw {
         let Chain { urn, st } = ch;
         let kk = self.blocks();
@@ -288,7 +288,7 @@ impl Model<'_> {
             t.draws += 1;
         }
         let cells = self.links.cells.max(1) as f64;
-        let mut role_mean = vec![0.0f64; self.settings.cell_roles];
+        let mut role_mean = vec![0.0f64; self.cells.roles];
         for row in cell.chunks(role_mean.len()) {
             role_mean
                 .iter_mut()

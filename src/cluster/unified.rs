@@ -96,7 +96,7 @@ pub use pool::pool;
 pub use pool::Pooling;
 pub use settings::{strength, Recorded, Settings, Weights};
 pub use summary::{pooled, summarize};
-pub use urn::{Cells, Urn};
+use urn::{Cells, Urn};
 
 /// The blockmodel over one set of links, with what the moves share.
 pub struct Model<'a> {
@@ -244,7 +244,7 @@ impl<'a> Model<'a> {
 
     /// Blocks, `A x B`.
     fn blocks(&self) -> usize {
-        self.settings.cell_roles * self.settings.gene_roles
+        self.cells.roles * self.settings.gene_roles
     }
 
     fn finite(&self) -> bool {
@@ -479,7 +479,7 @@ impl<'a> Model<'a> {
         scratch: &mut Scratch,
         rng: &mut SmallRng,
     ) {
-        let (aa, bb) = (self.settings.cell_roles, self.settings.gene_roles);
+        let (aa, bb) = (self.cells.roles, self.settings.gene_roles);
         let (c, g) = (self.links.cell[l] as usize, self.link_gene[l] as usize);
         self.put(urn, st, l, false);
         let gb = self.settings.gene_alpha / bb as f64;
@@ -531,23 +531,45 @@ impl<'a> Model<'a> {
     /// per gene, then the global weights.
     fn label_moves(&self, ch: &mut Chain, scratch: &mut Scratch, rng: &mut SmallRng) {
         let Chain { urn, st } = ch;
+        self.relabel_links(urn, st, scratch, rng);
+        self.swap_units(urn, st, true, scratch, rng);
+        self.swap_units(urn, st, false, scratch, rng);
+        self.cells.resample(urn, rng);
+    }
+
+    /// Every link relabelled once, in random order.
+    fn relabel_links(
+        &self,
+        urn: &mut Urn,
+        st: &mut State,
+        scratch: &mut Scratch,
+        rng: &mut SmallRng,
+    ) {
         let mut order: Vec<usize> = (0..self.links.len()).collect();
         order.shuffle(rng);
         for l in order {
             self.relabel(urn, st, l, scratch, rng);
         }
-        for c in 0..self.links.cells {
-            self.swap(urn, st, (c, true), scratch, rng);
+    }
+
+    /// A swap per cell (`cell` true) or per gene.
+    fn swap_units(
+        &self,
+        urn: &mut Urn,
+        st: &mut State,
+        cell: bool,
+        scratch: &mut Scratch,
+        rng: &mut SmallRng,
+    ) {
+        let units = if cell { self.links.cells } else { self.genes() };
+        for unit in 0..units {
+            self.swap(urn, st, (unit, cell), scratch, rng);
         }
-        for g in 0..self.genes() {
-            self.swap(urn, st, (g, false), scratch, rng);
-        }
-        self.cells.resample(urn, rng);
     }
 
     /// The counts implied by labels `a`, `b`, at shift 0 and uniform global
     /// weights.
-    fn state(&self, a: Vec<u16>, b: Vec<u16>) -> Chain {
+    fn chain(&self, a: Vec<u16>, b: Vec<u16>) -> Chain {
         let (bb, kk) = (self.settings.gene_roles, self.blocks());
         let sites = self.mu.len();
         // Reads per site and block are kept at finite strength alone.
@@ -651,7 +673,7 @@ impl McmcModel for Model<'_> {
     /// Each cell's links in one cell role, each gene's in one gene role,
     /// drawn at random.
     fn init(&self, rng: &mut SmallRng) -> Chain {
-        let (aa, bb) = (self.settings.cell_roles, self.settings.gene_roles);
+        let (aa, bb) = (self.cells.roles, self.settings.gene_roles);
         let cell: Vec<u16> = (0..self.links.cells)
             .map(|_| rng.random_range(0..aa) as u16)
             .collect();
@@ -660,7 +682,7 @@ impl McmcModel for Model<'_> {
             .collect();
         let a = self.links.cell.iter().map(|&c| cell[c as usize]).collect();
         let b = self.link_gene.iter().map(|&g| gene[g as usize]).collect();
-        self.state(a, b)
+        self.chain(a, b)
     }
 
     /// The label moves, then the shifts, then the cells' levels.

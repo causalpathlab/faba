@@ -58,7 +58,7 @@ impl Model<'_> {
         seed: u64,
     ) -> Vec<f64> {
         let mut rng = <SmallRng as rand::SeedableRng>::seed_from_u64(seed);
-        let mut st = self.state(a.to_vec(), b.to_vec()).st;
+        let mut st = self.chain(a.to_vec(), b.to_vec()).st;
         if !self.finite() {
             st.nu = nu.to_vec();
             (0..self.links.cells).for_each(|c| self.relevel(&mut st, c));
@@ -81,7 +81,7 @@ impl Model<'_> {
         seed: u64,
     ) -> Vec<f64> {
         let mut rng = <SmallRng as rand::SeedableRng>::seed_from_u64(seed);
-        let mut st = self.state(a.to_vec(), b.to_vec()).st;
+        let mut st = self.chain(a.to_vec(), b.to_vec()).st;
         st.delta = delta.to_vec();
         for k in 0..self.blocks() {
             self.refresh(&mut st, k);
@@ -98,7 +98,7 @@ impl Model<'_> {
     /// labels held at `a`, `b`.
     pub fn beta_draws(&self, a: &[u16], b: &[u16], draws: usize, seed: u64) -> Vec<f64> {
         let mut rng = <SmallRng as rand::SeedableRng>::seed_from_u64(seed);
-        let mut urn = self.state(a.to_vec(), b.to_vec()).urn;
+        let mut urn = self.chain(a.to_vec(), b.to_vec()).urn;
         (0..draws)
             .map(|_| {
                 self.cells.resample(&mut urn, &mut rng);
@@ -274,12 +274,12 @@ impl Model<'_> {
 
     /// The state of labels `a`, `b` at `held`.
     fn held_state(&self, (a, b): (&[u16], &[u16]), held: &Held) -> Chain {
-        let mut ch = self.state(a.to_vec(), b.to_vec());
+        let mut ch = self.chain(a.to_vec(), b.to_vec());
         self.hold(&mut ch, held);
         ch
     }
 
-    /// `st` at `held` (the levels only at infinite strength, where there
+    /// `ch` at `held` (the levels only at infinite strength, where there
     /// are any).
     fn hold(&self, ch: &mut Chain, held: &Held) {
         ch.urn.beta = held.beta.to_vec();
