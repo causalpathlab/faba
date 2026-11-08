@@ -3,7 +3,9 @@
 //! that record: the tables opened as recorded, or fitted again.
 
 use super::tables;
-use crate::cluster::browse::{plan, report, title, Modules, ModulesArgs, Plan};
+use crate::cluster::browse::{
+    fit_record, plan, record_modality, report, run_modules, title, Modules, ModulesArgs, Plan,
+};
 use crate::cluster::{args, record_name, ClusterArgs};
 use crate::run_record::RunRecord;
 use serde_json::Value;
@@ -307,6 +309,32 @@ fn modules_opens_the_recorded_tables_unless_asked_for_other_settings() {
     );
     let head = title(dir, &Modules::load(dir, "m6a").unwrap());
     assert!(head.ends_with("custom settings"), "{head}");
+}
+
+/// A fit's run record names its modality and, beside it, its tables: it
+/// opens them alone, never with other inputs, and never fits again.
+#[test]
+fn a_run_record_names_the_fit_to_open() {
+    assert_eq!(record_modality("m6a_blockmodel.run.json"), Some("m6a"));
+    assert_eq!(record_modality("atoi_cluster.run.json"), Some("atoi"));
+    assert_eq!(record_modality("pipeline.run.json"), None);
+    assert_eq!(record_modality("count_blockmodel.run.json"), None);
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    recorded(dir, &["--model", "blocks"]);
+    let record = dir.join(record_name("m6a", crate::cluster::ModelKind::Blocks));
+    let record: Box<str> = record.to_string_lossy().into();
+    let got = fit_record(std::slice::from_ref(&record)).unwrap();
+    assert_eq!(got, Some((dir.to_path_buf(), "m6a".to_string())));
+    let dir_only: Box<str> = dir.to_string_lossy().into();
+    assert_eq!(fit_record(std::slice::from_ref(&dir_only)).unwrap(), None);
+    assert!(fit_record(&[record.clone(), dir_only]).is_err());
+    run_modules(&modules(Path::new(&*record), &["--batch-process"])).unwrap();
+    for words in [&["--refit"][..], &["--cell-roles", "4"]] {
+        let all: Vec<&str> = words.iter().copied().chain(["--batch-process"]).collect();
+        let err = run_modules(&modules(Path::new(&*record), &all)).unwrap_err();
+        assert!(err.to_string().contains("opens its fit as it is"), "{err}");
+    }
 }
 
 /// Without a blockmodel record the options given cannot be compared: the

@@ -330,7 +330,10 @@ Example:\n  \
         aliases = ["modules", "blocks"],
         about = "View a `faba cluster` blockmodel fit (link or blocks): gene modules against cell modules, sites, genes and pileups",
         long_about = view_help("View a `faba cluster` fit (--model link or blocks): its gene modules against its\n\
-            cell modules, full screen (`faba modules` and `faba blocks` are older names).\n\n\
+            cell modules, full screen (`faba modules` and `faba blocks` are older names).\n\
+            Name the fit's run record, {modality}_blockmodel.run.json: it names the fit's\n\
+            tables of both sides and its modality, and they open as they are. Site\n\
+            matrices or their output directory work too, clustered first as below.\n\n\
             Four levels, each a margin of the next, all posterior-mean reads of the fitted\n\
             cells. 1 gene modules: every gene module against every cell module. 2 sites: the\n\
             sites of the module in focus, each with its reads, converted, unconverted and\n\
@@ -355,7 +358,7 @@ Example:\n  \
             about it. Without a terminal (or with --batch-process) the modules are printed\n\
             instead; --html writes them as one self-contained page instead (`e` in the\n\
             browser), the trace drawn in its Model section."),
-        after_long_help = "Example:\n  faba cluster-view out/\n  faba cluster-view out/ --fit '*_wt_*' --cell-roles 8 --gene-roles 8\n  faba cluster-view out/ --html cluster.html"
+        after_long_help = "Example:\n  faba cluster-view out/m6a_blockmodel.run.json\n  faba cluster-view out/\n  faba cluster-view out/ --fit '*_wt_*' --cell-roles 8 --gene-roles 8\n  faba cluster-view out/ --html cluster.html"
     )]
     ClusterView(ModulesArgs),
 

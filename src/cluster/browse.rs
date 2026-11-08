@@ -113,6 +113,62 @@ impl ModulesArgs {
     }
 }
 
+/// The run records of a blockmodel fit, `{m}_blockmodel.run.json` (and the
+/// older `{m}_cluster.run.json`, which a blockmodel fit wrote before the
+/// crp's record had a name of its own): the modality `m`, none for another
+/// file name.
+fn record_modality(name: &str) -> Option<&str> {
+    ["_blockmodel.run.json", "_cluster.run.json"]
+        .iter()
+        .find_map(|tail| name.strip_suffix(tail))
+        .filter(|m| crate::qc::layout::SITE_MODALITIES.contains(m))
+}
+
+/// What the browser offers to open: a fit's run record, or site matrices
+/// (or their output directory), clustered first when they have no tables.
+fn is_view_input(name: &str) -> bool {
+    record_modality(name).is_some() || crate::qc::layout::is_site_matrix_name(name)
+}
+
+/// `args` with its input, asked for in a browser when none is named (see
+/// [`is_view_input`]).
+fn with_view_inputs(args: &ClusterArgs, batch: bool) -> anyhow::Result<Option<ClusterArgs>> {
+    let mut args = args.clone();
+    if args.data_files.is_empty() {
+        let ask = crate::site_analysis::input_picker::ask_inputs(
+            "cluster-view",
+            batch,
+            "a fit's run record or site matrices",
+            is_view_input,
+            false,
+        );
+        let Some(chosen) = ask? else { return Ok(None) };
+        args.data_files = chosen.paths;
+    }
+    Ok(Some(args))
+}
+
+/// The fit `inputs` name when it is one run record of a blockmodel fit
+/// (see [`record_modality`]): its directory and modality. A record with
+/// other inputs is refused, as one view shows one fit.
+fn fit_record(inputs: &[Box<str>]) -> anyhow::Result<Option<(std::path::PathBuf, String)>> {
+    let of = |p: &str| {
+        let path = Path::new(p);
+        let name = path.file_name()?.to_str()?;
+        let m = record_modality(name)?;
+        path.is_file().then(|| {
+            let dir = path.parent().filter(|d| !d.as_os_str().is_empty());
+            (dir.unwrap_or(Path::new(".")).to_path_buf(), m.to_string())
+        })
+    };
+    let records: Vec<_> = inputs.iter().filter_map(|p| of(p)).collect();
+    match (records.len(), inputs.len()) {
+        (0, _) => Ok(None),
+        (1, 1) => Ok(records.into_iter().next()),
+        _ => anyhow::bail!("name one fit's run record alone, not with other inputs"),
+    }
+}
+
 /// The modality whose block tables `dir` holds: the one asked for, else
 /// m6a, else atoi; none when there are none.
 fn tables(dir: &Path, asked: Option<&str>) -> Option<String> {
@@ -151,17 +207,36 @@ fn print(m: &Modules) {
 pub fn run_modules(args: &ModulesArgs) -> anyhow::Result<()> {
     // No inputs named: browse for them, as `faba pileup` does.
     let batch = args.batch_process || args.html.is_some();
-    let Some(cluster) = super::with_inputs(&args.cluster, "cluster-view", batch)? else {
+    let Some(cluster) = with_view_inputs(&args.cluster, batch)? else {
         return Ok(());
     };
     let args = &ModulesArgs {
         cluster,
         ..args.clone()
     };
-    let dir = super::output_dir(&args.cluster);
-    // A cancelled fit is an error: nothing was written.
-    let Some(modality) = ensure_tables(args, &dir, !batch)? else {
-        return Ok(());
+    let (dir, modality) = match fit_record(&args.cluster.data_files)? {
+        // A fit's run record: its tables, as they are.
+        Some((dir, modality)) => {
+            anyhow::ensure!(
+                !args.refit && !super::args::asks_model(&args.cluster),
+                "a run record opens its fit as it is: to fit again, run `faba cluster` \
+                 (or name the fit's input directory with --refit)"
+            );
+            anyhow::ensure!(
+                tables(&dir, Some(&modality)).is_some(),
+                "no {modality} block tables beside {}",
+                args.cluster.data_files[0]
+            );
+            (dir, modality)
+        }
+        None => {
+            let dir = super::output_dir(&args.cluster);
+            // A cancelled fit is an error: nothing was written.
+            let Some(modality) = ensure_tables(args, &dir, !batch)? else {
+                return Ok(());
+            };
+            (dir, modality)
+        }
     };
     // Shared with the thread that writes the report on `e`.
     let modules = std::sync::Arc::new(Modules::load(&dir, &modality)?);

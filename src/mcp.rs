@@ -48,8 +48,8 @@ first.
 4. pileup, metagene and pwm read a directory's sites. metagene and pwm \
 return their table and its figure as an image. pileup returns a binned table \
 for a gene or region (and, with `figure`, a Miami SVG, as an image too). \
-cluster_view prints the gene and cell modules of a directory that already holds \
-cluster's block tables.
+cluster_view prints the gene and cell modules of a cluster fit, from its run \
+record ({m}_blockmodel.run.json) or the directory holding its tables.
 5. cluster fits cells by their own site reads (link, blocks or crp) and \
 writes its tables to `out`.
 
@@ -227,10 +227,10 @@ fn tools() -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "cluster_view",
-            "View a `cluster` fit: print the gene and cell modules it wrote (`faba cluster-view --batch-process`). `data` must already hold the block tables; this does not fit. With `html`, write one self-contained page to a new file instead.",
+            "View a `cluster` fit: print the gene and cell modules it wrote (`faba cluster-view --batch-process`). `data` is the fit's run record (`{m}_blockmodel.run.json`, which names both sides' tables and the modality) or the directory holding its tables; this does not fit. With `html`, write one self-contained page to a new file instead.",
             schema(
                 json!({
-                    "data": { "type": "string", "description": "A `cluster` output directory: the block tables it wrote" },
+                    "data": { "type": "string", "description": "A `cluster` fit: its run record `{m}_blockmodel.run.json`, or the output directory holding its block tables" },
                     "modality": modality(),
                     "gtf": { "type": "string", "description": "Gene annotation for the models drawn in the HTML page" },
                     "html": { "type": "string", "description": "Write the page here; must not exist" },
@@ -1242,7 +1242,14 @@ fn cluster_view_taken() -> Vec<String> {
 
 fn cluster_view(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
     let data = a.path("data")?;
-    block_tables(&data, a.str("modality"))?;
+    if Path::new(&data).is_file() {
+        ensure!(
+            data.ends_with("_blockmodel.run.json") || data.ends_with("_cluster.run.json"),
+            "{data} is not a `cluster` run record ({{m}}_blockmodel.run.json)"
+        );
+    } else {
+        block_tables(&data, a.str("modality"))?;
+    }
     let mut argv = vec!["cluster-view".into(), data.clone()];
     push_opt(&mut argv, "--modality", a.str("modality"));
     if let Some(gtf) = a.path_opt("gtf")? {
