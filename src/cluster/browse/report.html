@@ -1,4 +1,4 @@
-<!-- `faba modules --html`: the modules browser's page, inside the report shell (src/report/shell.html). -->
+<!-- `faba cluster-view --html`: the modules browser's page, inside the report shell (src/report/shell.html). -->
 <style>
 .term { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: auto 330px auto auto; }
 .search { color: var(--fg); }
@@ -130,7 +130,7 @@
 </div>
 
 <script>
-// The modules, as `faba modules --html` wrote them: per module its genes, per
+// The modules, as `faba cluster-view --html` wrote them: per module its genes, per
 // gene its sites, per site each cell module's posterior-mean [converted, all]
 // reads in the gene's main module (`c`) and over every gene module (`w`, the
 // full pileup, sent only when not `c`), cell modules in the order every pane
@@ -145,7 +145,7 @@ const cellNames = DATA.cellNames;
 const cellLabels = DATA.cellLabels;
 // A cell module without reads has no fraction (none, not 0%).
 const read = ([on, total]) => ({reads: total, frac: total > 0 ? on / total : null});
-// [converted, all] pairs added up in order, as `faba modules` checks they add.
+// [converted, all] pairs added up in order, as `faba cluster-view` checks they add.
 const sum = pairs => pairs.reduce((a, p) => [a[0] + p[0], a[1] + p[1]], [0, 0]);
 const modules = DATA.modules.map(m => {
   const genes = m.genes.map(ge => {
@@ -171,7 +171,7 @@ document.querySelectorAll(".off-name").forEach(e => e.textContent = `${DATA.off}
 document.getElementById("stat").textContent = `${modules.length} gene modules × ${CM} cell modules · ${DATA.modality}`;
 
 // The model the tables come from, as its run record says (`svg` drawn by
-// `faba modules` for its switches), or why there is none to draw.
+// `faba cluster-view` for its switches), or why there is none to draw.
 const MODEL = DATA.model;
 if (MODEL.svg) {
   document.getElementById("model").hidden = false;
@@ -276,7 +276,7 @@ if (TRACE.chains) {
   why.hidden = false; why.textContent = `No trace: ${TRACE.why}.`;
 }
 
-// The modules' diagonal order for the heatmaps, as `faba modules` chose it
+// The modules' diagonal order for the heatmaps, as `faba cluster-view` chose it
 // (the cell modules come in theirs).
 const diag = {rows: DATA.diagonal.map(n => modules.findIndex(m => m.name === n))};
 // A row's methylated fractions standardized across its cell modules, as the

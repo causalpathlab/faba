@@ -1,4 +1,4 @@
-//! The form `faba modules` asks the blockmodel's settings in before it
+//! The form `faba cluster-view` asks the blockmodel's settings in before it
 //! fits in a terminal: a row per setting of [`ROWS`], from `faba cluster`'s
 //! clap definition (see [`crate::tui::form`]), prefilled from the flags
 //! given, else the preset's; checked after every key as `faba cluster`
@@ -397,7 +397,7 @@ impl Screen for FitForm {
             Constraint::Length(help.len() as u16),
         ])
         .areas(area);
-        frame.render_widget(header("modules", &self.title, &self.why), top);
+        frame.render_widget(header("cluster-view", &self.title, &self.why), top);
         let changed = self.form.changed();
         let block = panel(format!(" fit settings · {changed} changed "), true);
         let inner = block.inner(body);

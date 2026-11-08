@@ -8,7 +8,7 @@ RNA modifications (DART-seq m6A, A-to-I editing), alternative polyadenylation
 
 ## A quick look
 
-Run in a terminal, `run`, `qc`, `pileup`, `metagene`, `pwm` and `modules` open full-screen
+Run in a terminal, `run`, `qc`, `pileup`, `metagene`, `pwm` and `cluster-view` open full-screen
 views; `--batch-process` skips them for scripts and clusters.
 
 Each view runs as a detachable session: Ctrl+Alt+D leaves it running (as does a dropped
@@ -165,7 +165,7 @@ faba <COMMAND> [OPTIONS]
 | `qc`                      | Pick thresholds in a full-screen view, then filter a faba output directory into a new fileset |
 | **Clustering: cells by their own sites** ||
 | `cluster`                 | Cluster cells by their site reads: link communities over (cell, gene) links with cell memberships (default), cell and gene modules with a methylation shift per pair (`--model blocks`), or a Chinese-restaurant-process mixture |
-| `modules` (`blocks`)      | Browse the gene modules against the cell modules of `cluster --model blocks` (clustering first when needed): each module's sites, the genes you pin side by side, and a gene's full pileup, one track per cell module; `--html` writes it as one self-contained page to share |
+| `cluster-view` (`modules`, `blocks`) | View a `cluster` fit (`--model link` or `blocks`; clustering first when needed): its gene modules against its cell modules, each module's sites, the genes you pin side by side, and a gene's full pileup, one track per cell module; `--html` writes it as one self-contained page to share |
 | **Inspection & reference** ||
 | `pwm`                     | Build a position weight matrix around genomic sites |
 | `pileup` (`inspect`)      | ASCII pileup, or a faceted Miami plot, for one gene |
@@ -212,7 +212,7 @@ Producers write every candidate and apply no p-value cutoff. qc is where cells, 
 1. docs lists the method write-ups. With `query` it prints the sections named (a topic such as profiling, a command such as qc, or a section number).
 2. count, atoi, dartseq, apa, depth and snp each write one modality. run writes the pipeline (SNP, then count, A-to-I, m6A, APA) into one directory. dartseq needs control BAMs; without them, run skips m6A.
 3. qc filters a directory into a new one, with the site thresholds given. It does not edit the input. With `dry_run` it writes nothing and returns what the cell QC keeps and what each threshold removes: try thresholds that way first.
-4. pileup, metagene and pwm read a directory's sites. metagene and pwm return their table and its figure as an image. pileup returns a binned table for a gene or region (and, with `figure`, a Miami SVG, as an image too). modules prints the gene and cell modules of a directory that already holds cluster's block tables.
+4. pileup, metagene and pwm read a directory's sites. metagene and pwm return their table and its figure as an image. pileup returns a binned table for a gene or region (and, with `figure`, a Miami SVG, as an image too). cluster_view prints the gene and cell modules of a directory that already holds cluster's block tables.
 5. cluster fits cells by their own site reads (link, blocks or crp) and writes its tables to `out`.
 
 The producers (count, depth, atoi, dartseq, apa, snp, run, qc, cluster) take `background`: on large BAMs set it, and the call returns a job id at once.
@@ -229,7 +229,7 @@ legume-mcp adds where the records are, the `notebook` tool (open with a plan: th
 | `run` | the pipeline (SNP, then count, A-to-I, m6A, APA) into one directory |
 | `qc` | filters a directory into a new one |
 | `cluster` | fits cells by their own site reads; writes its tables to a new directory |
-| `pileup`, `metagene`, `pwm`, `modules` | read what was written |
+| `pileup`, `metagene`, `pwm`, `cluster_view` | read what was written |
 | `notebook`, `job_status`, `job_wait`, `job_cancel` | from legume-mcp |
 
 ### Long runs in the background
@@ -242,7 +242,7 @@ Every write goes to an `out` that must not exist yet: no tool replaces a directo
 
 ## Clustering on real data
 
-`faba cluster` and `faba modules` fit by MCMC, so a fit is only worth reading once its chains
+`faba cluster` and `faba cluster-view` fit by MCMC, so a fit is only worth reading once its chains
 agree. Run several (`--chains`, 4 by default) and give them enough sweeps (`--sweeps`, burn-in
 included; `--burn-in`):
 
@@ -250,10 +250,10 @@ included; `--burn-in`):
 # Cell and gene modules from a faba output directory, straight through
 faba cluster out/ --model blocks --chains 4 --sweeps 600 --burn-in 200
 # ...or fit (or reopen) them in the browser, watching the chains as they run
-faba modules out/ --chains 4 --sweeps 600 --burn-in 200
+faba cluster-view out/ --chains 4 --sweeps 600 --burn-in 200
 ```
 
-**Watching the chains.** `faba modules` draws each chain's log joint live while it fits. When
+**Watching the chains.** `faba cluster-view` draws each chain's log joint live while it fits. When
 `faba cluster` is done it prints the same traces as one sparkline per chain on one scale, then a
 verdict and one line of advice naming the flags to run again with. Once the tables are open, the
 browser's header carries an `R-hat ... ok` or `check` badge, and `t` opens the trace view;

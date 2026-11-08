@@ -1,5 +1,5 @@
 //! The report's Model section: the run's settings from its record, its
-//! plate diagram drawn as they are set; and what `faba modules` makes of
+//! plate diagram drawn as they are set; and what `faba cluster-view` makes of
 //! that record: the tables opened as recorded, or fitted again.
 
 use super::tables;
@@ -254,7 +254,7 @@ fn an_older_shared_record_is_still_read() {
     assert_eq!(section(tmp.path())["preset"], "link");
 }
 
-/// `words` after `faba modules <dir>`, parsed as it parses them, what was
+/// `words` after `faba cluster-view <dir>`, parsed as it parses them, what was
 /// given recorded.
 pub(super) fn modules(dir: &Path, words: &[&str]) -> ModulesArgs {
     use clap::{Args, FromArgMatches};
@@ -268,7 +268,7 @@ pub(super) fn modules(dir: &Path, words: &[&str]) -> ModulesArgs {
     args
 }
 
-/// After a link run over a blocks run, `faba modules` with no model
+/// After a link run over a blocks run, `faba cluster-view` with no model
 /// options opens the tables as recorded and names the link preset in its
 /// header, as it does given `--model link`; a model or switches that set
 /// other settings than the record's fit again, saying why; `--model crp`

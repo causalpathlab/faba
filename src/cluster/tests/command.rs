@@ -148,7 +148,7 @@ fn the_saved_command_quotes_a_path_with_a_space() {
     assert!(text.contains("'/x y/a.zarr'"), "{text}");
 }
 
-/// `words` parsed as `faba modules` parses them, what was given recorded.
+/// `words` parsed as `faba cluster-view` parses them, what was given recorded.
 fn parse_modules(words: &[&str]) -> ModulesArgs {
     use clap::{Args, FromArgMatches};
     let m = ModulesArgs::augment_args(clap::Command::new("faba"))
@@ -159,11 +159,11 @@ fn parse_modules(words: &[&str]) -> ModulesArgs {
     args
 }
 
-/// `faba modules` clusters with the blocks preset unless `--model link` is
+/// `faba cluster-view` clusters with the blocks preset unless `--model link` is
 /// given, so its saved command says which, beside the options given to
-/// `faba modules`; `--model crp`, which writes no modules, is refused.
+/// `faba cluster-view`; `--model crp`, which writes no modules, is refused.
 #[test]
-fn the_saved_command_of_modules_names_its_preset() {
+fn the_saved_command_of_cluster_view_names_its_preset() {
     let args = parse_modules(&["faba", "/x.zarr", "--chains", "2", "--refit"]);
     let argv = command(&args.blockmodel().unwrap());
     assert_eq!(after(&argv, "--model"), "blocks");

@@ -1,4 +1,4 @@
-//! `faba modules`: the blockmodel's gene modules and cell modules, browsed.
+//! `faba cluster-view`: the blockmodel's gene modules and cell modules, browsed.
 //!
 //! Reads the tables `faba cluster`'s blockmodel writes (see [`data`]),
 //! fitting them first when they are missing or of other settings than those
@@ -107,7 +107,7 @@ impl ModulesArgs {
         }
         anyhow::ensure!(
             cluster.model != ModelKind::Crp,
-            "`faba modules` reads the blockmodel (--model link or blocks), not --model crp"
+            "`faba cluster-view` reads the blockmodel (--model link or blocks), not --model crp"
         );
         Ok(cluster)
     }
@@ -151,7 +151,7 @@ fn print(m: &Modules) {
 pub fn run_modules(args: &ModulesArgs) -> anyhow::Result<()> {
     // No inputs named: browse for them, as `faba pileup` does.
     let batch = args.batch_process || args.html.is_some();
-    let Some(cluster) = super::with_inputs(&args.cluster, "modules", batch)? else {
+    let Some(cluster) = super::with_inputs(&args.cluster, "cluster-view", batch)? else {
         return Ok(());
     };
     let args = &ModulesArgs {
@@ -174,14 +174,14 @@ pub fn run_modules(args: &ModulesArgs) -> anyhow::Result<()> {
     if let Some(path) = &args.html {
         return write_html(&modules, gtf.as_deref(), path);
     }
-    if crate::tui::batch(args.batch_process, "modules") {
+    if crate::tui::batch(args.batch_process, "cluster-view") {
         print(&modules);
         return Ok(());
     }
     browse(&dir, &modules, gtf)
 }
 
-/// What `faba modules` does with `dir`: open the block tables of a
+/// What `faba cluster-view` does with `dir`: open the block tables of a
 /// modality there, or cluster first, and why.
 #[derive(Debug, PartialEq)]
 enum Plan {
@@ -261,7 +261,7 @@ fn ensure_tables(args: &ModulesArgs, dir: &Path, view: bool) -> anyhow::Result<O
         ask::Asked::Fit(cluster) => *cluster,
         ask::Asked::Back if old.is_some() => return Ok(old),
         ask::Asked::Back | ask::Asked::Quit => {
-            crate::tui::work(|| eprintln!("faba modules: not fitting, as asked"))?;
+            crate::tui::work(|| eprintln!("faba cluster-view: not fitting, as asked"))?;
             return Ok(None);
         }
     };
@@ -282,7 +282,7 @@ fn ensure_tables(args: &ModulesArgs, dir: &Path, view: bool) -> anyhow::Result<O
         let Some(fitted) = watched else {
             crate::tui::work(|| {
                 eprintln!(
-                    "faba modules: the tables are written in {}; not opening the modules, as asked",
+                    "faba cluster-view: the tables are written in {}; not opening the modules, as asked",
                     dir.display()
                 )
             })?;
@@ -329,7 +329,7 @@ fn browse(
 ) -> anyhow::Result<()> {
     let gtf = match gtf {
         Some(gtf) => Some(gtf),
-        None => ask_reference("modules", Reference::Annotation, None)?
+        None => ask_reference("cluster-view", Reference::Annotation, None)?
             .map(|p| p.to_string_lossy().into()),
     };
     let models = crate::site_analysis::pileup::start_gene_models(gtf.as_deref());
@@ -337,7 +337,7 @@ fn browse(
     let mut view = ModulesView::new(&title, modules)
         .with_genes(models.clone())
         .with_report(
-            dir.join(format!("{}_modules.html", modules.modality)),
+            dir.join(format!("{}_cluster_view.html", modules.modality)),
             modules.clone(),
         );
     let mut settings = Default::default();

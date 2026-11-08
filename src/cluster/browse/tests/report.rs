@@ -88,7 +88,10 @@ fn the_page_holds_its_title_fragment_and_data() {
         let models = Default::default();
         report::write(&m, &models, &path).unwrap();
         let html = std::fs::read_to_string(&path).unwrap();
-        assert!(html.contains(&format!("<title>faba modules · {}</title>", m.modality)));
+        assert!(html.contains(&format!(
+            "<title>faba cluster-view · {}</title>",
+            m.modality
+        )));
         let script = report::FRAGMENT
             .rsplit_once("<script>")
             .map(|(_, code)| code)

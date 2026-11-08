@@ -48,7 +48,7 @@ first.
 4. pileup, metagene and pwm read a directory's sites. metagene and pwm \
 return their table and its figure as an image. pileup returns a binned table \
 for a gene or region (and, with `figure`, a Miami SVG, as an image too). \
-modules prints the gene and cell modules of a directory that already holds \
+cluster_view prints the gene and cell modules of a directory that already holds \
 cluster's block tables.
 5. cluster fits cells by their own site reads (link, blocks or crp) and \
 writes its tables to `out`.
@@ -226,8 +226,8 @@ fn tools() -> Vec<ToolSpec> {
             ),
         ),
         ToolSpec::new(
-            "modules",
-            "Print the gene and cell modules `cluster` wrote (`faba modules --batch-process`). `data` must already hold the block tables; this does not fit. With `html`, write one self-contained page to a new file instead.",
+            "cluster_view",
+            "View a `cluster` fit: print the gene and cell modules it wrote (`faba cluster-view --batch-process`). `data` must already hold the block tables; this does not fit. With `html`, write one self-contained page to a new file instead.",
             schema(
                 json!({
                     "data": { "type": "string", "description": "A `cluster` output directory: the block tables it wrote" },
@@ -560,7 +560,7 @@ impl Handler for Faba {
             "run" => run(&a, cx)?,
             "qc" => return qc(&a, cx),
             "cluster" => cluster(&a, cx)?,
-            "modules" => return modules(&a, cx),
+            "cluster_view" | "modules" => return cluster_view(&a, cx),
             "pileup" => return pileup(&a, cx),
             "metagene" => return metagene(&a, cx),
             "pwm" => return pwm(&a, cx),
@@ -1208,21 +1208,21 @@ fn cluster(a: &Arguments, cx: &Call) -> Result<Value> {
     run_out(a, cx, argv, &out, &what)
 }
 
-/// Flags that would make `modules` fit again, over the tables it was asked
+/// Flags that would make `cluster_view` fit again, over the tables it was asked
 /// to read: every flag and alias of the blockmodel options
-/// ([`crate::cluster::MODEL_OPTIONS`], what `modules` holds against the
-/// tables' record), read off the command itself so none is missed, and the
-/// sampler's.
-fn modules_taken() -> Vec<String> {
+/// ([`crate::cluster::MODEL_OPTIONS`], what `faba cluster-view` holds against
+/// the tables' record), read off the command itself so none is missed, and
+/// the sampler's.
+fn cluster_view_taken() -> Vec<String> {
     use clap::CommandFactory;
     let cli = crate::Cli::command();
-    let modules = cli
-        .find_subcommand("modules")
-        .expect("`faba modules` is a command");
+    let view = cli
+        .find_subcommand("cluster-view")
+        .expect("`faba cluster-view` is a command");
     let mut taken: Vec<String> = ["--chains", "--sweeps", "--burn-in"]
         .map(String::from)
         .into();
-    for arg in modules
+    for arg in view
         .get_arguments()
         .filter(|a| crate::cluster::MODEL_OPTIONS.contains(&a.get_id().as_str()))
     {
@@ -1240,15 +1240,15 @@ fn modules_taken() -> Vec<String> {
     taken
 }
 
-fn modules(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
+fn cluster_view(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
     let data = a.path("data")?;
     block_tables(&data, a.str("modality"))?;
-    let mut argv = vec!["modules".into(), data.clone()];
+    let mut argv = vec!["cluster-view".into(), data.clone()];
     push_opt(&mut argv, "--modality", a.str("modality"));
     if let Some(gtf) = a.path_opt("gtf")? {
         push_flag(&mut argv, "--gtf", &gtf);
     }
-    let taken = modules_taken();
+    let taken = cluster_view_taken();
     let taken: Vec<&str> = taken.iter().map(String::as_str).collect();
     argv.extend(a.options(&taken)?);
     argv.push("--batch-process".into());
@@ -1263,7 +1263,7 @@ fn modules(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
     Ok(vec![Content::Text(text)])
 }
 
-/// `dir` holds the block tables `cluster` writes, so `modules` has nothing
+/// `dir` holds the block tables `cluster` writes, so `cluster_view` has nothing
 /// to fit and nothing to replace.
 fn block_tables(dir: &str, modality: Option<&str>) -> Result<()> {
     let has = |m: &str| {
@@ -1437,8 +1437,8 @@ fn exists(path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        modules_taken, pileup_argv, recorded_results, tools, tsv_rows, typed_flags, with_typed,
-        Arguments, TYPED,
+        cluster_view_taken, pileup_argv, recorded_results, tools, tsv_rows, typed_flags,
+        with_typed, Arguments, TYPED,
     };
     use clap::CommandFactory;
     use serde_json::json;
@@ -1452,8 +1452,9 @@ mod tests {
         for &(tools, key, _, _) in TYPED {
             let long = key.replace('_', "-");
             for tool in tools {
+                // A tool is named after its command, `_` for `-`.
                 let sub = cli
-                    .find_subcommand(tool)
+                    .find_subcommand(tool.replace('_', "-"))
                     .unwrap_or_else(|| panic!("no command {tool}"));
                 assert!(
                     sub.get_arguments()
@@ -1556,11 +1557,11 @@ sites	m6A	10	2
     }
 
     /// Every blockmodel option, under any of its flags, is refused, so
-    /// `modules` can never fit again (and write over its tables) through
+    /// `cluster_view` can never fit again (and write over its tables) through
     /// `options`.
     #[test]
-    fn modules_refuses_every_option_that_would_fit_again() {
-        let taken = modules_taken();
+    fn cluster_view_refuses_every_option_that_would_fit_again() {
+        let taken = cluster_view_taken();
         for flag in [
             "--model",
             "--cell-roles",

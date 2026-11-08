@@ -1,4 +1,4 @@
-//! `faba modules --html`, and `e` in the browser: the modules as one page,
+//! `faba cluster-view --html`, and `e` in the browser: the modules as one page,
 //! the browser's levels and keys in it, its data the module tables (see
 //! [`crate::report`]).
 
@@ -256,6 +256,6 @@ pub fn write(
 
 /// The page of `data` (see [`data`]), streamed to `path`.
 pub(super) fn save(data: &Data, path: &Path) -> anyhow::Result<()> {
-    let title = format!("faba modules · {}", data.modality);
+    let title = format!("faba cluster-view · {}", data.modality);
     crate::report::write(path, &title, FRAGMENT, data)
 }

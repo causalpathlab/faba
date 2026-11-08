@@ -1,4 +1,4 @@
-//! Tests of `faba modules`: a small set of block tables written to a
+//! Tests of `faba cluster-view`: a small set of block tables written to a
 //! temporary folder, loaded and browsed. The fixtures are here; the tests
 //! are by what they cover.
 
