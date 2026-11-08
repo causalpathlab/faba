@@ -111,33 +111,33 @@ impl Model<'_> {
         pair: (u16, u16),
         scratch: &mut Scratch,
     ) -> Option<f64> {
+        self.holding(st, (unit, cell), pair, &mut scratch.moved);
+        if scratch.moved.is_empty() {
+            return None;
+        }
         let before = self.unit_term(urn, st, unit, cell);
-        let (sites_before, sites_after, reads) =
-            self.exchange_links(urn, st, (unit, cell), pair, scratch)?;
+        let (sites_before, sites_after, reads) = self.exchange_links(urn, st, cell, pair, scratch);
         let after = self.unit_term(urn, st, unit, cell);
         Some((after + sites_after) - (before + sites_before) + reads)
     }
 
     /// This model's part of [`Self::exchange`]: roles `r` and `r2`
-    /// exchanged on the unit's links here, in place, and the site terms of
-    /// every block a moved link leaves or enters before and after, or at
-    /// infinite strength (the reads factoring by link, each at its cell's
-    /// level) each moved link's reads in the block it enters less those in
-    /// the block it leaves; none when no link here holds either role.
+    /// exchanged, in place, on the links in `scratch`'s moved list (a cell's,
+    /// `cell` true, or a gene's, each holding one of them), and the site
+    /// terms of every block a moved link leaves or enters before and after,
+    /// or at infinite strength (the reads factoring by link, each at its
+    /// cell's level) each moved link's reads in the block it enters less
+    /// those in the block it leaves.
     fn exchange_links(
         &self,
         urn: &mut Urn,
         st: &mut State,
-        (unit, cell): (usize, bool),
+        cell: bool,
         (r, r2): (u16, u16),
         scratch: &mut Scratch,
-    ) -> Option<(f64, f64, f64)> {
+    ) -> (f64, f64, f64) {
         let (bb, kk) = (self.settings.gene_roles, self.blocks());
         let Scratch { moved, touched, .. } = scratch;
-        self.holding(st, (unit, cell), (r, r2), moved);
-        if moved.is_empty() {
-            return None;
-        }
         // The block a link enters from block `k`.
         let other = |k: usize| {
             let (a, b) = ((k / bb) as u16, (k % bb) as u16);
@@ -171,7 +171,7 @@ impl Model<'_> {
         };
         let before = sites(st);
         self.flip(urn, st, moved, cell, (r, r2));
-        Some((before, sites(st), reads))
+        (before, sites(st), reads)
     }
 
     /// A swap of two roles drawn uniformly on all of cell `unit`'s links
