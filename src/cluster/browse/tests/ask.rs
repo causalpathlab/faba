@@ -1,4 +1,4 @@
-//! The form `faba modules` asks the fit's settings in: prefilled from the
+//! The form `faba cluster-view` asks the fit's settings in: prefilled from the
 //! flags and the preset, refilled on a preset switch, checked as typed, and
 //! what Ctrl+R and Esc leave.
 
@@ -7,7 +7,7 @@ use super::*;
 use crate::cluster::browse::ask::{self, Asked, FitForm, ROWS};
 use crate::tui::{apply_key, feed, screen_text};
 
-/// The form over `words`' settings, as `faba modules` would ask them.
+/// The form over `words`' settings, as `faba cluster-view` would ask them.
 fn form(words: &[&str]) -> FitForm {
     let tmp = tempfile::tempdir().unwrap();
     let args = modules(tmp.path(), words).blockmodel().unwrap();

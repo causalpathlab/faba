@@ -296,7 +296,7 @@ Example:\n  \
             A Chinese-restaurant-process mixture (--model crp): each cell in one cluster,\n\
             the number of clusters learned, with split-merge moves and each cell's confidence.\n\n\
             Outputs, in the output directory, of the blockmodel (link and blocks alike, the\n\
-            tables `faba modules` reads), from the best chain's posterior means:\n\
+            tables `faba cluster-view` reads), from the best chain's posterior means:\n\
             - {modality}_cell_roles.parquet (every input cell's roles and `fitted`: in the\n\
               fit, not placed after; at strength inf its `level`), _gene_roles (each\n\
               gene's roles), _blocks (each\n\
@@ -326,10 +326,11 @@ Example:\n  \
     Cluster(ClusterArgs),
 
     #[command(
-        name = "modules",
-        alias = "blocks",
-        about = "Browse the gene modules and cell modules of `faba cluster --model blocks`",
-        long_about = view_help("Browse the gene modules and cell modules of `faba cluster --model blocks`\n\n\
+        name = "cluster-view",
+        aliases = ["modules", "blocks"],
+        about = "View a `faba cluster` blockmodel fit (link or blocks): gene modules against cell modules, sites, genes and pileups",
+        long_about = view_help("View a `faba cluster` fit (--model link or blocks): its gene modules against its\n\
+            cell modules, full screen (`faba modules` and `faba blocks` are older names).\n\n\
             Four levels, each a margin of the next, all posterior-mean reads of the fitted\n\
             cells. 1 gene modules: every gene module against every cell module. 2 sites: the\n\
             sites of the module in focus, each with its reads, converted, unconverted and\n\
@@ -354,9 +355,9 @@ Example:\n  \
             about it. Without a terminal (or with --batch-process) the modules are printed\n\
             instead; --html writes them as one self-contained page instead (`e` in the\n\
             browser), the trace drawn in its Model section."),
-        after_long_help = "Example:\n  faba modules out/\n  faba modules out/ --fit '*_wt_*' --cell-roles 8 --gene-roles 8\n  faba modules out/ --html modules.html"
+        after_long_help = "Example:\n  faba cluster-view out/\n  faba cluster-view out/ --fit '*_wt_*' --cell-roles 8 --gene-roles 8\n  faba cluster-view out/ --html cluster.html"
     )]
-    Modules(ModulesArgs),
+    ClusterView(ModulesArgs),
 
     #[command(
         name = "metagene",
@@ -553,8 +554,8 @@ Example:\n  \
                       (`claude mcp add faba -- faba mcp`). The tools run the commands:\n\
                       the producers and `run` write a new directory, `qc` filters one\n\
                       into another, `cluster` writes its tables to a new directory, and\n\
-                      `pileup`, `metagene`, `pwm`, `modules` and `docs` read what was\n\
-                      written. No tool replaces an existing directory or file, and no\n\
+                      `pileup`, `metagene`, `pwm`, `cluster_view` and `docs` read what\n\
+                      was written. No tool replaces an existing directory or file, and no\n\
                       tool opens a view."
     )]
     Mcp(mcp::McpArgs),
@@ -626,14 +627,14 @@ fn faba_command() -> clap::Command {
 }
 
 /// Notes what was given to `faba cluster`'s options (also under `faba
-/// modules`), for the command it saves.
+/// cluster-view`), for the command it saves.
 fn record_given(cli: &mut Cli, matches: &clap::ArgMatches) {
     let Some((_, m)) = matches.subcommand() else {
         return;
     };
     match &mut cli.commands {
         Commands::Cluster(args) => args.record_given(m),
-        Commands::Modules(args) => args.record_given(m),
+        Commands::ClusterView(args) => args.record_given(m),
         _ => {}
     }
 }
@@ -698,7 +699,7 @@ fn view_session(command: &Commands) -> Option<(&'static str, legume_tui::Options
     match command {
         Commands::Pwm(args) => Some(("pwm", args.view_session()?)),
         Commands::Pileup(args) => Some(("pileup", args.view_session()?)),
-        Commands::Modules(args) => Some(("modules", args.view_session()?)),
+        Commands::ClusterView(args) => Some(("cluster-view", args.view_session()?)),
         Commands::Metagene(args) => Some(("metagene", args.view_session()?)),
         Commands::Qc(args) => Some(("qc", args.view_session()?)),
         Commands::Run(args) => Some(("run", args.view_session()?)),
@@ -758,7 +759,7 @@ fn run(cli: Cli, cmd: clap::Command, matches: &clap::ArgMatches) -> anyhow::Resu
         Commands::Cluster(ref args) => {
             run_cluster(args)?;
         }
-        Commands::Modules(ref args) => run_modules(args)?,
+        Commands::ClusterView(ref args) => run_modules(args)?,
         Commands::Metagene(ref args) => run_metagene(args)?,
         Commands::Snp(ref args) => recorded(args.run_record(), || run_snp(args))?,
         Commands::Qc(ref args) => run_qc(args)?,
@@ -788,7 +789,7 @@ mod tests {
 
     #[test]
     fn what_is_given_to_cluster_is_noted_at_parse_time() {
-        for command in ["cluster", "modules"] {
+        for command in ["cluster", "cluster-view", "modules", "blocks"] {
             let m = faba_command()
                 .try_get_matches_from(["faba", command, "/x.zarr", "--chains", "2"])
                 .unwrap();
@@ -833,8 +834,17 @@ mod tests {
             (vec!["faba", "qc"], Some(("qc", false, false))),
             (vec!["faba", "qc", "out/"], Some(("qc", true, false))),
             (
+                vec!["faba", "cluster-view", "out/"],
+                Some(("cluster-view", true, false)),
+            ),
+            // The older names open the same view.
+            (
                 vec!["faba", "modules", "out/"],
-                Some(("modules", true, false)),
+                Some(("cluster-view", true, false)),
+            ),
+            (
+                vec!["faba", "blocks", "out/"],
+                Some(("cluster-view", true, false)),
             ),
             (vec!["faba", "run"], Some(("run", false, false))),
             (vec!["faba", "run", "a.bam"], Some(("run", true, false))),
@@ -855,7 +865,7 @@ mod tests {
             vec!["faba", "pileup", "a.zarr", "--batch-process"],
             vec!["faba", "metagene", "--batch-process"],
             vec!["faba", "qc", "out/", "--batch-process"],
-            vec!["faba", "modules", "out/", "--html", "m.html"],
+            vec!["faba", "cluster-view", "out/", "--html", "m.html"],
             vec!["faba", "run", "--batch-process"],
             vec!["faba", "count", "a.bam", "-g", "g.gff", "-o", "out/"],
             vec!["faba", "sessions"],
@@ -873,7 +883,7 @@ mod tests {
     #[test]
     fn the_views_long_help_ends_with_their_session() {
         let mut cmd = faba_command();
-        for name in ["pwm", "pileup", "modules", "metagene", "qc", "run"] {
+        for name in ["pwm", "pileup", "cluster-view", "metagene", "qc", "run"] {
             let sub = cmd.find_subcommand_mut(name).unwrap();
             let help = sub.render_long_help().to_string();
             assert!(help.contains("detachable session"), "{name}: {help}");

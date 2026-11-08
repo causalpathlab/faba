@@ -1,4 +1,4 @@
-//! The view `faba modules` shows while it fits: a bar per chain, its
+//! The view `faba cluster-view` shows while it fits: a bar per chain, its
 //! burn-in marked, with the time taken and left; under them each chain's
 //! log joint as it goes; then whether a chain lags, and once summarised
 //! the verdict on that and the chains' split R-hat, and what to do about
@@ -186,7 +186,7 @@ impl<T> Screen for Fitting<'_, T> {
         ])
         .areas(area);
         frame.render_widget(
-            header("modules", self.title, &clock(self.start.elapsed())),
+            header("cluster-view", self.title, &clock(self.start.elapsed())),
             top,
         );
         let schedule = self.progress.schedule();

@@ -392,7 +392,7 @@ impl Screen for ModulesView<'_> {
                 Constraint::Length(1),
             ])
             .areas(area);
-            frame.render_widget(header("modules", &self.title, &extra), head);
+            frame.render_widget(header("cluster-view", &self.title, &extra), head);
             return self.draw_trace(frame, body, foot);
         }
         self.fit_columns(area.width);
@@ -418,10 +418,12 @@ impl Screen for ModulesView<'_> {
         ])
         .areas(top);
 
-        frame.render_widget(header("modules", &self.title, &extra), head);
+        frame.render_widget(header("cluster-view", &self.title, &extra), head);
         frame.render_widget(Paragraph::new(self.levels()), levels);
-        // Keep the mark clear of the header's text.
-        let reserve = (self.title.chars().count() + extra.chars().count() + 16) as u16;
+        // Keep the mark clear of the header's text: the badge, its title and
+        // extra, and their padding and a margin.
+        let reserve =
+            ("cluster-view".len() + self.title.chars().count() + extra.chars().count() + 9) as u16;
         let corner = Rect::new(head.x, head.y, head.width, 2);
         crate::figure::logo::draw_mini_logo(frame.buffer_mut(), corner, reserve);
 

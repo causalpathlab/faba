@@ -1,4 +1,4 @@
-//! The chains' log joint under their bars (and, saved, in `faba modules`'
+//! The chains' log joint under their bars (and, saved, in `faba cluster-view`'
 //! trace pane): a line per chain in its label's colour, the burn-in's end
 //! marked; once done, whether a chain lags the best.
 

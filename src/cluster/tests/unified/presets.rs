@@ -379,12 +379,12 @@ fn held_out_scores_are_finite_at_extreme_sites() {
 }
 
 /// Both presets, run as `faba cluster` runs them on read input, write the
-/// one table set `faba modules` reads: the link preset one gene module, its
+/// one table set `faba cluster-view` reads: the link preset one gene module, its
 /// shifts all 0, the blocks preset its gene roles ordered by shift range
 /// and each cell's level; the placed cells' rows are in the cell roles, not
 /// fitted.
 #[test]
-fn both_presets_write_the_tables_faba_modules_reads() {
+fn both_presets_write_the_tables_faba_cluster_view_reads() {
     let (data, fit_reads) = planted_site_data(90, 80, 12, 141);
     let fitted: Vec<usize> = (0..80).collect();
     let weighted = Weighted::new(&fit_reads, None);

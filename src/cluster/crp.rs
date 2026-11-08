@@ -688,6 +688,6 @@ impl McmcModel for Model<'_> {
     }
 }
 
-/// Never traced: `faba modules`, which draws the traces, fits the
+/// Never traced: `faba cluster-view`, which draws the traces, fits the
 /// blockmodel.
 impl super::progress::Traced for Model<'_> {}

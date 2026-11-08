@@ -1,7 +1,7 @@
 //! Sampling progress: each chain's sweeps counted as they are done, and
 //! its log joint every so many sweeps (the blockmodel's), read from
 //! another thread (a bar on stderr for `faba cluster`, a view with the
-//! traces in `faba modules`), and a cancel that turns the sweeps left into
+//! traces in `faba cluster-view`), and a cancel that turns the sweeps left into
 //! no-ops.
 //!
 //! The chains run as `run_mcmc_parallel` runs them, each model wrapped so
