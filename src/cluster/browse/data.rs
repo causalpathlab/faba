@@ -21,6 +21,7 @@ use tables::{main_roles, posterior_sizes, read_shifts, role_sizes, site_counts};
 use tables::{BlockSites, SiteRows};
 
 mod run;
+pub(in crate::cluster) use run::read as read_record;
 mod sites;
 mod tables;
 mod trace;
@@ -176,7 +177,13 @@ pub struct Modules {
 
 impl Modules {
     /// The tables of `modality` in `dir`.
-    pub fn load(dir: &Path, modality: &str) -> anyhow::Result<Self> {
+    /// The model and trace come from `record` (a run record's file name and
+    /// contents) when given, else from the record found beside the tables.
+    pub fn load(
+        dir: &Path,
+        modality: &str,
+        record: Option<(String, serde_json::Value)>,
+    ) -> anyhow::Result<Self> {
         let path = |name: &str| dir.join(format!("{modality}_{name}.parquet"));
         let table = |name: &str| {
             let path = path(name);
@@ -219,7 +226,7 @@ impl Modules {
                 path("site_stats").display()
             );
         }
-        let record = run::record(dir, modality);
+        let record = record.map_or_else(|| run::record(dir, modality), Ok);
         let mut modules = Self {
             modality: modality.to_string(),
             cell_roles,

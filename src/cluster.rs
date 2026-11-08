@@ -33,6 +33,8 @@ mod write;
 
 use args::{check, inputs, output_dir, with_inputs};
 pub use args::{ClusterArgs, ModelKind};
+#[cfg(feature = "mcp")]
+pub(crate) use browse::read_fit_record;
 pub use browse::{run_modules, ModulesArgs};
 use command::command;
 
@@ -121,7 +123,11 @@ fn run_cluster_watched(
     args: &ClusterArgs,
     progress: &progress::Progress,
 ) -> anyhow::Result<Option<String>> {
-    let Some(args) = &with_inputs(args, "cluster", false)? else {
+    let site_matrices = (
+        "site matrices",
+        crate::qc::layout::is_site_matrix_name as fn(&str) -> bool,
+    );
+    let Some(args) = &with_inputs(args, "cluster", false, site_matrices)? else {
         return Ok(None);
     };
     let dir = output_dir(args);

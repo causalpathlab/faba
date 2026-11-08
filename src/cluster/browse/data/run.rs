@@ -26,10 +26,14 @@ pub(in crate::cluster::browse) fn record(
     } else {
         return Err(format!("no run record ({own}) beside the tables"));
     };
+    read(dir, &name).map(|record| (name, record))
+}
+
+/// The run record `name` in `dir`, parsed, or in one line why it cannot be.
+pub(in crate::cluster) fn read(dir: &Path, name: &str) -> Result<serde_json::Value, String> {
     let unread = |e: &dyn std::fmt::Display| format!("{name} cannot be read: {e}");
-    let text = std::fs::read_to_string(dir.join(&name)).map_err(|e| unread(&e))?;
-    let record = serde_json::from_str(&text).map_err(|e| unread(&e))?;
-    Ok((name, record))
+    let text = std::fs::read_to_string(dir.join(name)).map_err(|e| unread(&e))?;
+    serde_json::from_str(&text).map_err(|e| unread(&e))
 }
 
 /// The blockmodel's settings in `record`, the run record `name`, or in one

@@ -233,20 +233,20 @@ fn wide_tables(dir: &Path) {
 fn wide() -> Modules {
     let tmp = tempfile::tempdir().unwrap();
     wide_tables(tmp.path());
-    Modules::load(tmp.path(), "m6a").unwrap()
+    Modules::load(tmp.path(), "m6a", None).unwrap()
 }
 
 fn loaded() -> Modules {
     let tmp = tempfile::tempdir().unwrap();
     tables(tmp.path());
-    Modules::load(tmp.path(), "m6a").unwrap()
+    Modules::load(tmp.path(), "m6a", None).unwrap()
 }
 
 /// The modules of [`tables_with`] the cell roles swapped.
 fn swapped() -> Modules {
     let tmp = tempfile::tempdir().unwrap();
     tables_with(tmp.path(), true);
-    Modules::load(tmp.path(), "m6a").unwrap()
+    Modules::load(tmp.path(), "m6a", None).unwrap()
 }
 
 fn count(on: f64, total: f64) -> Count {

@@ -3,7 +3,9 @@
 //! that record: the tables opened as recorded, or fitted again.
 
 use super::tables;
-use crate::cluster::browse::{plan, report, title, Modules, ModulesArgs, Plan};
+use crate::cluster::browse::{
+    fit_record, plan, report, run_modules, title, Modules, ModulesArgs, Plan,
+};
 use crate::cluster::{args, record_name, ClusterArgs};
 use crate::run_record::RunRecord;
 use serde_json::Value;
@@ -29,7 +31,7 @@ fn recorded(dir: &Path, words: &[&str]) {
 
 /// The page's model section for the tables in `dir`.
 fn section(dir: &Path) -> Value {
-    let m = Modules::load(dir, "m6a").unwrap();
+    let m = Modules::load(dir, "m6a", None).unwrap();
     let data = serde_json::to_value(report::data(&m, &Default::default())).unwrap();
     data["model"].clone()
 }
@@ -284,7 +286,7 @@ fn modules_opens_the_recorded_tables_unless_asked_for_other_settings() {
     assert_eq!(at(&[]), open);
     assert_eq!(at(&["--chains", "2"]), open, "not a model option");
     assert_eq!(at(&["--model", "link"]), open);
-    let head = title(dir, &Modules::load(dir, "m6a").unwrap());
+    let head = title(dir, &Modules::load(dir, "m6a", None).unwrap());
     assert!(head.ends_with("m6a · link preset"), "{head}");
     let Plan::Fit(why) = at(&["--model", "blocks"]) else {
         panic!("another preset opened as it is");
@@ -305,8 +307,76 @@ fn modules_opens_the_recorded_tables_unless_asked_for_other_settings() {
         dir,
         &["--model", "link", "--shift", "on", "--gene-roles", "2"],
     );
-    let head = title(dir, &Modules::load(dir, "m6a").unwrap());
+    let head = title(dir, &Modules::load(dir, "m6a", None).unwrap());
     assert!(head.ends_with("custom settings"), "{head}");
+}
+
+/// A fit's run record says, by its contents, which fit to open: its
+/// modality from its `tables` (an older record's from its name), refused
+/// for a crp fit; another command's record is an input as before. It opens
+/// alone, never with other inputs, and never fits again.
+#[test]
+fn a_run_record_names_the_fit_to_open() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    let path = |name: &str| -> Box<str> { dir.join(name).to_string_lossy().into() };
+    let fit = |p: &str| fit_record(&[p.into()]);
+    // An older record: the modality in its name.
+    recorded(dir, &["--model", "blocks"]);
+    let record = path(&record_name("m6a", crate::cluster::ModelKind::Blocks));
+    let got = fit(&record).unwrap().unwrap();
+    assert_eq!((got.dir.as_path(), got.modality.as_str()), (dir, "m6a"));
+    // The record's own `tables` say the modality, whatever its name.
+    let mut json: Value =
+        serde_json::from_str(&std::fs::read_to_string(&*record).unwrap()).unwrap();
+    json["results"]["tables"] = crate::cluster::run::blockmodel::tables_entry("m6a");
+    std::fs::write(dir.join("renamed.run.json"), json.to_string()).unwrap();
+    assert_eq!(
+        fit(&path("renamed.run.json")).unwrap().unwrap().modality,
+        "m6a"
+    );
+    // A crp fit's record is refused, by what it holds; another command's
+    // is no fit, alone or with other inputs, as before.
+    let crp = r#"{"job":"cluster","results":{"posterior":{},"cluster_sizes":[]}}"#;
+    std::fs::write(dir.join("m6a_cluster.run.json"), crp).unwrap();
+    let err = fit(&path("m6a_cluster.run.json")).unwrap_err().to_string();
+    assert!(err.contains("--model crp"), "{err}");
+    // An older blockmodel record, before its `model` result: still a fit.
+    let older = r#"{"job":"cluster","results":{"blockmodel":{}}}"#;
+    std::fs::write(dir.join("m6a_old.run.json"), older).unwrap();
+    assert_eq!(
+        fit(&path("m6a_old.run.json")).unwrap().unwrap().modality,
+        "m6a"
+    );
+    std::fs::write(dir.join("pipeline.run.json"), r#"{"job":"run"}"#).unwrap();
+    assert!(fit(&path("pipeline.run.json")).unwrap().is_none());
+    let pipeline_and_more = [path("pipeline.run.json"), "x.zarr".into()];
+    assert!(fit_record(&pipeline_and_more).unwrap().is_none());
+    let dir_only: Box<str> = dir.to_string_lossy().into();
+    assert!(fit(&dir_only).unwrap().is_none());
+    assert!(fit_record(&[record.clone(), dir_only]).is_err());
+    run_modules(&modules(Path::new(&*record), &["--batch-process"])).unwrap();
+    for words in [
+        &["--refit"][..],
+        &["--cell-roles", "4"],
+        &["-o", "elsewhere"],
+        &["--fit", "*_wt_*"],
+    ] {
+        let all: Vec<&str> = words.iter().copied().chain(["--batch-process"]).collect();
+        let err = run_modules(&modules(Path::new(&*record), &all)).unwrap_err();
+        assert!(err.to_string().contains("opens its fit as it is"), "{err}");
+    }
+    let other = run_modules(&modules(
+        Path::new(&*record),
+        &["--modality", "atoi", "--batch-process"],
+    ))
+    .unwrap_err();
+    assert!(other.to_string().contains("not --modality atoi"), "{other}");
+    run_modules(&modules(
+        Path::new(&*record),
+        &["--modality", "M6A", "--batch-process"],
+    ))
+    .unwrap();
 }
 
 /// Without a blockmodel record the options given cannot be compared: the
@@ -321,7 +391,7 @@ fn modules_opens_unrecorded_tables_as_they_are() {
         plan(&args, tmp.path()).unwrap(),
         Plan::Open("m6a".to_string())
     );
-    let head = title(tmp.path(), &Modules::load(tmp.path(), "m6a").unwrap());
+    let head = title(tmp.path(), &Modules::load(tmp.path(), "m6a", None).unwrap());
     assert!(head.ends_with("settings not recorded"), "{head}");
 }
 

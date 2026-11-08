@@ -500,21 +500,17 @@ pub(super) fn check(args: &ClusterArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `args` with its inputs, asked for in a browser when none are named.
+/// `args` with its inputs, asked for in a browser when none are named: the
+/// files `keep` accepts, called `what`.
 pub(super) fn with_inputs(
     args: &ClusterArgs,
     command: &'static str,
     batch: bool,
+    (what, keep): (&'static str, fn(&str) -> bool),
 ) -> anyhow::Result<Option<ClusterArgs>> {
     let mut args = args.clone();
     if args.data_files.is_empty() {
-        let ask = crate::site_analysis::input_picker::ask_inputs(
-            command,
-            batch,
-            "site matrices",
-            crate::qc::layout::is_site_matrix_name,
-            false,
-        );
+        let ask = crate::site_analysis::input_picker::ask_inputs(command, batch, what, keep, false);
         let Some(chosen) = ask? else { return Ok(None) };
         args.data_files = chosen.paths;
     }

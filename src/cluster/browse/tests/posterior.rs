@@ -124,7 +124,7 @@ fn without_column(path: &Path, name: &str) {
 fn split(old: bool) -> Modules {
     let tmp = tempfile::tempdir().unwrap();
     split_tables(tmp.path(), old);
-    Modules::load(tmp.path(), "m6a").unwrap()
+    Modules::load(tmp.path(), "m6a", None).unwrap()
 }
 
 /// Whether `a` and `b` agree to within f32 rounding.
@@ -307,7 +307,7 @@ fn older_outputs_load_and_say_what_is_approximate() {
 fn the_pages_full_pileup_holds_the_same_posterior_numbers() {
     let tmp = tempfile::tempdir().unwrap();
     split_tables(tmp.path(), false);
-    let m = Modules::load(tmp.path(), "m6a").unwrap();
+    let m = Modules::load(tmp.path(), "m6a", None).unwrap();
     let data = serde_json::to_value(report::data(&m, &Default::default())).unwrap();
     let reads = gene::GeneReads::of(&m, "GENE1").unwrap();
     let gene = &module(&data, "M1")["genes"][0];
@@ -339,7 +339,7 @@ fn the_pages_full_pileup_holds_the_same_posterior_numbers() {
 fn the_pages_all_cells_numbers_round_the_exact_sums() {
     let tmp = tempfile::tempdir().unwrap();
     split_tables(tmp.path(), false);
-    let m = Modules::load(tmp.path(), "m6a").unwrap();
+    let m = Modules::load(tmp.path(), "m6a", None).unwrap();
     let data = serde_json::to_value(report::data(&m, &Default::default())).unwrap();
     // 1.15 and 0.85 cells: rounded first they would sum to 2.1.
     let all: f64 = m.cell_sizes.iter().sum();
@@ -362,7 +362,7 @@ fn the_pages_all_cells_numbers_round_the_exact_sums() {
 fn the_page_leaves_out_what_it_can_work_out() {
     let tmp = tempfile::tempdir().unwrap();
     split_tables(tmp.path(), false);
-    let m = Modules::load(tmp.path(), "m6a").unwrap();
+    let m = Modules::load(tmp.path(), "m6a", None).unwrap();
     let data = serde_json::to_value(report::data(&m, &Default::default())).unwrap();
     // GENE2 at 50: every read in its main role, sums exact.
     let site = &module(&data, "M2")["genes"][0]["sites"][0];
@@ -386,7 +386,7 @@ fn a_site_only_in_other_gene_roles_is_in_the_full_pileup_alone() {
     (on[5], off[5]) = (2.0, 1.0);
     let sites = [site("GENE1", 100), site("GENE1", 200)];
     write_reads(tmp.path(), &sites, (&on, &off), (4, 2), true);
-    let m = Modules::load(tmp.path(), "m6a").unwrap();
+    let m = Modules::load(tmp.path(), "m6a", None).unwrap();
     assert_eq!(gene1(&m).len(), 1, "only 100 listed");
     let reads = gene::GeneReads::of(&m, "GENE1").unwrap();
     assert_eq!(positions(&reads.groups[0].0), [100, 200]);
@@ -411,7 +411,7 @@ fn a_gene_role_without_its_genes_reads_is_not_listed() {
         (on[at + 1], off[at + 1]) = (0.0, 0.0);
     }
     write_reads(tmp.path(), &split_sites(), (&on, &off), (4, 2), true);
-    let m = Modules::load(tmp.path(), "m6a").unwrap();
+    let m = Modules::load(tmp.path(), "m6a", None).unwrap();
     assert!(m.members[1].is_empty());
     assert_eq!((m.order.clone(), m.diagonal.clone()), (vec![0], vec![0]));
     assert_eq!(m.genes(0).len(), 1, "GENE2 is not listed in gene role 1");
@@ -429,7 +429,7 @@ fn a_main_gene_role_past_the_blocks_is_an_error_naming_the_table() {
     let path = tmp.path().join("m6a_gene_roles.parquet");
     let weights = [0.1, 0.2, 0.7, 0.8, 0.1, 0.1];
     write::gene_roles(&["GENE1", "GENE2"], &weights, 3, &path).unwrap();
-    let e = Modules::load(tmp.path(), "m6a").unwrap_err();
+    let e = Modules::load(tmp.path(), "m6a", None).unwrap_err();
     assert!(format!("{e:#}").contains("m6a_gene_roles"), "{e:#}");
 }
 
@@ -453,7 +453,7 @@ fn two_chromosomes(dir: &Path) {
 fn a_gene_on_two_chromosomes_keeps_the_one_with_most_sites() {
     let tmp = tempfile::tempdir().unwrap();
     two_chromosomes(tmp.path());
-    let m = Modules::load(tmp.path(), "m6a").unwrap();
+    let m = Modules::load(tmp.path(), "m6a", None).unwrap();
     let reads = gene::GeneReads::of(&m, "GENE1").unwrap();
     assert_eq!(reads.chr, "chr1");
     assert_eq!(positions(&reads.groups[0].0), [100, 200]);

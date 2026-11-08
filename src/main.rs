@@ -306,7 +306,8 @@ Example:\n  \
               role, the full pileups), _site_stats (each site's raw reads and cells), and\n\
               _trace (each chain's log joint about 200 times over its sweeps: chain, sweep,\n\
               log_joint; the run's sweeps and burn-in in the run record)\n\
-            - {modality}_blockmodel.run.json: the run record, with the model's settings\n\
+            - {modality}_blockmodel.run.json: the run record, with the model's settings and\n\
+              the tables of each side it wrote (`faba cluster-view` opens the fit from it)\n\
             of crp:\n\
             - {modality}_cell_clusters.parquet: every input cell's cluster and confidence\n\
             - {modality}_site_clusters.parquet: each site's reads and posterior fraction per\n\
@@ -330,7 +331,10 @@ Example:\n  \
         aliases = ["modules", "blocks"],
         about = "View a `faba cluster` blockmodel fit (link or blocks): gene modules against cell modules, sites, genes and pileups",
         long_about = view_help("View a `faba cluster` fit (--model link or blocks): its gene modules against its\n\
-            cell modules, full screen (`faba modules` and `faba blocks` are older names).\n\n\
+            cell modules, full screen (`faba modules` and `faba blocks` are older names).\n\
+            Name the fit's run record, {modality}_blockmodel.run.json: its tables open as\n\
+            they are. Site matrices or their output directory work too, clustered first\n\
+            as below.\n\n\
             Four levels, each a margin of the next, all posterior-mean reads of the fitted\n\
             cells. 1 gene modules: every gene module against every cell module. 2 sites: the\n\
             sites of the module in focus, each with its reads, converted, unconverted and\n\
@@ -355,7 +359,7 @@ Example:\n  \
             about it. Without a terminal (or with --batch-process) the modules are printed\n\
             instead; --html writes them as one self-contained page instead (`e` in the\n\
             browser), the trace drawn in its Model section."),
-        after_long_help = "Example:\n  faba cluster-view out/\n  faba cluster-view out/ --fit '*_wt_*' --cell-roles 8 --gene-roles 8\n  faba cluster-view out/ --html cluster.html"
+        after_long_help = "Example:\n  faba cluster-view out/m6a_blockmodel.run.json\n  faba cluster-view out/\n  faba cluster-view out/ --fit '*_wt_*' --cell-roles 8 --gene-roles 8\n  faba cluster-view out/ --html cluster.html"
     )]
     ClusterView(ModulesArgs),
 
