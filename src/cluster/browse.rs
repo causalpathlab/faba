@@ -22,6 +22,7 @@ mod data;
 mod gene;
 mod order;
 mod report;
+mod text;
 mod view;
 
 pub use data::{gene_models, Count, Modules};
@@ -69,6 +70,41 @@ pub struct ModulesArgs {
         help = "Print the modules instead of browsing them full screen"
     )]
     batch_process: bool,
+
+    #[arg(
+        long = "module",
+        value_name = "M",
+        help = "With --batch-process: print gene module M's genes and sites (level 2), as M3 or 3"
+    )]
+    module: Option<String>,
+
+    #[arg(
+        long = "gene",
+        value_name = "GENE",
+        help = "With --batch-process: print a gene's sites in each cell module, over every gene module (levels 3 and 4), by key or symbol"
+    )]
+    gene: Option<String>,
+
+    #[arg(
+        long = "cells",
+        default_value_t = false,
+        help = "With --batch-process: print the cell modules and their sizes"
+    )]
+    cells: bool,
+
+    #[arg(
+        long = "trace",
+        default_value_t = false,
+        help = "With --batch-process: print each chain's trace, the verdict and what to do about it"
+    )]
+    trace: bool,
+
+    #[arg(
+        long = "settings",
+        default_value_t = false,
+        help = "With --batch-process: print the settings the fit ran with"
+    )]
+    settings: bool,
 
     /// `--no-detach` and `--session`: how the view runs as a session.
     #[command(flatten)]
@@ -327,6 +363,24 @@ pub fn run_modules(args: &ModulesArgs) -> anyhow::Result<()> {
     );
     if let Some(path) = &args.html {
         return write_html(&modules, gtf.as_deref(), path);
+    }
+    let shown = text::Shown {
+        module: args.module.clone(),
+        gene: args.gene.clone(),
+        cells: args.cells,
+        trace: args.trace,
+        settings: args.settings,
+    };
+    if shown.any() {
+        anyhow::ensure!(
+            args.batch_process,
+            "--module, --gene, --cells, --trace and --settings print a level: give \
+             --batch-process with them (the browser shows every level itself)"
+        );
+        text::printed(&modules, &shown)?
+            .iter()
+            .for_each(|line| println!("{line}"));
+        return Ok(());
     }
     if crate::tui::batch(args.batch_process, "cluster-view") {
         print(&modules);

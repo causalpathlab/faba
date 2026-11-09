@@ -17,6 +17,7 @@ mod model;
 mod posterior;
 mod report;
 mod strip;
+mod text;
 mod trace;
 mod view;
 
@@ -244,7 +245,8 @@ fn loaded() -> Modules {
 /// A count fit's tables, as `faba cluster --modality count` writes them:
 /// two cell roles and two gene roles. Cells B0 and B1 in cell role 1, B2
 /// and B3 in role 2; G1 and G2 in gene role 1, G3 in role 2. UMIs by cell
-/// role: G1 10 and 2, G2 4 and none, G3 none and 6.
+/// role: G1 10 and 2, G2 4 and none, G3 none and 6 (every gene written in
+/// every cell role, none as 0).
 fn count_tables(dir: &Path) {
     let path = |name: &str| dir.join(format!("count_{name}.parquet"));
     let cells: Vec<Cell> = (0..4)

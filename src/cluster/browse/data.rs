@@ -235,6 +235,9 @@ pub struct Modules {
     /// The model the tables come from, from their run record; why not
     /// when there is none (see [`run::model`]).
     pub run: Result<Recorded, String>,
+    /// The model's settings as the run record holds them, whatever the
+    /// model (none without a record).
+    pub settings: Option<serde_json::Value>,
     /// Whether the fit converged, and its trace (see [`Fit`]).
     pub fit: Fit,
 }
@@ -315,6 +318,9 @@ impl Modules {
                 .as_ref()
                 .map_err(Clone::clone)
                 .and_then(run::settings),
+            settings: (record.as_ref().ok())
+                .and_then(|(_, r)| r.pointer("/results/model"))
+                .cloned(),
             fit: Fit::read(dir, modality, &record),
         };
         // A count fit's genes are its sites, their reads UMIs per cell.

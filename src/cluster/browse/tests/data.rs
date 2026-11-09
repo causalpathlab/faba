@@ -75,15 +75,17 @@ fn a_count_fits_tables_load_as_umis_per_cell() {
     let names: Vec<(&str, i64)> = m.sites.iter().map(|s| (s.gene.as_ref(), s.pos)).collect();
     assert_eq!(names, [("G1", 0), ("G2", 0), ("G3", 0)]);
     assert!(m.stats.is_none() && !m.approximate.pileup);
-    // G1's and G2's UMIs over their cells; G2 has none in cell role 2.
+    // G1's and G2's UMIs over their cells, every gene counted in every
+    // cell role: G2 has none in cell role 2 and still counts its 2 cells,
+    // so module M1 there is 2 UMIs over 4 gene-cells.
     let m1 = m.block(0);
     assert_eq!(m1[0].on, 14.0);
     assert_eq!(m1[0].total, 4.0);
-    assert_eq!((m1[1].on, m1[1].total), (2.0, 2.0));
+    assert_eq!((m1[1].on, m1[1].total), (2.0, 4.0));
     assert!(m1.iter().all(|r| r.measure == Measure::PerCell));
     assert_eq!(m1[0].number().unwrap(), "3.5");
     let m2 = m.block(1);
-    assert_eq!((m2[0].total, m2[0].number()), (0.0, None));
+    assert_eq!((m2[0].total, m2[0].number()), (2.0, Some("0.00".into())));
     assert_eq!((m2[1].on, m2[1].up()), (6.0, 3.0));
     let g1 = &m.members[0]
         .iter()
@@ -109,8 +111,8 @@ fn a_count_fit_prints_umis_per_cell() {
             .map(str::to_string)
             .collect::<Vec<_>>()
     };
-    assert_eq!(row("M1")[3..], ["3.5", "1.0"]);
-    assert_eq!(row("M2")[3..], ["-", "3.0"]);
+    assert_eq!(row("M1")[3..], ["3.5", "0.50"]);
+    assert_eq!(row("M2")[3..], ["0.00", "3.0"]);
     // A site fit's are % and reads.
     assert!(printed(&loaded())[0].contains("C1 %/reads"));
 }

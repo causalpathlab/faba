@@ -48,8 +48,10 @@ first.
 4. pileup, metagene and pwm read a directory's sites. metagene and pwm \
 return their table and its figure as an image. pileup returns a binned table \
 for a gene or region (and, with `figure`, a Miami SVG, as an image too). \
-cluster_view prints the gene and cell modules of a cluster fit, from its run \
-record ({m}_blockmodel.run.json) or the directory holding its tables.
+cluster_view shows a cluster fit level by level, from its run record \
+({m}_blockmodel.run.json) or the directory holding its tables: the modules, \
+then a gene module, a gene, the cell modules, the trace and verdict, the \
+settings.
 5. cluster fits cells by their own site reads (link, blocks or crp) and \
 writes its tables to `out`.
 
@@ -227,11 +229,16 @@ fn tools() -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "cluster_view",
-            "View a `cluster` fit: print the gene and cell modules it wrote (`faba cluster-view --batch-process`). `data` is the fit's run record or the directory holding its tables; this does not fit. With `html`, write one self-contained page to a new file instead.",
+            "View a `cluster` fit (`faba cluster-view --batch-process`), level by level as the browser does: by default the gene modules against the cell modules (level 1). `module` prints one gene module's genes and sites with their values in each cell module (level 2); `gene` one gene's sites in each cell module over every gene module (levels 3 and 4); `cells` the cell modules' sizes; `trace` each chain's trace, the verdict and its advice; `settings` the settings the fit ran with. Several may be given; rows are tab-separated. Values are % converted for a site fit, UMIs per cell for a count fit. `data` is the fit's run record or the directory holding its tables; this never fits. With `html`, write one self-contained page to a new file instead.",
             schema(
                 json!({
                     "data": { "type": "string", "description": "A `cluster` fit: its run record `{m}_blockmodel.run.json`, or the output directory holding its block tables" },
                     "modality": modality(),
+                    "module": { "type": "string", "description": "A gene module to print, as M3 or 3" },
+                    "gene": { "type": "string", "description": "A gene to print, by key or symbol" },
+                    "cells": { "type": "boolean", "description": "Print the cell modules and their sizes" },
+                    "trace": { "type": "boolean", "description": "Print each chain's trace, the verdict and its advice" },
+                    "settings": { "type": "boolean", "description": "Print the settings the fit ran with" },
                     "gtf": { "type": "string", "description": "Gene annotation for the models drawn in the HTML page" },
                     "html": { "type": "string", "description": "Write the page here; must not exist" },
                     "options": options(),
@@ -1251,6 +1258,13 @@ fn cluster_view(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
     let taken: Vec<&str> = taken.iter().map(String::as_str).collect();
     argv.extend(a.options(&taken)?);
     argv.push("--batch-process".into());
+    push_opt(&mut argv, "--module", a.str("module"));
+    push_opt(&mut argv, "--gene", a.str("gene"));
+    for level in ["cells", "trace", "settings"] {
+        if a.flag(level)? {
+            argv.push(format!("--{level}"));
+        }
+    }
     if let Some(html) = a.path_opt("html")? {
         fresh(&html)?;
         push_flag(&mut argv, "--html", &html);
