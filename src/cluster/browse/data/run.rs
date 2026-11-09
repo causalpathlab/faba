@@ -60,9 +60,3 @@ pub(in crate::cluster::browse) fn settings(
     }
     serde_json::from_value(model.clone()).map_err(|e| format!("{name} cannot be read: {e}"))
 }
-
-/// The settings of the run that wrote `modality`'s tables in `dir`, or in
-/// one line why there are none (see [`record`] and [`settings`]).
-pub(in crate::cluster::browse) fn model(dir: &Path, modality: &str) -> Result<Recorded, String> {
-    settings(&record(dir, modality)?)
-}

@@ -1,9 +1,11 @@
-//! The view `faba cluster-view` shows while it fits: a bar per chain, its
-//! burn-in marked, with the time taken and left; under them each chain's
-//! log joint as it goes; then whether a chain lags, and once summarised
-//! the verdict on that and the chains' split R-hat, and what to do about
-//! it (see [`super::advice`]). `q` cancels; once the fit writes, too late
-//! for that, it leaves without opening the browser.
+//! The view `faba cluster` shows on a terminal while it fits: a bar per
+//! chain, its burn-in marked, with the time taken and left; under them
+//! each chain's log joint as it goes; then whether a chain lags, and once
+//! summarised the verdict on that and the chains' split R-hat, and what to
+//! do about it (see [`super::advice`]). `q` cancels, and nothing is
+//! written; Ctrl+C stops the chains early, and what they kept is written.
+//! Once the fit writes, too late for either, it leaves as soon as the
+//! tables are written.
 
 use super::Progress;
 use crate::tui::{clock, on_thread, run_view, spinner_frame, Pending, View};
@@ -23,17 +25,15 @@ pub(in crate::cluster) mod trace;
 const HOLD: Duration = Duration::from_millis(1500);
 
 /// The screen shown while the fit runs; done once its result is in (and
-/// has been up a moment, unless it is to leave).
+/// has been up a moment, unless a key came).
 struct Fitting<'a, T> {
     title: &'a str,
     progress: &'a Progress,
     /// The fit's result, once it comes.
     pending: Pending<'a, anyhow::Result<T>>,
-    /// A key came after the fit: open the browser now.
+    /// A key came after the fit, or a cancel too late to stop it: leave
+    /// as soon as the result is in.
     skip: bool,
-    /// A cancel came too late to stop the fit: leave once it is done,
-    /// without opening the browser.
-    leave: bool,
     status: Option<&'static str>,
     start: Instant,
 }
@@ -94,10 +94,8 @@ impl<T> Fitting<'_, T> {
             Line::from(Span::styled(format!(" {}", verdict.advice()), DIM)),
         ];
         lines.push(Line::from(Span::styled(
-            if self.leave {
-                " not opening the modules"
-            } else if self.pending.out().is_some() {
-                " opening the modules"
+            if self.pending.out().is_some() {
+                " the tables are written"
             } else {
                 " writing the tables"
             },
@@ -133,18 +131,41 @@ impl<T> Fitting<'_, T> {
         frame.render_widget(Paragraph::new(after), after_at);
     }
 
-    /// Stop the fit, or, too late for that, leave once it is written
-    /// without opening the browser; before the chains, it stops once the
+    /// Stop the fit, nothing written, or, too late for that, leave as
+    /// soon as it is written; once the chains were stopped early, what
+    /// they kept is still written. Before the chains, it stops once the
     /// step in hand (an input read, the filters) ends.
     fn cancel(&mut self) {
         let sampling = self.progress.schedule().is_some();
-        self.status = Some(if !self.progress.cancel() {
-            self.leave = true;
-            "too late to cancel: leaving without the modules once the tables are written"
+        self.status = Some(if self.progress.stopped_early().is_some() {
+            // A stop early is not undone: what the chains kept is written.
+            "stopping early already: what the chains kept is written"
+        } else if !self.progress.cancel() {
+            self.skip = true;
+            "too late to cancel: leaving once the tables are written"
         } else if sampling {
             "cancelling: the chains stop and nothing is written"
         } else {
             "cancelling once the step in hand ends: nothing is written"
+        });
+    }
+
+    /// Stop the chains early, what they kept written (see
+    /// [`Progress::stop_early`]), as an interrupt does on the command line;
+    /// before the chains, with nothing kept, cancel. Once the fit writes,
+    /// too late for that, leave as soon as it is written.
+    fn stop_early(&mut self) {
+        if self.progress.schedule().is_none() {
+            return self.cancel();
+        }
+        self.progress.stop_early();
+        self.status = Some(if self.progress.stopped_early().is_some() {
+            "stopping early: the chains stop and what they kept is written"
+        } else if self.progress.cancelled() {
+            "cancelling: the chains stop and nothing is written"
+        } else {
+            self.skip = true;
+            "too late to stop: leaving once the tables are written"
         });
     }
 }
@@ -186,7 +207,7 @@ impl<T> Screen for Fitting<'_, T> {
         ])
         .areas(area);
         frame.render_widget(
-            header("cluster-view", self.title, &clock(self.start.elapsed())),
+            header("cluster", self.title, &clock(self.start.elapsed())),
             top,
         );
         let schedule = self.progress.schedule();
@@ -214,13 +235,13 @@ impl<T> Screen for Fitting<'_, T> {
         }
         let footer = match self.status {
             Some(s) => Line::from(Span::styled(format!(" {s}"), HIGHLIGHT)),
-            None => help_line(&[("q", "cancel")]),
+            None if self.pending.out().is_some() => help_line(&[("any key", "leave")]),
+            None => help_line(&[("q", "cancel"), ("Ctrl+C", "stop early")]),
         };
         frame.render_widget(Paragraph::new(footer), foot);
     }
 
-    /// `q` or Esc cancels; once the fit is done any other key opens the
-    /// browser.
+    /// `q` or Esc cancels; once the fit is done any other key leaves.
     fn handle_key(&mut self, key: KeyEvent) {
         if matches!(key.code, KeyCode::Char('q') | KeyCode::Esc) {
             self.cancel();
@@ -229,17 +250,16 @@ impl<T> Screen for Fitting<'_, T> {
         }
     }
 
+    /// Ctrl+C (or a stop of the process) stops the chains early.
     fn interrupt(&mut self) {
-        self.cancel();
+        self.stop_early();
     }
 
     fn done(&self) -> bool {
         match self.pending.out() {
             None => self.pending.gone(),
             Some(Err(_)) => true,
-            Some(Ok(_)) => {
-                self.skip || self.leave || self.pending.since().is_some_and(|t| t >= HOLD)
-            }
+            Some(Ok(_)) => self.skip || self.pending.since().is_some_and(|t| t >= HOLD),
         }
     }
 
@@ -250,36 +270,32 @@ impl<T> Screen for Fitting<'_, T> {
     }
 }
 
-/// Run `work` (a fit of `chains` chains counting its sweeps on the
-/// progress it is given) on a thread, with the view under `title` until it
-/// is done; its result, none when a cancel came too late to stop it (its
-/// tables are written, but the browser is not to open).
+/// Run `work` (a fit counting its sweeps on `progress`) on a thread, with
+/// the view under `title` until it is done; its result.
 pub fn watch<T: Send>(
     title: &str,
-    chains: usize,
+    progress: &Progress,
     work: impl FnOnce(&Progress) -> anyhow::Result<T> + Send,
-) -> anyhow::Result<Option<T>> {
-    watch_with(title, chains, work, |screen| run_view(screen))
+) -> anyhow::Result<T> {
+    watch_with(title, progress, work, |screen| run_view(screen))
 }
 
 /// [`watch`], the view shown by `show`; a fit that panics is an error.
 fn watch_with<T: Send>(
     title: &str,
-    chains: usize,
+    progress: &Progress,
     work: impl FnOnce(&Progress) -> anyhow::Result<T> + Send,
     show: impl FnOnce(&mut Fitting<T>) -> anyhow::Result<()>,
-) -> anyhow::Result<Option<T>> {
-    let progress = Progress::traced(chains);
-    let ((shown, leave), out) = on_thread(
+) -> anyhow::Result<T> {
+    let (shown, out) = on_thread(
         "the fit",
-        || work(&progress),
+        || work(progress),
         |rx| {
             let mut screen = Fitting {
                 title,
-                progress: &progress,
+                progress,
                 pending: Pending::new(rx),
                 skip: false,
-                leave: false,
                 status: None,
                 start: Instant::now(),
             };
@@ -288,12 +304,11 @@ fn watch_with<T: Send>(
             if shown.is_err() {
                 progress.cancel();
             }
-            ((shown, screen.leave), screen.pending.take())
+            (shown, screen.pending.take())
         },
     );
     shown?;
-    let out = out?;
-    Ok((!leave).then_some(out))
+    out
 }
 
 #[cfg(test)]

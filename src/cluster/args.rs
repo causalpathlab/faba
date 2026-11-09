@@ -378,9 +378,9 @@ pub(super) fn recorded(args: &ClusterArgs) -> unified::Recorded {
 }
 
 /// The options (clap ids) that set the blockmodel's settings: the preset
-/// and every switch and concentration [`blockmodel`] reads. Given at other
-/// values than a run's record, they make `cluster-view` fit again, so the MCP
-/// `cluster_view` tool refuses them.
+/// and every switch and concentration [`blockmodel`] reads. `faba
+/// cluster-view`, which never fits, refuses them, as does the MCP
+/// `cluster_view` tool.
 pub(crate) const MODEL_OPTIONS: [&str; 11] = [
     "model",
     "cell_roles",
@@ -394,11 +394,6 @@ pub(crate) const MODEL_OPTIONS: [&str; 11] = [
     "profile_strength",
     "cell_sd",
 ];
-
-/// Whether any option that sets the blockmodel was given.
-pub(super) fn asks_model(args: &ClusterArgs) -> bool {
-    MODEL_OPTIONS.iter().any(|id| args.given(id))
-}
 
 /// The matrices to read: each with its batch and whether it is fitted; and
 /// the modality asked for.

@@ -317,8 +317,12 @@ Example:\n  \
             - {modality}_cluster.run.json: the run record\n\
             Each run record has split R-hat across chains (above 1.05: not converged) and,\n\
             with --holdout, held-out reads; the command beside it (.cmd.sh) runs it again.\n\
-            A blockmodel fit ends with each chain's log joint as a sparkline on stderr, the\n\
-            R-hat, and what to do when the chains disagree.",
+            On a terminal the chains are shown as they run: a bar per chain, its burn-in\n\
+            marked, each chain's log joint traced under the bars, then the R-hat and the\n\
+            verdict; `q` cancels (nothing is written) and Ctrl+C stops the chains early\n\
+            (what they kept is written, and the run record says so). Elsewhere a bar on\n\
+            stderr counts the sweeps. A blockmodel fit ends with each chain's log joint as\n\
+            a sparkline on stderr, the R-hat, and what to do when the chains disagree.",
         after_long_help = "\
 Example:\n  \
   faba cluster out/ --fit '*_wt_*' --cell-roles 8\n  \
@@ -334,9 +338,10 @@ Example:\n  \
         about = "View a `faba cluster` blockmodel fit (link or blocks): gene modules against cell modules, sites, genes and pileups",
         long_about = view_help("View a `faba cluster` fit (--model link or blocks): its gene modules against its\n\
             cell modules, full screen (`faba modules` and `faba blocks` are older names).\n\
-            Name the fit's run record, {modality}_blockmodel.run.json: its tables open as\n\
-            they are. Site matrices or their output directory work too, clustered first\n\
-            as below.\n\n\
+            Name the fit's run record, {modality}_blockmodel.run.json, or the output\n\
+            directory of its site matrices: its tables open as they are. It never fits:\n\
+            with no tables there, run `faba cluster` first; --model, a blockmodel switch\n\
+            or --refit is refused, naming `faba cluster`, which fits.\n\n\
             Four levels, each a margin of the next, all posterior-mean reads of the fitted\n\
             cells. 1 gene modules: every gene module against every cell module. 2 sites: the\n\
             sites of the module in focus, each with its reads, converted, unconverted and\n\
@@ -348,20 +353,18 @@ Example:\n  \
             its sites. Cell modules are sized by their fitted cells' summed memberships\n\
             (the `fitted` column of {modality}_cell_roles); placed cells are not in the\n\
             posterior tally. Tables older than these two are read approximately, and say\n\
-            so: rerun with --refit.\n\n\
+            so: fit again with `faba cluster`.\n\n\
             Reads are mirror bars, converted up and unconverted down; `v` shows a grid as a %\n\
             heatmap or a heatmap of each row's z across the cell modules, diagonally ordered;\n\
             `/` finds a gene. The tables are written by `faba cluster` (either blockmodel\n\
             preset, or custom settings), and opened as their run record says, its preset\n\
-            in the header. `faba cluster --model blocks` runs first, with these options,\n\
-            when they are missing, or when --model or a blockmodel switch is given whose\n\
-            settings (the rest at their defaults) are not the recorded ones.\n\
+            in the header.\n\
             The header says whether the fit converged (its split R-hat, `ok` or `check`);\n\
             `t` shows each chain's log joint as it ran ({modality}_trace), with what to do\n\
             about it. Without a terminal (or with --batch-process) the modules are printed\n\
             instead; --html writes them as one self-contained page instead (`e` in the\n\
             browser), the trace drawn in its Model section."),
-        after_long_help = "Example:\n  faba cluster-view out/m6a_blockmodel.run.json\n  faba cluster-view out/\n  faba cluster-view out/ --fit '*_wt_*' --cell-roles 8 --gene-roles 8\n  faba cluster-view out/ --html cluster.html"
+        after_long_help = "Example:\n  faba cluster-view out/m6a_blockmodel.run.json\n  faba cluster-view out/\n  faba cluster-view out/ --modality atoi\n  faba cluster-view out/ --html cluster.html"
     )]
     ClusterView(ModulesArgs),
 
@@ -627,13 +630,13 @@ fn run_help(text: &str) -> String {
 /// `faba`'s command, built, so each subcommand carries `faba`'s global
 /// flags (such as `-v`) and is named as `faba <command>`.
 fn faba_command() -> clap::Command {
-    let mut cmd = Cli::command();
+    let mut cmd = Cli::command().mut_subcommand("cluster-view", cluster::view_help);
     cmd.build();
     cmd
 }
 
-/// Notes what was given to `faba cluster`'s options (also under `faba
-/// cluster-view`), for the command it saves.
+/// Notes what was given to `faba cluster`'s options, for the command it
+/// saves (and under `faba cluster-view`, to refuse those that would fit).
 fn record_given(cli: &mut Cli, matches: &clap::ArgMatches) {
     let Some((_, m)) = matches.subcommand() else {
         return;

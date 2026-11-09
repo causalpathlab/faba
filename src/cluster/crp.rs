@@ -676,6 +676,6 @@ impl McmcModel for Model<'_> {
     }
 }
 
-/// Never traced: `faba cluster-view`, which draws the traces, fits the
-/// blockmodel.
+/// Never traced: only the blockmodel's chains keep their log joint (drawn
+/// by `faba cluster` as they run, and saved for `faba cluster-view`).
 impl super::progress::Traced for Model<'_> {}

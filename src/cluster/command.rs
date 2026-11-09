@@ -81,12 +81,6 @@ fn words(v: &Value) -> Vec<String> {
     }
 }
 
-/// The words option `id` (its clap id) has in `args`, as the saved
-/// command says them: none when unset.
-pub(super) fn value_words(args: &ClusterArgs, id: &str) -> Vec<String> {
-    fields(args).get(id).map(words).unwrap_or_default()
-}
-
 /// `args` as a `faba cluster` command: its inputs as absolute paths, then
 /// each option given or away from its default, by the flag clap names it,
 /// with the value this run had, paths among them absolute too.

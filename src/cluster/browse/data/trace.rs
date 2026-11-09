@@ -51,7 +51,7 @@ impl Fit {
         let name = format!("{modality}_trace.parquet");
         let trace = match (dir.join(&name).is_file(), number("/results/trace/burn_in")) {
             (false, _) => Err(format!(
-                "no {name} beside the tables: older fits kept no trace (rerun with --refit)"
+                "no {name} beside the tables: older fits kept no trace (fit again with `faba cluster`)"
             )),
             (true, None) => Err(match record {
                 Ok((r, _)) => format!("{r} gives no burn-in for {name}"),

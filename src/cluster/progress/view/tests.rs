@@ -1,6 +1,6 @@
 //! The fitting view drawn from a made-up progress: a bar per chain with
 //! its burn-in marked, the chains' log joint traced under them, the
-//! R-hat once in, `q` cancelling.
+//! R-hat once in, `q` cancelling, Ctrl+C stopping the chains early.
 
 use super::*;
 use crate::cluster::progress::advice::lagging;
@@ -28,7 +28,6 @@ fn fitting<'a>(p: &'a Progress, rx: &'a Receiver<anyhow::Result<u8>>) -> Fitting
         progress: p,
         pending: Pending::new(rx),
         skip: false,
-        leave: false,
         status: None,
         start: Instant::now(),
     }
@@ -86,6 +85,7 @@ fn draws_a_bar_per_chain_with_its_burn_in() {
         "0/100 waiting",
         "the burn-in ends at sweep 40",
         "q cancel",
+        "Ctrl+C stop early",
     ] {
         assert!(s.contains(want), "{want:?} in\n{s}");
     }
@@ -180,18 +180,19 @@ fn tick_until_done(view: &mut Fitting<u8>) -> anyhow::Result<()> {
 /// panic again.
 #[test]
 fn a_fit_that_panics_is_an_error() {
+    let p = Progress::new(1);
     let out = std::panic::catch_unwind(|| {
         watch_with(
             "t",
-            1,
+            &p,
             |_| -> anyhow::Result<u8> { panic!("a fit") },
             tick_until_done,
         )
     });
     let err = out.expect("no panic past the view").unwrap_err();
     assert!(err.to_string().contains("panicked: a fit"), "{err}");
-    let out = watch_with("t", 1, |_| Ok(7), tick_until_done);
-    assert_eq!(out.unwrap(), Some(7));
+    let out = watch_with("t", &Progress::new(1), |_| Ok(7), tick_until_done);
+    assert_eq!(out.unwrap(), 7);
 }
 
 /// The R-hat stays up for its moment from when the result comes, however
@@ -209,13 +210,43 @@ fn the_hold_starts_when_the_result_comes() {
     assert!(!v.done(), "the R-hat stays up once the fit is done");
 }
 
-/// `q` or Ctrl+C once the fit writes cannot stop it, but the browser is
-/// not opened after: the view ends with the result and says so.
+/// Ctrl+C while the chains sample stops them early, and the footer says
+/// what they kept is written, which `q` after does not undo; before the
+/// chains, with nothing kept, it cancels.
 #[test]
-fn a_cancel_too_late_leaves_without_the_browser() {
-    for stop in [
-        |v: &mut Fitting<u8>| v.handle_key(key('q')),
-        |v: &mut Fitting<u8>| v.interrupt(),
+fn ctrl_c_stops_the_chains_early() {
+    let (_tx, rx) = channel_u8();
+    let p = midway();
+    let mut v = fitting(&p, &rx);
+    v.interrupt();
+    assert_eq!(p.stopped_early(), Some(vec![20, 70, 0]));
+    assert!(!p.cancelled());
+    let s = screen(&mut v, 100, 8);
+    assert!(s.contains("stopping early"), "{s}");
+    assert!(!v.done(), "until the fit returns");
+    // `q` after it does not undo it: what they kept is written.
+    v.handle_key(key('q'));
+    assert!(!p.cancelled() && p.stopped_early().is_some());
+    assert!(screen(&mut v, 100, 8).contains("stopping early already"));
+
+    let p = Progress::new(2);
+    let mut v = fitting(&p, &rx);
+    v.interrupt();
+    assert!(p.cancelled() && p.stopped_early().is_none());
+    assert!(screen(&mut v, 80, 6).contains("cancelling once the step in hand ends"));
+}
+
+/// `q` or Ctrl+C once the fit writes cannot stop it: the view says so and
+/// ends as soon as the result is in, without the hold; the result is the
+/// fit's.
+#[test]
+fn a_stop_too_late_leaves_once_written() {
+    for (stop, said) in [
+        (
+            (|v: &mut Fitting<u8>| v.handle_key(key('q'))) as fn(&mut Fitting<u8>),
+            "too late to cancel",
+        ),
+        (|v: &mut Fitting<u8>| v.interrupt(), "too late to stop"),
     ] {
         let (tx, rx) = channel_u8();
         let p = midway();
@@ -223,23 +254,17 @@ fn a_cancel_too_late_leaves_without_the_browser() {
         p.commit().unwrap();
         let mut v = fitting(&p, &rx);
         stop(&mut v);
-        assert!(!p.cancelled());
+        assert!(!p.cancelled() && p.stopped_early().is_none());
         let s = screen(&mut v, 100, 12);
-        assert!(s.contains("not opening the modules"), "{s}");
+        assert!(s.contains(said), "{s}");
         tx.send(Ok(3)).unwrap();
         v.tick();
         assert!(v.done(), "no hold before leaving");
-        // Once the result is in, either one leaves too.
-        let (tx, rx) = channel_u8();
-        let mut v = fitting(&p, &rx);
-        tx.send(Ok(3)).unwrap();
-        v.tick();
-        stop(&mut v);
-        assert!(v.done() && v.leave);
     }
+    let p = Progress::new(1);
     let left = watch_with(
         "t",
-        1,
+        &p,
         |p| {
             p.commit()?;
             Ok(7)
@@ -252,7 +277,7 @@ fn a_cancel_too_late_leaves_without_the_browser() {
             tick_until_done(v)
         },
     );
-    assert_eq!(left.unwrap(), None, "the browser is skipped");
+    assert_eq!(left.unwrap(), 7, "the tables written are the fit's");
 }
 
 /// A made-up trace: sweeps `from..=to`, the log joint `level` give or

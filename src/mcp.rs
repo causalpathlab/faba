@@ -1208,11 +1208,10 @@ fn cluster(a: &Arguments, cx: &Call) -> Result<Value> {
     run_out(a, cx, argv, &out, &what)
 }
 
-/// Flags that would make `cluster_view` fit again, over the tables it was asked
-/// to read: every flag and alias of the blockmodel options
-/// ([`crate::cluster::MODEL_OPTIONS`], what `faba cluster-view` holds against
-/// the tables' record), read off the command itself so none is missed, and
-/// the sampler's.
+/// Flags `cluster_view` refuses up front, as `faba cluster-view`, which
+/// never fits, would: every flag and alias of the blockmodel options
+/// ([`crate::cluster::MODEL_OPTIONS`]), read off the command itself so none
+/// is missed, and the sampler's, which a viewer has no use for.
 fn cluster_view_taken() -> Vec<String> {
     use clap::CommandFactory;
     let cli = crate::Cli::command();
@@ -1566,11 +1565,11 @@ sites	m6A	10	2
         assert!(r["big"].as_str().unwrap().contains("big.run.json"));
     }
 
-    /// Every blockmodel option, under any of its flags, is refused, so
-    /// `cluster_view` can never fit again (and write over its tables) through
-    /// `options`.
+    /// Every blockmodel option, under any of its flags, is refused through
+    /// `options`, as `faba cluster-view` itself refuses it, naming `faba
+    /// cluster`: a viewer never fits.
     #[test]
-    fn cluster_view_refuses_every_option_that_would_fit_again() {
+    fn cluster_view_refuses_every_option_that_would_fit() {
         let taken = cluster_view_taken();
         for flag in [
             "--model",
@@ -1602,6 +1601,26 @@ sites	m6A	10	2
         assert!(a.options(&taken).is_err());
         let a = Arguments(json!({ "options": ["--community-gamma", "3"] }));
         assert!(a.options(&taken).is_err());
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_string_lossy();
+        for option in [
+            &["--model", "link"][..],
+            &["--communities", "4"],
+            &["--shift-sd", "1"],
+        ] {
+            let line = ["faba", "cluster-view", &dir, "--batch-process"];
+            let m = crate::faba_command()
+                .try_get_matches_from(line.iter().chain(option))
+                .unwrap();
+            let crate::Commands::ClusterView(args) = crate::parse(&m).unwrap().commands else {
+                panic!("not cluster-view");
+            };
+            let err = crate::cluster::run_modules(&args).unwrap_err().to_string();
+            assert!(
+                err.contains("never fits") && err.contains("`faba cluster`"),
+                "{option:?}: {err}"
+            );
+        }
     }
 
     /// `cluster_view` opens a fit's record or its tables, never anything

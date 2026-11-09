@@ -289,14 +289,14 @@ fn older_outputs_load_and_say_what_is_approximate() {
     assert!(m.approximate.sizes);
     assert_eq!(m.cells_label(1.5), "≈1.5");
     // The full pileup sums the block sites over gene roles, which hold no
-    // entry under a read: flagged, and the gene's view says to refit.
+    // entry under a read: flagged, and the gene's view says to fit again.
     assert!(m.approximate.pileup);
     let reads = gene::GeneReads::of(&m, "GENE1").unwrap();
     assert_eq!(positions(&reads.groups[0].0), [100, 200]);
     // GENE1 at 100, all cells converted: 4 + 2 + 1, its 0.3 under a read lost.
     assert!((reads.groups[0].0[0].1 - 7.0).abs() < 1e-5);
     let note = gene::note(&m, &reads).unwrap();
-    assert!(note.contains("--refit"), "{note}");
+    assert!(note.contains("faba cluster"), "{note}");
 }
 
 /// The page's level 4 holds the same numbers as the terminal's: per site

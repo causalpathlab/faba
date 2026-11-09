@@ -1,8 +1,8 @@
 //! Sampling progress: each chain's sweeps counted as they are done, and
 //! its log joint every so many sweeps (the blockmodel's), read from
-//! another thread (a bar on stderr for `faba cluster`, a view with the
-//! traces in `faba cluster-view`), and a cancel that turns the sweeps left into
-//! no-ops.
+//! another thread (by `faba cluster`: a view with the traces on a
+//! terminal, else a bar on stderr), and a cancel that turns the sweeps left
+//! into no-ops.
 //!
 //! The chains run as `run_mcmc_parallel` runs them, each model wrapped so
 //! that its sweep is the model's own, then a count (and the log joint,
@@ -153,13 +153,21 @@ impl Progress {
         n.is_multiple_of(every)
     }
 
-    /// [`Progress::traced`], its chains drawn on a bar on stderr while
-    /// they run, when stderr is a terminal.
+    /// [`Progress::traced`], for the command line's own run: the
+    /// process's interrupt flag stops its chains early.
+    pub fn interruptible(chains: usize) -> Self {
+        Self {
+            interrupt: Some(legume_numeric::matrix::stop::stop_flag()),
+            ..Self::traced(chains)
+        }
+    }
+
+    /// [`Progress::interruptible`], its chains drawn on a bar on stderr
+    /// while they run, when stderr is a terminal.
     pub fn on_stderr(chains: usize) -> Self {
         Self {
             bar: true,
-            interrupt: Some(legume_numeric::matrix::stop::stop_flag()),
-            ..Self::traced(chains)
+            ..Self::interruptible(chains)
         }
     }
 

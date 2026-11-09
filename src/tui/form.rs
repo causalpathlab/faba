@@ -254,14 +254,6 @@ impl Form {
         form
     }
 
-    /// The form of `cmd`'s flags named in `longs`, in that order.
-    pub fn only(cmd: &Command, longs: &[&str]) -> Self {
-        let mut form = Self::new(cmd, |a| a.get_long().is_some_and(|l| longs.contains(&l)));
-        form.fields
-            .sort_by_key(|f| longs.iter().position(|l| *l == f.long));
-        form
-    }
-
     pub fn get(&self, long: &str) -> Option<&Field> {
         self.fields.iter().find(|f| f.long == long)
     }

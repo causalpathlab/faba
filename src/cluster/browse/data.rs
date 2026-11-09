@@ -26,7 +26,7 @@ mod sites;
 mod tables;
 mod trace;
 
-pub(super) use run::{model as run_model, COUNT_FIT};
+pub(super) use run::COUNT_FIT;
 pub use trace::Fit;
 
 #[cfg(test)]
@@ -162,7 +162,7 @@ impl Approximate {
         self.sizes.then(|| {
             format!(
                 "approximate cell-module sizes: no `fitted` column in {modality}_cell_roles, \
-                 as in older tables (rerun with --refit)"
+                 as in older tables (fit again with `faba cluster`)"
             )
         })
     }
@@ -173,7 +173,7 @@ impl Approximate {
         self.pileup.then(|| {
             format!(
                 "approximate full pileups: no {modality}_site_cells, as in older tables \
-                 (rerun with --refit)"
+                 (fit again with `faba cluster`)"
             )
         })
     }
