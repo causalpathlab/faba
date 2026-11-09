@@ -16,6 +16,10 @@ use rustc_hash::FxHashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+/// The count fit's run record, which `faba cluster --within` and the
+/// viewer look for by this name.
+pub(in crate::cluster) const RECORD: &str = "count_blockmodel.run.json";
+
 /// The genes' names, the cells, and each cell's `(gene, count)`s.
 type CountsRead = (Vec<Box<str>>, Vec<read::Cell>, Vec<Vec<(u32, u32)>>);
 
@@ -431,6 +435,6 @@ pub(in crate::cluster) fn count_fit(
     record.set_result("converged", &verdict.converged());
     Ok(Written {
         modality: COUNT_MODALITY.into(),
-        record: "count_blockmodel.run.json".into(),
+        record: RECORD.into(),
     })
 }

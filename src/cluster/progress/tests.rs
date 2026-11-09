@@ -191,3 +191,19 @@ fn the_verdict_holds_what_the_pooling_found() {
     assert!(!v.converged());
     assert!(v.said().contains("cell role 1"), "{}", v.said());
 }
+
+/// A cancel or a stop asked for once the fit is writing is too late for
+/// it, and is noted; one in time is not.
+#[test]
+fn a_cancel_too_late_for_the_fit_is_noted() {
+    let p = Progress::new(1);
+    p.summarised(1.0).unwrap();
+    assert!(!p.asked_late());
+    assert!(!p.cancel() && p.asked_late() && !p.cancelled());
+    let p = Progress::new(1);
+    p.summarised(1.0).unwrap();
+    p.stop_early();
+    assert!(p.asked_late() && p.stopped_early().is_none());
+    let p = Progress::new(1);
+    assert!(p.cancel() && !p.asked_late());
+}

@@ -200,6 +200,63 @@ pub fn cell_roles(rows: &[RoleRow], k: usize, path: &Path) -> anyhow::Result<()>
     memberships(&labels, &membership, extra, k, path)
 }
 
+/// One row per cell of a fit within a count fit's cell modules (`faba
+/// cluster --within`): its main count module (1..; none when the count fit
+/// did not keep it), the group it was fitted in (`C3`, or `bg`), and its
+/// main site module (1..) within that group, when its group was fitted and
+/// kept it.
+pub struct NestedRow<'a> {
+    pub cell: &'a Cell,
+    pub count_role: Option<i32>,
+    pub group: Option<String>,
+    pub site_role: Option<i32>,
+}
+
+impl NestedRow<'_> {
+    /// The nested label: the group, then the site module within it
+    /// (`C3.2`); the group alone without a site module.
+    pub fn label(&self) -> Option<String> {
+        let group = self.group.as_deref()?;
+        Some(match self.site_role {
+            Some(k) => format!("{group}.{k}"),
+            None => group.to_string(),
+        })
+    }
+}
+
+/// Every cell read: barcode, batch, count module, group, site module
+/// within the group, and the nested label of the two.
+pub fn nested_cells(rows: &[NestedRow], path: &Path) -> anyhow::Result<()> {
+    let strings = |v: Vec<Option<&str>>| -> ArrayRef { Arc::new(StringArray::from(v)) };
+    let ints = |f: fn(&NestedRow) -> Option<i32>| -> ArrayRef {
+        Arc::new(Int32Array::from(rows.iter().map(f).collect::<Vec<_>>()))
+    };
+    let labels: Vec<Option<String>> = rows.iter().map(NestedRow::label).collect();
+    write(
+        vec![
+            (
+                "barcode",
+                strings(rows.iter().map(|r| Some(&*r.cell.barcode)).collect()),
+            ),
+            (
+                "batch",
+                strings(rows.iter().map(|r| Some(&*r.cell.batch)).collect()),
+            ),
+            ("count_role", ints(|r| r.count_role)),
+            (
+                "group",
+                strings(rows.iter().map(|r| r.group.as_deref()).collect()),
+            ),
+            ("site_role", ints(|r| r.site_role)),
+            (
+                "label",
+                strings(labels.iter().map(|l| l.as_deref()).collect()),
+            ),
+        ],
+        path,
+    )
+}
+
 /// One row per gene: its main gene role (1..), that role's weight, and its
 /// weight in each role (`weights`, genes x `roles`, row-major).
 pub fn gene_roles(

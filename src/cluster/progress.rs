@@ -57,6 +57,9 @@ pub struct Progress {
     /// Sweeps per chain and burn-in sweeps.
     schedule: OnceLock<(usize, usize)>,
     state: AtomicU8,
+    /// A cancel or a stop was asked for once the fit was writing, too late
+    /// for it.
+    late: AtomicBool,
     /// The chains' split R-hat, once summarised.
     rhat: OnceLock<f64>,
     /// What pooling the chains found short of convergence, once pooled.
@@ -94,6 +97,7 @@ impl Progress {
             started: (0..chains).map(|_| OnceLock::new()).collect(),
             schedule: OnceLock::new(),
             state: AtomicU8::new(RUNNING),
+            late: AtomicBool::new(false),
             rhat: OnceLock::new(),
             unsettled: OnceLock::new(),
             bar: false,
@@ -197,7 +201,24 @@ impl Progress {
         let to =
             self.state
                 .compare_exchange(RUNNING, CANCELLED, Ordering::SeqCst, Ordering::SeqCst);
-        !matches!(to, Err(COMMITTED))
+        self.too_late(to)
+    }
+
+    /// Whether the change of state `to` came before the fit was writing;
+    /// noted when it did not (see [`Progress::asked_late`]).
+    fn too_late(&self, to: Result<u8, u8>) -> bool {
+        let late = matches!(to, Err(COMMITTED));
+        if late {
+            self.late.store(true, Ordering::SeqCst);
+        }
+        !late
+    }
+
+    /// Whether a cancel or a stop was asked for too late, the fit writing
+    /// already: it is written, and whoever runs another fit after it (see
+    /// `faba cluster --within`) is not to.
+    pub fn asked_late(&self) -> bool {
+        self.late.load(Ordering::SeqCst)
     }
 
     /// Whether [`Progress::cancel`] stopped the run.
@@ -219,8 +240,9 @@ impl Progress {
         }
     }
 
-    /// Whether this run's interrupt flag is set.
-    fn interrupted(&self) -> bool {
+    /// Whether this run's interrupt flag is set: the process was
+    /// interrupted, now or before this run (the flag stays set).
+    pub fn interrupted(&self) -> bool {
         self.interrupt
             .as_ref()
             .is_some_and(|f| f.load(Ordering::Relaxed))
@@ -229,9 +251,10 @@ impl Progress {
     /// Stop the chains early, keeping what they drew: what the first
     /// interrupt does (see [`Progress::stopped_early`]).
     pub fn stop_early(&self) {
-        let _ = self
+        let to = self
             .state
             .compare_exchange(RUNNING, STOPPED, Ordering::SeqCst, Ordering::SeqCst);
+        self.too_late(to);
     }
 
     /// When the chains were stopped early, the sweeps each finished; the

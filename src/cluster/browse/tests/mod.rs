@@ -38,7 +38,7 @@ fn site(gene: &str, pos: i64) -> Site {
 ///
 /// Cells B0..B4: B0, B1 and B2 in cell role 1, B3 in role 2, B4 dropped;
 /// B2 was placed, not fitted.
-fn tables(dir: &Path) {
+pub(super) fn tables(dir: &Path) {
     tables_with(dir, false)
 }
 
@@ -247,7 +247,7 @@ fn loaded() -> Modules {
 /// and B3 in role 2; G1 and G2 in gene role 1, G3 in role 2. UMIs by cell
 /// role: G1 10 and 2, G2 4 and none, G3 none and 6 (every gene written in
 /// every cell role, none as 0).
-fn count_tables(dir: &Path) {
+pub(super) fn count_tables(dir: &Path) {
     let path = |name: &str| dir.join(format!("count_{name}.parquet"));
     let cells: Vec<Cell> = (0..4)
         .map(|i| Cell {

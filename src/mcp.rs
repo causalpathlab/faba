@@ -53,7 +53,11 @@ cluster_view shows a cluster fit level by level, from its run record \
 then a gene module, a gene, the cell modules, the trace and verdict, the \
 settings.
 5. cluster fits cells by their own site reads (link, blocks or crp) and \
-writes its tables to `out`.
+writes its tables to `out`. In two rounds: first `modality` count, cell \
+modules by gene counts (it writes count_blockmodel.run.json); then, with \
+`within` naming that record, m6a or atoi within each of its cell modules. \
+The second round writes {m}_within.run.json, which cluster_view opens: the \
+list of its fits, and with `group` the fit within one cell module.
 
 The producers (count, depth, atoi, dartseq, apa, snp, run, qc, cluster) take \
 `background`: on large BAMs set it, and the call returns a job id at once.
@@ -109,6 +113,12 @@ fn tools() -> Vec<ToolSpec> {
         })
     };
     let modality = || json!({ "type": "string", "enum": ["m6a", "atoi"] });
+    let fit_modality = || {
+        json!({
+            "type": "string", "enum": ["m6a", "atoi", "count"],
+            "description": "m6a or atoi: site reads. count: gene counts, the first of two rounds"
+        })
+    };
     let dir = || {
         json!({
             "type": "string",
@@ -210,11 +220,11 @@ fn tools() -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "cluster",
-            "Cluster cells by their site reads (`faba cluster`). `data` is a faba directory or site matrices. `model` is link (the default), blocks or crp. Tables go to `out`, a new directory, not back into `data`.",
+            "Cluster cells by their site reads (`faba cluster`). `data` is a faba directory or site matrices. `model` is link (the default), blocks or crp. Tables go to `out`, a new directory, not back into `data`. With `modality` count, cluster cells by their gene counts instead (count matrices; a background group takes cells no module explains). With `within`, the run record of such a count fit (count_blockmodel.run.json), fit the sites within each of its cell modules, one fit a module (`model` blocks unless given), into `out`/within/{m}/{group}/, with `out`/{m}_within.run.json naming them all and {m}_within_cells.parquet giving each cell its nested label (C3.2); `data` may then be left out, and the matrices are those beside the count fit's inputs.",
             schema(
                 json!({
-                    "data": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
-                    "modality": modality(),
+                    "data": { "type": "array", "items": { "type": "string" }, "description": "A faba directory, or site (or, with `modality` count, count) matrices; required unless `within` is given" },
+                    "modality": fit_modality(),
                     "model": { "type": "string", "enum": ["link", "blocks", "crp"] },
                     "cell_roles": { "type": "integer", "minimum": 1 },
                     "gene_roles": { "type": "integer", "minimum": 1 },
@@ -224,16 +234,17 @@ fn tools() -> Vec<ToolSpec> {
                     "fit": { "type": "string", "description": "Fit only matrices whose path matches this pattern (`*`, `?`); the rest are assigned after" },
                     "out": out(), "options": options(),
                 }),
-                &["data"],
+                &[],
             ),
         ),
         ToolSpec::new(
             "cluster_view",
-            "View a `cluster` fit (`faba cluster-view --batch-process`), level by level as the browser does: by default the gene modules against the cell modules (level 1). `module` prints one gene module's genes and sites with their values in each cell module (level 2); `gene` one gene's sites in each cell module over every gene module (levels 3 and 4); `cells` the cell modules' sizes; `trace` each chain's trace, the verdict and its advice; `settings` the settings the fit ran with. Several may be given; rows are tab-separated. Values are % converted for a site fit, UMIs per cell for a count fit. `data` is the fit's run record or the directory holding its tables; this never fits. With `html`, write one self-contained page to a new file instead.",
+            "View a `cluster` fit (`faba cluster-view --batch-process`), level by level as the browser does: by default the gene modules against the cell modules (level 1). `module` prints one gene module's genes and sites with their values in each cell module (level 2); `gene` one gene's sites in each cell module over every gene module (levels 3 and 4); `cells` the cell modules' sizes; `trace` each chain's trace, the verdict and its advice; `settings` the settings the fit ran with. Several may be given; rows are tab-separated. Values are % converted for a site fit, UMIs per cell for a count fit. `data` is the fit's run record or the directory holding its tables; this never fits. A within record ({m}_within.run.json, from `cluster` with `within`) prints the count fit's modules, each group's fit (cells, R-hat, verdict; why one was skipped) and the modules within each fitted group; with `group`, every argument applies to the fit within that cell module, and without it the levels asked for are the count fit's. With `html`, write one self-contained page to a new file instead; a within record without `group` writes a page a fit, `html` for the count fit and {stem}.{group}.html beside it for each group, linked to each other.",
             schema(
                 json!({
-                    "data": { "type": "string", "description": "A `cluster` fit: its run record `{m}_blockmodel.run.json`, or the output directory holding its block tables" },
-                    "modality": modality(),
+                    "data": { "type": "string", "description": "A `cluster` fit: its run record `{m}_blockmodel.run.json`, the output directory holding its block tables, or a within record `{m}_within.run.json`" },
+                    "modality": fit_modality(),
+                    "group": { "type": "string", "description": "Of a within record: the cell module of the count fit whose fit to view, as C3 or 3, or bg for its background cells" },
                     "module": { "type": "string", "description": "A gene module to print, as M3 or 3" },
                     "gene": { "type": "string", "description": "A gene to print, by key or symbol" },
                     "cells": { "type": "boolean", "description": "Print the cell modules and their sizes" },
@@ -404,6 +415,24 @@ const TYPED: &[(&[&str], &str, Kind, &str)] = &[
         "holdout",
         Kind::Number,
         "Share of (cell, site) entries held out and scored, to compare models (default 0)",
+    ),
+    (
+        &["cluster"],
+        "within",
+        Kind::Path,
+        "A count fit's run record (count_blockmodel.run.json): fit the sites within each of its cell modules",
+    ),
+    (
+        &["cluster"],
+        "within_background",
+        Kind::Number,
+        "With `within`: a cell whose background share in the count fit is above this goes to the group bg (default 0.5)",
+    ),
+    (
+        &["cluster"],
+        "within_min_cells",
+        Kind::Number,
+        "With `within`: a group with fewer cells to fit is skipped (default 50)",
     ),
     (
         &["pileup"],
@@ -1195,8 +1224,20 @@ fn qc(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
 }
 
 fn cluster(a: &Arguments, cx: &Call) -> Result<Value> {
-    let data = a.paths_req("data")?;
-    let out = a.out_or(cx, (&named(&data[0], "cluster"), ""), exists)?;
+    let data = a.paths("data")?;
+    // The second round reads the matrices beside the count fit's when none
+    // are named; `--within` itself is among the typed options.
+    let within = a.path_opt("within")?;
+    let (from, tool, what) = match (&within, data.first()) {
+        (Some(record), first) => (
+            first.unwrap_or(record),
+            "within",
+            format!("clusters within the cell modules of {record}"),
+        ),
+        (None, Some(first)) => (first, "cluster", format!("clusters of {}", data.join(", "))),
+        (None, None) => bail!("`data` is required (or `within`, a count fit's run record)"),
+    };
+    let out = a.out_or(cx, (&named(from, tool), ""), exists)?;
     let mut argv = vec!["cluster".into()];
     argv.extend(data.iter().cloned());
     push_opt(&mut argv, "--modality", a.str("modality"));
@@ -1210,16 +1251,23 @@ fn cluster(a: &Arguments, cx: &Call) -> Result<Value> {
     push_opt(&mut argv, "--fit", a.str("fit"));
     argv.extend(a.numbers(&["cell_roles", "gene_roles", "chains", "sweeps", "burn_in"])?);
     argv.extend(a.options(&[])?);
-    let what = format!("clusters of {}", data.join(", "));
     run_out(a, cx, argv, &out, &what)
 }
 
 fn cluster_view(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
     let data = a.path("data")?;
-    // What cannot be opened as it is is refused before the command runs.
-    crate::cluster::resolve(&[data.as_str().into()], a.str("modality"), None)?;
+    let html = a.path_opt("html")?;
+    // What cannot be opened as it is is refused before the command runs;
+    // the pages are those `html` writes, a within record's one a fit.
+    let pages = crate::cluster::opens(
+        &[data.as_str().into()],
+        a.str("modality"),
+        a.str("group"),
+        html.as_deref().map(Path::new),
+    )?;
     let mut argv = vec!["cluster-view".into(), data.clone()];
     push_opt(&mut argv, "--modality", a.str("modality"));
+    push_opt(&mut argv, "--group", a.str("group"));
     if let Some(gtf) = a.path_opt("gtf")? {
         push_flag(&mut argv, "--gtf", &gtf);
     }
@@ -1233,12 +1281,21 @@ fn cluster_view(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
             argv.push(format!("--{level}"));
         }
     }
-    if let Some(html) = a.path_opt("html")? {
-        fresh(&html)?;
+    if let Some(html) = html {
+        for page in &pages {
+            fresh(&page.to_string_lossy())?;
+        }
         push_flag(&mut argv, "--html", &html);
         let what = format!("modules of {data} as a page");
-        cx.run_making(command(&argv)?, &[PathBuf::from(&html)], &what)?;
-        return Ok(vec![Content::Json(json!({ "written": absolute(&html) }))]);
+        cx.run_making(command(&argv)?, &pages, &what)?;
+        let written: Vec<String> = pages
+            .iter()
+            .map(|p| absolute(&p.to_string_lossy()))
+            .collect();
+        return Ok(vec![Content::Json(match &written[..] {
+            [page] => json!({ "written": page }),
+            pages => json!({ "written": pages[0], "pages": pages }),
+        })]);
     }
     let text = cx.run_reading(command(&argv)?)?;
     Ok(vec![Content::Text(text)])
@@ -1401,6 +1458,7 @@ mod tests {
     };
     use clap::CommandFactory;
     use serde_json::json;
+    use std::path::{Path, PathBuf};
 
     /// Every typed argument names a flag its command has, and its tool's
     /// schema offers it.
@@ -1561,18 +1619,78 @@ sites	m6A	10	2
         let tmp = tempfile::tempdir().unwrap();
         let d = tmp.path();
         let at = |name: &str| d.join(name).to_string_lossy().into_owned();
-        let opens = |data: String| crate::cluster::resolve(&[data.into()], None, None);
+        let opens = |data: String, group| crate::cluster::opens(&[data.into()], None, group, None);
         std::fs::write(at("pipeline.run.json"), r#"{"job":"run"}"#).unwrap();
         std::fs::write(at("x.zarr"), "").unwrap();
         for refused in [at("pipeline.run.json"), at("x.zarr"), at("")] {
-            let err = opens(refused.clone()).unwrap_err().to_string();
+            let err = opens(refused.clone(), None).unwrap_err().to_string();
             assert!(err.contains("run `faba cluster` first"), "{refused}: {err}");
         }
         std::fs::write(at("m6a_block_sites.parquet"), "").unwrap();
-        assert_eq!(opens(at("")).unwrap().1, "m6a");
+        assert!(opens(at(""), None).unwrap().is_empty());
         let fit = r#"{"job":"cluster","results":{"model":{},"tables":{"modality":"m6a"}}}"#;
         std::fs::write(at("m6a_blockmodel.run.json"), fit).unwrap();
-        assert!(opens(at("m6a_blockmodel.run.json")).unwrap().2.is_some());
+        assert!(opens(at("m6a_blockmodel.run.json"), None)
+            .unwrap()
+            .is_empty());
+        // One fit has no groups to name.
+        let err = opens(at("m6a_blockmodel.run.json"), Some("C1")).unwrap_err();
+        assert!(err.to_string().contains("within record"), "{err}");
+    }
+
+    /// A within record opened whole names its fitted groups, whose pages
+    /// `html` writes beside the count fit's; with `group` it is one fit,
+    /// refused when that group has none.
+    #[test]
+    fn cluster_view_opens_a_within_record_whole_or_by_group() {
+        let tmp = tempfile::tempdir().unwrap();
+        let d = tmp.path();
+        let sub = d.join("within/m6a/C1");
+        std::fs::create_dir_all(&sub).unwrap();
+        let fit = r#"{"job":"cluster","results":{"model":{},"tables":{"modality":"m6a"}}}"#;
+        std::fs::write(sub.join("m6a_blockmodel.run.json"), fit).unwrap();
+        std::fs::write(sub.join("m6a_block_sites.parquet"), b"").unwrap();
+        let record = json!({ "job": "cluster", "results": { "within": {
+            "modality": "m6a", "count_record": d.join("count_blockmodel.run.json"),
+            "groups": [
+                { "group": "C1", "cells": 80, "status": "fitted", "dir": "within/m6a/C1",
+                  "record": "m6a_blockmodel.run.json" },
+                { "group": "C2", "cells": 9, "status": "skipped", "why": "too few" },
+            ],
+        } } });
+        let path = d.join("m6a_within.run.json").to_string_lossy().into_owned();
+        std::fs::write(&path, record.to_string()).unwrap();
+        let html = Path::new("out/fit.html");
+        let opens = |group| crate::cluster::opens(&[path.as_str().into()], None, group, Some(html));
+        assert_eq!(
+            opens(None).unwrap(),
+            [PathBuf::from("out/fit.html"), "out/fit.C1.html".into()]
+        );
+        assert_eq!(opens(Some("c1")).unwrap(), [html]);
+        let err = opens(Some("C2")).unwrap_err().to_string();
+        assert!(err.contains("C2 has no fit to open"), "{err}");
+        let err = opens(Some("C9")).unwrap_err().to_string();
+        assert!(err.contains("no group C9"), "{err}");
+    }
+
+    /// The second round needs no `data`: its matrices are those beside the
+    /// count fit's, and its output is named after the count fit's record.
+    #[test]
+    fn cluster_within_a_count_fit_needs_no_data() {
+        let args = json!({ "within": "out/count_blockmodel.run.json", "within_min_cells": 20 });
+        let a = Arguments(with_typed("cluster", args).unwrap());
+        assert_eq!(
+            a.options(&[]).unwrap(),
+            [
+                "--within",
+                "out/count_blockmodel.run.json",
+                "--within-min-cells",
+                "20"
+            ]
+        );
+        assert!(tools().iter().any(|t| {
+            t.name == "cluster" && t.input_schema["properties"]["within"].is_object()
+        }));
     }
 
     /// `figure` alone draws: the command gets `--svg`, which puts it in

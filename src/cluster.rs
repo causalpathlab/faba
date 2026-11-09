@@ -31,12 +31,13 @@ mod run {
 }
 mod summary;
 mod unified;
+mod within;
 mod write;
 
 use args::{check, inputs, output_dir, with_inputs};
 pub use args::{ClusterArgs, ModelKind};
 #[cfg(feature = "mcp")]
-pub(crate) use browse::resolve;
+pub(crate) use browse::opens;
 pub use browse::{fitting_hint, run_modules, ModulesArgs};
 use command::command;
 
@@ -109,12 +110,56 @@ fn memory_estimate(
     reads + shared + args.chains * chain
 }
 
+/// Whether the chains are drawn in the live view as they run: on a
+/// terminal, unless --batch-process says a bar.
+fn live(args: &ClusterArgs) -> bool {
+    !args.batch_process
+        && std::io::stderr().is_terminal()
+        && data_beans::interactive::tui_available()
+}
+
+/// `work` run counting on a progress of its own, which comes back with its
+/// result: on a terminal in the live view under `title` (see
+/// [`progress::view`]), where `q` cancels and Ctrl+C stops the chains
+/// early, the view staying up after a fit until a key when `stay`; else
+/// with a bar on stderr.
+fn watched<T: Send>(
+    args: &ClusterArgs,
+    title: &str,
+    stay: bool,
+    work: impl FnOnce(&progress::Progress) -> anyhow::Result<T> + Send,
+) -> (progress::Progress, anyhow::Result<T>) {
+    if live(args) {
+        let progress = progress::Progress::interruptible(args.chains);
+        let out = progress::view::watch(title, &progress, stay, work);
+        (progress, out)
+    } else {
+        let progress = progress::Progress::on_stderr(args.chains);
+        let out = work(&progress);
+        (progress, out)
+    }
+}
+
+/// What a run that ended in `error` comes to: a cancel asked for in the
+/// live view is not a failure (nothing written, said so, no modality);
+/// any other error as it is.
+fn unless_cancelled(args: &ClusterArgs, error: anyhow::Error) -> anyhow::Result<Option<String>> {
+    if live(args) && error.is::<progress::Cancelled>() {
+        eprintln!("faba cluster: {error}");
+        return Ok(None);
+    }
+    Err(error)
+}
+
 /// Cluster as `args` say; the modality fitted, none when no inputs were
-/// chosen. On a terminal the chains are drawn in a view as they run (see
-/// [`progress::view`]), where `q` cancels and Ctrl+C stops them early; else
-/// on a bar on stderr. A blockmodel fit ends with its chains' traces, R-hat
-/// and advice on stderr (see [`progress::spark`]).
+/// chosen. On a terminal the chains are drawn in a view as they run, else
+/// on a bar on stderr (see [`watched`]). A blockmodel fit ends with its
+/// chains' traces, R-hat and advice on stderr (see [`progress::spark`]).
+/// With `--within`, one fit per cell module of a count fit (see [`within`]).
 pub fn run_cluster(args: &ClusterArgs) -> anyhow::Result<Option<String>> {
+    if args.within.is_some() {
+        return within::run(args);
+    }
     let offered = if args.is_count() {
         (
             "count matrices",
@@ -134,35 +179,21 @@ pub fn run_cluster(args: &ClusterArgs) -> anyhow::Result<Option<String>> {
         data_files,
         ..args.clone()
     };
-    let live = !args.batch_process
-        && std::io::stderr().is_terminal()
-        && data_beans::interactive::tui_available();
-    let (progress, modality) = if live {
-        let progress = progress::Progress::interruptible(args.chains);
-        let model = if args.is_count() {
-            "count blockmodel".to_string()
-        } else {
-            format!("{} model", args.model.name())
-        };
-        let dir = output_dir(args.output.as_deref(), &args.data_files);
-        let title = format!("fitting the {model} in {}", dir.display());
-        let watched = progress::view::watch(&title, &progress, |p| run_cluster_watched(args, p));
-        // A cancel asked for in the view is not a failure: nothing written,
-        // said so.
-        match watched {
-            Err(e) if e.is::<progress::Cancelled>() => {
-                eprintln!("faba cluster: {e}");
-                return Ok(None);
-            }
-            other => (progress, other?),
-        }
+    let model = if args.is_count() {
+        "count blockmodel".to_string()
     } else {
-        let progress = progress::Progress::on_stderr(args.chains);
-        let modality = run_cluster_watched(args, &progress)?;
-        (progress, modality)
+        format!("{} model", args.model.name())
     };
-    progress::spark::tell(&progress);
-    Ok(Some(modality))
+    let dir = output_dir(args.output.as_deref(), &args.data_files);
+    let title = format!("fitting the {model} in {}", dir.display());
+    let (progress, fitted) = watched(args, &title, true, |p| run_cluster_watched(args, p));
+    match fitted {
+        Ok(modality) => {
+            progress::spark::tell(&progress);
+            Ok(Some(modality))
+        }
+        Err(e) => unless_cancelled(args, e),
+    }
 }
 
 /// [`run_cluster`] of `args`, their inputs named, the chains counting their
@@ -173,32 +204,54 @@ fn run_cluster_watched(
     progress: &progress::Progress,
 ) -> anyhow::Result<String> {
     let dir = output_dir(args.output.as_deref(), &args.data_files);
-    let mut record = RunRecord::start("cluster", &dir.to_string_lossy())
+    let record = RunRecord::start("cluster", &dir.to_string_lossy())
         .inputs("matrices", &args.data_files)
         .options(args);
-    let outcome = match cluster(args, &dir, &mut record, progress) {
+    recorded(
+        record,
+        |record| cluster(args, &dir, record, progress),
+        |written| save_command(args, &dir, &written.record),
+    )
+    .map(|written| written.modality)
+}
+
+/// `fit` run under `record`, which is then written under the name the fit
+/// gives it, `then` first (so what it writes is among the record's
+/// outputs); a fit that fails is recorded as failed. Cancelled, nothing is
+/// written, not even the record.
+fn recorded(
+    mut record: RunRecord,
+    fit: impl FnOnce(&mut RunRecord) -> anyhow::Result<Written>,
+    then: impl FnOnce(&Written),
+) -> anyhow::Result<Written> {
+    let outcome = match fit(&mut record) {
         Err(e) if e.is::<progress::Cancelled>() => return Err(e),
         outcome => outcome,
     };
     if let Ok(written) = &outcome {
         record = record.file_name(&written.record);
-        // The command, to read, edit and run again, beside its record.
-        let name = written.record.replace(".run.json", ".cmd.sh");
-        let script = crate::script::Script {
-            name: &name,
-            made_by: "faba cluster",
-            guard: None,
-            cd: false,
-            head: 1,
-            replace: true,
-        };
-        // The fit is done and recorded whether or not the script is written.
-        if let Err(e) = crate::script::write(&dir, &script, &command(args)) {
-            warn!("the command was not saved: {e:#}");
-        }
+        then(written);
     }
     record.finish(&outcome);
-    outcome.map(|written| written.modality)
+    outcome
+}
+
+/// The command of `args`, to read, edit and run again, saved in `dir`
+/// beside the run record named `record` (`.cmd.sh` for `.run.json`).
+fn save_command(args: &ClusterArgs, dir: &Path, record: &str) {
+    let name = record.replace(".run.json", ".cmd.sh");
+    let script = crate::script::Script {
+        name: &name,
+        made_by: "faba cluster",
+        guard: None,
+        cd: false,
+        head: 1,
+        replace: true,
+    };
+    // The fit is done and recorded whether or not the script is written.
+    if let Err(e) = crate::script::write(dir, &script, &command(args)) {
+        warn!("the command was not saved: {e:#}");
+    }
 }
 
 /// The chains' schedule for `args`: `--burn-in` sweeps, then the
@@ -240,8 +293,19 @@ fn cluster(
     if args.is_count() {
         return run::count::count_fit(args, &mcmc_config(args), dir, record, progress);
     }
-    let inputs = inputs(args)?;
-    let all = read::read_inputs(&inputs, progress)?;
+    let all = read::read_inputs(&inputs(args)?, progress)?;
+    site_fit(args, dir, record, progress, all)
+}
+
+/// The site fit of `args` over the cells and reads of `all`: filtered,
+/// fitted, summarised and written to `dir`; what was written.
+fn site_fit(
+    args: &ClusterArgs,
+    dir: &Path,
+    record: &mut RunRecord,
+    progress: &progress::Progress,
+    all: read::SiteData,
+) -> anyhow::Result<Written> {
     let (data, kept) = read::filter(&all, args.min_cell_sites, args.min_site_cells);
     progress.check()?;
     // Only the input cells are needed from here: let their reads go.
