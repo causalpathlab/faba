@@ -1,6 +1,8 @@
 //! Loading the tables as modules, and the numbers the grids draw from.
 
-use super::{count, loaded};
+use super::{count, counted, loaded};
+use crate::cluster::browse::data::{Count, Measure};
+use crate::cluster::browse::printed;
 use crate::cluster::browse::view::{box_size, eighths, hanging, Ramp, Stretch};
 use crate::cluster::browse::{diagonal, standardized};
 use ratatui::style::Color;
@@ -23,6 +25,94 @@ fn the_tables_load_as_modules() {
     assert!((m.shift_range(1) - 1.5).abs() < 1e-6);
     let stats = m.stats.as_ref().unwrap();
     assert_eq!((stats.on[3], stats.off[3], stats.cells[3]), (40, 40, 12));
+}
+
+/// UMIs over cells: a rate per cell, bars up alone, printed per cell.
+#[test]
+fn a_per_cell_count_is_a_rate_with_nothing_below() {
+    let per_cell = |on, total| Count {
+        on,
+        total,
+        measure: Measure::PerCell,
+    };
+    let r = per_cell(7.0, 2.0);
+    assert_eq!((r.up(), r.off(), r.fraction()), (3.5, 0.0, Some(3.5)));
+    assert_eq!(
+        (r.pct(), r.number()),
+        ("3.5/cell".into(), Some("3.5".into()))
+    );
+    assert_eq!(per_cell(30.0, 2.0).number().unwrap(), "15");
+    assert_eq!(per_cell(1.0, 4.0).pct(), "0.25/cell");
+    let none = per_cell(0.0, 0.0);
+    assert_eq!(
+        (none.up(), none.pct(), none.number()),
+        (0.0, "-".into(), None)
+    );
+    // Read counts keep their unconverted reads and their %.
+    let reads = count(1.0, 4.0);
+    assert_eq!(
+        (reads.up(), reads.off(), reads.pct()),
+        (1.0, 3.0, "25%".into())
+    );
+    // A sum with UMIs per cell in it stays per cell, whichever comes first.
+    let mut sum = Count::default();
+    sum.add(per_cell(7.0, 2.0));
+    sum.add(per_cell(1.0, 2.0));
+    assert_eq!(sum, per_cell(8.0, 4.0));
+    let total: Count = [Count::default(), per_cell(3.0, 1.0)].into_iter().sum();
+    assert_eq!(total.measure, Measure::PerCell);
+}
+
+/// A count fit's tables, as `write::count_genes` leaves them, load as
+/// modules of genes, each one site, their reads UMIs per cell.
+#[test]
+fn a_count_fits_tables_load_as_umis_per_cell() {
+    let m = counted();
+    assert_eq!(m.modality, "count");
+    assert_eq!((m.cell_roles, m.gene_roles), (2, 2));
+    assert_eq!(m.cell_sizes, vec![2.0, 2.0]);
+    assert_eq!(m.gene_sizes, vec![2, 1]);
+    let names: Vec<(&str, i64)> = m.sites.iter().map(|s| (s.gene.as_ref(), s.pos)).collect();
+    assert_eq!(names, [("G1", 0), ("G2", 0), ("G3", 0)]);
+    assert!(m.stats.is_none() && !m.approximate.pileup);
+    // G1's and G2's UMIs over their cells; G2 has none in cell role 2.
+    let m1 = m.block(0);
+    assert_eq!(m1[0].on, 14.0);
+    assert_eq!(m1[0].total, 4.0);
+    assert_eq!((m1[1].on, m1[1].total), (2.0, 2.0));
+    assert!(m1.iter().all(|r| r.measure == Measure::PerCell));
+    assert_eq!(m1[0].number().unwrap(), "3.5");
+    let m2 = m.block(1);
+    assert_eq!((m2[0].total, m2[0].number()), (0.0, None));
+    assert_eq!((m2[1].on, m2[1].up()), (6.0, 3.0));
+    let g1 = &m.members[0]
+        .iter()
+        .find(|s| m.sites[s.site].gene.as_ref() == "G1");
+    let g1 = g1.expect("G1 in module 1");
+    assert!(g1
+        .reads
+        .iter()
+        .all(|r| r.measure == Measure::PerCell && r.off() == 0.0));
+}
+
+/// The modules printed: a count fit's columns are UMIs per cell.
+#[test]
+fn a_count_fit_prints_umis_per_cell() {
+    let lines = printed(&counted());
+    assert!(
+        lines[0].contains("C1 UMI/cell") && lines[0].contains("C2 UMI/cell"),
+        "{lines:?}"
+    );
+    let row = |name: &str| {
+        let line = lines.iter().find(|l| l.starts_with(name)).unwrap();
+        line.split_whitespace()
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(row("M1")[3..], ["3.5", "1.0"]);
+    assert_eq!(row("M2")[3..], ["-", "3.0"]);
+    // A site fit's are % and reads.
+    assert!(printed(&loaded())[0].contains("C1 %/reads"));
 }
 
 #[test]

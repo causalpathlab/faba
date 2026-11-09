@@ -167,7 +167,9 @@ fn multinomial(n: u32, weights: &[f64], out: &mut [u32], rng: &mut SmallRng) {
         let k = if p >= 1.0 {
             left
         } else {
-            Binomial::new(left as u64, p).expect("a probability").sample(rng) as u32
+            Binomial::new(left as u64, p)
+                .expect("a probability")
+                .sample(rng) as u32
         };
         *o += k;
         left -= k;
@@ -186,15 +188,24 @@ impl<'a> Model<'a> {
 
     fn sizes(&self) -> (usize, usize, usize, usize) {
         let s = &self.settings;
-        (self.counts.cells(), self.counts.genes, s.cell_roles, s.gene_roles)
+        (
+            self.counts.cells(),
+            self.counts.genes,
+            s.cell_roles,
+            s.gene_roles,
+        )
     }
 
     /// Every parameter drawn from its prior.
     pub fn prior_draw(&self, rng: &mut SmallRng) -> State {
         let (cc, gg, aa, bb) = self.sizes();
         let s = &self.settings;
-        let w: Vec<f64> = (0..aa).map(|_| gamma(s.gamma / aa as f64, s.weight_rate, rng)).collect();
-        let v: Vec<f64> = (0..bb).map(|_| gamma(s.gamma / bb as f64, s.weight_rate, rng)).collect();
+        let w: Vec<f64> = (0..aa)
+            .map(|_| gamma(s.gamma / aa as f64, s.weight_rate, rng))
+            .collect();
+        let v: Vec<f64> = (0..bb)
+            .map(|_| gamma(s.gamma / bb as f64, s.weight_rate, rng))
+            .collect();
         let (e0, f0) = s.rate_prior;
         let cell_rate: Vec<f64> = (0..cc).map(|_| gamma(e0, f0, rng)).collect();
         let gene_rate: Vec<f64> = (0..gg).map(|_| gamma(e0, f0, rng)).collect();
@@ -280,7 +291,9 @@ impl<'a> Model<'a> {
         let s = &self.settings;
         let (e0, f0) = s.rate_prior;
         // The cell side: each cell role's exposure per unit of theta.
-        let psi_total: Vec<f64> = (0..bb).map(|b| (0..gg).map(|g| st.psi[g * bb + b]).sum()).collect();
+        let psi_total: Vec<f64> = (0..bb)
+            .map(|b| (0..gg).map(|g| st.psi[g * bb + b]).sum())
+            .collect();
         let cell_exposure: Vec<f64> = (0..aa)
             .map(|a| (0..bb).map(|b| st.lambda[a * bb + b] * psi_total[b]).sum())
             .collect();
@@ -291,9 +304,15 @@ impl<'a> Model<'a> {
             (s.gamma, s.weight_rate, e0, f0),
             rng,
         );
-        let theta_total: Vec<f64> = (0..aa).map(|a| (0..cc).map(|c| st.theta[c * aa + a]).sum()).collect();
+        let theta_total: Vec<f64> = (0..aa)
+            .map(|a| (0..cc).map(|c| st.theta[c * aa + a]).sum())
+            .collect();
         let gene_exposure: Vec<f64> = (0..bb)
-            .map(|b| (0..aa).map(|a| st.lambda[a * bb + b] * theta_total[a]).sum())
+            .map(|b| {
+                (0..aa)
+                    .map(|a| st.lambda[a * bb + b] * theta_total[a])
+                    .sum()
+            })
             .collect();
         side(
             (&st.m, &mut st.psi, &mut st.gene_rate, &mut st.v),
@@ -302,15 +321,13 @@ impl<'a> Model<'a> {
             (s.gamma, s.weight_rate, e0, f0),
             rng,
         );
-        let psi_total: Vec<f64> = (0..bb).map(|b| (0..gg).map(|g| st.psi[g * bb + b]).sum()).collect();
-        for a in 0..aa {
-            for b in 0..bb {
+        let psi_total: Vec<f64> = (0..bb)
+            .map(|b| (0..gg).map(|g| st.psi[g * bb + b]).sum())
+            .collect();
+        for (a, &t) in theta_total.iter().enumerate() {
+            for (b, &p) in psi_total.iter().enumerate() {
                 let k = a * bb + b;
-                st.lambda[k] = gamma(
-                    s.kappa + st.blocks[k] as f64,
-                    s.kappa + theta_total[a] * psi_total[b],
-                    rng,
-                );
+                st.lambda[k] = gamma(s.kappa + st.blocks[k] as f64, s.kappa + t * p, rng);
             }
         }
         let (a0, b0) = s.background;
@@ -342,11 +359,15 @@ impl<'a> Model<'a> {
                 out += x as f64 * mu.ln() - statrs::function::gamma::ln_gamma(x as f64 + 1.0);
             }
         }
-        let theta_total: Vec<f64> = (0..aa).map(|a| (0..cc).map(|c| st.theta[c * aa + a]).sum()).collect();
-        let psi_total: Vec<f64> = (0..bb).map(|b| (0..gg).map(|g| st.psi[g * bb + b]).sum()).collect();
-        for a in 0..aa {
-            for b in 0..bb {
-                out -= st.lambda[a * bb + b] * theta_total[a] * psi_total[b];
+        let theta_total: Vec<f64> = (0..aa)
+            .map(|a| (0..cc).map(|c| st.theta[c * aa + a]).sum())
+            .collect();
+        let psi_total: Vec<f64> = (0..bb)
+            .map(|b| (0..gg).map(|g| st.psi[g * bb + b]).sum())
+            .collect();
+        for (a, &t) in theta_total.iter().enumerate() {
+            for (b, &p) in psi_total.iter().enumerate() {
+                out -= st.lambda[a * bb + b] * t * p;
             }
         }
         out - st.size.iter().sum::<f64>() * st.level.iter().sum::<f64>()
@@ -375,7 +396,11 @@ fn side(
     for u in 0..units {
         let row = &mut weights[u * roles..(u + 1) * roles];
         for (a, x) in row.iter_mut().enumerate() {
-            *x = gamma(global[a] + counts[u * roles + a] as f64, rate[u] + exposure[a], rng);
+            *x = gamma(
+                global[a] + counts[u * roles + a] as f64,
+                rate[u] + exposure[a],
+                rng,
+            );
         }
         let shape: f64 = global.iter().sum();
         rate[u] = gamma(e0 + shape, f0 + row.iter().sum::<f64>(), rng);
@@ -393,21 +418,21 @@ impl Model<'_> {
         let mut st = self.prior_draw(rng);
         let mut cell_total = vec![0.0f64; cc];
         let mut gene_total = vec![0.0f64; gg];
-        for c in 0..cc {
+        for (c, n) in cell_total.iter_mut().enumerate() {
             let (genes, xs) = self.counts.of(c);
             for (&g, &x) in genes.iter().zip(xs) {
-                cell_total[c] += x as f64;
+                *n += x as f64;
                 gene_total[g as usize] += x as f64;
             }
         }
         let total: f64 = cell_total.iter().sum::<f64>().max(1.0);
         // s_c r_g = half of N_c N_g / N, split evenly between the two.
         let root = (2.0 * total).sqrt();
-        for c in 0..cc {
-            st.size[c] = (cell_total[c] / root).max(1e-3);
+        for (s, &n) in st.size.iter_mut().zip(&cell_total) {
+            *s = (n / root).max(1e-3);
         }
-        for g in 0..gg {
-            st.level[g] = (gene_total[g] / root).max(1e-3);
+        for (r, &n) in st.level.iter_mut().zip(&gene_total) {
+            *r = (n / root).max(1e-3);
         }
         // Blocks at rate 1: theta_ca psi_gb summed is the other half when
         // theta sums to N_c / root over a cell's roles and psi to N_g /

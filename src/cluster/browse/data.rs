@@ -26,7 +26,7 @@ mod sites;
 mod tables;
 mod trace;
 
-pub(super) use run::model as run_model;
+pub(super) use run::{model as run_model, COUNT_FIT};
 pub use trace::Fit;
 
 #[cfg(test)]
@@ -329,7 +329,10 @@ impl Modules {
     /// Every member's, site's and block's reads marked as UMIs per cell.
     fn measure_per_cell(&mut self) {
         let mark = |r: &mut Count| r.measure = Measure::PerCell;
-        self.members.iter_mut().flatten().for_each(|m| m.reads.iter_mut().for_each(mark));
+        self.members
+            .iter_mut()
+            .flatten()
+            .for_each(|m| m.reads.iter_mut().for_each(mark));
         self.blocks.iter_mut().flatten().for_each(mark);
         self.whole.iter_mut().for_each(mark);
     }

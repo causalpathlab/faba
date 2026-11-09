@@ -451,14 +451,14 @@ pub fn count_genes(
                     rows.iter().map(|&(g, _)| names[g]).collect::<Vec<_>>(),
                 )),
             ),
-            (
-                "chr",
-                Arc::new(StringArray::from(vec![""; rows.len()])),
-            ),
+            ("chr", Arc::new(StringArray::from(vec![""; rows.len()]))),
             ("pos", Arc::new(Int64Array::from(vec![0i64; rows.len()]))),
             ("converted", f32s(&|&(g, a)| umis[g * aa + a])),
             ("total", f32s(&|&(_, a)| cells[a])),
-            ("per_cell", f32s(&|&(g, a)| umis[g * aa + a] / cells[a].max(1e-12))),
+            (
+                "per_cell",
+                f32s(&|&(g, a)| umis[g * aa + a] / cells[a].max(1e-12)),
+            ),
         ],
         path,
     )

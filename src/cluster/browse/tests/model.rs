@@ -221,6 +221,34 @@ fn no_record_or_an_older_one_omits_the_section() {
         .contains("cannot be read"));
 }
 
+/// A count fit's record holds the count model's settings, not the
+/// blockmodel's: the section is left out, saying so plainly, and the header
+/// names no preset.
+#[test]
+fn a_count_fit_draws_no_plate_and_claims_no_preset() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    super::count_tables(dir);
+    let mut record = RunRecord::start("cluster", &dir.to_string_lossy())
+        .file_name("count_blockmodel.run.json")
+        .options(&cluster(&["--modality", "count"]));
+    record.set_result("model", &crate::cluster::count::Settings::default());
+    record.finish(&Ok(()));
+    let m = Modules::load(dir, "count", None).unwrap();
+    let data = serde_json::to_value(report::data(&m, &Default::default())).unwrap();
+    let s = &data["model"];
+    assert!(s["svg"].is_null() && s["preset"].is_null(), "{s}");
+    let why = s["why"].as_str().unwrap();
+    assert!(why.starts_with("a count fit: x_cg ~ Poisson("), "{why}");
+    assert!(why.ends_with("no plate drawn yet"), "{why}");
+    let head = title(dir, &m);
+    assert!(head.ends_with("count · count blockmodel"), "{head}");
+    assert!(
+        !head.contains("preset") && !head.contains("not recorded"),
+        "{head}"
+    );
+}
+
 /// The record `faba cluster --model crp` leaves in `dir`: its options, no
 /// model.
 fn crp_record(dir: &Path) {

@@ -491,7 +491,10 @@ pub(super) fn check(args: &ClusterArgs) -> anyhow::Result<()> {
             args.cell_roles >= 1 && args.gene_roles.is_none_or(|b| b >= 1),
             "--cell-roles and --gene-roles must be at least 1"
         );
-        anyhow::ensure!(positive(args.community_gamma), "--community-gamma must be positive");
+        anyhow::ensure!(
+            positive(args.community_gamma),
+            "--community-gamma must be positive"
+        );
         anyhow::ensure!(args.count_genes >= 1, "--count-genes must be at least 1");
         return Ok(());
     }

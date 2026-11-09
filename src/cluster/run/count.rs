@@ -44,12 +44,15 @@ fn count_inputs(args: &args::ClusterArgs) -> anyhow::Result<Vec<(Box<str>, Box<s
     Ok(out)
 }
 
+/// The genes' names, the cells, and each cell's `(gene, count)`s.
+type CountsRead = (Vec<Box<str>>, Vec<read::Cell>, Vec<Vec<(u32, u32)>>);
+
 /// Every cell's spliced counts over the genes of every input: the genes'
 /// names, the cells (barcode and batch), and each cell's `(gene, count)`.
 fn read_counts(
     inputs: &[(Box<str>, Box<str>)],
     progress: &progress::Progress,
-) -> anyhow::Result<(Vec<Box<str>>, Vec<read::Cell>, Vec<Vec<(u32, u32)>>)> {
+) -> anyhow::Result<CountsRead> {
     let mut genes: Vec<Box<str>> = Vec::new();
     let mut index: FxHashMap<Box<str>, u32> = FxHashMap::default();
     let mut cells = Vec::new();
@@ -113,7 +116,11 @@ fn variable_genes(per_cell: &[Vec<(u32, u32)>], genes: usize, n: usize) -> Vec<u
         .collect();
     let mut sorted = totals.clone();
     sorted.sort_by(f64::total_cmp);
-    let median = sorted.get(sorted.len() / 2).copied().unwrap_or(1.0).max(1.0);
+    let median = sorted
+        .get(sorted.len() / 2)
+        .copied()
+        .unwrap_or(1.0)
+        .max(1.0);
     let (mut sum, mut sq) = (vec![0.0f64; genes], vec![0.0f64; genes]);
     for (cell, &t) in per_cell.iter().zip(&totals) {
         let scale = median / t.max(1.0);
@@ -188,7 +195,8 @@ impl McmcModel for Fit<'_> {
 
     fn collect(&self, st: &count::State) -> Draw {
         let (_, _, aa, bb) = self.sizes;
-        let units_of = |c: usize| st.n0[c] as f64 + st.n[c * aa..(c + 1) * aa].iter().sum::<u32>() as f64;
+        let units_of =
+            |c: usize| st.n0[c] as f64 + st.n[c * aa..(c + 1) * aa].iter().sum::<u32>() as f64;
         Draw {
             log_likelihood: self.model.log_likelihood(st),
             cell: shares(&st.theta, aa).collect(),

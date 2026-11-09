@@ -230,13 +230,18 @@ fn tables(dir: &Path, asked: Option<&str>) -> Option<String> {
 /// is, and each cell module's methylated % and posterior-mean reads (a
 /// count fit: its UMIs per cell and gene, a module's genes averaged).
 fn print(m: &Modules) {
+    printed(m).iter().for_each(|line| println!("{line}"));
+}
+
+/// [`print`]'s lines: the head, then one per gene module.
+fn printed(m: &Modules) -> Vec<String> {
     let count = m.modality == "count";
     let unit = if count { "UMI/cell" } else { "%/reads" };
     let mut head = format!("{:<8}{:>11}{:>8}", "module", "main genes", "range");
     for &c in &m.columns {
         head.push_str(&format!("{:>16}", format!("C{} {unit}", c + 1)));
     }
-    println!("{head}");
+    let mut lines = vec![head];
     for &g in &m.order {
         let mut line = format!(
             "{:<8}{:>11}{:>8.2}",
@@ -252,8 +257,9 @@ fn print(m: &Modules) {
             };
             line.push_str(&format!("{cell:>16}"));
         }
-        println!("{line}");
+        lines.push(line);
     }
+    lines
 }
 
 pub fn run_modules(args: &ModulesArgs) -> anyhow::Result<()> {
@@ -444,10 +450,11 @@ fn ensure_tables(args: &ModulesArgs, dir: &Path, view: bool) -> anyhow::Result<O
 }
 
 /// The browser's header: the directory, the modality, and the model the
-/// tables come from (its preset, or custom settings).
+/// tables come from (its preset, custom settings, or a count fit).
 fn title(dir: &Path, modules: &Modules) -> String {
     let model = match &modules.run {
         Ok(r) => r.label(),
+        Err(why) if why == data::COUNT_FIT => "count blockmodel".to_string(),
         Err(_) => "settings not recorded".to_string(),
     };
     format!("{} · {} · {model}", dir.display(), modules.modality)
