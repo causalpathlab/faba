@@ -242,6 +242,46 @@ fn loaded() -> Modules {
     Modules::load(tmp.path(), "m6a", None).unwrap()
 }
 
+/// A count fit's tables, as `faba cluster --modality count` writes them:
+/// two cell roles and two gene roles. Cells B0 and B1 in cell role 1, B2
+/// and B3 in role 2; G1 and G2 in gene role 1, G3 in role 2. UMIs by cell
+/// role: G1 10 and 2, G2 4 and none, G3 none and 6.
+fn count_tables(dir: &Path) {
+    let path = |name: &str| dir.join(format!("count_{name}.parquet"));
+    let cells: Vec<Cell> = (0..4)
+        .map(|i| Cell {
+            barcode: format!("B{i}").into(),
+            batch: "b".into(),
+            fit: true,
+        })
+        .collect();
+    let member = [[1.0f32, 0.0], [1.0, 0.0], [0.0, 1.0], [0.0, 1.0]];
+    let rows: Vec<write::RoleRow> = cells
+        .iter()
+        .zip(&member)
+        .map(|(cell, m)| write::RoleRow {
+            cell,
+            membership: Some(m.as_slice()),
+            level: Some(0.1),
+        })
+        .collect();
+    write::cell_roles(&rows, 2, &path("cell_roles")).unwrap();
+    let genes = ["G1", "G2", "G3"];
+    let weights = [1.0, 0.0, 1.0, 0.0, 0.0, 1.0];
+    write::gene_roles(&genes, &weights, 2, &path("gene_roles")).unwrap();
+    let log_rate = [1.0, -1.0, -0.5, 0.5];
+    write::blocks(&log_rate, &[0.1; 4], &[1.0; 4], 2, &path("blocks")).unwrap();
+    let umis = [10.0, 2.0, 4.0, 0.0, 0.0, 6.0];
+    write::count_genes(&genes, &[0, 0, 1], &umis, &[2.0, 2.0], &path("block_sites")).unwrap();
+}
+
+/// The modules of [`count_tables`].
+fn counted() -> Modules {
+    let tmp = tempfile::tempdir().unwrap();
+    count_tables(tmp.path());
+    Modules::load(tmp.path(), "count", None).unwrap()
+}
+
 /// The modules of [`tables_with`] the cell roles swapped.
 fn swapped() -> Modules {
     let tmp = tempfile::tempdir().unwrap();
@@ -250,7 +290,7 @@ fn swapped() -> Modules {
 }
 
 fn count(on: f64, total: f64) -> Count {
-    Count { on, total }
+    Count::reads(on, total)
 }
 
 fn press(v: &mut ModulesView, code: KeyCode) {

@@ -16,6 +16,7 @@ mod args;
 pub(crate) use args::MODEL_OPTIONS;
 mod browse;
 mod command;
+mod count;
 mod crp;
 mod embed;
 mod fast;
@@ -25,6 +26,7 @@ mod read;
 /// Each model's fit, from the read and filtered input to its tables.
 mod run {
     pub(super) mod blockmodel;
+    pub(super) mod count;
     pub(super) mod crp;
 }
 mod summary;
@@ -123,11 +125,18 @@ fn run_cluster_watched(
     args: &ClusterArgs,
     progress: &progress::Progress,
 ) -> anyhow::Result<Option<String>> {
-    let site_matrices = (
-        "site matrices",
-        crate::qc::layout::is_site_matrix_name as fn(&str) -> bool,
-    );
-    let Some(args) = &with_inputs(args, "cluster", false, site_matrices)? else {
+    let offered = if args.is_count() {
+        (
+            "count matrices",
+            crate::qc::layout::is_count_matrix_name as fn(&str) -> bool,
+        )
+    } else {
+        (
+            "site matrices",
+            crate::qc::layout::is_site_matrix_name as fn(&str) -> bool,
+        )
+    };
+    let Some(args) = &with_inputs(args, "cluster", false, offered)? else {
         return Ok(None);
     };
     let dir = output_dir(args);
@@ -195,6 +204,9 @@ fn cluster(
     progress: &progress::Progress,
 ) -> anyhow::Result<Written> {
     check(args)?;
+    if args.is_count() {
+        return run::count::count_fit(args, &mcmc_config(args), dir, record, progress);
+    }
     let inputs = inputs(args)?;
     let all = read::read_inputs(&inputs, progress)?;
     let (data, kept) = read::filter(&all, args.min_cell_sites, args.min_site_cells);

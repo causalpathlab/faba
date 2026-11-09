@@ -10,6 +10,7 @@
 //! every gene role (see [`gene`]).
 //! `--html` (or `e`) writes the same as one page (see [`report`]).
 
+use super::command::COUNT_MODALITY;
 use super::{ClusterArgs, ModelKind};
 use crate::site_analysis::input_picker::{ask_reference, Reference};
 use crate::site_analysis::miami::genemodel::load_gene_models_where;
@@ -227,13 +228,21 @@ fn tables(dir: &Path, asked: Option<&str>) -> Option<String> {
 }
 
 /// The modules as text: per gene module, the genes whose main module it
-/// is, and each cell module's methylated % and posterior-mean reads.
+/// is, and each cell module's methylated % and posterior-mean reads (a
+/// count fit: its UMIs per cell and gene, a module's genes averaged).
 fn print(m: &Modules) {
+    printed(m).iter().for_each(|line| println!("{line}"));
+}
+
+/// [`print`]'s lines: the head, then one per gene module.
+fn printed(m: &Modules) -> Vec<String> {
+    let count = m.modality == COUNT_MODALITY;
+    let unit = if count { "UMI/cell" } else { "%/reads" };
     let mut head = format!("{:<8}{:>11}{:>8}", "module", "main genes", "range");
     for &c in &m.columns {
-        head.push_str(&format!("{:>14}", format!("C{} %/reads", c + 1)));
+        head.push_str(&format!("{:>16}", format!("C{} {unit}", c + 1)));
     }
-    println!("{head}");
+    let mut lines = vec![head];
     for &g in &m.order {
         let mut line = format!(
             "{:<8}{:>11}{:>8.2}",
@@ -242,10 +251,16 @@ fn print(m: &Modules) {
             m.shift_range(g)
         );
         for r in m.block(g) {
-            line.push_str(&format!("{:>14}", format!("{}/{:.0}", r.pct(), r.total)));
+            let cell = match (count, r.number()) {
+                (true, Some(n)) => n,
+                (true, None) => "-".into(),
+                (false, _) => format!("{}/{:.0}", r.pct(), r.total),
+            };
+            line.push_str(&format!("{cell:>16}"));
         }
-        println!("{line}");
+        lines.push(line);
     }
+    lines
 }
 
 pub fn run_modules(args: &ModulesArgs) -> anyhow::Result<()> {
@@ -321,6 +336,22 @@ enum Plan {
 /// defaults); else open the tables as they are. `--model crp`, which writes
 /// no modules, is refused whatever the tables.
 fn plan(args: &ModulesArgs, dir: &Path) -> anyhow::Result<Plan> {
+    // A count fit is opened as it is, never fitted here: its options
+    // belong to `faba cluster --modality count`.
+    if args.cluster.is_count() {
+        anyhow::ensure!(
+            !args.refit && !super::args::asks_model(&args.cluster),
+            "`faba cluster-view` opens a count fit as it is: to fit it again with other \
+             settings, run `faba cluster --modality count` with them"
+        );
+        return Ok(match tables(dir, Some(COUNT_MODALITY)) {
+            Some(m) => Plan::Open(m),
+            None => anyhow::bail!(
+                "no count tables in {}: run `faba cluster --modality count` first",
+                dir.display()
+            ),
+        });
+    }
     let asked = args.blockmodel()?;
     if args.refit {
         return Ok(Plan::Fit("--refit".to_string()));
@@ -436,10 +467,11 @@ fn ensure_tables(args: &ModulesArgs, dir: &Path, view: bool) -> anyhow::Result<O
 }
 
 /// The browser's header: the directory, the modality, and the model the
-/// tables come from (its preset, or custom settings).
+/// tables come from (its preset, custom settings, or a count fit).
 fn title(dir: &Path, modules: &Modules) -> String {
     let model = match &modules.run {
         Ok(r) => r.label(),
+        Err(why) if why == data::COUNT_FIT => "count blockmodel".to_string(),
         Err(_) => "settings not recorded".to_string(),
     };
     format!("{} · {} · {model}", dir.display(), modules.modality)

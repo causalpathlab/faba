@@ -36,14 +36,28 @@ pub(in crate::cluster) fn read(dir: &Path, name: &str) -> Result<serde_json::Val
     serde_json::from_str(&text).map_err(|e| unread(&e))
 }
 
+/// Why a count fit's record draws no plate: its model is not the
+/// blockmodel's.
+pub(in crate::cluster::browse) const COUNT_FIT: &str = "a count fit: x_cg ~ Poisson(s_c r_g + \
+     sum_ab theta_ca lambda_ab psi_gb); no plate drawn yet";
+
 /// The blockmodel's settings in `record`, the run record `name`, or in one
-/// line why there are none (an older record, or a crp run's).
+/// line why there are none (an older record, a crp run's, or a count
+/// fit's, see [`COUNT_FIT`]).
 pub(in crate::cluster::browse) fn settings(
     (name, record): &(String, serde_json::Value),
 ) -> Result<Recorded, String> {
     let Some(model) = record.pointer("/results/model") else {
         return Err(format!("{name} holds no blockmodel settings"));
     };
+    // A count fit's record names its tables' modality, which is its kind.
+    if record
+        .pointer("/results/tables/modality")
+        .and_then(|m| m.as_str())
+        == Some(crate::cluster::command::COUNT_MODALITY)
+    {
+        return Err(COUNT_FIT.to_string());
+    }
     serde_json::from_value(model.clone()).map_err(|e| format!("{name} cannot be read: {e}"))
 }
 

@@ -212,8 +212,10 @@ impl ModulesView<'_> {
             // The site's numbers beside its bars, over what is there.
             for t in 0..rows.tracks {
                 let r = cols[p as usize][self.track(t)];
-                let Some(f) = r.fraction() else { continue };
-                let text = format!(" {:.0}% {} ", 100.0 * f, compact(r.total));
+                if r.fraction().is_none() {
+                    continue;
+                }
+                let text = format!(" {} {} ", r.pct(), compact(r.total));
                 let len = text.chars().count() as u16;
                 let tx = if x + p + 1 + len <= area.right() {
                     x + p + 1

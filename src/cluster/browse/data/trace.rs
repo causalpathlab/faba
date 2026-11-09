@@ -38,11 +38,10 @@ impl Fit {
         let number = |key: &str| at(key).and_then(Value::as_u64).map(|n| n as usize);
         // Not finite when the record has none (too few draws); none
         // without a blockmodel record.
-        let rhat = at("/results/blockmodel").map(|b| {
-            b.get("rhat_log_joint")
-                .and_then(Value::as_f64)
-                .unwrap_or(f64::NAN)
-        });
+        // A count fit's R-hat is of its log-likelihood, under `count`.
+        let rhat = (at("/results/blockmodel").map(|b| b.get("rhat_log_joint")))
+            .or_else(|| at("/results/count").map(|c| c.get("rhat_log_likelihood")))
+            .map(|r| r.and_then(Value::as_f64).unwrap_or(f64::NAN));
         let sweeps = number("/results/trace/sweeps")
             .or_else(|| number("/options/sweeps"))
             .unwrap_or(0);

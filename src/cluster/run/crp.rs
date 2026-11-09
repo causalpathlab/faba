@@ -42,6 +42,7 @@ pub(in crate::cluster) fn crp_fit(
         model = model.with_heldout(h);
     }
     let chains = super::super::progress::run(&model, config, args.chains, progress)?;
+    progress.note_stop(config, record)?;
     let posterior = summary::posterior(&chains, args.min_cluster_cells);
     if posterior.rhat_k > RHAT_OK || posterior.rhat_log_posterior > RHAT_OK {
         warn!(

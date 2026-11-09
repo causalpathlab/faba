@@ -22,10 +22,23 @@ pub struct ClusterArgs {
 
     #[arg(
         long = "modality",
-        value_name = "m6a|atoi",
-        help = "Which sites to take from an output directory (default: m6a, else atoi)"
+        value_name = "m6a|atoi|count",
+        help = "Which sites to take from an output directory (default: m6a, else atoi); count: cluster the gene count matrices instead",
+        long_help = "Which sites to take from an output directory (default: m6a, else atoi).\n\
+                     count: a Poisson blockmodel of the `{batch}_count` matrices' spliced counts\n\
+                     over the --count-genes most variable genes, with a background of cell size\n\
+                     times gene level that belongs to no role (Ball, Karrer and Newman 2011;\n\
+                     Schein et al. 2016): --cell-roles, --gene-roles (default 8) and\n\
+                     --community-gamma apply. Its tables are count_*.parquet."
     )]
     pub(super) modality: Option<Box<str>>,
+
+    #[arg(
+        long,
+        default_value_t = 2000,
+        help = "With --modality count: the most variable genes to fit"
+    )]
+    pub(super) count_genes: usize,
 
     #[arg(
         short = 'o',
@@ -402,11 +415,16 @@ pub(super) fn inputs(args: &ClusterArgs) -> anyhow::Result<Vec<read::Input>> {
             .into();
         match crate::run_record::output_dir_of(f) {
             Some(dir) => {
-                let sites = crate::site_analysis::output_dir::output_site_matrices(
-                    &dir,
-                    args.modality.as_deref(),
-                )?;
-                for (batch, path) in sites.matrices {
+                let matrices = if args.is_count() {
+                    count_matrices(&dir)?
+                } else {
+                    crate::site_analysis::output_dir::output_site_matrices(
+                        &dir,
+                        args.modality.as_deref(),
+                    )?
+                    .matrices
+                };
+                for (batch, path) in matrices {
                     out.push(read::Input {
                         fit: fits(&path),
                         path,
@@ -433,6 +451,17 @@ pub(super) fn inputs(args: &ClusterArgs) -> anyhow::Result<Vec<read::Input>> {
     );
     qualify_batches(&mut out);
     Ok(out)
+}
+
+/// The `{batch}_count` matrices of output directory `dir`, as (batch, path).
+fn count_matrices(dir: &std::path::Path) -> anyhow::Result<Vec<(Box<str>, Box<str>)>> {
+    let layout = crate::qc::layout::scan_input_dir(&dir.to_string_lossy())?;
+    let found: Vec<_> = (layout.matrices.iter())
+        .filter(|m| &*m.kind == super::command::COUNT_MODALITY)
+        .map(|m| (m.batch.clone(), m.path.clone()))
+        .collect();
+    anyhow::ensure!(!found.is_empty(), "{} has no count matrices", dir.display());
+    Ok(found)
 }
 
 /// A batch name met in several folders is a different batch in each: those
@@ -473,6 +502,27 @@ pub(super) fn check(args: &ClusterArgs) -> anyhow::Result<()> {
         (0.0..1.0).contains(&args.holdout),
         "--holdout must be at least 0 and less than 1"
     );
+    if args.is_count() {
+        anyhow::ensure!(
+            args.cell_roles >= 1 && args.gene_roles.is_none_or(|b| b >= 1),
+            "--cell-roles and --gene-roles must be at least 1"
+        );
+        anyhow::ensure!(
+            positive(args.community_gamma),
+            "--community-gamma must be positive"
+        );
+        anyhow::ensure!(args.count_genes >= 1, "--count-genes must be at least 1");
+        // What only the site fits do, refused rather than ignored.
+        anyhow::ensure!(
+            args.holdout == 0.0,
+            "--holdout does not apply to --modality count"
+        );
+        anyhow::ensure!(
+            !args.given("model"),
+            "--model chooses a site fit's model; --modality count fits the count blockmodel"
+        );
+        return Ok(());
+    }
     if args.model == ModelKind::Crp {
         anyhow::ensure!(
             positive(crp_strength(args)),
