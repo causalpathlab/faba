@@ -625,7 +625,7 @@ fn a_links_predictive_is_its_sites_summed() {
         assert!(scored.iter().all(|x| x.is_finite()), "{scored:?}");
         for (k, (x, y)) in scored.iter().zip(&summed).enumerate() {
             assert!(
-                (x - y).abs() < 1e-12 * y.abs(),
+                (x - y).abs() < FAST_MATH * y.abs(),
                 "strength {strength} block {k}: scored {x}, summed {y}"
             );
         }
@@ -657,7 +657,7 @@ fn a_links_reads_at_extreme_logits_score_right() {
         let (scored, summed) = model.link_check((&[0, 1, 2], &[0, 1, 0]), &held, l);
         for (k, (x, y)) in scored.iter().zip(&summed).enumerate() {
             assert!(
-                (x - y).abs() < 1e-12 * y.abs(),
+                (x - y).abs() < FAST_MATH * y.abs(),
                 "link {l} block {k}: scored {x}, summed {y}"
             );
         }

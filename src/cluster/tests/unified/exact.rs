@@ -195,7 +195,7 @@ fn the_log_joint_is_the_models_definition() {
                 };
                 let reported = model.log_joint_at((&a, &b), &at);
                 assert!(
-                    (reported - defined).abs() < 1e-9,
+                    (reported - defined).abs() < FAST_MATH * defined.abs().max(1.0),
                     "{s:?} a {a:?} b {b:?} delta {delta:?} nu {nu:?}: reported {reported}, \
                      defined {defined}"
                 );

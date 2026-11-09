@@ -79,18 +79,6 @@ pub(super) fn log_sum_exp(values: impl Iterator<Item = f64> + Clone) -> f64 {
     max + values.map(|v| (v - max).exp()).sum::<f64>().ln()
 }
 
-/// The Dirichlet-multinomial log marginal of counts `row` under
-/// `Dirichlet(conc * base)`.
-pub(super) fn ln_urn(row: &[u32], conc: f64, base: &[f64]) -> f64 {
-    let total: u32 = row.iter().sum();
-    ln_gamma(conc) - ln_gamma(conc + total as f64)
-        + row
-            .iter()
-            .zip(base)
-            .map(|(&x, &b)| ln_gamma(conc * b + x as f64) - ln_gamma(conc * b))
-            .sum::<f64>()
-}
-
 /// `ln B(x + m, y + u) - ln B(x, y)`: the Beta-binomial predictive of `m`
 /// converted and `u` unconverted reads given `Beta(x, y)`, without the
 /// binomial coefficient (the same for every cluster). Few reads, the usual

@@ -34,13 +34,17 @@
 //! at infinite strength each cell's level through its links' reads. Every
 //! move leaves the posterior invariant.
 //!
-//! At a site some link reaches with fractional reads (batch weights) or
-//! more than 16, its blocks' Beta functions are taken through a fast
-//! `ln Gamma` (the cluster's `fast` module: f32 below 16, about `1e-3`
-//! error per term) in every term a move reads, the log joint's included.
-//! The target there is the Beta-binomial through that `ln Gamma`, a small
-//! shift from the exact one, and the moves leave it invariant exactly;
-//! elsewhere the library's `ln Gamma`.
+//! Logs are fast and approximate (the cluster's `fast` module, f32):
+//! every `ln` in the relabelling's weights and the reads' running
+//! products, the cell and gene urns (sums of logs), and at a site
+//! some link reaches with fractional reads (batch weights) or more than
+//! 16, its blocks' Beta functions (about `1e-3` error per term); elsewhere
+//! the sites' Beta functions are the library's. The relabelling weighs
+//! roles by the urns' own differences and, at infinite strength, by the
+//! log joint's own read terms, so those moves are exact for the
+//! approximate target; at finite strength its reads' weights (rising
+//! factorials and one fast log) differ from the log joint's Beta functions
+//! by about `1e-4` per link, a small shift from the exact posterior.
 //!
 //! Gene roles need the shift: a site belongs to one gene, so without it a
 //! gene's role never reaches its reads, and is refused. So does infinite
@@ -434,7 +438,8 @@ impl<'a> Model<'a> {
     /// with `ln sigmoid(z) = -ln (1 + exp(-mu_s) exp(-nu) exp(-delta))`: few
     /// whole reads as `(1 + ...)^n` multiplied into a running product kept
     /// as a mantissa and a power of 2 (one log at the end), others each
-    /// through `ln_1p`, the linear part from the link's constants. The
+    /// through `ln (1 + ...)`, the linear part from the link's constants.
+    /// Every log is the cluster's `fast::ln`. The
     /// relabelling's every block ([`Self::link_reads_blocks`]) takes the
     /// same steps in the same order, so the two agree bit for bit.
     fn link_reads(&self, l: usize, nu: (f64, f64), delta: (f64, f64)) -> f64 {
@@ -487,7 +492,7 @@ impl<'a> Model<'a> {
             w, rising, gene, ..
         } = scratch;
         for (b, x) in gene.iter_mut().enumerate() {
-            *x = (st.m[g * bb + b] as f64 + gb).ln();
+            *x = fast::urn_step(gb, st.m[g * bb + b]);
         }
         self.ln_link_blocks(st, l, w, rising);
         for a in 0..aa {
@@ -610,7 +615,7 @@ fn entry_reads(e: f64, m: f64, u: f64, product: &mut (f64, i64), ones: &mut f64)
     if few_whole(m, u) && e < E_OVERFLOWS {
         scale(product, (1.0 + e).powi((m + u) as i32));
     } else {
-        *ones += (m + u) * e.ln_1p();
+        *ones += (m + u) * fast::ln_1p(e);
     }
 }
 
@@ -623,11 +628,11 @@ fn scale(product: &mut (f64, i64), x: f64) {
 
 /// The log of a running product kept as a mantissa and a power of 2.
 fn ln_split((mantissa, e): (f64, i64)) -> f64 {
-    mantissa.ln() + e as f64 * LN_2
+    fast::ln(mantissa) + e as f64 * LN_2
 }
 
 /// The `exp(-z)` from which [`entry_reads`] takes few whole reads by
-/// `ln_1p`: below it `(1 + e)^16` times a mantissa under 2 is finite.
+/// their log: below it `(1 + e)^16` times a mantissa under 2 is finite.
 const E_OVERFLOWS: f64 = (1u64 << 60) as f64;
 
 /// Each of `sites` sites: whether some link reaches it with reads not few

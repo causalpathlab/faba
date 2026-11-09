@@ -308,7 +308,7 @@ fn relabelled_copies_pool_to_one_chains_means() {
     let (reads, gene_of, _, _, _) = planted_blocks(90, 12, 0.5, 337);
     let links = Links::new(&Weighted::new(&reads, None), &gene_of);
     let model = Model::new(&links, &gene_of, gene_of.len(), blocks_preset()).unwrap();
-    let chain = run_mcmc(&model, &config(40, 100, 339));
+    let chain = run_mcmc(&model, &config(40, 300, 339));
     let to = relabelling(&[1, 2, 0], &[1, 0]);
     let copy = Draw::relabelled(&chain, &to);
     let one = chain.last().unwrap().means(true);
