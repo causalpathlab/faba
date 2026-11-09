@@ -13,7 +13,7 @@ const RISING: [&str; 9] = [" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇",
 pub(super) fn peak<'r>(reads: impl IntoIterator<Item = &'r Count>) -> f64 {
     reads
         .into_iter()
-        .map(|r| r.on.max(r.off()))
+        .map(|r| r.up().max(r.off()))
         .fold(0.0, f64::max)
 }
 
@@ -23,7 +23,7 @@ pub(super) fn peak<'r>(reads: impl IntoIterator<Item = &'r Count>) -> f64 {
 /// stacked one under another never touch.
 pub(super) fn mirror(buf: &mut Buffer, x: u16, y: u16, lines: u16, reads: Count, peak: f64) {
     let (up, down) = (
-        eighths(reads.on, peak, lines),
+        eighths(reads.up(), peak, lines),
         eighths(reads.off(), peak, lines),
     );
     for k in 0..lines {

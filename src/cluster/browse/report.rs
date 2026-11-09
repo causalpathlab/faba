@@ -25,6 +25,9 @@ pub(super) struct Data {
     modality: String,
     on: &'static str,
     off: &'static str,
+    /// Whether the reads are a count fit's UMIs per cell (`[UMIs, cells]`),
+    /// drawn as bars up alone, rather than converted fractions.
+    per_cell: bool,
     /// The cell modules' names and posterior sizes (their fitted cells'
     /// memberships summed), in the panes' column order, the sizes labelled
     /// as the terminal labels them (see [`Modules::cells_label`]), and all
@@ -119,8 +122,14 @@ pub(super) fn data(m: &Modules, models: &FxHashMap<Box<str>, GeneModel>) -> Data
                 .collect(),
         })
         .collect();
-    let (on, off) = channel_names(&m.modality);
+    let per_cell = m.modality == "count";
+    let (on, off) = if per_cell {
+        ("UMIs", "")
+    } else {
+        channel_names(&m.modality)
+    };
     Data {
+        per_cell,
         title: format!("gene modules × cell modules · {}", m.modality),
         modality: m.modality.clone(),
         on,

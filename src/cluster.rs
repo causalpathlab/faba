@@ -16,6 +16,7 @@ mod args;
 pub(crate) use args::MODEL_OPTIONS;
 mod browse;
 mod command;
+mod count;
 mod crp;
 mod embed;
 mod fast;
@@ -25,6 +26,7 @@ mod read;
 /// Each model's fit, from the read and filtered input to its tables.
 mod run {
     pub(super) mod blockmodel;
+    pub(super) mod count;
     pub(super) mod crp;
 }
 mod summary;
@@ -195,6 +197,9 @@ fn cluster(
     progress: &progress::Progress,
 ) -> anyhow::Result<Written> {
     check(args)?;
+    if args.modality.as_deref() == Some("count") {
+        return run::count::count_fit(args, &mcmc_config(args), dir, record, progress);
+    }
     let inputs = inputs(args)?;
     let all = read::read_inputs(&inputs, progress)?;
     let (data, kept) = read::filter(&all, args.min_cell_sites, args.min_site_cells);

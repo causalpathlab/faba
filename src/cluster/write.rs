@@ -411,6 +411,59 @@ pub fn block_sites(
     write(columns, path)
 }
 
+/// One row per gene and cell role with counts there, by gene role and
+/// gene: both roles (the gene's main gene role), the gene (`chr` empty and
+/// `pos` 0: a gene is one feature), its UMIs in the cell role's cells
+/// (each cell's counts by its membership), those cells (their memberships
+/// summed), and the UMIs per cell. The columns are `{m}_block_sites`'s,
+/// with UMIs as `converted` and cells as `total`, so the module view reads
+/// a count fit as it reads a site fit.
+pub fn count_genes(
+    names: &[&str],
+    main: &[usize],
+    umis: &[f64],
+    cells: &[f64],
+    path: &Path,
+) -> anyhow::Result<()> {
+    let aa = cells.len();
+    let mut rows: Vec<(usize, usize)> = (0..names.len())
+        .flat_map(|g| (0..aa).map(move |a| (g, a)))
+        .filter(|&(g, a)| umis[g * aa + a] > 0.0)
+        .collect();
+    rows.sort_by_key(|&(g, a)| (main[g], names[g], a));
+    let i32s = |f: &dyn Fn(&(usize, usize)) -> usize| {
+        Arc::new(Int32Array::from(
+            rows.iter().map(|x| f(x) as i32 + 1).collect::<Vec<_>>(),
+        ))
+    };
+    let f32s = |f: &dyn Fn(&(usize, usize)) -> f64| {
+        Arc::new(Float32Array::from(
+            rows.iter().map(|x| f(x) as f32).collect::<Vec<_>>(),
+        ))
+    };
+    write(
+        vec![
+            ("cell_role", i32s(&|&(_, a)| a) as ArrayRef),
+            ("gene_role", i32s(&|&(g, _)| main[g])),
+            (
+                "gene",
+                Arc::new(StringArray::from(
+                    rows.iter().map(|&(g, _)| names[g]).collect::<Vec<_>>(),
+                )),
+            ),
+            (
+                "chr",
+                Arc::new(StringArray::from(vec![""; rows.len()])),
+            ),
+            ("pos", Arc::new(Int64Array::from(vec![0i64; rows.len()]))),
+            ("converted", f32s(&|&(g, a)| umis[g * aa + a])),
+            ("total", f32s(&|&(_, a)| cells[a])),
+            ("per_cell", f32s(&|&(g, a)| umis[g * aa + a] / cells[a].max(1e-12))),
+        ],
+        path,
+    )
+}
+
 /// Posterior-mean reads under which a site's entry in a cell role is left
 /// out of [`site_cells`]: low enough that a gene's full pileup loses no
 /// fractional reads (the table is drawn, never sorted or standardized).

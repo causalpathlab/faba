@@ -250,7 +250,7 @@ fn swapped() -> Modules {
 }
 
 fn count(on: f64, total: f64) -> Count {
-    Count { on, total }
+    Count::reads(on, total)
 }
 
 fn press(v: &mut ModulesView, code: KeyCode) {

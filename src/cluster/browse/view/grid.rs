@@ -448,9 +448,8 @@ fn grid_row(
         for dx in 0..2 {
             mirror(buf, x + dx, area.y, 1, *r, peak);
         }
-        if let (Some(f), true) = (r.fraction(), cell_w == CELL) {
-            let pct = format!("{:>3.0}", 100.0 * f);
-            buf.set_string(x + 2, area.y, pct, DIM);
+        if let (Some(n), true) = (r.number(), cell_w == CELL) {
+            buf.set_string(x + 2, area.y, format!("{n:>3}"), DIM);
         }
         end = x + cell_w - 1;
     }
@@ -492,7 +491,7 @@ fn heat_row(
             _ => {
                 let g = stretch.gray(ramp, f);
                 let ink = if g > 140 { Color::Black } else { Color::White };
-                (Color::Rgb(g, g, g), ink, format!("{:.0}", 100.0 * f))
+                (Color::Rgb(g, g, g), ink, r.number().unwrap_or_default())
             }
         };
         let (w, h) = box_size(r.total, stretch.deepest, cell_w);

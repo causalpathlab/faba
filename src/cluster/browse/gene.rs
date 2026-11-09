@@ -37,7 +37,7 @@ impl<'a> GeneReads<'a> {
             let (pos, whole) = (m.sites[s].pos, m.whole(s));
             let all: Count = whole.iter().copied().sum();
             for (group, r) in groups.iter_mut().zip(std::iter::once(&all).chain(whole)) {
-                group.0.push((pos, r.on));
+                group.0.push((pos, r.up()));
                 group.1.push((pos, r.off()));
             }
         }

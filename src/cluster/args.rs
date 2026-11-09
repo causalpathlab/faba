@@ -22,10 +22,23 @@ pub struct ClusterArgs {
 
     #[arg(
         long = "modality",
-        value_name = "m6a|atoi",
-        help = "Which sites to take from an output directory (default: m6a, else atoi)"
+        value_name = "m6a|atoi|count",
+        help = "Which sites to take from an output directory (default: m6a, else atoi); count: cluster the gene count matrices instead",
+        long_help = "Which sites to take from an output directory (default: m6a, else atoi).\n\
+                     count: a Poisson blockmodel of the `{batch}_count` matrices' spliced counts\n\
+                     over the --count-genes most variable genes, with a background of cell size\n\
+                     times gene level that belongs to no role (Ball, Karrer and Newman 2011;\n\
+                     Schein et al. 2016): --cell-roles, --gene-roles (default 8) and\n\
+                     --community-gamma apply. Its tables are count_*.parquet."
     )]
     pub(super) modality: Option<Box<str>>,
+
+    #[arg(
+        long,
+        default_value_t = 2000,
+        help = "With --modality count: the most variable genes to fit"
+    )]
+    pub(super) count_genes: usize,
 
     #[arg(
         short = 'o',
@@ -473,6 +486,15 @@ pub(super) fn check(args: &ClusterArgs) -> anyhow::Result<()> {
         (0.0..1.0).contains(&args.holdout),
         "--holdout must be at least 0 and less than 1"
     );
+    if args.modality.as_deref() == Some("count") {
+        anyhow::ensure!(
+            args.cell_roles >= 1 && args.gene_roles.is_none_or(|b| b >= 1),
+            "--cell-roles and --gene-roles must be at least 1"
+        );
+        anyhow::ensure!(positive(args.community_gamma), "--community-gamma must be positive");
+        anyhow::ensure!(args.count_genes >= 1, "--count-genes must be at least 1");
+        return Ok(());
+    }
     if args.model == ModelKind::Crp {
         anyhow::ensure!(
             positive(crp_strength(args)),

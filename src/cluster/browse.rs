@@ -227,11 +227,14 @@ fn tables(dir: &Path, asked: Option<&str>) -> Option<String> {
 }
 
 /// The modules as text: per gene module, the genes whose main module it
-/// is, and each cell module's methylated % and posterior-mean reads.
+/// is, and each cell module's methylated % and posterior-mean reads (a
+/// count fit: its UMIs per cell and gene, a module's genes averaged).
 fn print(m: &Modules) {
+    let count = m.modality == "count";
+    let unit = if count { "UMI/cell" } else { "%/reads" };
     let mut head = format!("{:<8}{:>11}{:>8}", "module", "main genes", "range");
     for &c in &m.columns {
-        head.push_str(&format!("{:>14}", format!("C{} %/reads", c + 1)));
+        head.push_str(&format!("{:>16}", format!("C{} {unit}", c + 1)));
     }
     println!("{head}");
     for &g in &m.order {
@@ -242,7 +245,12 @@ fn print(m: &Modules) {
             m.shift_range(g)
         );
         for r in m.block(g) {
-            line.push_str(&format!("{:>14}", format!("{}/{:.0}", r.pct(), r.total)));
+            let cell = match (count, r.number()) {
+                (true, Some(n)) => n,
+                (true, None) => "-".into(),
+                (false, _) => format!("{}/{:.0}", r.pct(), r.total),
+            };
+            line.push_str(&format!("{cell:>16}"));
         }
         println!("{line}");
     }

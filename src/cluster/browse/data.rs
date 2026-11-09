@@ -32,32 +32,96 @@ pub use trace::Fit;
 #[cfg(test)]
 pub(super) use tables::role_at;
 
-/// Converted reads and all reads.
+/// What a [`Count`] measures.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub enum Measure {
+    /// Converted reads of all reads at a site: a fraction, drawn as mirror
+    /// bars (converted up, unconverted down).
+    #[default]
+    Fraction,
+    /// A gene's UMIs over its cells (`on` the UMIs, `total` the cells): a
+    /// rate per cell, drawn as bars up alone.
+    PerCell,
+}
+
+/// Converted reads and all reads (or, measured [`Measure::PerCell`], UMIs
+/// and cells).
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Count {
     pub on: f64,
     pub total: f64,
+    pub measure: Measure,
 }
 
 impl Count {
+    /// Converted and all reads.
+    pub fn reads(on: f64, total: f64) -> Self {
+        Self {
+            on,
+            total,
+            measure: Measure::Fraction,
+        }
+    }
+
+    /// `other` added; a sum of UMIs per cell stays one.
     pub fn add(&mut self, other: Count) {
         self.on += other.on;
         self.total += other.total;
+        if other.measure == Measure::PerCell {
+            self.measure = Measure::PerCell;
+        }
     }
 
+    /// The unconverted reads; none per cell, where `total` counts cells.
     pub fn off(self) -> f64 {
-        self.total - self.on
+        match self.measure {
+            Measure::Fraction => self.total - self.on,
+            Measure::PerCell => 0.0,
+        }
     }
 
-    /// The methylated fraction; none without reads.
+    /// A bar's height above its zero line: the converted reads (or the
+    /// UMIs per cell).
+    pub fn up(self) -> f64 {
+        match self.measure {
+            Measure::Fraction => self.on,
+            Measure::PerCell => self.fraction().unwrap_or(0.0),
+        }
+    }
+
+    /// The methylated fraction (or the UMIs per cell); none without reads
+    /// (or cells).
     pub fn fraction(self) -> Option<f64> {
         (self.total > 0.0).then(|| self.on / self.total)
     }
 
-    /// The methylated fraction as a whole %, `-` without reads.
+    /// The methylated fraction as a whole % (or the UMIs per cell, to two
+    /// figures), `-` without reads.
     pub fn pct(self) -> String {
-        self.fraction()
-            .map_or("-".into(), |f| format!("{:.0}%", 100.0 * f))
+        self.fraction().map_or("-".into(), |f| match self.measure {
+            Measure::Fraction => format!("{:.0}%", 100.0 * f),
+            Measure::PerCell => format!("{}/cell", per_cell(f)),
+        })
+    }
+
+    /// [`Self::fraction`] in a grid cell's few characters: a whole % (or
+    /// the UMIs per cell); none without reads.
+    pub fn number(self) -> Option<String> {
+        self.fraction().map(|f| match self.measure {
+            Measure::Fraction => format!("{:.0}", 100.0 * f),
+            Measure::PerCell => per_cell(f),
+        })
+    }
+}
+
+/// UMIs per cell, to two significant figures or a whole number.
+fn per_cell(f: f64) -> String {
+    if f >= 10.0 {
+        format!("{f:.0}")
+    } else if f >= 1.0 {
+        format!("{f:.1}")
+    } else {
+        format!("{f:.2}")
     }
 }
 
@@ -127,7 +191,7 @@ pub struct Pileup<'a> {
 /// What `faba cluster`'s blockmodel wrote, as the browser reads it.
 #[derive(Debug)]
 pub struct Modules {
-    /// The sites' modality, e.g. `m6a`.
+    /// The sites' modality, e.g. `m6a`, or `count` for gene counts.
     pub modality: String,
     pub cell_roles: usize,
     pub gene_roles: usize,
@@ -202,9 +266,12 @@ impl Modules {
         let rows = table("block_sites")?;
         let cells_rows = optional("site_cells")?;
         let site_cells = cells_rows.as_ref().map(SiteRows::of).transpose()?;
+        // A count fit's gene is one feature: no pileup to approximate, no
+        // site counts to miss.
+        let count = modality == "count";
         let approximate = Approximate {
             sizes: listed,
-            pileup: site_cells.is_none(),
+            pileup: site_cells.is_none() && !count,
         };
         let notes = [
             approximate.sizes_note(modality),
@@ -220,7 +287,7 @@ impl Modules {
         let stats = optional("site_stats")?
             .map(|t| site_counts(&from.sites, &t))
             .transpose()?;
-        if stats.is_none() {
+        if stats.is_none() && !count {
             log::warn!(
                 "no {}: rerun `faba cluster --model blocks` for each site's counts",
                 path("site_stats").display()
@@ -250,9 +317,21 @@ impl Modules {
                 .and_then(run::settings),
             fit: Fit::read(dir, modality, &record),
         };
+        // A count fit's genes are its sites, their reads UMIs per cell.
+        if count {
+            modules.measure_per_cell();
+        }
         modules.set_orders();
         modules.put_in_columns();
         Ok(modules)
+    }
+
+    /// Every member's, site's and block's reads marked as UMIs per cell.
+    fn measure_per_cell(&mut self) {
+        let mark = |r: &mut Count| r.measure = Measure::PerCell;
+        self.members.iter_mut().flatten().for_each(|m| m.reads.iter_mut().for_each(mark));
+        self.blocks.iter_mut().flatten().for_each(mark);
+        self.whole.iter_mut().for_each(mark);
     }
 
     /// Every member's, site's and block's reads put in column order, once,

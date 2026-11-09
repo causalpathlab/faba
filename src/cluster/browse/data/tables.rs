@@ -48,10 +48,7 @@ impl<'a> SiteRows<'a> {
 
     /// Row `i`'s posterior-mean reads.
     pub(super) fn reads(&self, i: usize) -> Count {
-        Count {
-            on: self.converted.value(i) as f64,
-            total: self.total.value(i) as f64,
-        }
+        Count::reads(self.converted.value(i) as f64, self.total.value(i) as f64)
     }
 }
 

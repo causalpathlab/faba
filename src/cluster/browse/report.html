@@ -145,6 +145,16 @@ const cellNames = DATA.cellNames;
 const cellLabels = DATA.cellLabels;
 // A cell module without reads has no fraction (none, not 0%).
 const read = ([on, total]) => ({reads: total, frac: total > 0 ? on / total : null});
+// A count fit's reads are [UMIs, cells]: its bars rise by the UMIs per cell
+// and nothing hangs below; a site fit's rise by converted reads and hang by
+// unconverted ones.
+const PER_CELL = !!DATA.perCell;
+const up = r => r.frac === null ? 0 : PER_CELL ? r.frac : r.reads * r.frac;
+const down = r => r.frac === null || PER_CELL ? 0 : r.reads * (1 - r.frac);
+const perCell = f => f >= 10 ? f.toFixed(0) : f >= 1 ? f.toFixed(1) : f.toFixed(2);
+// A fraction as a grid's number, and as a label.
+const num = f => PER_CELL ? perCell(f) : Math.round(100 * f);
+const label = f => PER_CELL ? `${perCell(f)}/cell` : `${Math.round(100 * f)}%`;
 // [converted, all] pairs added up in order, as `faba cluster-view` checks they add.
 const sum = pairs => pairs.reduce((a, p) => [a[0] + p[0], a[1] + p[1]], [0, 0]);
 const modules = DATA.modules.map(m => {
@@ -349,7 +359,7 @@ const sitesOf = m => moduleSites(m).list;
 function pct(ctx, frac, x, y, size, colour) {
   const keep = ctx.font;
   ctx.font = `${size}px ui-monospace, monospace`; ctx.textAlign = "left"; ctx.fillStyle = colour;
-  ctx.fillText(Math.round(100 * frac), x, y);
+  ctx.fillText(num(frac), x, y);
   ctx.font = keep;
 }
 // A grid's ramps and its deepest block, by canvas, module and % scale. The %
@@ -438,7 +448,7 @@ function hinton(canvas, rows, label, sel, extra, from, heat, key) {
     ctx.fillText(label(r), left - 10, y + ch / 2);
     // Each block a mirror bar, as in the pileup: converted reads up,
     // unconverted down, both on the row's scale.
-    const peak = Math.max(...row.map(x => x.frac === null ? 0 : Math.max(x.reads * x.frac, x.reads * (1 - x.frac))));
+    const peak = Math.max(...row.map(x => Math.max(up(x), down(x))));
     const zrow = standardized(row);
     // A cell module without reads draws nothing.
     if (heat) shownCols.forEach((c, k) => { const x = row[c]; if (x.frac === null) return;
@@ -450,7 +460,7 @@ function hinton(canvas, rows, label, sel, extra, from, heat, key) {
       let fill, text, dark;
       if (heat === 1) {
         const g = Math.round(255 * Math.min(1, Math.max(0, (f(x.frac) - lo) / (hi - lo || 1))));
-        fill = `rgb(${g},${g},${g})`; text = Math.round(100 * x.frac); dark = g > 140;
+        fill = `rgb(${g},${g},${g})`; text = num(x.frac); dark = g > 140;
       } else {
         const z = zrow[c], t = Math.min(1, Math.abs(z) / zTop);
         const [r, g, b] = z >= 0 ? [255, 255 * (1 - t), 255 * (1 - t)] : [255 * (1 - t), 255 * (1 - t), 255];
@@ -468,11 +478,11 @@ function hinton(canvas, rows, label, sel, extra, from, heat, key) {
       // The bar sits left of centre; its methylated % in small type to its
       // right, when the column is not narrowed.
       const cx = left + (k + 0.3) * cw, cy = y + ch / 2, half = ch / 2 - 2, w = Math.max(3, cw * 0.28);
-      const up = half * x.reads * x.frac / peak, down = half * x.reads * (1 - x.frac) / peak;
+      const [up_, down_] = [half * up(x) / peak, half * down(x) / peak];
       ctx.strokeStyle = rule; ctx.lineWidth = 1;
       ctx.beginPath(); ctx.moveTo(left + k * cw + 2, cy); ctx.lineTo(left + (k + 1) * cw - 2, cy); ctx.stroke();
-      ctx.fillStyle = acc; ctx.fillRect(cx - w / 2, cy - up, w, up);
-      ctx.fillStyle = fg; ctx.fillRect(cx - w / 2, cy, w, down);
+      ctx.fillStyle = acc; ctx.fillRect(cx - w / 2, cy - up_, w, up_);
+      ctx.fillStyle = fg; ctx.fillRect(cx - w / 2, cy, w, down_);
       if (!narrow) pct(ctx, x.frac, cx + w / 2 + 2, cy, Math.min(10, cw * 0.4), dim);
     });
     if (extra) { ctx.textAlign = "left"; ctx.fillStyle = dim; ctx.fillText(extra[r], left + shownCols.length * cw + 10, y + ch / 2); }
@@ -538,7 +548,7 @@ const tracksOf = key => [{name: "all", size: DATA.allLabel, read: s => s.all[key
   ...cellNames.map((name, c) => ({name, size: cellLabels[c], read: s => s[key][c]}))];
 const pileTracks = tracksOf("cells"), fullTracks = tracksOf("whole");
 // The tallest bar of `tracks[k]` over `sites`, either way up: the scale its bars share.
-const peakOf = (tracks, sites, k) => Math.max(...sites.map(s => { const r = tracks[k].read(s); return Math.max(r.reads * r.frac, r.reads * (1 - r.frac)); }));
+const peakOf = (tracks, sites, k) => Math.max(...sites.map(s => { const r = tracks[k].read(s); return Math.max(up(r), down(r)); }));
 // The pinned genes in rows: as many as fit across, then a new row below, the
 // pane growing with them; each row has its own models and tracks.
 const ROW_H = 230;
@@ -592,11 +602,11 @@ function drawPileRow(ctx, W, y0, shown, seg, left, right, pick) {
     tracks.forEach((t, k) => {
       const mid = ty(k) + track / 2, half = track / 2 - 3, top_ = k === 0 ? peakOf(tracks, ge.sites, 0) : cellPeak;
       ge.sites.forEach(s => {
-        const r = t.read(s), up = half * r.reads * r.frac / top_, down = half * r.reads * (1 - r.frac) / top_;
-        ctx.fillStyle = acc; ctx.fillRect(x(s.pos) - 2, mid - up, 4, up);
-        ctx.fillStyle = fg; ctx.fillRect(x(s.pos) - 2, mid, 4, down);
+        const r = t.read(s), rise = half * up(r) / top_, hang = half * down(r) / top_;
+        ctx.fillStyle = acc; ctx.fillRect(x(s.pos) - 2, mid - rise, 4, rise);
+        ctx.fillStyle = fg; ctx.fillRect(x(s.pos) - 2, mid, 4, hang);
         if (s === pick.site && mine) { ctx.strokeStyle = acc; ctx.lineWidth = 1; ctx.strokeRect(x(s.pos) - 5, mid - half - 1, 10, 2 * half + 2); }
-        if (s === state.hover || (s === pick.site && mine && !state.hover)) siteLabel(ctx, r, x(s.pos), mid, up, k === 0 ? acc : fg);
+        if (s === state.hover || (s === pick.site && mine && !state.hover)) siteLabel(ctx, r, x(s.pos), mid, rise, k === 0 ? acc : fg);
         if (k === 0) spots.push({x: x(s.pos), y0, site: s});
       });
     });
@@ -607,7 +617,7 @@ function drawPileRow(ctx, W, y0, shown, seg, left, right, pick) {
 let labels = [];
 function siteLabel(ctx, r, x, mid, up, colour) { if (r.frac === null) return; labels.push(() => {
   const keep = ctx.font; ctx.font = "10px ui-monospace, monospace"; ctx.textAlign = "left"; ctx.fillStyle = colour;
-  const text = `${Math.round(100 * r.frac)}% · ${Math.round(r.reads)}`, y = mid - Math.max(up, 4) / 2;
+  const text = `${label(r.frac)} · ${Math.round(r.reads)}`, y = mid - Math.max(up, 4) / 2;
   const w = ctx.measureText(text).width;
   ctx.fillStyle = css("--term"); ctx.fillRect(x + 5, y - 7, w + 4, 14);
   ctx.fillStyle = colour; ctx.fillText(text, x + 7, y);
@@ -638,13 +648,13 @@ function drawFull() {
   tracks.forEach((t, k) => {
     const mid = ty(k) + track / 2, half = track / 2 - 4, top_ = k === 0 ? peakOf(tracks, visible, 0) : cellPeak, r0 = t.read(pick.site);
     ctx.textAlign = "right"; ctx.fillStyle = k === 0 ? acc : fg;
-    ctx.fillText(`${k === 0 ? "all cells" : t.name}  ${t.size}  ${r0.frac === null ? "-" : Math.round(100 * r0.frac) + "%"}`, left - 12, mid);
+    ctx.fillText(`${k === 0 ? "all cells" : t.name}  ${t.size}  ${r0.frac === null ? "-" : label(r0.frac)}`, left - 12, mid);
     ctx.strokeStyle = rule; ctx.beginPath(); ctx.moveTo(left, mid); ctx.lineTo(W - right, mid); ctx.stroke();
     visible.forEach(s => {
-      const r = t.read(s), up = half * r.reads * r.frac / top_, down = half * r.reads * (1 - r.frac) / top_, w = Math.max(4, Math.min(14, 60 / Math.sqrt(visible.length)));
-      ctx.fillStyle = acc; ctx.fillRect(x(s.pos) - w / 2, mid - up, w, up);
-      ctx.fillStyle = fg; ctx.fillRect(x(s.pos) - w / 2, mid, w, down);
-      if (s === (state.hover || pick.site)) siteLabel(ctx, r, x(s.pos) + w / 2 - 4, mid, up, k === 0 ? acc : fg);
+      const r = t.read(s), rise = half * up(r) / top_, hang = half * down(r) / top_, w = Math.max(4, Math.min(14, 60 / Math.sqrt(visible.length)));
+      ctx.fillStyle = acc; ctx.fillRect(x(s.pos) - w / 2, mid - rise, w, rise);
+      ctx.fillStyle = fg; ctx.fillRect(x(s.pos) - w / 2, mid, w, hang);
+      if (s === (state.hover || pick.site)) siteLabel(ctx, r, x(s.pos) + w / 2 - 4, mid, rise, k === 0 ? acc : fg);
       if (k === 0) spots.push({x: x(s.pos), site: s});
     });
   });
