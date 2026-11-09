@@ -302,6 +302,34 @@ pub(super) fn modules(dir: &Path, words: &[&str]) -> ModulesArgs {
     args
 }
 
+/// A count fit is opened as it is: `faba cluster-view --modality count`
+/// with no model options opens its tables, and refuses `--refit` or any
+/// model option, naming the command that fits it; with no count tables it
+/// says to fit them first.
+#[test]
+fn a_count_fit_is_opened_as_it_is_never_fitted_again() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    let at = |words: &[&str]| plan(&modules(dir, words), dir);
+    let missing = at(&["--modality", "count"]).unwrap_err().to_string();
+    assert!(missing.contains("no count tables"), "{missing}");
+    super::count_tables(dir);
+    let open = Plan::Open("count".to_string());
+    assert_eq!(at(&["--modality", "count"]).unwrap(), open);
+    assert_eq!(at(&["--modality", "Count", "--chains", "2"]).unwrap(), open);
+    for words in [
+        &["--modality", "count", "--refit"][..],
+        &["--modality", "count", "--cell-roles", "12"],
+        &["--modality", "count", "--model", "blocks"],
+    ] {
+        let refused = at(words).unwrap_err().to_string();
+        assert!(
+            refused.contains("faba cluster --modality count"),
+            "{words:?}: {refused}"
+        );
+    }
+}
+
 /// After a link run over a blocks run, `faba cluster-view` with no model
 /// options opens the tables as recorded and names the link preset in its
 /// header, as it does given `--model link`; a model or switches that set

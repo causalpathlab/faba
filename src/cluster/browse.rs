@@ -10,6 +10,7 @@
 //! every gene role (see [`gene`]).
 //! `--html` (or `e`) writes the same as one page (see [`report`]).
 
+use super::command::COUNT_MODALITY;
 use super::{ClusterArgs, ModelKind};
 use crate::site_analysis::input_picker::{ask_reference, Reference};
 use crate::site_analysis::miami::genemodel::load_gene_models_where;
@@ -235,7 +236,7 @@ fn print(m: &Modules) {
 
 /// [`print`]'s lines: the head, then one per gene module.
 fn printed(m: &Modules) -> Vec<String> {
-    let count = m.modality == crate::cluster::command::COUNT_MODALITY;
+    let count = m.modality == COUNT_MODALITY;
     let unit = if count { "UMI/cell" } else { "%/reads" };
     let mut head = format!("{:<8}{:>11}{:>8}", "module", "main genes", "range");
     for &c in &m.columns {
@@ -335,6 +336,22 @@ enum Plan {
 /// defaults); else open the tables as they are. `--model crp`, which writes
 /// no modules, is refused whatever the tables.
 fn plan(args: &ModulesArgs, dir: &Path) -> anyhow::Result<Plan> {
+    // A count fit is opened as it is, never fitted here: its options
+    // belong to `faba cluster --modality count`.
+    if args.cluster.is_count() {
+        anyhow::ensure!(
+            !args.refit && !super::args::asks_model(&args.cluster),
+            "`faba cluster-view` opens a count fit as it is: to fit it again with other \
+             settings, run `faba cluster --modality count` with them"
+        );
+        return Ok(match tables(dir, Some(COUNT_MODALITY)) {
+            Some(m) => Plan::Open(m),
+            None => anyhow::bail!(
+                "no count tables in {}: run `faba cluster --modality count` first",
+                dir.display()
+            ),
+        });
+    }
     let asked = args.blockmodel()?;
     if args.refit {
         return Ok(Plan::Fit("--refit".to_string()));
