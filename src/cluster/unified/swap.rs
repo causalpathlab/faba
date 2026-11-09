@@ -2,7 +2,6 @@
 //! or a gene's links, each swap its own inverse.
 
 use super::{Model, State, Urn};
-use crate::cluster::fast::{self, ln_urn};
 use rand::rngs::SmallRng;
 use rand::RngExt;
 
@@ -61,16 +60,6 @@ impl Model<'_> {
         }
     }
 
-    /// A gene's urn: its links per role under its Dirichlet.
-    pub(super) fn gene_term(&self, st: &State, g: usize) -> f64 {
-        let bb = self.settings.gene_roles;
-        ln_urn(
-            &st.m[g * bb..(g + 1) * bb],
-            self.settings.gene_alpha,
-            &self.gene_base,
-        )
-    }
-
     /// The change in a cell's urn (`cell` true) or a gene's as roles `r`
     /// and `r2` exchange their links.
     fn unit_exchange(
@@ -82,11 +71,10 @@ impl Model<'_> {
     ) -> f64 {
         let pair = (r as usize, r2 as usize);
         if cell {
-            return self.cells.exchange(urn, unit, pair);
+            self.cells.exchange(urn, unit, pair)
+        } else {
+            self.gene_side.exchange(&st.genes, unit, pair)
         }
-        let bb = self.settings.gene_roles;
-        let row = &st.m[unit * bb..(unit + 1) * bb];
-        fast::urn_exchange(row, self.settings.gene_alpha, &self.gene_base, pair)
     }
 
     /// Roles `r` and `r2` exchanged on links `moved` (each holding one of

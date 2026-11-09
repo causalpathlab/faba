@@ -43,7 +43,7 @@ fn the_form_is_prefilled_from_the_flags_then_the_preset() {
         ("gene-roles", "4"),
         ("shift", "on"),
         ("profile-strength", "inf"),
-        ("global", "symmetric"),
+        ("global", "hdp"),
         ("sweeps", "150"),
         ("cell-roles", "8"),
     ] {

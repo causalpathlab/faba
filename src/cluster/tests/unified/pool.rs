@@ -23,6 +23,7 @@ fn memberships(cell: Vec<f32>, gene: Vec<f32>, shift: Vec<f64>) -> Means {
         cell,
         gene,
         beta: Vec::new(),
+        gene_beta: Vec::new(),
         shift_sd: vec![0.0; shift.len()],
         shift,
         level: Vec::new(),
@@ -93,6 +94,7 @@ fn relabel_all(m: &Means, to: &Alignment) -> Means {
         cell: renumber(&m.cell, &to.cell),
         gene: renumber(&m.gene, &to.gene),
         beta: renumber(&m.beta, &to.cell),
+        gene_beta: renumber(&m.gene_beta, &to.gene),
         shift: renumber(&m.shift, &blocks),
         shift_sd: renumber(&m.shift_sd, &blocks),
         level: m.level.clone(),
@@ -275,6 +277,7 @@ fn assert_same_means(x: &Means, y: &Means) {
     close(&wide(&x.cell), &wide(&y.cell), "cell");
     close(&wide(&x.gene), &wide(&y.gene), "gene");
     close(&x.beta, &y.beta, "beta");
+    close(&x.gene_beta, &y.gene_beta, "gene beta");
     close(&x.shift, &y.shift, "shift");
     // The sd from pooled sums and squares, to their rounding.
     for (u, v) in x.shift_sd.iter().zip(&y.shift_sd) {
@@ -549,6 +552,7 @@ fn the_summary_gives_the_tables_means() {
     assert_eq!(summary.shifts, means.shift);
     assert_eq!(summary.shift_sd, means.shift_sd);
     assert_eq!(summary.global_weights, means.beta);
+    assert_eq!(summary.gene_global_weights, means.gene_beta);
     let best = chains[summary.best_chain].last().unwrap().means(false);
     assert_ne!(summary.shift_sd, best.shift_sd);
 }

@@ -1,7 +1,6 @@
 //! A kept draw: the chain's running posterior means, its held-out score and
 //! its scalars.
 
-use super::urn::role_weights;
 use super::{ln_mean, Alignment, Chain, Model, State};
 use crate::cluster::crp::{ln_sigmoid, log_sum_exp, logit};
 use std::sync::{Arc, Mutex};
@@ -12,6 +11,7 @@ pub struct Tally {
     cell: Vec<f64>,
     gene: Vec<f64>,
     beta: Vec<f64>,
+    gene_beta: Vec<f64>,
     shift: Vec<f64>,
     shift_sq: Vec<f64>,
     /// Each cell's level (at infinite strength only).
@@ -26,7 +26,8 @@ pub struct Tally {
 }
 
 /// A chain's posterior means over its kept draws: each cell's and gene's
-/// role weights (row-major), the global weights, each block's shift with
+/// role weights (row-major), the cell roles' and gene roles' global
+/// weights, each block's shift with
 /// its sd, each cell's level (empty at finite strength, where there is
 /// none), and each gene's, cell's and site's links or reads in each block
 /// (`K` blocks per row; the sites' only when asked for).
@@ -34,6 +35,7 @@ pub struct Means {
     pub cell: Vec<f32>,
     pub gene: Vec<f32>,
     pub beta: Vec<f64>,
+    pub gene_beta: Vec<f64>,
     pub shift: Vec<f64>,
     pub shift_sd: Vec<f64>,
     pub level: Vec<f64>,
@@ -84,6 +86,7 @@ impl Tally {
             cell: self.cell.iter().map(|x| (x / n) as f32).collect(),
             gene: self.gene.iter().map(|x| (x / n) as f32).collect(),
             beta: mean(&self.beta),
+            gene_beta: mean(&self.gene_beta),
             shift_sd: self
                 .shift_sq
                 .iter()
@@ -106,6 +109,7 @@ impl Tally {
         add_columns(&mut self.cell, &other.cell, &to.cell);
         add_columns(&mut self.gene, &other.gene, &to.gene);
         add_columns(&mut self.beta, &other.beta, &to.cell);
+        add_columns(&mut self.gene_beta, &other.gene_beta, &to.gene);
         add(&mut self.level, &other.level, |x| x);
         for (sums, x) in [
             (&mut self.shift, &other.shift),
@@ -248,13 +252,14 @@ impl Model<'_> {
         let Chain { urn, st } = ch;
         let kk = self.blocks();
         let cell = self.cells.means(urn);
-        let gene = role_weights(&st.m, self.settings.gene_alpha, &self.gene_base);
+        let gene = self.gene_side.means(&st.genes);
         {
             let mut t = st.tally.lock().expect("a chain's tally");
             let same = |x: f64| x;
             add(&mut t.cell, &cell, same);
             add(&mut t.gene, &gene, same);
             add(&mut t.beta, &urn.beta, same);
+            add(&mut t.gene_beta, &st.genes.beta, same);
             add(&mut t.shift, &st.delta, same);
             add(&mut t.shift_sq, &st.delta, |x| x * x);
             if !self.finite() {

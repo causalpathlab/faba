@@ -169,7 +169,8 @@ fn the_link_preset_recovers_planted_patterns_and_scores_held_out_reads() {
 
 /// The blocks preset recovers planted cell and gene roles (cells by their
 /// main cell role, genes by their main gene role) though every cell has its
-/// own level within ±1, which its level takes, not a role; both planted
+/// own level within ±1, which its level takes, not a role; each cell role
+/// holds a share of the drawn global weights; both planted
 /// gene roles shift strongly, and both chains name the same genes as each
 /// one's most enriched.
 #[test]
@@ -185,10 +186,13 @@ fn the_blocks_preset_recovers_planted_cell_and_gene_roles() {
         "top-gene overlap between chains {:?}",
         summary.top_gene_overlap
     );
-    assert!(summary
-        .global_weights
-        .iter()
-        .all(|w| (w - 1.0 / 3.0).abs() < 1e-12));
+    // Drawn (HDP): three planted roles alike in size each hold a share.
+    let weights = &summary.global_weights;
+    assert!((weights.iter().sum::<f64>() - 1.0).abs() < 1e-9);
+    assert!(
+        weights.iter().all(|&w| w > 0.2),
+        "global weights {weights:?}"
+    );
     for c in &chains {
         let means = c.last().unwrap().means(false);
         let cells = summary::main_labels(&means.cell, 3);
@@ -310,7 +314,7 @@ fn the_link_preset_condenses_without_structure() {
     let reads = draw_cells(&fracs, 0.3, &mut rng);
     let links = Links::new(&Weighted::new(&reads, None), &gene_of);
     let model = Model::new(&links, &gene_of, gene_of.len(), link_preset(4, 0.5)).unwrap();
-    let chains = run_mcmc_parallel(&model, &config(20, 150, 81), 2);
+    let chains = run_mcmc_parallel(&model, &config(20, 300, 81), 2);
     for c in &chains {
         let means = c.last().unwrap().means(true);
         // Each cell role's share of the reads, its blocks' summed.

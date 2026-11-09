@@ -286,3 +286,134 @@ fn a_translation_follows_its_conditional() {
         "t: sampled mean {sampled:.4} sd {sd:.4}, exact mean {exact:.4} sd {exact_sd:.4}"
     );
 }
+
+/// A cell role's translation scores its moved links' reads as the log
+/// joint does: the joint's change less the priors' is the move's reads'
+/// change, at labels where cells hold links in other roles than their
+/// main one, so that the move does change some reads; and its step's
+/// scale, from those links' information, is the same after it.
+#[test]
+fn a_role_translation_scores_the_reads_the_joint_changes() {
+    let (reads, gene_of, cell_role, _, _) = planted_blocks(40, 8, 1.0, 157);
+    let links = Links::new(&Weighted::new(&reads, None), &gene_of);
+    let model = Model::new(&links, &gene_of, gene_of.len(), blocks_preset()).unwrap();
+    let mut rng = SmallRng::seed_from_u64(163);
+    // Mostly the planted role, a fifth of the links elsewhere.
+    let a: Vec<u16> = links
+        .cell
+        .iter()
+        .map(|&c| match rng.random_range(0..5) {
+            0 => rng.random_range(0..3),
+            _ => cell_role[c as usize],
+        })
+        .collect();
+    let b: Vec<u16> = (0..links.len()).map(|_| rng.random_range(0..2)).collect();
+    let delta: Vec<f64> = (0..6).map(|_| rng.random_range(-2.0..2.0)).collect();
+    let nu: Vec<f64> = (0..links.cells)
+        .map(|_| rng.random_range(-1.5..1.5))
+        .collect();
+    for role in 0..3 {
+        // The step's scale is the same before and after: the proposal is
+        // symmetric.
+        let (before, after) = model.role_information((&a, &b), (&delta, &nu), role, &[-0.7, 0.4]);
+        assert!(before > 0.0);
+        for x in after {
+            assert!(
+                (x - before).abs() < 1e-9 * before,
+                "role {role}: {before} then {x}"
+            );
+        }
+        for (scored, joint) in
+            model.role_translation_check((&a, &b), (&delta, &nu), role, &[-0.7, 0.05, 0.4])
+        {
+            assert!(scored != 0.0);
+            assert!(
+                (scored - joint).abs() < 1e-6 * joint.abs().max(1.0),
+                "role {role}: scored {scored}, joint {joint}"
+            );
+        }
+    }
+}
+
+/// Where every cell's links hold one role, a role's translation moves no
+/// read, so its line's target is the priors' alone: role 0's first shift
+/// is drawn about the start's by that Normal in `t`, mean `(sum nu /
+/// cell_sd^2 - sum delta / shift_sd^2) / P` over role 0's shifts and its
+/// cells' levels, sd `1 / sqrt(P)`, `P = B / shift_sd^2 + C_0 /
+/// cell_sd^2`.
+#[test]
+fn a_role_translation_on_pure_cells_follows_its_priors() {
+    let (reads, gene_of, cell_role, _, _) = planted_blocks(40, 8, 1.0, 167);
+    let links = Links::new(&Weighted::new(&reads, None), &gene_of);
+    let s = Settings {
+        shift_sd: Some(1.3),
+        cell_sd: 0.7,
+        ..blocks_preset()
+    };
+    let model = Model::new(&links, &gene_of, gene_of.len(), s).unwrap();
+    let mut rng = SmallRng::seed_from_u64(173);
+    let a: Vec<u16> = links.cell.iter().map(|&c| cell_role[c as usize]).collect();
+    let b: Vec<u16> = (0..links.len()).map(|_| rng.random_range(0..2)).collect();
+    let delta: Vec<f64> = (0..6).map(|_| rng.random_range(-2.0..2.0)).collect();
+    let nu: Vec<f64> = (0..links.cells)
+        .map(|_| rng.random_range(-1.5..1.5))
+        .collect();
+    let (sp, lp) = (1.0 / 1.3f64.powi(2), 1.0 / 0.7f64.powi(2));
+    let main: Vec<usize> = (0..links.cells).filter(|&c| cell_role[c] == 0).collect();
+    let precision = 2.0 * sp + main.len() as f64 * lp;
+    let t =
+        (main.iter().map(|&c| nu[c]).sum::<f64>() * lp - (delta[0] + delta[1]) * sp) / precision;
+    let (exact, exact_sd) = (delta[0] + t, 1.0 / precision.sqrt());
+    let draws = model.role_translation_draws((&a, &b), (&delta, &nu), 20000, 179);
+    let (sampled, sd) = draw_moments(draws);
+    assert!(
+        (sampled - exact).abs() < 0.05 * exact_sd && (sd / exact_sd - 1.0).abs() < 0.05,
+        "delta_0: sampled mean {sampled:.4} sd {sd:.4}, exact mean {exact:.4} sd {exact_sd:.4}"
+    );
+}
+
+/// Where cells hold links outside their main role, a role's translation
+/// moves those links' reads, and its draws follow the line's exact
+/// density, its priors' Normal times the moved reads, computed on a grid.
+#[test]
+fn a_role_translation_follows_its_line_where_reads_move() {
+    let (reads, gene_of, cell_role, _, _) = planted_blocks(40, 8, 1.0, 181);
+    let links = Links::new(&Weighted::new(&reads, None), &gene_of);
+    let model = Model::new(&links, &gene_of, gene_of.len(), blocks_preset()).unwrap();
+    let mut rng = SmallRng::seed_from_u64(191);
+    let a: Vec<u16> = links
+        .cell
+        .iter()
+        .map(|&c| match rng.random_range(0..4) {
+            0 => rng.random_range(0..3),
+            _ => cell_role[c as usize],
+        })
+        .collect();
+    let b: Vec<u16> = (0..links.len()).map(|_| rng.random_range(0..2)).collect();
+    let delta: Vec<f64> = (0..6).map(|_| rng.random_range(-1.0..1.0)).collect();
+    let nu: Vec<f64> = (0..links.cells)
+        .map(|_| rng.random_range(-1.0..1.0))
+        .collect();
+    let grid: Vec<f64> = (0..4001).map(|i| -2.0 + i as f64 / 1000.0).collect();
+    let (draws, density) = model.role_line((&a, &b), (&delta, &nu), 1, (40_000, 193), &grid);
+    let top = density.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let w: Vec<f64> = density.iter().map(|d| (d - top).exp()).collect();
+    let mass: f64 = w.iter().sum();
+    assert!(
+        w[0] / mass < 1e-9 && w[grid.len() - 1] / mass < 1e-9,
+        "grid too narrow"
+    );
+    let exact = grid.iter().zip(&w).map(|(t, w)| t * w).sum::<f64>() / mass;
+    let exact_sd = (grid
+        .iter()
+        .zip(&w)
+        .map(|(t, w)| (t - exact).powi(2) * w)
+        .sum::<f64>()
+        / mass)
+        .sqrt();
+    let (sampled, sd) = draw_moments(draws);
+    assert!(
+        (sampled - exact).abs() < 0.05 * exact_sd && (sd / exact_sd - 1.0).abs() < 0.05,
+        "t: sampled mean {sampled:.4} sd {sd:.4}, exact mean {exact:.4} sd {exact_sd:.4}"
+    );
+}

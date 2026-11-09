@@ -6,8 +6,8 @@
 //! reads at site `s` are `Binomial(n_s, p_s,ab)`, with
 //!
 //! ```text
-//! beta ~ Dirichlet(gamma / A)                 (or fixed at 1 / A)
-//! theta_c ~ Dirichlet(alpha beta),  psi_g ~ Dirichlet(gene_alpha / B)
+//! beta ~ Dirichlet(gamma / A),  beta' ~ Dirichlet(gamma / B)   (or fixed at 1 / A, 1 / B)
+//! theta_c ~ Dirichlet(alpha beta),  psi_g ~ Dirichlet(gene_alpha beta')
 //! delta_ab ~ N(0, shift_sd^2)                 (or 0)
 //! p_s,ab ~ Beta(S sigmoid(mu_s + delta_ab), S sigmoid(-mu_s - delta_ab))
 //! ```
@@ -22,17 +22,20 @@
 //! `psi` and `p` integrated out, a link's pair of roles is drawn from
 //!
 //! ```text
-//! P(a, b | rest) ∝ (n_ca + alpha beta_a) (m_gb + gene_alpha / B) Π_s pred(m_s, u_s | block ab at s)
+//! P(a, b | rest) ∝ (n_ca + alpha beta_a) (m_gb + gene_alpha beta'_b) Π_s pred(m_s, u_s | block ab at s)
 //! ```
 //!
 //! (counts excluding the link): collapsed Gibbs, one link at a time. Whole
 //! cells exchange two cell roles and whole genes two gene roles by
 //! Metropolis-Hastings swaps, each its own inverse, the ratio the change in
-//! log joint (the unit's urn and the blocks' sites it touches); `beta` is
-//! drawn from its conditional through each cell's table counts (Teh et al.
-//! 2006); each shift by slice sampling through its block's marginals, and
-//! at infinite strength each cell's level through its links' reads. Every
-//! move leaves the posterior invariant.
+//! log joint (the unit's urn and the blocks' sites it touches); `beta` and
+//! `beta'` are drawn from their conditionals through each cell's and each
+//! gene's table counts (Teh et al. 2006), so roles not needed empty; each
+//! shift by slice sampling through its block's marginals (finite strength)
+//! or random-walk Metropolis through its links' reads (infinite, as is each
+//! cell's level), and at infinite strength the shifts against the levels,
+//! all together and per cell role (see [`resample`]). Every move leaves the
+//! posterior invariant.
 //!
 //! Logs are fast and approximate (the cluster's `fast` module, f32):
 //! every `ln` in the relabelling's weights and the reads' running
@@ -51,10 +54,10 @@
 //! strength: without the shift every block's reads are Binomial at
 //! `sigmoid(mu_s)`, and no role reaches them.
 //!
-//! `faba cluster --model link` is one gene role, no shift, finite strength
-//! and HDP weights (link communities); `--model blocks` gene roles, the
-//! shift, infinite strength (with the cells' levels) and symmetric weights
-//! (cell and gene modules).
+//! `faba cluster --model link` is one gene role, no shift and finite
+//! strength (link communities); `--model blocks` gene roles, the shift and
+//! infinite strength, with the cells' levels (cell and gene modules); both
+//! HDP weights by default.
 //! Cells outside the fit are placed against a fitted chain (see [`place`]),
 //! the chains summarised together (see [`summary`]), and their roles
 //! aligned (see [`align`]) and their tallies pooled where they agree (see
@@ -100,13 +103,15 @@ pub use pool::pool;
 pub use pool::Pooling;
 pub use settings::{strength, Recorded, Settings, Weights};
 pub use summary::{pooled, summarize};
-use urn::{Cells, Urn};
+use urn::{Side, Urn};
 
 /// The blockmodel over one set of links, with what the moves share.
 pub struct Model<'a> {
     links: &'a Links,
     /// The cells' side: what a link's cell role touches beyond its reads.
-    cells: Cells,
+    cells: Side,
+    /// The genes' side, likewise for a link's gene role.
+    gene_side: Side,
     /// Each site's gene, numbered from 0.
     gene_of: &'a [u32],
     /// Each link's gene.
@@ -121,8 +126,6 @@ pub struct Model<'a> {
     /// Each link's unconverted reads, and those times their sites'
     /// baselines summed: the linear part of its Binomial log-likelihood.
     link_off: Vec<(f64, f64)>,
-    /// The genes' urn base, `1 / B` each.
-    gene_base: Vec<f64>,
     /// Sites some link reaches with reads not few and whole, whose
     /// entries' `ln Gamma` terms are cached (finite strength).
     gamma_site: Vec<bool>,
@@ -137,15 +140,16 @@ pub struct Chain {
     st: State,
 }
 
-/// A chain's labels and what they imply beyond the cells' side: links per
-/// gene and gene role (`genes x B`), and reads per site and block (`sites x
+/// A chain's labels and what they imply beyond the cells' side: the genes'
+/// side (links per gene and gene role, `genes x B`, and the gene roles'
+/// global weights), and reads per site and block (`sites x
 /// K`, `K = A x B` blocks, block `a B + b`) with the links holding them
 /// (finite strength only: at infinite strength the reads factor by link and
 /// none are kept per block).
 pub struct State {
     a: Vec<u16>,
     b: Vec<u16>,
-    m: Vec<u32>,
+    genes: Urn,
     on: Vec<f64>,
     off: Vec<f64>,
     /// Links holding reads at each site in each block: at none, the
@@ -208,15 +212,22 @@ impl<'a> Model<'a> {
             gene_link[next[g as usize]] = l;
             next[g as usize] += 1;
         }
-        let cells = Cells {
-            cells: links.cells,
+        let cells = Side {
+            units: links.cells,
             roles: settings.cell_roles,
             alpha: settings.alpha,
+            weights: settings.weights,
+        };
+        let gene_side = Side {
+            units: genes,
+            roles: settings.gene_roles,
+            alpha: settings.gene_alpha,
             weights: settings.weights,
         };
         Ok(Self {
             links,
             cells,
+            gene_side,
             gene_of,
             link_gene,
             gene_ptr,
@@ -224,7 +235,6 @@ impl<'a> Model<'a> {
             mu_exp: mu.iter().map(|&x| (-x).exp()).collect(),
             mu,
             link_off,
-            gene_base: vec![1.0 / settings.gene_roles as f64; settings.gene_roles],
             gamma_site: gamma_sites(links, sites),
             settings,
             heldout: None,
@@ -351,15 +361,11 @@ impl<'a> Model<'a> {
     /// Link `l`'s labels counted in (`add`) or out: its cell's role count
     /// in `urn`, its gene's, and at finite strength its reads in its block.
     fn put(&self, urn: &mut Urn, st: &mut State, l: usize, add: bool) {
-        let (bb, kk) = (self.settings.gene_roles, self.blocks());
+        let kk = self.blocks();
         let (c, g) = (self.links.cell[l] as usize, self.link_gene[l] as usize);
         self.cells.count(urn, c, st.a[l] as usize, add);
-        let m = &mut st.m[g * bb + st.b[l] as usize];
-        if add {
-            *m += 1;
-        } else {
-            *m -= 1;
-        }
+        self.gene_side
+            .count(&mut st.genes, g, st.b[l] as usize, add);
         if !self.finite() {
             return;
         }
@@ -567,12 +573,7 @@ impl<'a> Model<'a> {
         let (c, g) = (self.links.cell[l] as usize, self.link_gene[l] as usize);
         self.put(urn, st, l, false);
         let Scratch { w, rising, .. } = scratch;
-        let gene = |st: &State, b: usize| {
-            fast::urn_step(
-                self.settings.gene_alpha * self.gene_base[b],
-                st.m[g * bb + b],
-            )
-        };
+        let gene = |st: &State, b: usize| self.gene_side.ln_weight(&st.genes, g, b);
         if self.joint_relabel() {
             let w = &mut w[..aa * bb];
             self.ln_link_blocks(st, l, Blocks::ALL, w, rising);
@@ -612,7 +613,7 @@ impl<'a> Model<'a> {
     fn log_joint(&self, urn: &Urn, st: &State) -> f64 {
         let kk = self.blocks();
         let cells = self.cells.ln_joint(urn);
-        let genes: f64 = (0..self.genes()).map(|g| self.gene_term(st, g)).sum();
+        let genes = self.gene_side.ln_joint(&st.genes);
         let shifts = self
             .settings
             .shift_sd
@@ -637,6 +638,7 @@ impl<'a> Model<'a> {
         self.swap_units(urn, st, true, scratch, rng);
         self.swap_units(urn, st, false, scratch, rng);
         self.cells.resample(urn, rng);
+        self.gene_side.resample(&mut st.genes, rng);
     }
 
     /// Every link relabelled once, in random order.
@@ -672,14 +674,14 @@ impl<'a> Model<'a> {
     /// The counts implied by labels `a`, `b`, at shift 0 and uniform global
     /// weights.
     fn chain(&self, a: Vec<u16>, b: Vec<u16>) -> Chain {
-        let (bb, kk) = (self.settings.gene_roles, self.blocks());
+        let kk = self.blocks();
         let sites = self.mu.len();
         // Reads per site and block are kept at finite strength alone.
         let per_block = if self.finite() { sites * kk } else { 0 };
         let mut st = State {
             a,
             b,
-            m: vec![0; self.genes() * bb],
+            genes: self.gene_side.urn(),
             on: vec![0.0; per_block],
             off: vec![0.0; per_block],
             holders: vec![0; per_block],
@@ -836,6 +838,7 @@ impl McmcModel for Model<'_> {
         self.resample_shifts(&mut ch.st, rng);
         self.resample_levels(&mut ch.st, rng);
         self.resample_translation(&mut ch.st, rng);
+        self.resample_role_translations(&ch.urn, &mut ch.st, rng);
     }
 
     fn collect(&self, ch: &Chain) -> Draw {

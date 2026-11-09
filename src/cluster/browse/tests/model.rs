@@ -50,7 +50,7 @@ fn drawn(svg: &str, node: &str) -> Option<bool> {
     Some(svg[i + at.len()..].starts_with(" data-fixed"))
 }
 
-/// The blocks preset: its shift drawn, `psi` drawn, `beta` fixed, no `p`,
+/// The blocks preset: its shift drawn, `psi` drawn, `beta` drawn, no `p`,
 /// and each cell's own level `nu_c` in the cells plate with its prior sd,
 /// an edge to the reads.
 #[test]
@@ -66,7 +66,7 @@ fn the_blocks_preset_is_drawn_as_set() {
         (Some(0.5), Some(0.5))
     );
     assert_eq!(s["shiftSd"], 1.0);
-    assert!(s["gamma"].is_null(), "symmetric weights have no gamma");
+    assert_eq!(s["gamma"], 1.0, "the global weights drawn");
     assert_eq!(s["cellSd"], 0.7, "the levels' prior sd");
     let svg = s["svg"].as_str().unwrap();
     assert_eq!(drawn(svg, "nu"), Some(false), "each cell's level");
@@ -81,8 +81,9 @@ fn the_blocks_preset_is_drawn_as_set() {
     assert_eq!(drawn(svg, "delta"), Some(false));
     assert_eq!(drawn(svg, "sigma-delta"), Some(false));
     assert_eq!(drawn(svg, "psi"), Some(false), "B = 8");
-    assert_eq!(drawn(svg, "beta"), Some(true), "fixed at 1 / A");
-    assert_eq!(drawn(svg, "gamma"), None);
+    assert_eq!(drawn(svg, "beta"), Some(false), "drawn (HDP)");
+    assert_eq!(drawn(svg, "gamma"), Some(false));
+    assert!(svg.contains("β, β′ drawn"), "both sides' weights drawn");
     assert_eq!(drawn(svg, "p"), None, "S = inf: no p");
     assert_eq!(drawn(svg, "strength"), None);
     assert_eq!(

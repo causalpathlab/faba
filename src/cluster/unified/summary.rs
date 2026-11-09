@@ -24,12 +24,13 @@ pub struct Summary {
     pub gene_agreement: Vec<f64>,
     /// The best chain (highest mean log joint), and the tables'
     /// posterior-mean block shifts (`A x B`, row-major) with their sds and
-    /// global weights over the cell roles (the best chain's alone from
-    /// [`summarize`]).
+    /// global weights over the cell roles and over the gene roles (the
+    /// best chain's alone from [`summarize`]).
     pub best_chain: usize,
     pub shifts: Vec<f64>,
     pub shift_sd: Vec<f64>,
     pub global_weights: Vec<f64>,
+    pub gene_global_weights: Vec<f64>,
     /// Held-out reads' log-likelihood per read, over every kept draw.
     pub heldout_per_read: Option<f64>,
     /// Each chain's own strong gene roles (whose shift ranges at least
@@ -120,6 +121,7 @@ pub fn summarize(model: &Model, chains: &[Vec<Draw>]) -> Summary {
         shifts: best.map_or_else(Vec::new, |m| m.shift.clone()),
         shift_sd: best.map_or_else(Vec::new, |m| m.shift_sd.clone()),
         global_weights: best.map_or_else(Vec::new, |m| m.beta.clone()),
+        gene_global_weights: best.map_or_else(Vec::new, |m| m.gene_beta.clone()),
         heldout_per_read: per_read(chains.iter().flatten().map(|d| d.heldout)),
         strong_gene_roles: tops.iter().map(Vec::len).collect(),
         top_gene_overlap: pairwise(&tops, |x, y| best_overlap(x, y)),
@@ -140,5 +142,6 @@ pub fn pooled(
     summary.shifts = means.shift.clone();
     summary.shift_sd = means.shift_sd.clone();
     summary.global_weights = means.beta.clone();
+    summary.gene_global_weights = means.gene_beta.clone();
     (summary, means, pooling)
 }
