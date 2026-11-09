@@ -54,9 +54,19 @@ impl Cells {
     }
 
     /// Cell `c`'s urn: its links per role under its Dirichlet.
-    pub(super) fn term(&self, urn: &Urn, c: usize) -> f64 {
-        let row = &urn.n[c * self.roles..(c + 1) * self.roles];
-        fast::ln_urn(row, self.alpha, &urn.beta)
+    fn term(&self, urn: &Urn, c: usize) -> f64 {
+        fast::ln_urn(self.row(urn, c), self.alpha, &urn.beta)
+    }
+
+    /// Cell `c`'s links per role.
+    fn row<'u>(&self, urn: &'u Urn, c: usize) -> &'u [u32] {
+        &urn.n[c * self.roles..(c + 1) * self.roles]
+    }
+
+    /// The change in cell `c`'s urn as roles `r` and `r2` exchange their
+    /// links.
+    pub(super) fn exchange(&self, urn: &Urn, c: usize, pair: (usize, usize)) -> f64 {
+        fast::urn_exchange(self.row(urn, c), self.alpha, &urn.beta, pair)
     }
 
     /// Every cell's urn.

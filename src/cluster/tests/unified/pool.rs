@@ -308,7 +308,7 @@ fn relabelled_copies_pool_to_one_chains_means() {
     let (reads, gene_of, _, _, _) = planted_blocks(90, 12, 0.5, 337);
     let links = Links::new(&Weighted::new(&reads, None), &gene_of);
     let model = Model::new(&links, &gene_of, gene_of.len(), blocks_preset()).unwrap();
-    let chain = run_mcmc(&model, &config(40, 300, 339));
+    let chain = run_mcmc(&model, &config(100, 300, 339));
     let to = relabelling(&[1, 2, 0], &[1, 0]);
     let copy = Draw::relabelled(&chain, &to);
     let one = chain.last().unwrap().means(true);
@@ -370,24 +370,35 @@ fn with_nothing_to_pool_the_best_chain_stands_alone() {
     }
 }
 
-/// The diagnostics name every quantity short of convergence: with fewer
-/// than 100 effective draws across the chains pooled, each quantity falls
-/// short, so each is named, and the worst values are the extremes. Here
-/// the cells all take the first cell role: the second, empty, is not
-/// checked.
+/// The diagnostics name every quantity short of convergence: with 10
+/// draws per chain no quantity can reach 100 effective draws, so each one
+/// checked is named (the log joint, each used block's shift and each used
+/// cell role; an empty role is not checked), and the worst values are the
+/// extremes.
 #[test]
 fn quantities_short_of_convergence_are_named() {
     let links = tiny_links();
     let model = tiny_model(&links);
-    let cfg = config(30, 50, 353);
+    let cfg = config(10, 50, 353);
     let chains = vec![run_mcmc(&model, &cfg), run_mcmc(&model, &cfg)];
     let (_, pooling) = unified::pool(&model, &chains, 0, &[]);
-    assert_eq!(pooling.alignment[0].cell_used, vec![true, false]);
-    assert_eq!(
-        pooling.not_converged,
-        ["log joint", "shift (0, 0)", "shift (0, 1)", "cell role 0"]
+    let used = &pooling.alignment[0];
+    assert_eq!((used.cell_used.len(), used.gene_used.len()), (2, 2));
+    assert!(used.cell_used.iter().any(|&u| u) && used.gene_used.iter().any(|&u| u));
+    let mut checked = vec!["log joint".to_string()];
+    for (a, _) in used.cell_used.iter().enumerate().filter(|(_, &u)| u) {
+        for (b, _) in used.gene_used.iter().enumerate().filter(|(_, &u)| u) {
+            checked.push(format!("shift ({a}, {b})"));
+        }
+    }
+    for (a, _) in used.cell_used.iter().enumerate().filter(|(_, &u)| u) {
+        checked.push(format!("cell role {a}"));
+    }
+    assert!(
+        checked.len() >= 3,
+        "a shift and a cell role checked: {checked:?}"
     );
-    assert!(pooling.not_converged.iter().any(|q| q == "log joint"));
+    assert_eq!(pooling.not_converged, checked);
     assert_eq!(pooling.unsettled, pooling.not_converged, "nothing left out");
     assert!(pooling.worst_ess < 100.0);
     assert!(pooling.worst_rhat >= pooling.rhat_log_joint);
