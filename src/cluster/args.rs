@@ -98,7 +98,7 @@ pub struct ClusterArgs {
         long_help = "link and blocks are presets of one blockmodel over (cell, gene) links, each\n\
                      link in a cell role and a gene role:\n\
                      - link: --gene-roles 1 --shift off --profile-strength 5 --global hdp\n\
-                     - blocks: --gene-roles 8 --shift on --profile-strength inf --global symmetric\n\
+                     - blocks: --gene-roles 8 --shift on --profile-strength inf --global hdp\n\
                        (with each cell's own level, --cell-sd)\n\
                      Each of those switches given overrides its preset.\n\
                      crp: each cell in one cluster, the number of clusters learned."
@@ -130,7 +130,7 @@ pub struct ClusterArgs {
     #[arg(
         long,
         value_enum,
-        help = "The cell roles' global weights: hdp, drawn with the labels so popular roles draw reads; symmetric, equal and fixed (default: hdp with link, symmetric with blocks)"
+        help = "The cell roles' and gene roles' global weights: hdp, drawn with the labels so popular roles draw links and unneeded ones empty; symmetric, equal and fixed (default: hdp)"
     )]
     pub(super) global: Option<Global>,
 
@@ -144,7 +144,7 @@ pub struct ClusterArgs {
     #[arg(
         long,
         default_value_t = 1.0,
-        help = "With --global hdp: concentration of the cell roles' global weights"
+        help = "With --global hdp: concentration of the cell roles' and gene roles' global weights"
     )]
     pub(super) community_gamma: f64,
 
@@ -331,10 +331,7 @@ pub(super) fn blockmodel(args: &ClusterArgs) -> unified::Settings {
         gene_roles: args.gene_roles.unwrap_or(pick(blocks, 1, 8)),
         alpha: args.membership_alpha,
         gene_alpha: args.gene_alpha,
-        weights: match args
-            .global
-            .unwrap_or(pick(blocks, Global::Hdp, Global::Symmetric))
-        {
+        weights: match args.global.unwrap_or(Global::Hdp) {
             Global::Hdp => unified::Weights::Hdp(args.community_gamma),
             Global::Symmetric => unified::Weights::Symmetric,
         },

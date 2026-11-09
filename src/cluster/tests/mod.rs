@@ -723,7 +723,6 @@ fn presets_and_switches_resolve_to_one_blockmodel() {
     assert_eq!(resolve(&["--model", "link"]), link);
     let blocks = Settings {
         gene_roles: 8,
-        weights: Weights::Symmetric,
         shift_sd: Some(1.0),
         strength: f64::INFINITY,
         ..link.clone()

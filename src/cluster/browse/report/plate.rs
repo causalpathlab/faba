@@ -157,7 +157,8 @@ fn flag(parts: &mut Parts, name: &str, (x, y, w): (u32, u32, u32), lines: &[&str
 
 /// The plate diagram of the blockmodel `s` sets: the shift off draws no
 /// `delta`, one gene role greys `psi`, symmetric weights grey `beta`
-/// (fixed, no `gamma`), and an infinite strength draws no `p`, the reads
+/// (fixed, no `gamma`; the weights flag names the gene roles' `beta'`
+/// beside it), and an infinite strength draws no `p`, the reads
 /// drawn from the shifted baseline itself and each cell's own level `nu`.
 pub(super) fn svg(s: &Settings) -> String {
     let mut p = Parts::default();
@@ -281,11 +282,12 @@ fn nodes(p: &mut Parts, s: &Settings) {
 
 /// The switches' flags, as the run set them.
 fn flags(p: &mut Parts, s: &Settings) {
-    let weights = match s.weights.gamma() {
-        Some(_) => "HDP: β drawn",
-        None => "symmetric: β = 1/A",
+    // `beta'`, the gene roles' weights, named here: no node of its own.
+    let weights: &[&str] = match s.weights.gamma() {
+        Some(_) => &["HDP: β, β′ drawn"],
+        None => &["symmetric:", "β = 1/A, β′ = 1/B"],
     };
-    flag(p, "flag-weights", (16, 224, 140), &[weights]);
+    flag(p, "flag-weights", (16, 224, 140), weights);
     let roles = format!("gene roles B = {}", s.gene_roles);
     flag(p, "flag-roles", (500, 222, 210), &[&roles]);
     let shifted = if s.shift_sd.is_some() {

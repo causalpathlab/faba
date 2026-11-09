@@ -142,6 +142,109 @@ impl Model<'_> {
             .collect()
     }
 
+    /// Cell role `role`'s translation by each of `ts` from the labels `a`,
+    /// `b`, shifts `delta` and levels `nu`: its reads' change as the move
+    /// scores it, and the log joint's change less the priors'.
+    pub fn role_translation_check(
+        &self,
+        (a, b): (&[u16], &[u16]),
+        (delta, nu): (&[f64], &[f64]),
+        role: usize,
+        ts: &[f64],
+    ) -> Vec<(f64, f64)> {
+        let (sd, cell_sd) = (self.settings.shift_sd.unwrap(), self.settings.cell_sd);
+        ts.iter()
+            .map(|&t| {
+                let Chain { urn, mut st } = self.uniform_state((a, b), (delta, nu));
+                let lines = self.role_lines(&urn, &st);
+                let rest = |st: &State| {
+                    self.log_joint(&urn, st) - ln_normal(&st.delta, sd) - ln_normal(&st.nu, cell_sd)
+                };
+                let (scored, before) = (self.line_reads(&st, &lines, role, t), rest(&st));
+                self.translate(&mut st, lines.line(role), t);
+                (scored, rest(&st) - before)
+            })
+            .collect()
+    }
+
+    /// Cell role `role`'s step information (see
+    /// [`Model::line_information`]) from the labels `a`, `b`, shifts `delta`
+    /// and levels `nu`, and after its translation by each of `ts`.
+    pub fn role_information(
+        &self,
+        (a, b): (&[u16], &[u16]),
+        (delta, nu): (&[f64], &[f64]),
+        role: usize,
+        ts: &[f64],
+    ) -> (f64, Vec<f64>) {
+        let Chain { urn, mut st } = self.uniform_state((a, b), (delta, nu));
+        let lines = self.role_lines(&urn, &st);
+        let before = self.line_information(&st, &lines, role);
+        let after = ts
+            .iter()
+            .map(|&t| {
+                self.translate(&mut st, lines.line(role), t);
+                let info = self.line_information(&st, &lines, role);
+                self.translate(&mut st, lines.line(role), -t);
+                info
+            })
+            .collect();
+        (before, after)
+    }
+
+    /// Cell role `role`'s translation from the labels `a`, `b`, shifts
+    /// `delta` and levels `nu`, its other roles held: the displacement `t`
+    /// after each of `draws` of its steps, and the line's log density
+    /// (unnormalised: its prior's and its moved links' reads) at each of
+    /// `ts`, from the start.
+    pub fn role_line(
+        &self,
+        (a, b): (&[u16], &[u16]),
+        (delta, nu): (&[f64], &[f64]),
+        role: usize,
+        (draws, seed): (usize, u64),
+        ts: &[f64],
+    ) -> (Vec<f64>, Vec<f64>) {
+        let mut rng = <SmallRng as rand::SeedableRng>::seed_from_u64(seed);
+        let Chain { urn, mut st } = self.uniform_state((a, b), (delta, nu));
+        let lines = self.role_lines(&urn, &st);
+        let sd = self.settings.shift_sd.unwrap();
+        let (precision, mean) = self.line_prior(&st, lines.line(role), sd);
+        let density = ts
+            .iter()
+            .map(|&t| -0.5 * precision * (t - mean).powi(2) + self.line_reads(&st, &lines, role, t))
+            .collect();
+        let k = role * self.settings.gene_roles;
+        let start = st.delta[k];
+        let moved = (0..draws)
+            .map(|_| {
+                self.role_step(&mut st, &lines, role, sd, &mut rng);
+                st.delta[k] - start
+            })
+            .collect();
+        (moved, density)
+    }
+
+    /// Cell role 0's first shift after each of `draws` role translations
+    /// (see [`Model::resample_role_translations`]), the labels held at `a`,
+    /// `b`, from shifts `delta` and levels `nu`.
+    pub fn role_translation_draws(
+        &self,
+        (a, b): (&[u16], &[u16]),
+        (delta, nu): (&[f64], &[f64]),
+        draws: usize,
+        seed: u64,
+    ) -> Vec<f64> {
+        let mut rng = <SmallRng as rand::SeedableRng>::seed_from_u64(seed);
+        let Chain { urn, mut st } = self.uniform_state((a, b), (delta, nu));
+        (0..draws)
+            .map(|_| {
+                self.resample_role_translations(&urn, &mut st, &mut rng);
+                st.delta[0]
+            })
+            .collect()
+    }
+
     /// `beta[0]` after each of `draws` updates of the global weights, the
     /// labels held at `a`, `b`.
     pub fn beta_draws(&self, a: &[u16], b: &[u16], draws: usize, seed: u64) -> Vec<f64> {
@@ -318,8 +421,23 @@ impl Model<'_> {
             check(&ch.st);
             self.resample_translation(&mut ch.st, &mut rng);
             check(&ch.st);
+            self.resample_role_translations(&ch.urn, &mut ch.st, &mut rng);
+            check(&ch.st);
         }
         (checked, stale)
+    }
+
+    /// [`Self::held_state`] at uniform global weights.
+    fn uniform_state(&self, labels: (&[u16], &[u16]), (delta, nu): (&[f64], &[f64])) -> Chain {
+        let beta = vec![1.0 / self.cells.roles as f64; self.cells.roles];
+        self.held_state(
+            labels,
+            &Held {
+                beta: &beta,
+                delta,
+                nu,
+            },
+        )
     }
 
     /// The state of labels `a`, `b` at `held`.

@@ -336,6 +336,16 @@ fn plan(args: &ModulesArgs, dir: &Path) -> anyhow::Result<Plan> {
             let wanted = super::args::recorded(&asked);
             if wanted.settings == recorded.settings {
                 Ok(Plan::Open(m))
+            } else if recorded.label() == wanted.label() {
+                // The same preset, recorded by a version whose defaults differ.
+                Ok(Plan::Fit(format!(
+                    "the {m} block tables in {} are of the {} with other settings \
+                     (its defaults have changed since): {:?}, now {:?}",
+                    dir.display(),
+                    recorded.label(),
+                    recorded.settings,
+                    wanted.settings
+                )))
             } else {
                 Ok(Plan::Fit(format!(
                     "the {m} block tables in {} are of the {}, not the {} asked for",

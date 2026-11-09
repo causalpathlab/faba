@@ -281,15 +281,17 @@ Example:\n  \
             so gene roles are gene modules. --profile-strength sets how far a profile may\n\
             leave its centre (`inf`: not at all, and each cell then has its own\n\
             methylation level on top, prior sd --cell-sd; a finite strength integrates\n\
-            the profile out, so no cell level can enter); --global hdp shares global\n\
-            weights so popular cell roles draw reads. Memberships and profiles are\n\
+            the profile out, so no cell level can enter); --global hdp (the default)\n\
+            draws global weights over the cell roles and over the gene roles, so popular\n\
+            roles draw links and roles not needed empty. Memberships and profiles are\n\
             integrated out; several chains of collapsed Gibbs on each link's roles,\n\
-            whole-cell and whole-gene role swaps, global-weight and slice-sampled shift\n\
-            and level updates run in parallel, each move exact. Two presets, each switch\n\
-            given overriding them:\n\
-            - link (the default): one gene role, no shift, strength 5, hdp: link communities\n\
-            - blocks: 8 gene roles, the shift, strength inf (cell levels), symmetric: cell\n\
-              and gene modules\n\
+            whole-cell and whole-gene role swaps, global-weight draws, and shift and level\n\
+            updates (with translations of shifts against levels, whole and per cell role)\n\
+            run in parallel, each move exact. Two presets, each switch given overriding\n\
+            them:\n\
+            - link (the default): one gene role, no shift, strength 5: link communities\n\
+            - blocks: 8 gene roles, the shift, strength inf (cell levels): cell and gene\n\
+              modules\n\
             Gene roles need --shift on: a site belongs to one gene, so without a shift a\n\
             gene's role never reaches its reads. Cells left out of the fit are placed\n\
             against the fitted roles.\n\n\

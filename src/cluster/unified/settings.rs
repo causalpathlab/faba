@@ -1,13 +1,15 @@
 //! The blockmodel's settings, and what a run's record says of them.
 
-/// The global weights over the cell roles.
+/// The global weights over the cell roles, and likewise over the gene
+/// roles.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Weights {
-    /// `beta ~ Dirichlet(gamma / A)` with this `gamma`, drawn with the
-    /// labels (a weak-limit hierarchical Dirichlet process).
+    /// `beta ~ Dirichlet(gamma / A)` with this `gamma` (`B` for the gene
+    /// roles), drawn with the labels (a weak-limit hierarchical Dirichlet
+    /// process).
     Hdp(f64),
-    /// `beta = 1 / A`, fixed.
+    /// `beta = 1 / A` (`1 / B`), fixed.
     Symmetric,
 }
 
@@ -30,9 +32,11 @@ pub struct Settings {
     pub gene_roles: usize,
     /// Dirichlet concentration of each cell's role weights around `beta`.
     pub alpha: f64,
-    /// Dirichlet concentration of each gene's role weights.
+    /// Dirichlet concentration of each gene's role weights around its
+    /// global weights.
     pub gene_alpha: f64,
-    /// The cell roles' global weights: drawn (HDP) or fixed.
+    /// The cell roles' and gene roles' global weights: drawn (HDP) or
+    /// fixed.
     pub weights: Weights,
     /// Prior standard deviation of each block's shift; `None`, no shift.
     pub shift_sd: Option<f64>,

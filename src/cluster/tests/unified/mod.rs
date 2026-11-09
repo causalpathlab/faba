@@ -6,7 +6,7 @@
 //! submodules.
 
 use super::{config, draw_cells};
-use crate::cluster::crp::ln_beta;
+use crate::cluster::crp::{ln_beta, log_sum_exp};
 use crate::cluster::fast;
 use crate::cluster::read::{self, Reads, Weighted};
 use crate::cluster::summary::{self, ari};
@@ -397,17 +397,11 @@ fn genes_and_reads(
 ) -> f64 {
     let (bb, n, sites) = (s.gene_roles, links.len(), mu.len());
     let kk = s.cell_roles * bb;
-    let link_gene = links.genes_of(gene_of);
-    let genes = *gene_of.iter().max().unwrap() as usize + 1;
     let gene_base = vec![1.0 / bb as f64; bb];
-    let mut out = 0.0;
-    for g in 0..genes {
-        let mut counts = vec![0.0; bb];
-        (0..n)
-            .filter(|&l| link_gene[l] as usize == g)
-            .for_each(|l| counts[b[l] as usize] += 1.0);
-        out += urn(&counts, s.gene_alpha, &gene_base);
-    }
+    let mut out: f64 = gene_counts(links, gene_of, bb, b)
+        .iter()
+        .map(|c| urn(c, s.gene_alpha, &gene_base))
+        .sum();
     if s.strength.is_infinite() {
         for l in 0..n {
             let z = nu[links.cell[l] as usize] + delta[a[l] as usize * bb + b[l] as usize];
@@ -451,6 +445,16 @@ fn block_reads(
     (on, off)
 }
 
+/// Each gene's links per gene role under labels `b`.
+fn gene_counts(links: &Links, gene_of: &[u32], roles: usize, b: &[u16]) -> Vec<Vec<f64>> {
+    let genes = *gene_of.iter().max().unwrap() as usize + 1;
+    let mut out = vec![vec![0.0; roles]; genes];
+    for (&g, &r) in links.genes_of(gene_of).iter().zip(b) {
+        out[g as usize][r as usize] += 1.0;
+    }
+    out
+}
+
 /// Each cell's links per cell role under labels `a`.
 fn cell_counts(links: &Links, roles: usize, a: &[u16]) -> Vec<Vec<f64>> {
     let mut out = vec![vec![0.0; roles]; links.cells];
@@ -465,8 +469,9 @@ fn cell_counts(links: &Links, roles: usize, a: &[u16]) -> Vec<Vec<f64>> {
 /// at `nu`, from the model's
 /// definition: each cell's and gene's Dirichlet-multinomial urn, each
 /// block's sites' marginals around `sigmoid(mu + delta)`, and under HDP the
-/// global weight `beta_1 ~ Beta(gamma / 2, gamma / 2)` integrated on a
-/// grid. Also `E[beta]` of link 0's cell role.
+/// cell roles' global weight `beta_1 ~ Beta(gamma / 2, gamma / 2)`
+/// integrated on a grid, and with two gene roles the gene roles' likewise.
+/// Also `E[beta]` of link 0's cell role.
 fn exact(
     links: &Links,
     gene_of: &[u32],
@@ -494,18 +499,31 @@ fn exact(
         let k: Vec<usize> = (0..n).map(|l| code / kk.pow(l as u32) % kk).collect();
         let a: Vec<u16> = k.iter().map(|&k| (k / bb) as u16).collect();
         let b: Vec<u16> = k.iter().map(|&k| (k % bb) as u16).collect();
-        let fixed = genes_and_reads(links, gene_of, mu, s, (&a, &b), held);
-        let cells = cell_counts(links, 2, &a);
-        let terms: Vec<f64> = grid
-            .iter()
-            .map(|&g| {
-                ln_prior(g)
-                    + cells
-                        .iter()
-                        .map(|c| urn(c, s.alpha, &[g, 1.0 - g]))
-                        .sum::<f64>()
-            })
-            .collect();
+        // Each grid point's log prior and the urns of `counts` there.
+        let grid_terms = |counts: &[Vec<f64>], conc: f64| -> Vec<f64> {
+            grid.iter()
+                .map(|&g| {
+                    ln_prior(g)
+                        + counts
+                            .iter()
+                            .map(|c| urn(c, conc, &[g, 1.0 - g]))
+                            .sum::<f64>()
+                })
+                .collect()
+        };
+        let mut fixed = genes_and_reads(links, gene_of, mu, s, (&a, &b), held);
+        // Integrated on a grid of one weight: two gene roles at most.
+        assert!(bb <= 2, "exact() takes one or two gene roles");
+        if let (Weights::Hdp(_), 2) = (s.weights, bb) {
+            // The gene urns at uniform weights out, integrated over theirs in.
+            let genes = gene_counts(links, gene_of, 2, &b);
+            fixed -= genes
+                .iter()
+                .map(|c| urn(c, s.gene_alpha, &[0.5; 2]))
+                .sum::<f64>();
+            fixed += log_sum_exp(grid_terms(&genes, s.gene_alpha).into_iter());
+        }
+        let terms = grid_terms(&cell_counts(links, 2, &a), s.alpha);
         let mx = terms.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
         let w: Vec<f64> = terms.iter().map(|t| (t - mx).exp()).collect();
         let mass: f64 = w.iter().sum();
@@ -557,7 +575,7 @@ fn blocks_preset() -> Settings {
         gene_roles: 2,
         alpha: 0.5,
         gene_alpha: 0.5,
-        weights: Weights::Symmetric,
+        weights: Weights::Hdp(1.0),
         shift_sd: Some(1.5),
         strength: f64::INFINITY,
         cell_sd: 1.0,
