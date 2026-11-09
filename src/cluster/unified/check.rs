@@ -2,7 +2,7 @@
 //! held, the log joint, and the swap's ratio beside the log joint's change.
 
 use super::draw::{add_columns, Tally};
-use super::{Alignment, Chain, Draw, Model, Scratch, State};
+use super::{ln_normal, Alignment, Blocks, Chain, Draw, Model, Scratch, State};
 use legume_numeric::mcmc::engine::McmcModel;
 use rand::rngs::SmallRng;
 use std::sync::{Arc, Mutex};
@@ -90,6 +90,54 @@ impl Model<'_> {
             .map(|_| {
                 self.resample_levels(&mut st, &mut rng);
                 st.nu[0]
+            })
+            .collect()
+    }
+
+    /// The log joint before and after one translation of the shifts and
+    /// levels (see [`Model::resample_translation`]), the labels held at
+    /// `a`, `b`, with the shifts' and levels' Normal priors' change: what
+    /// the move changes, read off the log joint and off its priors alone.
+    pub fn translation_check(
+        &self,
+        (a, b): (&[u16], &[u16]),
+        (delta, nu): (&[f64], &[f64]),
+        seed: u64,
+    ) -> (f64, f64) {
+        let mut rng = <SmallRng as rand::SeedableRng>::seed_from_u64(seed);
+        let Chain { urn, mut st } = self.chain(a.to_vec(), b.to_vec());
+        st.delta = delta.to_vec();
+        (0..self.blocks()).for_each(|k| self.refresh(&mut st, k));
+        st.nu = nu.to_vec();
+        (0..self.links.cells).for_each(|c| self.relevel(&mut st, c));
+        let (sd, cell_sd) = (self.settings.shift_sd.unwrap(), self.settings.cell_sd);
+        let prior = |st: &State| ln_normal(&st.delta, sd) + ln_normal(&st.nu, cell_sd);
+        let (before, prior_before) = (self.log_joint(&urn, &st), prior(&st));
+        self.resample_translation(&mut st, &mut rng);
+        (
+            self.log_joint(&urn, &st) - before,
+            prior(&st) - prior_before,
+        )
+    }
+
+    /// The translation `t` of each of `draws` translations (see
+    /// [`Model::resample_translation`]), each from the same shifts `delta`
+    /// and levels `nu`, the labels held at `a`, `b`.
+    pub fn translation_draws(
+        &self,
+        (a, b): (&[u16], &[u16]),
+        (delta, nu): (&[f64], &[f64]),
+        draws: usize,
+        seed: u64,
+    ) -> Vec<f64> {
+        let mut rng = <SmallRng as rand::SeedableRng>::seed_from_u64(seed);
+        let mut st = self.chain(a.to_vec(), b.to_vec()).st;
+        (0..draws)
+            .map(|_| {
+                st.delta = delta.to_vec();
+                st.nu = nu.to_vec();
+                self.resample_translation(&mut st, &mut rng);
+                st.delta[0] - delta[0]
             })
             .collect()
     }
@@ -223,7 +271,7 @@ impl Model<'_> {
         self.put(&mut urn, &mut st, l, false);
         let kk = self.blocks();
         let mut scored = vec![0.0; kk];
-        self.ln_link_blocks(&st, l, &mut scored, &mut Scratch::new(self).rising);
+        self.ln_link_blocks(&st, l, Blocks::ALL, &mut scored, &mut vec![(1.0, 0); kk]);
         let (s, m, u) = self.links.of(l);
         let nu = st.nu[self.links.cell[l] as usize];
         let summed = (0..kk)
@@ -267,6 +315,8 @@ impl Model<'_> {
             self.resample_shifts(&mut ch.st, &mut rng);
             check(&ch.st);
             self.resample_levels(&mut ch.st, &mut rng);
+            check(&ch.st);
+            self.resample_translation(&mut ch.st, &mut rng);
             check(&ch.st);
         }
         (checked, stale)

@@ -59,6 +59,27 @@ pub(super) fn ln_urn(row: &[u32], conc: f64, base: &[f64]) -> f64 {
         - ln_rising(conc, total)
 }
 
+/// The change in [`ln_urn`] of counts `row` under `Dirichlet(conc *
+/// base)` as entries `r` and `r2` exchange their counts: the total
+/// unchanged, only the rising factorials' logs between the two counts
+/// differ, `|n - n2|` of each (none when the two pseudo-counts are equal).
+pub(super) fn urn_exchange(row: &[u32], conc: f64, base: &[f64], (r, r2): (usize, usize)) -> f64 {
+    let (x, n, x2, n2) = (conc * base[r], row[r], conc * base[r2], row[r2]);
+    if x == x2 || n == n2 {
+        return 0.0;
+    }
+    let gained = |from: u32, to: u32| -> f64 {
+        (from..to)
+            .map(|j| ln(x + f64::from(j)) - ln(x2 + f64::from(j)))
+            .sum()
+    };
+    if n2 > n {
+        gained(n, n2)
+    } else {
+        -gained(n2, n)
+    }
+}
+
 /// The change in [`ln_urn`] as one entry, pseudo-count `x` and count `n`,
 /// gains a count, the total's change aside (the same for every entry).
 #[inline(always)]

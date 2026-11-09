@@ -2,18 +2,16 @@
 //! or a gene's links, each swap its own inverse.
 
 use super::{Model, State, Urn};
-use crate::cluster::fast::ln_urn;
+use crate::cluster::fast::{self, ln_urn};
 use rand::rngs::SmallRng;
 use rand::RngExt;
 
-/// Buffers a sweep's moves reuse: the relabelling's log weights per block,
-/// its running products per block (see [`Model::ln_link_blocks`]) and its
-/// genes' urn logs per gene role, and a swap's moved links and the (site,
-/// block) entries they touch.
+/// Buffers a sweep's moves reuse: the relabelling's log weights and
+/// running products per role, or per block when drawn jointly (see [`Model::ln_link_blocks`]), and a swap's
+/// moved links and the (site, block) entries they touch.
 pub(super) struct Scratch {
     pub(super) w: Vec<f64>,
     pub(super) rising: Vec<(f64, i64)>,
-    pub(super) gene: Vec<f64>,
     moved: Vec<usize>,
     touched: Vec<usize>,
 }
@@ -21,10 +19,15 @@ pub(super) struct Scratch {
 impl Scratch {
     /// Empty buffers sized for `model`.
     pub(super) fn new(model: &Model) -> Self {
+        let (aa, bb) = (model.cells.roles, model.settings.gene_roles);
+        let roles = if model.joint_relabel() {
+            aa * bb
+        } else {
+            aa.max(bb)
+        };
         Self {
-            w: vec![0.0; model.blocks()],
-            rising: vec![(1.0, 0); model.blocks()],
-            gene: vec![0.0; model.settings.gene_roles],
+            w: vec![0.0; roles],
+            rising: vec![(1.0, 0); roles],
             moved: Vec::new(),
             touched: Vec::new(),
         }
@@ -68,13 +71,22 @@ impl Model<'_> {
         )
     }
 
-    /// A cell's urn (`cell` true) or a gene's.
-    fn unit_term(&self, urn: &Urn, st: &State, unit: usize, cell: bool) -> f64 {
+    /// The change in a cell's urn (`cell` true) or a gene's as roles `r`
+    /// and `r2` exchange their links.
+    fn unit_exchange(
+        &self,
+        urn: &Urn,
+        st: &State,
+        (unit, cell): (usize, bool),
+        (r, r2): (u16, u16),
+    ) -> f64 {
+        let pair = (r as usize, r2 as usize);
         if cell {
-            self.cells.term(urn, unit)
-        } else {
-            self.gene_term(st, unit)
+            return self.cells.exchange(urn, unit, pair);
         }
+        let bb = self.settings.gene_roles;
+        let row = &st.m[unit * bb..(unit + 1) * bb];
+        fast::urn_exchange(row, self.settings.gene_alpha, &self.gene_base, pair)
     }
 
     /// Roles `r` and `r2` exchanged on links `moved` (each holding one of
@@ -115,10 +127,9 @@ impl Model<'_> {
         if scratch.moved.is_empty() {
             return None;
         }
-        let before = self.unit_term(urn, st, unit, cell);
+        let unit_change = self.unit_exchange(urn, st, (unit, cell), pair);
         let (sites_before, sites_after, reads) = self.exchange_links(urn, st, cell, pair, scratch);
-        let after = self.unit_term(urn, st, unit, cell);
-        Some((after + sites_after) - (before + sites_before) + reads)
+        Some(unit_change + (sites_after - sites_before) + reads)
     }
 
     /// This model's part of [`Self::exchange`]: roles `r` and `r2`

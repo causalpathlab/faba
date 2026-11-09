@@ -229,3 +229,60 @@ fn global_weights_follow_their_conditional() {
         "beta_1 | labels: sampled mean {sampled:.4} sd {sd:.4}, exact mean {exact:.4} sd {exact_sd:.4}"
     );
 }
+
+/// A translation of every shift by `t` and every level by `-t` leaves
+/// each read's logit, so the log joint changes by its priors' change
+/// alone: the move's conditional is theirs, and it is exact.
+#[test]
+fn a_translation_changes_only_the_priors() {
+    let (reads, gene_of, _, _, _) = planted_blocks(40, 8, 1.0, 131);
+    let links = Links::new(&Weighted::new(&reads, None), &gene_of);
+    let model = Model::new(&links, &gene_of, gene_of.len(), blocks_preset()).unwrap();
+    let mut rng = SmallRng::seed_from_u64(137);
+    let a: Vec<u16> = (0..links.len()).map(|_| rng.random_range(0..3)).collect();
+    let b: Vec<u16> = (0..links.len()).map(|_| rng.random_range(0..2)).collect();
+    let delta: Vec<f64> = (0..6).map(|_| rng.random_range(-2.0..2.0)).collect();
+    let nu: Vec<f64> = (0..links.cells)
+        .map(|_| rng.random_range(-1.5..1.5))
+        .collect();
+    for seed in 0..20 {
+        let (joint, prior) = model.translation_check((&a, &b), (&delta, &nu), seed);
+        assert!(prior != 0.0);
+        assert!(
+            (joint - prior).abs() < 1e-6,
+            "seed {seed}: joint {joint}, prior {prior}"
+        );
+    }
+}
+
+/// A translation's `t`, from fixed shifts and levels, follows its
+/// conditional: the Normal along the line from the shifts' and levels'
+/// priors, mean `(sum nu / cell_sd^2 - sum delta / shift_sd^2) / P` and
+/// sd `1 / sqrt(P)`, `P = K / shift_sd^2 + C / cell_sd^2`.
+#[test]
+fn a_translation_follows_its_conditional() {
+    let (reads, gene_of, _, _, _) = planted_blocks(40, 8, 1.0, 139);
+    let links = Links::new(&Weighted::new(&reads, None), &gene_of);
+    let s = Settings {
+        shift_sd: Some(1.3),
+        cell_sd: 0.7,
+        ..blocks_preset()
+    };
+    let model = Model::new(&links, &gene_of, gene_of.len(), s).unwrap();
+    let mut rng = SmallRng::seed_from_u64(149);
+    let a: Vec<u16> = (0..links.len()).map(|_| rng.random_range(0..3)).collect();
+    let b: Vec<u16> = (0..links.len()).map(|_| rng.random_range(0..2)).collect();
+    let delta: Vec<f64> = (0..6).map(|_| rng.random_range(-2.0..2.0)).collect();
+    let nu: Vec<f64> = (0..links.cells)
+        .map(|_| rng.random_range(-1.5..1.5))
+        .collect();
+    let (sp, lp) = (1.0 / 1.3f64.powi(2), 1.0 / 0.7f64.powi(2));
+    let precision = 6.0 * sp + links.cells as f64 * lp;
+    let exact = (nu.iter().sum::<f64>() * lp - delta.iter().sum::<f64>() * sp) / precision;
+    let exact_sd = 1.0 / precision.sqrt();
+    let (sampled, sd) = draw_moments(model.translation_draws((&a, &b), (&delta, &nu), 8000, 151));
+    assert!(
+        (sampled - exact).abs() < 0.05 * exact_sd && (sd / exact_sd - 1.0).abs() < 0.05,
+        "t: sampled mean {sampled:.4} sd {sd:.4}, exact mean {exact:.4} sd {exact_sd:.4}"
+    );
+}

@@ -391,38 +391,51 @@ impl<'a> Model<'a> {
         self.link_reads(l, (st.nu_exp[c], st.nu[c]), (st.delta_exp[k], st.delta[k]))
     }
 
-    /// Link `l`'s reads' log predictive in each block (`out`, one per
+    /// Link `l`'s reads' log predictive in each of `blocks` (`out`, one per
     /// block) given the other links (`l` counted out): sites outer, each
-    /// site's blocks inner over contiguous entries, the path taken once per
-    /// site. Away from the model's Gamma sites (every link there has few
-    /// whole reads), each block takes a ratio of rising factorials,
-    /// multiplied into its running product in `rising` (kept as a mantissa
-    /// and a power of 2, so it never underflows) and one log taken per
-    /// block at the end. At a Gamma site each block adds its site term's
+    /// site's blocks inner, the path taken once per site. Away from the
+    /// model's Gamma sites (every link there has few whole reads), each
+    /// block takes a ratio of rising factorials, multiplied into its
+    /// running product in `rising` (kept as a factor and a power of 2, so
+    /// it never underflows) and one log taken per block at the end. At a Gamma site each block adds its site term's
     /// change, by [`fast::ln_gamma`] from the cached terms, its arguments
     /// formed as [`Self::put`] and [`Self::recache`] would form them with
     /// the link in, so that the weights are the log joint's.
-    fn ln_link_blocks(&self, st: &State, l: usize, out: &mut [f64], rising: &mut [(f64, i64)]) {
+    fn ln_link_blocks(
+        &self,
+        st: &State,
+        l: usize,
+        blocks: Blocks,
+        out: &mut [f64],
+        rising: &mut [(f64, i64)],
+    ) {
         if !self.finite() {
-            return self.link_reads_blocks(st, l, out, rising);
+            return self.link_reads_blocks(st, l, blocks, out, rising);
         }
         let kk = self.blocks();
         let (s, m, u) = self.links.of(l);
+        let n = out.len();
+        let rising = &mut rising[..n];
         out.fill(0.0);
         rising.fill((1.0, 0));
         for i in 0..s.len() {
-            let row = s[i] as usize * kk..(s[i] as usize + 1) * kk;
-            let (on, off) = (&st.on[row.clone()], &st.off[row.clone()]);
-            let prior = &st.prior[row.clone()];
+            let row = s[i] as usize * kk + blocks.first;
+            let at = |j: usize| row + j * blocks.step;
             if !self.gamma_site[s[i] as usize] {
-                for (k, r) in rising.iter_mut().enumerate() {
-                    let (px, py) = prior[k];
-                    scale(r, rising_ratio(px + on[k], py + off[k], m[i], u[i]));
+                for (j, r) in rising.iter_mut().enumerate() {
+                    let at = at(j);
+                    let (px, py) = st.prior[at];
+                    scale(r, rising_ratio(px + st.on[at], py + st.off[at], m[i], u[i]));
                 }
             } else {
-                let lg = &st.lgamma[row];
-                for (k, x) in out.iter_mut().enumerate() {
-                    *x += pred_gamma(prior[k], (on[k], off[k]), lg[k], (m[i], u[i]));
+                for (j, x) in out.iter_mut().enumerate() {
+                    let at = at(j);
+                    *x += pred_gamma(
+                        st.prior[at],
+                        (st.on[at], st.off[at]),
+                        st.lgamma[at],
+                        (m[i], u[i]),
+                    );
                 }
             }
         }
@@ -440,9 +453,9 @@ impl<'a> Model<'a> {
     /// as a mantissa and a power of 2 (one log at the end), others each
     /// through `ln (1 + ...)`, the linear part from the link's constants.
     /// Every log is the cluster's `fast::ln`. The
-    /// relabelling's every block ([`Self::link_reads_blocks`]) takes the
-    /// same steps in the same order, so the two agree bit for bit.
-    fn link_reads(&self, l: usize, nu: (f64, f64), delta: (f64, f64)) -> f64 {
+    /// relabelling's blocks ([`Self::link_reads_blocks`]) take the same
+    /// steps in the same order, so the two agree bit for bit.
+    pub(super) fn link_reads(&self, l: usize, nu: (f64, f64), delta: (f64, f64)) -> f64 {
         let (s, m, u) = self.links.of(l);
         let (mut product, mut ones) = ((1.0, 0), 0.0);
         for i in 0..s.len() {
@@ -453,29 +466,95 @@ impl<'a> Model<'a> {
         -ln_split(product) - ones - (off_mu + off * (nu.1 + delta.1))
     }
 
-    /// [`Self::link_reads`] in every block at once (`out`, one per block),
-    /// at link `l`'s cell's level and each block's shift: sites outer, each
-    /// site's `exp(-mu_s - nu_c)` once and the blocks inner, the running
-    /// products in `rising`.
-    fn link_reads_blocks(&self, st: &State, l: usize, out: &mut [f64], rising: &mut [(f64, i64)]) {
+    /// [`Self::link_reads`] at `N` points at once, each a level and a
+    /// shift with their `exp(-x)`, the sites read once: each point takes
+    /// the same steps in the same order as [`Self::link_reads`], so its
+    /// value is the same bit for bit. (A single point goes through
+    /// [`Self::link_reads`] itself, which compiles to a tighter loop.)
+    pub(super) fn link_reads_at<const N: usize>(
+        &self,
+        l: usize,
+        at: [((f64, f64), (f64, f64)); N],
+    ) -> [f64; N] {
+        let (s, m, u) = self.links.of(l);
+        let mut product = [(1.0, 0); N];
+        let mut ones = [0.0; N];
+        for i in 0..s.len() {
+            let mu = self.mu_exp[s[i] as usize];
+            for j in 0..N {
+                let ((nu, _), (delta, _)) = at[j];
+                entry_reads(mu * nu * delta, m[i], u[i], &mut product[j], &mut ones[j]);
+            }
+        }
+        let (off, off_mu) = self.link_off[l];
+        std::array::from_fn(|j| {
+            let ((_, nu), (_, delta)) = at[j];
+            -ln_split(product[j]) - ones[j] - (off_mu + off * (nu + delta))
+        })
+    }
+
+    /// Link `l`'s reads' Fisher information about a logit offset at the
+    /// rest of their logit, `exp(-rest)` given as `rest_exp` (the offset
+    /// itself left out): each site's `n sigmoid(z) sigmoid(-z)`, `n q (1 -
+    /// q)` with `q = 1 / (1 + e)`, `e = exp(-mu_s) rest_exp` (finite however
+    /// large `e`).
+    pub(super) fn link_information(&self, l: usize, rest_exp: f64) -> f64 {
+        let (s, m, u) = self.links.of(l);
+        (0..s.len())
+            .map(|i| {
+                let e = self.mu_exp[s[i] as usize] * rest_exp;
+                let q = 1.0 / (1.0 + e);
+                (m[i] + u[i]) * q * (1.0 - q)
+            })
+            .sum()
+    }
+
+    /// [`Self::link_reads`] in each of `blocks` at once (`out`, one per
+    /// block), at link `l`'s cell's level and each block's shift: sites
+    /// outer, each site's `exp(-mu_s - nu_c)` once and the blocks inner,
+    /// the running products in `rising`.
+    fn link_reads_blocks(
+        &self,
+        st: &State,
+        l: usize,
+        blocks: Blocks,
+        out: &mut [f64],
+        rising: &mut [(f64, i64)],
+    ) {
         let c = self.links.cell[l] as usize;
         let (s, m, u) = self.links.of(l);
+        let rising = &mut rising[..out.len()];
         out.fill(0.0);
         rising.fill((1.0, 0));
+        let delta_exp = st.delta_exp[blocks.first..].iter().step_by(blocks.step);
+        let delta = st.delta[blocks.first..].iter().step_by(blocks.step);
         for i in 0..s.len() {
             let e = self.mu_exp[s[i] as usize] * st.nu_exp[c];
-            for ((x, r), &d) in out.iter_mut().zip(rising.iter_mut()).zip(&st.delta_exp) {
+            for ((x, r), &d) in out.iter_mut().zip(rising.iter_mut()).zip(delta_exp.clone()) {
                 entry_reads(e * d, m[i], u[i], r, x);
             }
         }
         let (off, off_mu) = self.link_off[l];
-        for (k, (x, &r)) in out.iter_mut().zip(rising.iter()).enumerate() {
-            *x = -ln_split(r) - *x - (off_mu + off * (st.nu[c] + st.delta[k]));
+        for ((x, &r), &d) in out.iter_mut().zip(rising.iter()).zip(delta) {
+            *x = -ln_split(r) - *x - (off_mu + off * (st.nu[c] + d));
         }
     }
 
-    /// Link `l`'s pair of roles from its conditional, `scratch`'s weights
-    /// and gene logs its buffers.
+    /// Whether the relabelling draws a link's pair of roles jointly: when
+    /// its `A x B` blocks are at most twice the `A + B` the two steps
+    /// would score.
+    pub(super) fn joint_relabel(&self) -> bool {
+        let (aa, bb) = (self.cells.roles, self.settings.gene_roles);
+        aa * bb <= 2 * (aa + bb)
+    }
+
+    /// Link `l`'s pair of roles (the link counted out throughout): drawn
+    /// jointly from all `A x B` blocks when that costs little more than the
+    /// alternative (see [`Self::joint_relabel`]), so that a link can move
+    /// both roles at once; otherwise its cell role given its gene role,
+    /// then its gene role given the new cell role, two Gibbs steps on the
+    /// pair's conditional scoring `A + B` blocks. `scratch`'s weights and
+    /// running products are its buffers.
     fn relabel(
         &self,
         urn: &mut Urn,
@@ -487,23 +566,43 @@ impl<'a> Model<'a> {
         let (aa, bb) = (self.cells.roles, self.settings.gene_roles);
         let (c, g) = (self.links.cell[l] as usize, self.link_gene[l] as usize);
         self.put(urn, st, l, false);
-        let gb = self.settings.gene_alpha / bb as f64;
-        let Scratch {
-            w, rising, gene, ..
-        } = scratch;
-        for (b, x) in gene.iter_mut().enumerate() {
-            *x = fast::urn_step(gb, st.m[g * bb + b]);
-        }
-        self.ln_link_blocks(st, l, w, rising);
-        for a in 0..aa {
-            let cell = self.cells.ln_weight(urn, c, a);
-            for b in 0..bb {
-                w[a * bb + b] += cell + gene[b];
+        let Scratch { w, rising, .. } = scratch;
+        let gene = |st: &State, b: usize| {
+            fast::urn_step(
+                self.settings.gene_alpha * self.gene_base[b],
+                st.m[g * bb + b],
+            )
+        };
+        if self.joint_relabel() {
+            let w = &mut w[..aa * bb];
+            self.ln_link_blocks(st, l, Blocks::ALL, w, rising);
+            for a in 0..aa {
+                let cell = self.cells.ln_weight(urn, c, a);
+                for b in 0..bb {
+                    w[a * bb + b] += cell + gene(st, b);
+                }
             }
+            let k = sample_log(w, rng);
+            (st.a[l], st.b[l]) = ((k / bb) as u16, (k % bb) as u16);
+            self.put(urn, st, l, true);
+            return;
         }
-        let k = sample_log(w, rng);
-        st.a[l] = (k / bb) as u16;
-        st.b[l] = (k % bb) as u16;
+        let b = st.b[l] as usize;
+        let w_cell = &mut w[..aa];
+        self.ln_link_blocks(st, l, Blocks::cell_roles(b, bb), w_cell, rising);
+        for (a, x) in w_cell.iter_mut().enumerate() {
+            *x += self.cells.ln_weight(urn, c, a);
+        }
+        let a = sample_log(w_cell, rng);
+        st.a[l] = a as u16;
+        if bb > 1 {
+            let w_gene = &mut w[..bb];
+            self.ln_link_blocks(st, l, Blocks::gene_roles(a, bb), w_gene, rising);
+            for (b, x) in w_gene.iter_mut().enumerate() {
+                *x += gene(st, b);
+            }
+            st.b[l] = sample_log(w_gene, rng) as u16;
+        }
         self.put(urn, st, l, true);
     }
 
@@ -514,17 +613,15 @@ impl<'a> Model<'a> {
         let kk = self.blocks();
         let cells = self.cells.ln_joint(urn);
         let genes: f64 = (0..self.genes()).map(|g| self.gene_term(st, g)).sum();
-        let normal =
-            |x: &[f64], sd: f64| -> f64 { x.iter().map(|d| -d * d / (2.0 * sd * sd)).sum() };
         let shifts = self
             .settings
             .shift_sd
-            .map_or(0.0, |sd| normal(&st.delta, sd));
+            .map_or(0.0, |sd| ln_normal(&st.delta, sd));
         if !self.finite() {
             let reads: f64 = (0..self.links.len())
                 .map(|l| self.ln_link(st, l, self.block(st, l)))
                 .sum();
-            return cells + genes + reads + shifts + normal(&st.nu, self.settings.cell_sd);
+            return cells + genes + reads + shifts + ln_normal(&st.nu, self.settings.cell_sd);
         }
         let sites: f64 = (0..self.mu.len() * kk)
             .map(|at| self.site_term(st, at))
@@ -606,6 +703,38 @@ impl<'a> Model<'a> {
     }
 }
 
+/// The Normal(0, `sd`) log density of each of `x`, summed (normaliser
+/// left out).
+pub(super) fn ln_normal(x: &[f64], sd: f64) -> f64 {
+    x.iter().map(|d| -d * d / (2.0 * sd * sd)).sum()
+}
+
+/// A set of blocks a link is scored in: `first`, then every `step`-th,
+/// as many as the scores asked for.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Blocks {
+    first: usize,
+    step: usize,
+}
+
+impl Blocks {
+    /// Every block, in order.
+    pub(super) const ALL: Self = Self { first: 0, step: 1 };
+
+    /// Each cell role's block with gene role `b`, of `bb` gene roles.
+    fn cell_roles(b: usize, bb: usize) -> Self {
+        Self { first: b, step: bb }
+    }
+
+    /// Each gene role's block with cell role `a`, of `bb` gene roles.
+    fn gene_roles(a: usize, bb: usize) -> Self {
+        Self {
+            first: a * bb,
+            step: 1,
+        }
+    }
+}
+
 /// One link entry's `m` converted and `u` unconverted reads at a site of
 /// `exp(-z) = e` (see [`Model::link_reads`]): few whole reads multiply
 /// `(1 + e)^n` into `product` (a mantissa and a power of 2), others add
@@ -619,14 +748,25 @@ fn entry_reads(e: f64, m: f64, u: f64, product: &mut (f64, i64), ones: &mut f64)
     }
 }
 
-/// A running product kept as a mantissa and a power of 2, multiplied by
-/// `x` and split again, so that it never underflows.
+/// A running product kept as a factor and a power of 2, multiplied by `x`:
+/// split again only once the factor leaves `[2^-40, 2^40]`, so that it
+/// never underflows nor, times any factor under `2^960` (see
+/// [`E_OVERFLOWS`]), overflows.
 fn scale(product: &mut (f64, i64), x: f64) {
-    let (mantissa, e) = binary_split(product.0 * x);
-    *product = (mantissa, product.1 + e);
+    let p = product.0 * x;
+    if (SPLIT_BELOW..=SPLIT_ABOVE).contains(&p) {
+        product.0 = p;
+    } else {
+        let (mantissa, e) = binary_split(p);
+        *product = (mantissa, product.1 + e);
+    }
 }
 
-/// The log of a running product kept as a mantissa and a power of 2.
+/// The window [`scale`] keeps a running product's factor in.
+const SPLIT_BELOW: f64 = 1.0 / (1u64 << 40) as f64;
+const SPLIT_ABOVE: f64 = (1u64 << 40) as f64;
+
+/// The log of a running product kept as a factor and a power of 2.
 fn ln_split((mantissa, e): (f64, i64)) -> f64 {
     fast::ln(mantissa) + e as f64 * LN_2
 }
@@ -695,6 +835,7 @@ impl McmcModel for Model<'_> {
         self.label_moves(ch, &mut Scratch::new(self), rng);
         self.resample_shifts(&mut ch.st, rng);
         self.resample_levels(&mut ch.st, rng);
+        self.resample_translation(&mut ch.st, rng);
     }
 
     fn collect(&self, ch: &Chain) -> Draw {
