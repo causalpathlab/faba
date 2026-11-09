@@ -413,9 +413,10 @@ fn cluster_view_never_fits() {
     assert!(head.ends_with("custom settings"), "{head}");
 }
 
-/// A level printed is given with --batch-process: alone, clap asks for it.
+/// A level asked for by name needs no --batch-process (it is printed as
+/// text either way) and is refused beside --html, the page of every level.
 #[test]
-fn a_level_is_printed_with_batch_process_alone() {
+fn a_level_is_printed_without_batch_process_but_not_with_html() {
     let tmp = tempfile::tempdir().unwrap();
     for level in [
         &["--module", "M1"][..],
@@ -424,10 +425,12 @@ fn a_level_is_printed_with_batch_process_alone() {
         &["--trace"],
         &["--settings"],
     ] {
-        let err = parsed(tmp.path(), level).unwrap_err();
-        assert!(err.contains("--batch-process"), "{level:?}: {err}");
+        assert!(parsed(tmp.path(), level).is_ok(), "{level:?}");
         let with: Vec<&str> = level.iter().copied().chain(["--batch-mode"]).collect();
         assert!(parsed(tmp.path(), &with).is_ok(), "{with:?}");
+        let page: Vec<&str> = level.iter().copied().chain(["--html", "p.html"]).collect();
+        let err = parsed(tmp.path(), &page).unwrap_err();
+        assert!(err.contains("--html"), "{page:?}: {err}");
     }
     assert!(parsed(tmp.path(), &[]).is_ok());
 }

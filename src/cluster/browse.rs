@@ -110,15 +110,12 @@ impl ModulesArgs {
 }
 
 /// What `faba cluster-view` says when it is given an option it does not
-/// have: `error` with one more tip when that option is one of `faba
-/// cluster`'s (the model's, the sampler's, the reads' filters), as the
-/// viewer opens fits as they are and never fits; any other error as it is.
-pub fn fitting_hint(mut error: clap::Error) -> clap::Error {
+/// have (`viewing`: the command line named it): `error` with one more tip
+/// when that option is one of `faba cluster`'s (the model's, the sampler's,
+/// the reads' filters), as the viewer opens fits as they are and never
+/// fits; any other error as it is.
+pub fn fitting_hint(mut error: clap::Error, viewing: bool) -> clap::Error {
     use clap::error::{ContextKind, ContextValue, ErrorKind};
-    let viewing = matches!(
-        error.get(ContextKind::Usage),
-        Some(ContextValue::StyledStr(u)) if u.to_string().contains("faba cluster-view")
-    );
     let Some(ContextValue::String(given)) = error.get(ContextKind::InvalidArg) else {
         return error;
     };
@@ -292,7 +289,8 @@ pub fn run_modules(args: &ModulesArgs) -> anyhow::Result<()> {
     if let Some(path) = &args.html {
         return write_html(&modules, gtf.as_deref(), path);
     }
-    if crate::tui::batch(args.batch_process, "cluster-view") {
+    // A level asked for by name is printed as text, terminal or not.
+    if args.shown.any() || crate::tui::batch(args.batch_process, "cluster-view") {
         text::printed(&modules, &args.shown)?
             .iter()
             .for_each(|line| println!("{line}"));

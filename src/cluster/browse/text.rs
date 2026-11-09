@@ -7,17 +7,18 @@
 
 use super::Modules;
 
-/// What the batch printout shows instead of the modules (level 1): each
-/// level the browser opens, named on the command line, each given with
-/// --batch-process alone (the browser shows every level itself).
+/// What the printout shows instead of the modules (level 1): each level
+/// the browser opens, named on the command line. Asking for one prints it
+/// as text, as --batch-process does; with --html, which writes the page of
+/// every level, it is refused.
 #[derive(clap::Args, Debug, Default, Clone, PartialEq)]
 pub struct Shown {
     /// A gene module's genes and sites (`M3` or `3`).
     #[arg(
         long = "module",
         value_name = "M",
-        requires = "batch_process",
-        help = "With --batch-process: print gene module M's genes and sites (level 2), as M3 or 3"
+        conflicts_with = "html",
+        help = "Print gene module M's genes and sites (level 2), as M3 or 3"
     )]
     pub module: Option<String>,
 
@@ -25,29 +26,29 @@ pub struct Shown {
     #[arg(
         long = "gene",
         value_name = "GENE",
-        requires = "batch_process",
-        help = "With --batch-process: print a gene's sites in each cell module, over every gene module (levels 3 and 4), by key or symbol"
+        conflicts_with = "html",
+        help = "Print a gene's sites in each cell module, over every gene module (levels 3 and 4), by key or symbol"
     )]
     pub gene: Option<String>,
 
     #[arg(
         long = "cells",
-        requires = "batch_process",
-        help = "With --batch-process: print the cell modules and their sizes"
+        conflicts_with = "html",
+        help = "Print the cell modules and their sizes"
     )]
     pub cells: bool,
 
     #[arg(
         long = "trace",
-        requires = "batch_process",
-        help = "With --batch-process: print each chain's trace, the verdict and what to do about it"
+        conflicts_with = "html",
+        help = "Print each chain's trace, the verdict and what to do about it"
     )]
     pub trace: bool,
 
     #[arg(
         long = "settings",
-        requires = "batch_process",
-        help = "With --batch-process: print the settings the fit ran with"
+        conflicts_with = "html",
+        help = "Print the settings the fit ran with"
     )]
     pub settings: bool,
 }
@@ -122,11 +123,12 @@ pub fn modules(m: &Modules) -> Vec<String> {
         if m.per_cell() {
             // A count module's UMIs per gene and cell, beside each cell
             // module's size (the block's own total sums its genes' cells).
-            let sizes = m.columns.iter().map(|&c| m.cell_sizes[c]);
+            let sizes = m.columns.iter().map(|&c| m.cells_label(m.cell_sizes[c]));
             row.extend(
-                m.block(g).iter().zip(sizes).flat_map(|(r, n)| {
-                    [r.number().unwrap_or_else(|| "-".into()), format!("{n:.1}")]
-                }),
+                m.block(g)
+                    .iter()
+                    .zip(sizes)
+                    .flat_map(|(r, n)| [r.number().unwrap_or_else(|| "-".into()), n]),
             );
         } else {
             row.extend(values(m.block(g)));
@@ -292,7 +294,10 @@ fn trace(m: &Modules) -> Vec<String> {
 fn settings(m: &Modules) -> Vec<String> {
     let (model, json) = match &m.run {
         Ok(r) => (format!("the {}", r.label()), serde_json::to_value(r).ok()),
-        Err(_) if m.per_cell() => ("the count blockmodel".into(), m.count_settings.clone()),
+        // A count fit's settings are not the blockmodel's: kept as recorded.
+        Err(_) if m.count_settings.is_some() => {
+            ("the count blockmodel".into(), m.count_settings.clone())
+        }
         Err(why) => (why.clone(), None),
     };
     let mut out = vec![format!("settings: {model}")];

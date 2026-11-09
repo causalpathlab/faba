@@ -264,11 +264,6 @@ impl<'a, T> Pending<'a, T> {
         self.out.as_ref().map(|(out, _)| out)
     }
 
-    /// The time since the result came; none before.
-    pub fn since(&self) -> Option<Duration> {
-        self.out.as_ref().map(|(_, at)| at.elapsed())
-    }
-
     /// Whether the work ended without a result: it panicked.
     pub fn gone(&self) -> bool {
         self.out.is_none() && self.gone

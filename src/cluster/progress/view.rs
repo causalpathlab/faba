@@ -16,13 +16,10 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use std::borrow::Cow;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use trace::chain_style;
 
 pub(in crate::cluster) mod trace;
-
-/// How long the R-hat stays up once the fit is done, unless a key comes.
-const HOLD: Duration = Duration::from_millis(1500);
 
 /// The screen shown while the fit runs; done once its result is in (and
 /// has been up a moment, unless a key came).
@@ -259,7 +256,8 @@ impl<T> Screen for Fitting<'_, T> {
         match self.pending.out() {
             None => self.pending.gone(),
             Some(Err(_)) => true,
-            Some(Ok(_)) => self.skip || self.pending.since().is_some_and(|t| t >= HOLD),
+            // The verdict stays up until a key.
+            Some(Ok(_)) => self.skip,
         }
     }
 

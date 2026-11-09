@@ -8,6 +8,7 @@ use crate::tui::screen_text as screen;
 use ratatui::crossterm::event::KeyModifiers;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{channel, Receiver, Sender};
+use std::time::Duration;
 
 /// Three chains of 100 sweeps, 40 of them burn-in: one started 10 s ago
 /// at sweep 20, one 7 s ago at sweep 70, one still queued.
@@ -195,19 +196,20 @@ fn a_fit_that_panics_is_an_error() {
     assert_eq!(out.unwrap(), 7);
 }
 
-/// The R-hat stays up for its moment from when the result comes, however
-/// long it was drawn before.
+/// Once the fit is done the verdict stays up, however long, until a key.
 #[test]
-fn the_hold_starts_when_the_result_comes() {
+fn the_verdict_stays_up_until_a_key() {
     let (tx, rx) = channel_u8();
     let p = midway();
     p.set_rhat(1.01);
     let mut v = fitting(&p, &rx);
-    screen(&mut v, 100, 12);
-    std::thread::sleep(HOLD + Duration::from_millis(50));
     tx.send(Ok(3)).unwrap();
     v.tick();
-    assert!(!v.done(), "the R-hat stays up once the fit is done");
+    screen(&mut v, 100, 12);
+    std::thread::sleep(Duration::from_millis(50));
+    assert!(!v.done(), "the verdict stays up once the fit is done");
+    v.handle_key(key('x'));
+    assert!(v.done(), "a key leaves");
 }
 
 /// Ctrl+C while the chains sample stops them early, and the footer says

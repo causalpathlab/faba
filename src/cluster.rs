@@ -134,7 +134,9 @@ pub fn run_cluster(args: &ClusterArgs) -> anyhow::Result<Option<String>> {
         data_files,
         ..args.clone()
     };
-    let live = std::io::stderr().is_terminal() && data_beans::interactive::tui_available();
+    let live = !args.batch_process
+        && std::io::stderr().is_terminal()
+        && data_beans::interactive::tui_available();
     let (progress, modality) = if live {
         let progress = progress::Progress::interruptible(args.chains);
         let model = if args.is_count() {
@@ -144,8 +146,16 @@ pub fn run_cluster(args: &ClusterArgs) -> anyhow::Result<Option<String>> {
         };
         let dir = output_dir(args.output.as_deref(), &args.data_files);
         let title = format!("fitting the {model} in {}", dir.display());
-        let modality = progress::view::watch(&title, &progress, |p| run_cluster_watched(args, p))?;
-        (progress, modality)
+        let watched = progress::view::watch(&title, &progress, |p| run_cluster_watched(args, p));
+        // A cancel asked for in the view is not a failure: nothing written,
+        // said so.
+        match watched {
+            Err(e) if e.is::<progress::Cancelled>() => {
+                eprintln!("faba cluster: {e}");
+                return Ok(None);
+            }
+            other => (progress, other?),
+        }
     } else {
         let progress = progress::Progress::on_stderr(args.chains);
         let modality = run_cluster_watched(args, &progress)?;

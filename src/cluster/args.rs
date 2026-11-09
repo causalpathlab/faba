@@ -78,6 +78,14 @@ pub struct ClusterArgs {
     )]
     pub(super) no_batch_correction: bool,
 
+    #[arg(
+        long = "batch-process",
+        visible_alias = "batch-mode",
+        default_value_t = false,
+        help = "Fit with a progress bar on stderr rather than the live view of the chains, even on a terminal"
+    )]
+    pub(super) batch_process: bool,
+
     #[arg(long, default_value_t = 50, help = "Drop cells covering fewer sites")]
     pub(super) min_cell_sites: usize,
 

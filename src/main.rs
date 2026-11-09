@@ -643,8 +643,21 @@ where
     I: IntoIterator<Item = T>,
     T: Into<std::ffi::OsString> + Clone,
 {
+    let line: Vec<std::ffi::OsString> = line.into_iter().map(Into::into).collect();
+    // The subcommand named: the first word after the program's that is not
+    // an option, by its name or an alias.
+    let named = line
+        .iter()
+        .skip(1)
+        .find(|w| !w.to_string_lossy().starts_with('-'));
+    let viewing = cmd.find_subcommand("cluster-view").is_some_and(|view| {
+        named.is_some_and(|w| {
+            let w = w.to_string_lossy();
+            view.get_name() == w || view.get_all_aliases().any(|a| a == w)
+        })
+    });
     cmd.try_get_matches_from_mut(line)
-        .map_err(cluster::fitting_hint)
+        .map_err(|e| cluster::fitting_hint(e, viewing))
 }
 
 /// Notes what was given to `faba cluster`'s options, for the command it
