@@ -97,11 +97,10 @@ impl ModulesArgs {
 /// are refused (see [`refuse_fitting`]), only what names the tables to open
 /// is shown, its help saying so.
 pub fn view_help(command: clap::Command) -> clap::Command {
-    let shown = ["data_files", "modality", "output"];
     let fitting: Vec<String> = super::command::definition()
         .get_arguments()
         .map(|a| a.get_id().to_string())
-        .filter(|id| !shown.contains(&id.as_str()))
+        .filter(|id| !VIEW_READS.contains(&id.as_str()))
         .collect();
     let command = fitting
         .iter()
@@ -361,10 +360,15 @@ fn open_tables(c: &ClusterArgs, dir: &Path) -> anyhow::Result<String> {
     })
 }
 
-/// Refused, whatever is opened: `--refit` and every option that sets the
-/// blockmodel ([`super::args::MODEL_OPTIONS`]), as `faba cluster-view`
-/// opens fits as they are and never fits; the refusal names the command
-/// that fits (`faba cluster --modality count` for a count fit).
+/// The options of `faba cluster` (clap ids) that `faba cluster-view` reads:
+/// its inputs, the modality and the output directory.
+const VIEW_READS: [&str; 3] = ["data_files", "modality", "output"];
+
+/// Refused, whatever is opened: `--refit` and every other option of `faba
+/// cluster` but [`VIEW_READS`] (the model's, the sampler's, the reads'
+/// filters), as `faba cluster-view` opens fits as they are and never fits;
+/// the refusal names the command that fits (`faba cluster --modality
+/// count` for a count fit).
 fn refuse_fitting(args: &ModulesArgs) -> anyhow::Result<()> {
     let c = &args.cluster;
     let definition = super::command::definition();
@@ -373,10 +377,12 @@ fn refuse_fitting(args: &ModulesArgs) -> anyhow::Result<()> {
         .then(|| "--refit".to_string())
         .into_iter()
         .collect();
+    // Of `faba cluster`'s options, the view reads its inputs, the modality
+    // and the directory alone: any other sets a fit, which it never runs.
     given.extend(
         definition
             .get_arguments()
-            .filter(|a| super::args::MODEL_OPTIONS.contains(&a.get_id().as_str()))
+            .filter(|a| !VIEW_READS.contains(&a.get_id().as_str()))
             .filter(|a| c.given(a.get_id().as_str()))
             .filter_map(|a| a.get_long().map(|l| format!("--{l}"))),
     );

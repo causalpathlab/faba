@@ -320,12 +320,10 @@ fn a_count_fit_is_opened_as_it_is_never_fitted_again() {
     );
     super::count_tables(dir);
     assert_eq!(at(&["--modality", "count"]).unwrap(), "count");
-    assert_eq!(
-        at(&["--modality", "Count", "--chains", "2"]).unwrap(),
-        "count"
-    );
+    assert_eq!(at(&["--modality", "Count"]).unwrap(), "count");
     for words in [
         &["--modality", "count", "--refit"][..],
+        &["--modality", "count", "--chains", "2"],
         &["--modality", "count", "--cell-roles", "12"],
         &["--modality", "count", "--model", "blocks"],
     ] {
@@ -382,7 +380,8 @@ fn cluster_view_never_fits() {
     recorded(dir, &["--model", "blocks"]);
     recorded(dir, &["--model", "link"]);
     view(&[]).unwrap();
-    view(&["--chains", "2"]).unwrap();
+    // A sampler's option sets a fit too: refused, not ignored.
+    refused(&["--chains", "2"]);
     refusals.iter().for_each(|w| refused(w));
     let head = title(dir, &Modules::load(dir, "m6a", None).unwrap());
     assert!(head.ends_with("m6a · link preset"), "{head}");
