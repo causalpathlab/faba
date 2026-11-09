@@ -2,7 +2,7 @@
 
 use super::{count, counted, loaded};
 use crate::cluster::browse::data::{Count, Measure};
-use crate::cluster::browse::printed;
+use crate::cluster::browse::text::modules;
 use crate::cluster::browse::view::{box_size, eighths, hanging, Ramp, Stretch};
 use crate::cluster::browse::{diagonal, standardized};
 use ratatui::style::Color;
@@ -97,24 +97,40 @@ fn a_count_fits_tables_load_as_umis_per_cell() {
         .all(|r| r.measure == Measure::PerCell && r.off() == 0.0));
 }
 
-/// The modules printed: a count fit's columns are UMIs per cell.
+/// The modules printed, a row each, tab-separated: a count fit's columns
+/// are UMIs per cell and cells, a site fit's % and reads.
 #[test]
 fn a_count_fit_prints_umis_per_cell() {
-    let lines = printed(&counted());
-    assert!(
-        lines[0].contains("C1 UMI/cell") && lines[0].contains("C2 UMI/cell"),
-        "{lines:?}"
-    );
+    let m = counted();
+    let lines = modules(&m);
+    let head: Vec<&str> = lines[0].split('\t').collect();
+    assert_eq!(&head[..3], ["module", "main genes", "range"]);
+    assert_eq!(head.len(), 3 + 2 * m.cell_roles, "{head:?}");
+    for c in 1..=2 {
+        assert!(
+            head.contains(&format!("C{c} UMI/cell").as_str()),
+            "{head:?}"
+        );
+        assert!(head.contains(&format!("C{c} cells").as_str()), "{head:?}");
+    }
     let row = |name: &str| {
-        let line = lines.iter().find(|l| l.starts_with(name)).unwrap();
-        line.split_whitespace()
-            .map(str::to_string)
-            .collect::<Vec<_>>()
+        let line = lines
+            .iter()
+            .find(|l| l.starts_with(&format!("{name}\t")))
+            .unwrap();
+        line.split('\t').map(str::to_string).collect::<Vec<_>>()
     };
-    assert_eq!(row("M1")[3..], ["3.5", "0.50"]);
-    assert_eq!(row("M2")[3..], ["0.00", "3.0"]);
+    assert!(lines[1..]
+        .iter()
+        .all(|l| l.split('\t').count() == head.len()));
+    assert_eq!([&row("M1")[3], &row("M1")[5]], ["3.5", "0.50"]);
+    assert_eq!([&row("M2")[3], &row("M2")[5]], ["0.00", "3.0"]);
     // A site fit's are % and reads.
-    assert!(printed(&loaded())[0].contains("C1 %/reads"));
+    let head = modules(&loaded()).remove(0);
+    assert!(
+        head.contains("\tC1 %\t") && head.contains("\tC1 reads"),
+        "{head}"
+    );
 }
 
 #[test]

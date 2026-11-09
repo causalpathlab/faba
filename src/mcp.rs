@@ -697,7 +697,6 @@ impl Arguments {
             "--no-detach",
             "--html",
             "--dist-measures",
-            "--refit",
             "--figure",
             "--plots",
             "--dry-run",
@@ -1215,48 +1214,17 @@ fn cluster(a: &Arguments, cx: &Call) -> Result<Value> {
     run_out(a, cx, argv, &out, &what)
 }
 
-/// Flags `cluster_view` refuses up front, as `faba cluster-view`, which
-/// never fits, would: every flag and alias of the blockmodel options
-/// ([`crate::cluster::MODEL_OPTIONS`]), read off the command itself so none
-/// is missed, and the sampler's, which a viewer has no use for.
-fn cluster_view_taken() -> Vec<String> {
-    use clap::CommandFactory;
-    let cli = crate::Cli::command();
-    let view = cli
-        .find_subcommand("cluster-view")
-        .expect("`faba cluster-view` is a command");
-    let mut taken: Vec<String> = ["--chains", "--sweeps", "--burn-in"]
-        .map(String::from)
-        .into();
-    for arg in view
-        .get_arguments()
-        .filter(|a| crate::cluster::MODEL_OPTIONS.contains(&a.get_id().as_str()))
-    {
-        let longs = arg
-            .get_long()
-            .into_iter()
-            .chain(arg.get_all_aliases().into_iter().flatten());
-        taken.extend(longs.map(|l| format!("--{l}")));
-        let shorts = arg
-            .get_short()
-            .into_iter()
-            .chain(arg.get_all_short_aliases().into_iter().flatten());
-        taken.extend(shorts.map(|s| format!("-{s}")));
-    }
-    taken
-}
-
 fn cluster_view(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
     let data = a.path("data")?;
-    viewable(&data, a.str("modality"))?;
+    // What cannot be opened as it is is refused before the command runs.
+    crate::cluster::resolve(&[data.as_str().into()], a.str("modality"), None)?;
     let mut argv = vec!["cluster-view".into(), data.clone()];
     push_opt(&mut argv, "--modality", a.str("modality"));
     if let Some(gtf) = a.path_opt("gtf")? {
         push_flag(&mut argv, "--gtf", &gtf);
     }
-    let taken = cluster_view_taken();
-    let taken: Vec<&str> = taken.iter().map(String::as_str).collect();
-    argv.extend(a.options(&taken)?);
+    // A fitting option is refused by the command itself, naming `faba cluster`.
+    argv.extend(a.options(&[])?);
     argv.push("--batch-process".into());
     push_opt(&mut argv, "--module", a.str("module"));
     push_opt(&mut argv, "--gene", a.str("gene"));
@@ -1274,37 +1242,6 @@ fn cluster_view(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
     }
     let text = cx.run_reading(command(&argv)?)?;
     Ok(vec![Content::Text(text)])
-}
-
-/// `data` is what `cluster_view` may open: a blockmodel fit's run record,
-/// or a directory with its block tables; nothing else, so the command
-/// never fits from here.
-fn viewable(data: &str, modality: Option<&str>) -> Result<()> {
-    if crate::cluster::read_fit_record(Path::new(data))?.is_none() {
-        block_tables(data, modality)?;
-    }
-    Ok(())
-}
-
-/// `dir` holds the block tables `cluster` writes, so `cluster_view` has nothing
-/// to fit and nothing to replace.
-fn block_tables(dir: &str, modality: Option<&str>) -> Result<()> {
-    let has = |m: &str| {
-        Path::new(dir)
-            .join(format!("{m}_block_sites.parquet"))
-            .is_file()
-    };
-    match modality {
-        Some(m) => ensure!(
-            has(m),
-            "no {m} block tables in {dir}: run cluster into a new directory first"
-        ),
-        None => ensure!(
-            has("m6a") || has("atoi"),
-            "no block tables in {dir}: run cluster into a new directory first"
-        ),
-    }
-    Ok(())
 }
 
 /// Flags that switch `pileup` into the Miami figure. They are arguments of
@@ -1460,8 +1397,7 @@ fn exists(path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        cluster_view_taken, pileup_argv, recorded_results, tools, tsv_rows, typed_flags, viewable,
-        with_typed, Arguments, TYPED,
+        pileup_argv, recorded_results, tools, tsv_rows, typed_flags, with_typed, Arguments, TYPED,
     };
     use clap::CommandFactory;
     use serde_json::json;
@@ -1579,57 +1515,36 @@ sites	m6A	10	2
         assert!(r["big"].as_str().unwrap().contains("big.run.json"));
     }
 
-    /// Every blockmodel option, under any of its flags, is refused through
-    /// `options`, as `faba cluster-view` itself refuses it, naming `faba
-    /// cluster`: a viewer never fits.
+    /// Every blockmodel option, under any of its flags, passes through
+    /// `options` to `faba cluster-view`, which refuses it as clap does,
+    /// saying to run `faba cluster` with it: a viewer never fits.
     #[test]
     fn cluster_view_refuses_every_option_that_would_fit() {
-        let taken = cluster_view_taken();
-        for flag in [
-            "--model",
-            "--cell-roles",
-            "--communities",
-            "--prior-strength",
-            "--gene-roles",
-            "--shift",
-            "--global",
-            "--profile-strength",
-            "--membership-alpha",
-            "--community-gamma",
-            "--gene-alpha",
-            "--shift-sd",
-            "--cell-sd",
-        ] {
-            assert!(
-                taken.iter().any(|t| t == flag),
-                "{flag} not refused: {taken:?}"
-            );
-        }
-        // Each of the options names a flag of the command.
-        assert!(
-            taken.len() > crate::cluster::MODEL_OPTIONS.len(),
-            "{taken:?}"
-        );
-        let taken: Vec<&str> = taken.iter().map(String::as_str).collect();
-        let a = Arguments(json!({ "options": ["--membership-alpha=2"] }));
-        assert!(a.options(&taken).is_err());
-        let a = Arguments(json!({ "options": ["--community-gamma", "3"] }));
-        assert!(a.options(&taken).is_err());
-        let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().to_string_lossy();
         for option in [
             &["--model", "link"][..],
+            &["--cell-roles", "4"],
             &["--communities", "4"],
+            &["--prior-strength", "2"],
+            &["--gene-roles", "3"],
+            &["--shift", "on"],
+            &["--global", "on"],
+            &["--profile-strength", "inf"],
+            &["--membership-alpha=2"],
+            &["--community-gamma", "3"],
+            &["--gene-alpha", "1"],
             &["--shift-sd", "1"],
+            &["--cell-sd", "1"],
+            &["--chains", "2"],
+            &["--sweeps", "50"],
+            &["--burn-in", "10"],
         ] {
-            let line = ["faba", "cluster-view", &dir, "--batch-process"];
-            let m = crate::faba_command()
-                .try_get_matches_from(line.iter().chain(option))
-                .unwrap();
-            let crate::Commands::ClusterView(args) = crate::parse(&m).unwrap().commands else {
-                panic!("not cluster-view");
-            };
-            let err = crate::cluster::run_modules(&args).unwrap_err().to_string();
+            let a = Arguments(json!({ "options": option }));
+            let passed = a.options(&[]).unwrap();
+            let line = ["faba", "cluster-view", "out/", "--batch-process"];
+            let all = line.iter().copied().map(String::from).chain(passed);
+            let err = crate::matches(&mut crate::faba_command(), all)
+                .unwrap_err()
+                .to_string();
             assert!(
                 err.contains("never fits") && err.contains("`faba cluster`"),
                 "{option:?}: {err}"
@@ -1638,23 +1553,26 @@ sites	m6A	10	2
     }
 
     /// `cluster_view` opens a fit's record or its tables, never anything
-    /// it would have to fit first: another file, another command's record
-    /// or a directory without tables are refused.
+    /// it would have to fit first: another command's record or site
+    /// matrices without tables beside them, or a directory without tables,
+    /// are refused.
     #[test]
     fn cluster_view_opens_only_what_needs_no_fit() {
         let tmp = tempfile::tempdir().unwrap();
         let d = tmp.path();
         let at = |name: &str| d.join(name).to_string_lossy().into_owned();
+        let opens = |data: String| crate::cluster::resolve(&[data.into()], None, None);
         std::fs::write(at("pipeline.run.json"), r#"{"job":"run"}"#).unwrap();
         std::fs::write(at("x.zarr"), "").unwrap();
         for refused in [at("pipeline.run.json"), at("x.zarr"), at("")] {
-            assert!(viewable(&refused, None).is_err(), "{refused}");
+            let err = opens(refused.clone()).unwrap_err().to_string();
+            assert!(err.contains("run `faba cluster` first"), "{refused}: {err}");
         }
         std::fs::write(at("m6a_block_sites.parquet"), "").unwrap();
-        assert!(viewable(&at(""), None).is_ok());
+        assert_eq!(opens(at("")).unwrap().1, "m6a");
         let fit = r#"{"job":"cluster","results":{"model":{},"tables":{"modality":"m6a"}}}"#;
         std::fs::write(at("m6a_blockmodel.run.json"), fit).unwrap();
-        assert!(viewable(&at("m6a_blockmodel.run.json"), None).is_ok());
+        assert!(opens(at("m6a_blockmodel.run.json")).unwrap().2.is_some());
     }
 
     /// `figure` alone draws: the command gets `--svg`, which puts it in

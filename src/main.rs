@@ -340,8 +340,8 @@ Example:\n  \
             cell modules, full screen (`faba modules` and `faba blocks` are older names).\n\
             Name the fit's run record, {modality}_blockmodel.run.json, or the output\n\
             directory of its site matrices: its tables open as they are. It never fits:\n\
-            with no tables there, run `faba cluster` first; --model, a blockmodel switch\n\
-            or --refit is refused, naming `faba cluster`, which fits.\n\n\
+            with no tables there, run `faba cluster` first; it has none of `faba cluster`'s\n\
+            options for the model, the sampler or the reads, and says to run that.\n\n\
             Four levels, each a margin of the next, all posterior-mean reads of the fitted\n\
             cells. 1 gene modules: every gene module against every cell module. 2 sites: the\n\
             sites of the module in focus, each with its reads, converted, unconverted and\n\
@@ -630,21 +630,28 @@ fn run_help(text: &str) -> String {
 /// `faba`'s command, built, so each subcommand carries `faba`'s global
 /// flags (such as `-v`) and is named as `faba <command>`.
 fn faba_command() -> clap::Command {
-    let mut cmd = Cli::command().mut_subcommand("cluster-view", cluster::view_help);
+    let mut cmd = Cli::command();
     cmd.build();
     cmd
 }
 
+/// `line` parsed by `cmd`; an option of `faba cluster` given to `faba
+/// cluster-view`, which never fits, refused saying to run `faba cluster`
+/// with it (see [`cluster::fitting_hint`]).
+fn matches<I, T>(cmd: &mut clap::Command, line: I) -> Result<clap::ArgMatches, clap::Error>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString> + Clone,
+{
+    cmd.try_get_matches_from_mut(line)
+        .map_err(cluster::fitting_hint)
+}
+
 /// Notes what was given to `faba cluster`'s options, for the command it
-/// saves (and under `faba cluster-view`, to refuse those that would fit).
+/// saves.
 fn record_given(cli: &mut Cli, matches: &clap::ArgMatches) {
-    let Some((_, m)) = matches.subcommand() else {
-        return;
-    };
-    match &mut cli.commands {
-        Commands::Cluster(args) => args.record_given(m),
-        Commands::ClusterView(args) => args.record_given(m),
-        _ => {}
+    if let (Commands::Cluster(args), Some((_, m))) = (&mut cli.commands, matches.subcommand()) {
+        args.record_given(m);
     }
 }
 
@@ -667,7 +674,7 @@ fn main() -> anyhow::Result<()> {
 
     // One parse of the command line: `faba run`'s view takes its matches.
     let mut cmd = faba_command();
-    let matches = cmd.get_matches_mut();
+    let matches = matches(&mut cmd, std::env::args_os()).unwrap_or_else(|e| e.exit());
     let cli = parse(&matches).unwrap_or_else(|e| e.format(&mut cmd).exit());
 
     data_beans::aux::logging::init_logger(cli.verbose);
@@ -798,15 +805,46 @@ mod tests {
 
     #[test]
     fn what_is_given_to_cluster_is_noted_at_parse_time() {
-        for command in ["cluster", "cluster-view", "modules", "blocks"] {
-            let m = faba_command()
-                .try_get_matches_from(["faba", command, "/x.zarr", "--chains", "2"])
-                .unwrap();
-            let cli = parse(&m).unwrap();
-            let noted = format!("{:?}", cli.commands);
-            // Only the set of given ids quotes a name.
-            assert!(noted.contains(r#""chains""#), "{noted}");
+        let m = faba_command()
+            .try_get_matches_from(["faba", "cluster", "/x.zarr", "--chains", "2"])
+            .unwrap();
+        let cli = parse(&m).unwrap();
+        let noted = format!("{:?}", cli.commands);
+        // Only the set of given ids quotes a name.
+        assert!(noted.contains(r#""chains""#), "{noted}");
+    }
+
+    /// `faba cluster-view`, under any of its names, has none of `faba
+    /// cluster`'s fitting options: clap refuses each, saying to run `faba
+    /// cluster` with it; an option neither has is refused plainly, as is
+    /// one given to another command.
+    #[test]
+    fn a_fitting_option_given_to_the_viewer_says_to_run_cluster() {
+        let refused = |line: &[&str]| {
+            let e = matches(&mut faba_command(), line).unwrap_err();
+            assert_eq!(
+                e.kind(),
+                clap::error::ErrorKind::UnknownArgument,
+                "{line:?}"
+            );
+            e.to_string()
+        };
+        for command in ["cluster-view", "modules", "blocks"] {
+            for option in [&["--chains", "2"][..], &["--cell-roles=3"], &["--fit", "x"]] {
+                let line: Vec<&str> = ["faba", command, "out/"]
+                    .iter()
+                    .chain(option)
+                    .copied()
+                    .collect();
+                let err = refused(&line);
+                assert!(
+                    err.contains("never fits") && err.contains("`faba cluster`"),
+                    "{err}"
+                );
+            }
+            assert!(!refused(&["faba", command, "--nonesuch"]).contains("never fits"));
         }
+        assert!(!refused(&["faba", "qc", "out/", "--chains", "2"]).contains("never fits"));
     }
 
     /// The session `line` opens: its screen, whether something was named

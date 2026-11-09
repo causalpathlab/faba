@@ -233,11 +233,14 @@ pub struct Modules {
     /// `{m}_site_stats`; none when the tables predate it.
     pub stats: Option<SiteStats>,
     /// The model the tables come from, from their run record; why not
-    /// when there is none (see [`run::model`]).
+    /// when there is none (see [`run::settings`]).
     pub run: Result<Recorded, String>,
-    /// The model's settings as the run record holds them, whatever the
-    /// model (none without a record).
-    pub settings: Option<serde_json::Value>,
+    /// A count fit's settings as its run record holds them, which are not
+    /// the blockmodel's [`Recorded`] (none for a site fit, or without a
+    /// record).
+    pub count_settings: Option<serde_json::Value>,
+    /// Each gene with sites, by key, and its main gene role.
+    main: FxHashMap<Box<str>, usize>,
     /// Whether the fit converged, and its trace (see [`Fit`]).
     pub fit: Fit,
 }
@@ -297,6 +300,13 @@ impl Modules {
             );
         }
         let record = record.map_or_else(|| run::record(dir, modality), Ok);
+        let main = (from.sites.iter())
+            .filter_map(|s| Some((s.gene.clone(), *main.get(s.gene.as_ref())?)))
+            .collect();
+        let count_settings = (record.as_ref().ok())
+            .filter(|_| count)
+            .and_then(|(_, r)| r.pointer("/results/model"))
+            .cloned();
         let mut modules = Self {
             modality: modality.to_string(),
             cell_roles,
@@ -318,9 +328,8 @@ impl Modules {
                 .as_ref()
                 .map_err(Clone::clone)
                 .and_then(run::settings),
-            settings: (record.as_ref().ok())
-                .and_then(|(_, r)| r.pointer("/results/model"))
-                .cloned(),
+            count_settings,
+            main,
             fit: Fit::read(dir, modality, &record),
         };
         // A count fit's genes are its sites, their reads UMIs per cell.
@@ -330,6 +339,24 @@ impl Modules {
         modules.set_orders();
         modules.put_in_columns();
         Ok(modules)
+    }
+
+    /// Whether the values are UMIs per cell (a count fit's genes), not a
+    /// site's converted reads of all its reads.
+    pub fn per_cell(&self) -> bool {
+        self.modality == crate::cluster::command::COUNT_MODALITY
+    }
+
+    /// The gene `name` names, by key or symbol (ASCII case aside; the
+    /// first key by name when several match): its key and its main gene
+    /// role; none when no gene with sites matches.
+    pub fn find_gene(&self, name: &str) -> Option<(&str, usize)> {
+        let named =
+            |k: &str| k.eq_ignore_ascii_case(name) || query_symbol(k).eq_ignore_ascii_case(name);
+        (self.main.iter())
+            .filter(|(k, _)| named(k))
+            .map(|(k, &g)| (k.as_ref(), g))
+            .min()
     }
 
     /// Every member's, site's and block's reads marked as UMIs per cell.

@@ -2,7 +2,7 @@
 //! every cell module, the cell modules, the settings; asked for by name,
 //! wrong names refused.
 
-use super::super::text::{printed, Shown};
+use super::super::text::{modules, printed, Shown};
 use super::{counted, loaded};
 
 fn shown(f: impl FnOnce(&mut Shown)) -> Shown {
@@ -77,6 +77,8 @@ fn the_cell_modules_and_settings_print_in_order() {
         s.settings = true;
     });
     assert!(s.any() && !Shown::default().any());
+    // None asked: the modules (level 1).
+    assert_eq!(printed(&m, &Shown::default()).unwrap(), modules(&m));
     let lines = printed(&m, &s).unwrap();
     assert!(lines[0].starts_with("cell modules"), "{lines:?}");
     assert_eq!(lines[1], "module\tcells");

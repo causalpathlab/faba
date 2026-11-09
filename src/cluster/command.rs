@@ -39,10 +39,14 @@ impl ClusterArgs {
     /// Whether this is a fit of gene counts (`--modality count`), the count
     /// blockmodel, rather than of a site modality.
     pub(super) fn is_count(&self) -> bool {
-        self.modality
-            .as_deref()
-            .is_some_and(|m| m.eq_ignore_ascii_case(COUNT_MODALITY))
+        is_count(self.modality.as_deref())
     }
+}
+
+/// Whether `modality` names gene counts ([`COUNT_MODALITY`], ASCII case
+/// aside): `faba cluster`'s count fit, or `faba cluster-view`'s.
+pub(in crate::cluster) fn is_count(modality: Option<&str>) -> bool {
+    modality.is_some_and(|m| m.eq_ignore_ascii_case(COUNT_MODALITY))
 }
 
 /// The modality that names gene counts, and the count fit's tables.

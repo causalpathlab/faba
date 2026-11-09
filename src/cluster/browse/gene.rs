@@ -49,15 +49,15 @@ impl<'a> GeneReads<'a> {
     }
 }
 
-/// What the footer says first of `reads`: the chromosomes left out, and
-/// that older tables make the pileup approximate; none when neither.
-pub(super) fn note(m: &Modules, reads: &GeneReads) -> Option<String> {
+/// What the footer says first of a gene's pileup on `chr`: the
+/// chromosomes `dropped` (left out), and that older tables make the pileup
+/// approximate; none when neither.
+pub(super) fn note(m: &Modules, chr: &str, dropped: &[&str]) -> Option<String> {
     let mut parts = Vec::new();
-    if !reads.dropped.is_empty() {
+    if !dropped.is_empty() {
         parts.push(format!(
-            "its sites on {} left out (shown: {})",
-            reads.dropped.join(", "),
-            reads.chr
+            "its sites on {} left out (shown: {chr})",
+            dropped.join(", ")
         ));
     }
     parts.extend(m.approximate.pileup_note(&m.modality));
@@ -85,7 +85,7 @@ pub(super) fn show(
         cursor: None,
         // Group 0 is all cells; each group has two tracks.
         track_from: 2 * (first + 1),
-        status: note(m, &reads),
+        status: note(m, reads.chr, &reads.dropped),
     };
     loop {
         let view = View {

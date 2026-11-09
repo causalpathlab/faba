@@ -14,7 +14,6 @@ use std::io::IsTerminal;
 use std::path::Path;
 
 mod args;
-pub(crate) use args::MODEL_OPTIONS;
 mod browse;
 mod command;
 mod count;
@@ -37,8 +36,8 @@ mod write;
 use args::{check, inputs, output_dir, with_inputs};
 pub use args::{ClusterArgs, ModelKind};
 #[cfg(feature = "mcp")]
-pub(crate) use browse::read_fit_record;
-pub use browse::{run_modules, view_help, ModulesArgs};
+pub(crate) use browse::resolve;
+pub use browse::{fitting_hint, run_modules, ModulesArgs};
 use command::command;
 
 #[cfg(test)]
@@ -128,25 +127,29 @@ pub fn run_cluster(args: &ClusterArgs) -> anyhow::Result<Option<String>> {
         )
     };
     // The inputs are asked for first, in a browser of their own.
-    let Some(args) = &with_inputs(args, "cluster", false, offered)? else {
+    let Some(data_files) = with_inputs(&args.data_files, "cluster", false, offered)? else {
         return Ok(None);
     };
-    let live = std::io::stderr().is_terminal() && data_beans::interactive::tui_available();
-    let progress = if live {
-        progress::Progress::interruptible(args.chains)
-    } else {
-        progress::Progress::on_stderr(args.chains)
+    let args = &ClusterArgs {
+        data_files,
+        ..args.clone()
     };
-    let modality = if live {
+    let live = std::io::stderr().is_terminal() && data_beans::interactive::tui_available();
+    let (progress, modality) = if live {
+        let progress = progress::Progress::interruptible(args.chains);
         let model = if args.is_count() {
             "count blockmodel".to_string()
         } else {
             format!("{} model", args.model.name())
         };
-        let title = format!("fitting the {model} in {}", output_dir(args).display());
-        progress::view::watch(&title, &progress, |p| run_cluster_watched(args, p))?
+        let dir = output_dir(args.output.as_deref(), &args.data_files);
+        let title = format!("fitting the {model} in {}", dir.display());
+        let modality = progress::view::watch(&title, &progress, |p| run_cluster_watched(args, p))?;
+        (progress, modality)
     } else {
-        run_cluster_watched(args, &progress)?
+        let progress = progress::Progress::on_stderr(args.chains);
+        let modality = run_cluster_watched(args, &progress)?;
+        (progress, modality)
     };
     progress::spark::tell(&progress);
     Ok(Some(modality))
@@ -159,7 +162,7 @@ fn run_cluster_watched(
     args: &ClusterArgs,
     progress: &progress::Progress,
 ) -> anyhow::Result<String> {
-    let dir = output_dir(args);
+    let dir = output_dir(args.output.as_deref(), &args.data_files);
     let mut record = RunRecord::start("cluster", &dir.to_string_lossy())
         .inputs("matrices", &args.data_files)
         .options(args);

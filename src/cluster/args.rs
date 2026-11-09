@@ -377,24 +377,6 @@ pub(super) fn recorded(args: &ClusterArgs) -> unified::Recorded {
     }
 }
 
-/// The options (clap ids) that set the blockmodel's settings: the preset
-/// and every switch and concentration [`blockmodel`] reads. `faba
-/// cluster-view`, which never fits, refuses them, as does the MCP
-/// `cluster_view` tool.
-pub(crate) const MODEL_OPTIONS: [&str; 11] = [
-    "model",
-    "cell_roles",
-    "gene_roles",
-    "shift",
-    "global",
-    "membership_alpha",
-    "community_gamma",
-    "gene_alpha",
-    "shift_sd",
-    "profile_strength",
-    "cell_sd",
-];
-
 /// The matrices to read: each with its batch and whether it is fitted; and
 /// the modality asked for.
 pub(super) fn inputs(args: &ClusterArgs) -> anyhow::Result<Vec<read::Input>> {
@@ -476,12 +458,13 @@ pub(super) fn qualify_batches(inputs: &mut [read::Input]) {
     }
 }
 
-/// `-o`, else the first input directory, else the first matrix's directory.
-pub(super) fn output_dir(args: &ClusterArgs) -> PathBuf {
-    if let Some(o) = &args.output {
-        return PathBuf::from(o.as_ref());
+/// `-o` (`output`), else the first input directory, else the first
+/// matrix's directory.
+pub(super) fn output_dir(output: Option<&str>, data_files: &[Box<str>]) -> PathBuf {
+    match output {
+        Some(o) => PathBuf::from(o),
+        None => crate::run_record::default_output_dir(&data_files[0]),
     }
-    crate::run_record::default_output_dir(&args.data_files[0])
 }
 
 /// Settings that would make the fit meaningless, refused up front.
@@ -542,19 +525,17 @@ pub(super) fn check(args: &ClusterArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `args` with its inputs, asked for in a browser when none are named: the
-/// files `keep` accepts, called `what`.
+/// `data_files`, or when none are named the inputs asked for in a browser:
+/// the files `keep` accepts, called `what`; none when none are chosen.
 pub(super) fn with_inputs(
-    args: &ClusterArgs,
+    data_files: &[Box<str>],
     command: &'static str,
     batch: bool,
     (what, keep): (&'static str, fn(&str) -> bool),
-) -> anyhow::Result<Option<ClusterArgs>> {
-    let mut args = args.clone();
-    if args.data_files.is_empty() {
-        let ask = crate::site_analysis::input_picker::ask_inputs(command, batch, what, keep, false);
-        let Some(chosen) = ask? else { return Ok(None) };
-        args.data_files = chosen.paths;
+) -> anyhow::Result<Option<Vec<Box<str>>>> {
+    if !data_files.is_empty() {
+        return Ok(Some(data_files.to_vec()));
     }
-    Ok(Some(args))
+    let ask = crate::site_analysis::input_picker::ask_inputs(command, batch, what, keep, false);
+    Ok(ask?.map(|chosen| chosen.paths))
 }
