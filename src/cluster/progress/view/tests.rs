@@ -168,10 +168,14 @@ fn shows_the_r_hat_then_ends() {
     assert!(v.done(), "a fit that died ends it");
 }
 
-/// Ticks `view` until it is done, as the terminal loop would.
+/// Ticks `view` until it is done, as the terminal loop would, a key
+/// coming once the result is in (the verdict stays up until one).
 fn tick_until_done(view: &mut Fitting<u8>) -> anyhow::Result<()> {
     while !view.done() {
         view.tick();
+        if view.pending.out().is_some() {
+            view.handle_key(key('x'));
+        }
         std::thread::sleep(Duration::from_millis(1));
     }
     Ok(())
