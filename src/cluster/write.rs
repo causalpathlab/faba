@@ -411,7 +411,7 @@ pub fn block_sites(
     write(columns, path)
 }
 
-/// One row per gene and cell role with counts there, by gene role and
+/// One row per gene and cell role, by gene role and
 /// gene: both roles (the gene's main gene role), the gene (`chr` empty and
 /// `pos` 0: a gene is one feature), its UMIs in the cell role's cells
 /// (each cell's counts by its membership) and those cells (their
@@ -426,9 +426,10 @@ pub fn count_genes(
     path: &Path,
 ) -> anyhow::Result<()> {
     let aa = cells.len();
+    // Every gene in every cell role, none left out: a gene with no UMIs in
+    // a cell role reads 0 per cell there, and counts in its module's mean.
     let mut rows: Vec<(usize, usize)> = (0..names.len())
         .flat_map(|g| (0..aa).map(move |a| (g, a)))
-        .filter(|&(g, a)| umis[g * aa + a] > 0.0)
         .collect();
     rows.sort_by_key(|&(g, a)| (main[g], names[g], a));
     let i32s = |f: &dyn Fn(&(usize, usize)) -> usize| {

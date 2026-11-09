@@ -1,28 +1,27 @@
 //! `faba cluster-view`: the blockmodel's gene modules and cell modules, browsed.
 //!
-//! Reads the tables `faba cluster`'s blockmodel writes (see [`data`]),
-//! fitting them first when they are missing or of other settings than those
-//! given (see [`plan`]), in a terminal with the settings asked in a form
-//! first (see [`ask`]), and opens a view of four linked levels, each a margin of the next over the posterior-mean reads by gene
+//! Reads the tables `faba cluster`'s blockmodel writes (see [`data`]), as
+//! they are: it never fits, and has none of the options that would (see
+//! [`fitting_hint`]). It opens a view of four linked levels, each a
+//! margin of the next over the posterior-mean reads by gene
 //! role, site and cell role (see [`view`]): every gene module against every
 //! cell module, the sites of the module in focus, the genes pinned side by
 //! side (each in its main gene module), and one gene's full pileup over
 //! every gene role (see [`gene`]).
 //! `--html` (or `e`) writes the same as one page (see [`report`]).
 
-use super::command::COUNT_MODALITY;
-use super::{ClusterArgs, ModelKind};
+use super::command::{is_count, COUNT_MODALITY};
 use crate::site_analysis::input_picker::{ask_reference, Reference};
 use crate::site_analysis::miami::genemodel::load_gene_models_where;
 use anyhow::Context;
 use clap::Args;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-mod ask;
 mod data;
 mod gene;
 mod order;
 mod report;
+mod text;
 mod view;
 
 pub use data::{gene_models, Count, Modules};
@@ -33,8 +32,32 @@ pub use view::ModulesView;
 
 #[derive(Args, Debug, Clone)]
 pub struct ModulesArgs {
-    #[command(flatten)]
-    cluster: ClusterArgs,
+    #[arg(
+        num_args = 0..,
+        value_name = "RECORD|DIR",
+        value_hint = clap::ValueHint::AnyPath,
+        help = "A fit's run record, or the output directory (or site matrices) whose block tables to open; browse for one when left out",
+        long_help = "A `faba cluster` fit's run record, {modality}_blockmodel.run.json, or\n\
+                     the output directory (or site matrices) whose block tables to open, as\n\
+                     they are. Left out, a browser asks, as `faba pileup`'s does."
+    )]
+    data_files: Vec<Box<str>>,
+
+    #[arg(
+        long = "modality",
+        value_name = "m6a|atoi|count",
+        help = "Which fit's tables to open from a directory (default: m6a, else atoi); count: the count fit's"
+    )]
+    modality: Option<Box<str>>,
+
+    #[arg(
+        short = 'o',
+        long = "output",
+        value_name = "DIR",
+        value_hint = clap::ValueHint::DirPath,
+        help = "The directory the tables are in (default: the input's directory)"
+    )]
+    output: Option<Box<str>>,
 
     #[arg(
         long = "gtf",
@@ -46,18 +69,6 @@ pub struct ModulesArgs {
                      downloads one, as `faba pileup` does."
     )]
     gtf: Option<Box<str>>,
-
-    #[arg(
-        long = "refit",
-        default_value_t = false,
-        help = "Cluster again with these options even when block tables exist",
-        long_help = "Cluster again (`faba cluster --model blocks`, or `--model link` when given,\n\
-                     with these options) even when the output directory has block tables.\n\
-                     Without it, existing tables are opened as their run record says, unless\n\
-                     --model or a blockmodel switch is given whose settings (the rest at their\n\
-                     defaults) are not the recorded ones."
-    )]
-    refit: bool,
 
     #[arg(
         long = "html",
@@ -78,6 +89,10 @@ pub struct ModulesArgs {
     )]
     batch_process: bool,
 
+    /// The levels printed under --batch-process instead of the modules.
+    #[command(flatten)]
+    shown: text::Shown,
+
     /// `--no-detach` and `--session`: how the view runs as a session.
     #[command(flatten)]
     pub session: legume_tui::cli::SessionArgs,
@@ -88,45 +103,69 @@ impl ModulesArgs {
     /// --html. Matrices named start a new one; with none, live sessions
     /// are offered first.
     pub fn view_session(&self) -> Option<legume_tui::Options> {
-        let target = !self.cluster.data_files.is_empty();
+        let target = !self.data_files.is_empty();
         let batch = self.batch_process || self.html.is_some();
         (!batch).then(|| self.session.options(target))
     }
-
-    /// Notes which clustering options `matches` were given, for the
-    /// command `faba cluster` saves.
-    pub fn record_given(&mut self, matches: &clap::ArgMatches) {
-        self.cluster.record_given(matches);
-    }
-
-    /// The clustering options, with the blockmodel preset they fit: the
-    /// blocks preset unless `--model link` is given; `--model crp`, which
-    /// writes no modules, refused.
-    pub(super) fn blockmodel(&self) -> anyhow::Result<ClusterArgs> {
-        let mut cluster = self.cluster.clone();
-        if !cluster.given("model") {
-            cluster.model = ModelKind::Blocks;
-        }
-        anyhow::ensure!(
-            cluster.model != ModelKind::Crp,
-            "`faba cluster-view` reads the blockmodel (--model link or blocks), not --model crp"
-        );
-        Ok(cluster)
-    }
 }
 
+/// What `faba cluster-view` says when it is given an option it does not
+/// have (`viewing`: the command line named it): `error` with one more tip
+/// when that option is one of `faba cluster`'s (the model's, the sampler's,
+/// the reads' filters), as the viewer opens fits as they are and never
+/// fits; any other error as it is.
+pub fn fitting_hint(mut error: clap::Error, viewing: bool) -> clap::Error {
+    use clap::error::{ContextKind, ContextValue, ErrorKind};
+    let Some(ContextValue::String(given)) = error.get(ContextKind::InvalidArg) else {
+        return error;
+    };
+    let flag = given.split('=').next().unwrap_or(given);
+    let of_cluster = super::command::definition().get_arguments().any(|a| {
+        let longs = a
+            .get_long()
+            .into_iter()
+            .chain(a.get_all_aliases().into_iter().flatten());
+        let shorts = a
+            .get_short()
+            .into_iter()
+            .chain(a.get_all_short_aliases().into_iter().flatten());
+        longs
+            .map(|l| format!("--{l}"))
+            .chain(shorts.map(|c| format!("-{c}")))
+            .any(|f| f == flag)
+    });
+    if error.kind() != ErrorKind::UnknownArgument || !viewing || !of_cluster {
+        return error;
+    }
+    let mut tips = match error.get(ContextKind::Suggested) {
+        Some(ContextValue::StyledStrs(tips)) => tips.clone(),
+        _ => Vec::new(),
+    };
+    tips.push(FITTING_HINT.into());
+    error.insert(ContextKind::Suggested, ContextValue::StyledStrs(tips));
+    error
+}
+
+/// [`fitting_hint`]'s tip.
+const FITTING_HINT: &str = "`faba cluster-view` opens fits as they are and never fits: run \
+     `faba cluster` (or `faba cluster --modality count`) with that option, then open its run \
+     record here";
+
 /// What the browser offers to open: a fit's run record, or site matrices
-/// (or their output directory), clustered first when they have no tables.
+/// (or their output directory) whose fit's tables are beside them.
 fn is_view_input(name: &str) -> bool {
     crate::run_record::is_run_record(name) || crate::qc::layout::is_site_matrix_name(name)
 }
 
+/// A run record: its file name and contents.
+pub(crate) type Record = (String, serde_json::Value);
+
 /// A blockmodel fit as its run record names it: the record's directory,
 /// its file name and contents, and the fit's modality.
 #[derive(Debug)]
-pub(crate) struct FitRecord {
-    pub dir: std::path::PathBuf,
-    pub record: (String, serde_json::Value),
+struct FitRecord {
+    pub dir: PathBuf,
+    pub record: Record,
     pub modality: String,
 }
 
@@ -154,7 +193,7 @@ fn fit_record(inputs: &[Box<str>]) -> anyhow::Result<Option<FitRecord>> {
 /// which has no modules. The modality is the one its `tables` say; an older
 /// record's, the one its name begins with, else the one whose tables are
 /// beside it. Each table it names is looked for beside it.
-pub(crate) fn read_fit_record(path: &Path) -> anyhow::Result<Option<FitRecord>> {
+fn read_fit_record(path: &Path) -> anyhow::Result<Option<FitRecord>> {
     let name = path
         .file_name()
         .and_then(|n| n.to_str())
@@ -227,42 +266,6 @@ fn tables(dir: &Path, asked: Option<&str>) -> Option<String> {
     }
 }
 
-/// The modules as text: per gene module, the genes whose main module it
-/// is, and each cell module's methylated % and posterior-mean reads (a
-/// count fit: its UMIs per cell and gene, a module's genes averaged).
-fn print(m: &Modules) {
-    printed(m).iter().for_each(|line| println!("{line}"));
-}
-
-/// [`print`]'s lines: the head, then one per gene module.
-fn printed(m: &Modules) -> Vec<String> {
-    let count = m.modality == COUNT_MODALITY;
-    let unit = if count { "UMI/cell" } else { "%/reads" };
-    let mut head = format!("{:<8}{:>11}{:>8}", "module", "main genes", "range");
-    for &c in &m.columns {
-        head.push_str(&format!("{:>16}", format!("C{} {unit}", c + 1)));
-    }
-    let mut lines = vec![head];
-    for &g in &m.order {
-        let mut line = format!(
-            "{:<8}{:>11}{:>8.2}",
-            format!("M{}", g + 1),
-            m.gene_sizes[g],
-            m.shift_range(g)
-        );
-        for r in m.block(g) {
-            let cell = match (count, r.number()) {
-                (true, Some(n)) => n,
-                (true, None) => "-".into(),
-                (false, _) => format!("{}/{:.0}", r.pct(), r.total),
-            };
-            line.push_str(&format!("{cell:>16}"));
-        }
-        lines.push(line);
-    }
-    lines
-}
-
 pub fn run_modules(args: &ModulesArgs) -> anyhow::Result<()> {
     // No inputs named: browse for them, as `faba pileup` does.
     let batch = args.batch_process || args.html.is_some();
@@ -270,40 +273,11 @@ pub fn run_modules(args: &ModulesArgs) -> anyhow::Result<()> {
         "a fit's run record or site matrices",
         is_view_input as fn(&str) -> bool,
     );
-    let Some(cluster) = super::with_inputs(&args.cluster, "cluster-view", batch, offered)? else {
+    let Some(inputs) = super::with_inputs(&args.data_files, "cluster-view", batch, offered)? else {
         return Ok(());
     };
-    let args = &ModulesArgs {
-        cluster,
-        ..args.clone()
-    };
-    let (dir, modality, record) = match fit_record(&args.cluster.data_files)? {
-        // A fit's run record: its tables, as they are.
-        Some(fit) => {
-            let c = &args.cluster;
-            anyhow::ensure!(
-                !args.refit && !super::args::asks_model(c) && c.output.is_none() && c.fit.is_none(),
-                "a run record opens its fit as it is (no --refit, -o, --fit or model \
-                 options): to fit again, run `faba cluster`"
-            );
-            if let Some(m) = &c.modality {
-                anyhow::ensure!(
-                    m.eq_ignore_ascii_case(&fit.modality),
-                    "the run record is of a {} fit, not --modality {m}",
-                    fit.modality
-                );
-            }
-            (fit.dir, fit.modality, Some(fit.record))
-        }
-        None => {
-            let dir = super::output_dir(&args.cluster);
-            // A cancelled fit is an error: nothing was written.
-            let Some(modality) = ensure_tables(args, &dir, !batch)? else {
-                return Ok(());
-            };
-            (dir, modality, None)
-        }
-    };
+    let (dir, modality, record) =
+        resolve(&inputs, args.modality.as_deref(), args.output.as_deref())?;
     // Shared with the thread that writes the report on `e`.
     let modules = std::sync::Arc::new(Modules::load(&dir, &modality, record)?);
     let gtf = crate::run_record::explicit_or_recorded(
@@ -315,155 +289,64 @@ pub fn run_modules(args: &ModulesArgs) -> anyhow::Result<()> {
     if let Some(path) = &args.html {
         return write_html(&modules, gtf.as_deref(), path);
     }
-    if crate::tui::batch(args.batch_process, "cluster-view") {
-        print(&modules);
+    // A level asked for by name is printed as text, terminal or not.
+    if args.shown.any() || crate::tui::batch(args.batch_process, "cluster-view") {
+        text::printed(&modules, &args.shown)?
+            .iter()
+            .for_each(|line| println!("{line}"));
         return Ok(());
     }
     browse(&dir, &modules, gtf)
 }
 
-/// What `faba cluster-view` does with `dir`: open the block tables of a
-/// modality there, or cluster first, and why.
-#[derive(Debug, PartialEq)]
-enum Plan {
-    Open(String),
-    Fit(String),
-}
-
-/// What to do with `dir`: cluster when asked to (`--refit`), when it has
-/// no block tables, or when the blockmodel options given set other settings
-/// than the tables' run record says (the options not given at their
-/// defaults); else open the tables as they are. `--model crp`, which writes
-/// no modules, is refused whatever the tables.
-fn plan(args: &ModulesArgs, dir: &Path) -> anyhow::Result<Plan> {
-    // A count fit is opened as it is, never fitted here: its options
-    // belong to `faba cluster --modality count`.
-    if args.cluster.is_count() {
-        anyhow::ensure!(
-            !args.refit && !super::args::asks_model(&args.cluster),
-            "`faba cluster-view` opens a count fit as it is: to fit it again with other \
-             settings, run `faba cluster --modality count` with them"
-        );
-        return Ok(match tables(dir, Some(COUNT_MODALITY)) {
-            Some(m) => Plan::Open(m),
-            None => anyhow::bail!(
-                "no count tables in {}: run `faba cluster --modality count` first",
-                dir.display()
-            ),
-        });
-    }
-    let asked = args.blockmodel()?;
-    if args.refit {
-        return Ok(Plan::Fit("--refit".to_string()));
-    }
-    let Some(m) = tables(dir, args.cluster.modality.as_deref()) else {
-        return Ok(Plan::Fit(format!("no block tables in {}", dir.display())));
+/// What `data_files` open, as they are: the directory, the modality and
+/// the run record (its file name and contents) of a fit's run record
+/// named alone, else of the block tables in `-o` (`output`), else in the
+/// first input's directory. With no tables there, the fit `faba cluster`
+/// would write is to be run first: nothing is ever fitted here.
+pub(crate) fn resolve(
+    data_files: &[Box<str>],
+    modality: Option<&str>,
+    output: Option<&str>,
+) -> anyhow::Result<(PathBuf, String, Option<Record>)> {
+    let Some(fit) = fit_record(data_files)? else {
+        let dir = super::output_dir(output, data_files);
+        let modality = open_tables(&dir, modality)?;
+        return Ok((dir, modality, None));
     };
-    if !super::args::asks_model(&args.cluster) {
-        return Ok(Plan::Open(m));
-    }
-    match data::run_model(dir, &m) {
-        Ok(recorded) => {
-            let wanted = super::args::recorded(&asked);
-            if wanted.settings == recorded.settings {
-                Ok(Plan::Open(m))
-            } else if recorded.label() == wanted.label() {
-                // The same preset, recorded by a version whose defaults differ.
-                Ok(Plan::Fit(format!(
-                    "the {m} block tables in {} are of the {} with other settings \
-                     (its defaults have changed since): {:?}, now {:?}",
-                    dir.display(),
-                    recorded.label(),
-                    recorded.settings,
-                    wanted.settings
-                )))
-            } else {
-                Ok(Plan::Fit(format!(
-                    "the {m} block tables in {} are of the {}, not the {} asked for",
-                    dir.display(),
-                    recorded.label(),
-                    wanted.label()
-                )))
-            }
-        }
-        Err(why) => {
-            log::warn!(
-                "the clustering options given cannot be compared with the tables' ({why}): \
-                 opening them as they are (--refit clusters again)"
-            );
-            Ok(Plan::Open(m))
-        }
-    }
-}
-
-/// The modality of the block tables in `dir`: those there (see [`plan`]),
-/// else those `faba cluster` writes now. With `view` (and a terminal) the
-/// settings are asked first (see [`ask`]), prefilled from those given and
-/// the preset, and the chains drawn in a view, where `q` cancels the fit;
-/// else the settings given are fitted, on a bar on stderr. Esc on the form
-/// opens the old tables, as its footer says, if there are any. None, said
-/// so, when the form was left by Ctrl+C or with no tables to open, or a
-/// cancel came too late to stop the fit: the browser is not to open.
-fn ensure_tables(args: &ModulesArgs, dir: &Path, view: bool) -> anyhow::Result<Option<String>> {
-    let why = match plan(args, dir)? {
-        Plan::Open(m) => {
-            log::info!(
-                "opening the {m} block tables in {} as they are (--refit clusters again)",
-                dir.display()
-            );
-            return Ok(Some(m));
-        }
-        Plan::Fit(why) => why,
-    };
-    let interactive = view && data_beans::interactive::tui_available();
-    let title = format!("the blockmodel's settings for {}", dir.display());
-    let old = tables(dir, args.cluster.modality.as_deref());
-    let leave = match &old {
-        Some(m) => format!("open the old {m} tables without fitting"),
-        None => "quit without fitting".to_string(),
-    };
-    let cluster = match ask::chosen(args.blockmodel()?, interactive, |c| {
-        ask::ask(c, &title, &why, &leave)
-    })? {
-        ask::Asked::Fit(cluster) => *cluster,
-        ask::Asked::Back if old.is_some() => return Ok(old),
-        ask::Asked::Back | ask::Asked::Quit => {
-            crate::tui::work(|| eprintln!("faba cluster-view: not fitting, as asked"))?;
-            return Ok(None);
-        }
-    };
-    log::info!(
-        "{why}: running `faba cluster --model {}` in {} first",
-        cluster.model.name(),
-        dir.display()
+    // A fit's run record: its tables, as they are.
+    anyhow::ensure!(
+        output.is_none(),
+        "a run record opens its fit as it is (no -o): to fit again, run `faba cluster`"
     );
-    let fitted = if interactive {
-        let title = format!(
-            "fitting the {} model in {}",
-            cluster.model.name(),
-            dir.display()
+    if let Some(m) = modality {
+        anyhow::ensure!(
+            m.eq_ignore_ascii_case(&fit.modality),
+            "the run record is of a {} fit, not --modality {m}",
+            fit.modality
         );
-        let watched = super::progress::view::watch(&title, cluster.chains, |p| {
-            super::run_cluster_watched(&cluster, p)
-        })?;
-        let Some(fitted) = watched else {
-            crate::tui::work(|| {
-                eprintln!(
-                    "faba cluster-view: the tables are written in {}; not opening the modules, as asked",
-                    dir.display()
-                )
-            })?;
-            return Ok(None);
-        };
-        fitted
+    }
+    Ok((fit.dir, fit.modality, Some(fit.record)))
+}
+
+/// The modality of the block tables in `dir` to open: those of `modality`,
+/// else as [`tables`] chooses; with none there, the fit `faba cluster`
+/// would write is to be run first.
+fn open_tables(dir: &Path, modality: Option<&str>) -> anyhow::Result<String> {
+    let count = is_count(modality);
+    let asked = if count {
+        Some(COUNT_MODALITY)
     } else {
-        super::run_cluster(&cluster)?
+        modality
     };
-    // The tables of the modality just fitted, not older ones beside them.
-    fitted
-        .and_then(|m| tables(dir, Some(&m)))
-        .map(Some)
-        .ok_or_else(|| anyhow::anyhow!("`faba cluster` wrote no block tables in {}", dir.display()))
+    tables(dir, asked).with_context(|| {
+        let (what, fits) = match asked {
+            Some(_) if count => ("count".to_string(), "faba cluster --modality count"),
+            Some(m) => (format!("{} block", m.to_ascii_lowercase()), "faba cluster"),
+            None => ("block".to_string(), "faba cluster"),
+        };
+        format!("no {what} tables in {}: run `{fits}` first", dir.display())
+    })
 }
 
 /// The browser's header: the directory, the modality, and the model the

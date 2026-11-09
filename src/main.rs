@@ -317,8 +317,12 @@ Example:\n  \
             - {modality}_cluster.run.json: the run record\n\
             Each run record has split R-hat across chains (above 1.05: not converged) and,\n\
             with --holdout, held-out reads; the command beside it (.cmd.sh) runs it again.\n\
-            A blockmodel fit ends with each chain's log joint as a sparkline on stderr, the\n\
-            R-hat, and what to do when the chains disagree.",
+            On a terminal the chains are shown as they run: a bar per chain, its burn-in\n\
+            marked, each chain's log joint traced under the bars, then the R-hat and the\n\
+            verdict; `q` cancels (nothing is written) and Ctrl+C stops the chains early\n\
+            (what they kept is written, and the run record says so). Elsewhere a bar on\n\
+            stderr counts the sweeps. A blockmodel fit ends with each chain's log joint as\n\
+            a sparkline on stderr, the R-hat, and what to do when the chains disagree.",
         after_long_help = "\
 Example:\n  \
   faba cluster out/ --fit '*_wt_*' --cell-roles 8\n  \
@@ -334,9 +338,10 @@ Example:\n  \
         about = "View a `faba cluster` blockmodel fit (link or blocks): gene modules against cell modules, sites, genes and pileups",
         long_about = view_help("View a `faba cluster` fit (--model link or blocks): its gene modules against its\n\
             cell modules, full screen (`faba modules` and `faba blocks` are older names).\n\
-            Name the fit's run record, {modality}_blockmodel.run.json: its tables open as\n\
-            they are. Site matrices or their output directory work too, clustered first\n\
-            as below.\n\n\
+            Name the fit's run record, {modality}_blockmodel.run.json, or the output\n\
+            directory of its site matrices: its tables open as they are. It never fits:\n\
+            with no tables there, run `faba cluster` first; it has none of `faba cluster`'s\n\
+            options for the model, the sampler or the reads, and says to run that.\n\n\
             Four levels, each a margin of the next, all posterior-mean reads of the fitted\n\
             cells. 1 gene modules: every gene module against every cell module. 2 sites: the\n\
             sites of the module in focus, each with its reads, converted, unconverted and\n\
@@ -348,20 +353,18 @@ Example:\n  \
             its sites. Cell modules are sized by their fitted cells' summed memberships\n\
             (the `fitted` column of {modality}_cell_roles); placed cells are not in the\n\
             posterior tally. Tables older than these two are read approximately, and say\n\
-            so: rerun with --refit.\n\n\
+            so: fit again with `faba cluster`.\n\n\
             Reads are mirror bars, converted up and unconverted down; `v` shows a grid as a %\n\
             heatmap or a heatmap of each row's z across the cell modules, diagonally ordered;\n\
             `/` finds a gene. The tables are written by `faba cluster` (either blockmodel\n\
             preset, or custom settings), and opened as their run record says, its preset\n\
-            in the header. `faba cluster --model blocks` runs first, with these options,\n\
-            when they are missing, or when --model or a blockmodel switch is given whose\n\
-            settings (the rest at their defaults) are not the recorded ones.\n\
+            in the header.\n\
             The header says whether the fit converged (its split R-hat, `ok` or `check`);\n\
             `t` shows each chain's log joint as it ran ({modality}_trace), with what to do\n\
             about it. Without a terminal (or with --batch-process) the modules are printed\n\
             instead; --html writes them as one self-contained page instead (`e` in the\n\
             browser), the trace drawn in its Model section."),
-        after_long_help = "Example:\n  faba cluster-view out/m6a_blockmodel.run.json\n  faba cluster-view out/\n  faba cluster-view out/ --fit '*_wt_*' --cell-roles 8 --gene-roles 8\n  faba cluster-view out/ --html cluster.html"
+        after_long_help = "Example:\n  faba cluster-view out/m6a_blockmodel.run.json\n  faba cluster-view out/\n  faba cluster-view out/ --modality atoi\n  faba cluster-view out/ --html cluster.html"
     )]
     ClusterView(ModulesArgs),
 
@@ -632,16 +635,36 @@ fn faba_command() -> clap::Command {
     cmd
 }
 
-/// Notes what was given to `faba cluster`'s options (also under `faba
-/// cluster-view`), for the command it saves.
+/// `line` parsed by `cmd`; an option of `faba cluster` given to `faba
+/// cluster-view`, which never fits, refused saying to run `faba cluster`
+/// with it (see [`cluster::fitting_hint`]).
+fn matches<I, T>(cmd: &mut clap::Command, line: I) -> Result<clap::ArgMatches, clap::Error>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<std::ffi::OsString> + Clone,
+{
+    let line: Vec<std::ffi::OsString> = line.into_iter().map(Into::into).collect();
+    // The subcommand named: the first word after the program's that is not
+    // an option, by its name or an alias.
+    let named = line
+        .iter()
+        .skip(1)
+        .find(|w| !w.to_string_lossy().starts_with('-'));
+    let viewing = cmd.find_subcommand("cluster-view").is_some_and(|view| {
+        named.is_some_and(|w| {
+            let w = w.to_string_lossy();
+            view.get_name() == w || view.get_all_aliases().any(|a| a == w)
+        })
+    });
+    cmd.try_get_matches_from_mut(line)
+        .map_err(|e| cluster::fitting_hint(e, viewing))
+}
+
+/// Notes what was given to `faba cluster`'s options, for the command it
+/// saves.
 fn record_given(cli: &mut Cli, matches: &clap::ArgMatches) {
-    let Some((_, m)) = matches.subcommand() else {
-        return;
-    };
-    match &mut cli.commands {
-        Commands::Cluster(args) => args.record_given(m),
-        Commands::ClusterView(args) => args.record_given(m),
-        _ => {}
+    if let (Commands::Cluster(args), Some((_, m))) = (&mut cli.commands, matches.subcommand()) {
+        args.record_given(m);
     }
 }
 
@@ -664,7 +687,7 @@ fn main() -> anyhow::Result<()> {
 
     // One parse of the command line: `faba run`'s view takes its matches.
     let mut cmd = faba_command();
-    let matches = cmd.get_matches_mut();
+    let matches = matches(&mut cmd, std::env::args_os()).unwrap_or_else(|e| e.exit());
     let cli = parse(&matches).unwrap_or_else(|e| e.format(&mut cmd).exit());
 
     data_beans::aux::logging::init_logger(cli.verbose);
@@ -795,15 +818,46 @@ mod tests {
 
     #[test]
     fn what_is_given_to_cluster_is_noted_at_parse_time() {
-        for command in ["cluster", "cluster-view", "modules", "blocks"] {
-            let m = faba_command()
-                .try_get_matches_from(["faba", command, "/x.zarr", "--chains", "2"])
-                .unwrap();
-            let cli = parse(&m).unwrap();
-            let noted = format!("{:?}", cli.commands);
-            // Only the set of given ids quotes a name.
-            assert!(noted.contains(r#""chains""#), "{noted}");
+        let m = faba_command()
+            .try_get_matches_from(["faba", "cluster", "/x.zarr", "--chains", "2"])
+            .unwrap();
+        let cli = parse(&m).unwrap();
+        let noted = format!("{:?}", cli.commands);
+        // Only the set of given ids quotes a name.
+        assert!(noted.contains(r#""chains""#), "{noted}");
+    }
+
+    /// `faba cluster-view`, under any of its names, has none of `faba
+    /// cluster`'s fitting options: clap refuses each, saying to run `faba
+    /// cluster` with it; an option neither has is refused plainly, as is
+    /// one given to another command.
+    #[test]
+    fn a_fitting_option_given_to_the_viewer_says_to_run_cluster() {
+        let refused = |line: &[&str]| {
+            let e = matches(&mut faba_command(), line).unwrap_err();
+            assert_eq!(
+                e.kind(),
+                clap::error::ErrorKind::UnknownArgument,
+                "{line:?}"
+            );
+            e.to_string()
+        };
+        for command in ["cluster-view", "modules", "blocks"] {
+            for option in [&["--chains", "2"][..], &["--cell-roles=3"], &["--fit", "x"]] {
+                let line: Vec<&str> = ["faba", command, "out/"]
+                    .iter()
+                    .chain(option)
+                    .copied()
+                    .collect();
+                let err = refused(&line);
+                assert!(
+                    err.contains("never fits") && err.contains("`faba cluster`"),
+                    "{err}"
+                );
+            }
+            assert!(!refused(&["faba", command, "--nonesuch"]).contains("never fits"));
         }
+        assert!(!refused(&["faba", "qc", "out/", "--chains", "2"]).contains("never fits"));
     }
 
     /// The session `line` opens: its screen, whether something was named

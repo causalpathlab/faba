@@ -240,7 +240,7 @@ fn the_full_pileup_sums_every_gene_role_per_cell_module() {
         let all: Count = [whole(s, 0), whole(s, 1)].into_iter().sum();
         assert!((up[i].1 - all.on).abs() < 1e-5 && (down[i].1 - all.off()).abs() < 1e-5);
     }
-    assert_eq!(gene::note(&m, &reads), None);
+    assert_eq!(gene::note(&m, reads.chr, &reads.dropped), None);
     assert!(gene::GeneReads::of(&m, "GENE9").is_err());
 }
 
@@ -289,14 +289,14 @@ fn older_outputs_load_and_say_what_is_approximate() {
     assert!(m.approximate.sizes);
     assert_eq!(m.cells_label(1.5), "≈1.5");
     // The full pileup sums the block sites over gene roles, which hold no
-    // entry under a read: flagged, and the gene's view says to refit.
+    // entry under a read: flagged, and the gene's view says to fit again.
     assert!(m.approximate.pileup);
     let reads = gene::GeneReads::of(&m, "GENE1").unwrap();
     assert_eq!(positions(&reads.groups[0].0), [100, 200]);
     // GENE1 at 100, all cells converted: 4 + 2 + 1, its 0.3 under a read lost.
     assert!((reads.groups[0].0[0].1 - 7.0).abs() < 1e-5);
-    let note = gene::note(&m, &reads).unwrap();
-    assert!(note.contains("--refit"), "{note}");
+    let note = gene::note(&m, reads.chr, &reads.dropped).unwrap();
+    assert!(note.contains("faba cluster"), "{note}");
 }
 
 /// The page's level 4 holds the same numbers as the terminal's: per site
@@ -457,7 +457,7 @@ fn a_gene_on_two_chromosomes_keeps_the_one_with_most_sites() {
     let reads = gene::GeneReads::of(&m, "GENE1").unwrap();
     assert_eq!(reads.chr, "chr1");
     assert_eq!(positions(&reads.groups[0].0), [100, 200]);
-    let note = gene::note(&m, &reads).unwrap();
+    let note = gene::note(&m, reads.chr, &reads.dropped).unwrap();
     assert!(note.contains("chr0"), "{note}");
     // The page's level 4 leaves the chr0 site out too.
     let data = serde_json::to_value(report::data(&m, &Default::default())).unwrap();

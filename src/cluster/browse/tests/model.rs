@@ -1,10 +1,10 @@
 //! The report's Model section: the run's settings from its record, its
 //! plate diagram drawn as they are set; and what `faba cluster-view` makes of
-//! that record: the tables opened as recorded, or fitted again.
+//! that record: the tables opened as they are, never fitted again.
 
 use super::tables;
 use crate::cluster::browse::{
-    fit_record, plan, report, run_modules, title, Modules, ModulesArgs, Plan,
+    fit_record, open_tables, report, run_modules, title, Modules, ModulesArgs,
 };
 use crate::cluster::{args, record_name, ClusterArgs};
 use crate::run_record::RunRecord;
@@ -288,80 +288,122 @@ fn an_older_shared_record_is_still_read() {
     assert_eq!(section(tmp.path())["preset"], "link");
 }
 
-/// `words` after `faba cluster-view <dir>`, parsed as it parses them, what was
-/// given recorded.
-pub(super) fn modules(dir: &Path, words: &[&str]) -> ModulesArgs {
-    use clap::{Args, FromArgMatches};
+/// `words` after `faba cluster-view <dir>`, parsed as `faba` parses them:
+/// the arguments, or clap's refusal as `faba` says it.
+fn parsed(dir: &Path, words: &[&str]) -> Result<ModulesArgs, String> {
     let dir = dir.to_string_lossy();
-    let all = ["faba", &dir].into_iter().chain(words.iter().copied());
-    let m = ModulesArgs::augment_args(clap::Command::new("faba"))
-        .try_get_matches_from(all)
-        .unwrap();
-    let mut args = ModulesArgs::from_arg_matches(&m).unwrap();
-    args.record_given(&m);
-    args
+    let line = ["faba", "cluster-view", &dir];
+    let line = line.into_iter().chain(words.iter().copied());
+    let m = crate::matches(&mut crate::faba_command(), line).map_err(|e| e.to_string())?;
+    match crate::parse(&m).unwrap().commands {
+        crate::Commands::ClusterView(args) => Ok(args),
+        _ => panic!("not cluster-view"),
+    }
+}
+
+/// [`parsed`], given words it takes.
+fn modules(dir: &Path, words: &[&str]) -> ModulesArgs {
+    parsed(dir, words).unwrap()
+}
+
+/// What `faba cluster-view` says of `words`, which it does not take: an
+/// option of `faba cluster` (the model's, the sampler's, the reads'
+/// filters) refused saying to run `faba cluster` with it, with or without
+/// tables to open.
+fn refused(dir: &Path, words: &[&str]) {
+    let err = parsed(dir, words).unwrap_err();
+    assert!(
+        err.contains("never fits")
+            && err.contains("`faba cluster`")
+            && err.contains("faba cluster --modality count")
+            && err.contains(words[0].split('=').next().unwrap()),
+        "{words:?}: {err}"
+    );
 }
 
 /// A count fit is opened as it is: `faba cluster-view --modality count`
-/// with no model options opens its tables, and refuses `--refit` or any
-/// model option, naming the command that fits it; with no count tables it
-/// says to fit them first.
+/// opens its tables, and has no model option, saying to run the command
+/// that fits it; with no count tables it says to fit them first.
 #[test]
 fn a_count_fit_is_opened_as_it_is_never_fitted_again() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
-    let at = |words: &[&str]| plan(&modules(dir, words), dir);
+    let at = |words: &[&str]| {
+        let args = modules(dir, words);
+        open_tables(dir, args.modality.as_deref())
+    };
     let missing = at(&["--modality", "count"]).unwrap_err().to_string();
-    assert!(missing.contains("no count tables"), "{missing}");
+    assert_eq!(
+        missing,
+        format!(
+            "no count tables in {}: run `faba cluster --modality count` first",
+            dir.display()
+        )
+    );
     super::count_tables(dir);
-    let open = Plan::Open("count".to_string());
-    assert_eq!(at(&["--modality", "count"]).unwrap(), open);
-    assert_eq!(at(&["--modality", "Count", "--chains", "2"]).unwrap(), open);
+    assert_eq!(at(&["--modality", "count"]).unwrap(), "count");
+    assert_eq!(at(&["--modality", "Count"]).unwrap(), "count");
     for words in [
-        &["--modality", "count", "--refit"][..],
-        &["--modality", "count", "--cell-roles", "12"],
-        &["--modality", "count", "--model", "blocks"],
+        &["--chains", "2", "--modality", "count"][..],
+        &["--cell-roles", "12", "--modality", "count"],
+        &["--count-genes", "500", "--modality", "count"],
+        &["--model", "blocks", "--modality", "count"],
     ] {
-        let refused = at(words).unwrap_err().to_string();
-        assert!(
-            refused.contains("faba cluster --modality count"),
-            "{words:?}: {refused}"
-        );
+        refused(dir, words);
     }
+    // `--refit` is no option of either command: refused plainly.
+    let err = parsed(dir, &["--refit"]).unwrap_err();
+    assert!(
+        err.contains("--refit") && !err.contains("never fits"),
+        "{err}"
+    );
 }
 
-/// After a link run over a blocks run, `faba cluster-view` with no model
-/// options opens the tables as recorded and names the link preset in its
-/// header, as it does given `--model link`; a model or switches that set
-/// other settings than the record's fit again, saying why; `--model crp`
-/// is refused with the tables there too.
+/// `faba cluster-view` never fits. Given a directory with no block tables
+/// it says to run `faba cluster` first; given any option that sets the
+/// blockmodel, the recorded settings among them, it refuses, naming `faba
+/// cluster`, with or without the tables. Given none, it opens the tables
+/// as they are, the recorded preset in its header.
 #[test]
-fn modules_opens_the_recorded_tables_unless_asked_for_other_settings() {
+fn cluster_view_never_fits() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
+    let view = |words: &[&str]| {
+        let all: Vec<&str> = words.iter().copied().chain(["--batch-process"]).collect();
+        run_modules(&modules(dir, &all))
+    };
+    let refusals = [
+        &["--model", "link"][..],
+        &["--model", "crp"],
+        &["--cell-roles", "4"],
+        &["--shift", "on"],
+        &["--profile-strength", "inf"],
+        // A sampler's option sets a fit too: refused, not ignored.
+        &["--chains", "2"],
+    ];
+    let missing = view(&[]).unwrap_err().to_string();
+    assert_eq!(
+        missing,
+        format!(
+            "no block tables in {}: run `faba cluster` first",
+            dir.display()
+        )
+    );
+    let missing = view(&["--modality", "ATOI"]).unwrap_err().to_string();
+    assert_eq!(
+        missing,
+        format!(
+            "no atoi block tables in {}: run `faba cluster` first",
+            dir.display()
+        )
+    );
+    refusals.iter().for_each(|w| refused(dir, w));
     recorded(dir, &["--model", "blocks"]);
     recorded(dir, &["--model", "link"]);
-    let at = |words: &[&str]| plan(&modules(dir, words), dir).unwrap();
-    let open = Plan::Open("m6a".to_string());
-    assert_eq!(at(&[]), open);
-    assert_eq!(at(&["--chains", "2"]), open, "not a model option");
-    assert_eq!(at(&["--model", "link"]), open);
+    view(&[]).unwrap();
+    refusals.iter().for_each(|w| refused(dir, w));
     let head = title(dir, &Modules::load(dir, "m6a", None).unwrap());
     assert!(head.ends_with("m6a · link preset"), "{head}");
-    let Plan::Fit(why) = at(&["--model", "blocks"]) else {
-        panic!("another preset opened as it is");
-    };
-    assert!(
-        why.contains("link preset") && why.contains("blocks preset"),
-        "{why}"
-    );
-    let Plan::Fit(why) = at(&["--model", "link", "--cell-sd", "0.5", "--shift", "on"]) else {
-        panic!("other switches opened as they are");
-    };
-    assert!(why.contains("custom settings"), "{why}");
-    assert!(matches!(at(&["--refit"]), Plan::Fit(_)));
-    let refused = plan(&modules(dir, &["--model", "crp"]), dir).unwrap_err();
-    assert!(refused.to_string().contains("--model crp"), "{refused}");
     // Custom settings recorded are named so in the header.
     recorded(
         dir,
@@ -369,6 +411,28 @@ fn modules_opens_the_recorded_tables_unless_asked_for_other_settings() {
     );
     let head = title(dir, &Modules::load(dir, "m6a", None).unwrap());
     assert!(head.ends_with("custom settings"), "{head}");
+}
+
+/// A level asked for by name needs no --batch-process (it is printed as
+/// text either way) and is refused beside --html, the page of every level.
+#[test]
+fn a_level_is_printed_without_batch_process_but_not_with_html() {
+    let tmp = tempfile::tempdir().unwrap();
+    for level in [
+        &["--module", "M1"][..],
+        &["--gene", "G1"],
+        &["--cells"],
+        &["--trace"],
+        &["--settings"],
+    ] {
+        assert!(parsed(tmp.path(), level).is_ok(), "{level:?}");
+        let with: Vec<&str> = level.iter().copied().chain(["--batch-mode"]).collect();
+        assert!(parsed(tmp.path(), &with).is_ok(), "{with:?}");
+        let page: Vec<&str> = level.iter().copied().chain(["--html", "p.html"]).collect();
+        let err = parsed(tmp.path(), &page).unwrap_err();
+        assert!(err.contains("--html"), "{page:?}: {err}");
+    }
+    assert!(parsed(tmp.path(), &[]).is_ok());
 }
 
 /// A fit's run record says, by its contents, which fit to open: its
@@ -416,15 +480,15 @@ fn a_run_record_names_the_fit_to_open() {
     assert!(fit(&dir_only).unwrap().is_none());
     assert!(fit_record(&[record.clone(), dir_only]).is_err());
     run_modules(&modules(Path::new(&*record), &["--batch-process"])).unwrap();
-    for words in [
-        &["--refit"][..],
-        &["--cell-roles", "4"],
-        &["-o", "elsewhere"],
-        &["--fit", "*_wt_*"],
-    ] {
-        let all: Vec<&str> = words.iter().copied().chain(["--batch-process"]).collect();
-        let err = run_modules(&modules(Path::new(&*record), &all)).unwrap_err();
-        assert!(err.to_string().contains("opens its fit as it is"), "{err}");
+    let elsewhere = &["-o", "elsewhere", "--batch-process"];
+    let err = run_modules(&modules(Path::new(&*record), elsewhere)).unwrap_err();
+    let err = err.to_string();
+    assert!(
+        err.contains("as it is") && err.contains("`faba cluster`"),
+        "{err}"
+    );
+    for words in [&["--cell-roles", "4"][..], &["--fit", "*_wt_*"]] {
+        refused(Path::new(&*record), words);
     }
     let other = run_modules(&modules(
         Path::new(&*record),
@@ -439,18 +503,14 @@ fn a_run_record_names_the_fit_to_open() {
     .unwrap();
 }
 
-/// Without a blockmodel record the options given cannot be compared: the
-/// tables open as they are.
+/// Without a blockmodel record the tables open as they are, the header
+/// saying their settings are not recorded.
 #[test]
 fn modules_opens_unrecorded_tables_as_they_are() {
     let tmp = tempfile::tempdir().unwrap();
     tables(tmp.path());
     crp_record(tmp.path());
-    let args = modules(tmp.path(), &["--model", "blocks"]);
-    assert_eq!(
-        plan(&args, tmp.path()).unwrap(),
-        Plan::Open("m6a".to_string())
-    );
+    assert_eq!(open_tables(tmp.path(), None).unwrap(), "m6a");
     let head = title(tmp.path(), &Modules::load(tmp.path(), "m6a", None).unwrap());
     assert!(head.ends_with("settings not recorded"), "{head}");
 }

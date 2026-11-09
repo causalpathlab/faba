@@ -39,10 +39,14 @@ impl ClusterArgs {
     /// Whether this is a fit of gene counts (`--modality count`), the count
     /// blockmodel, rather than of a site modality.
     pub(super) fn is_count(&self) -> bool {
-        self.modality
-            .as_deref()
-            .is_some_and(|m| m.eq_ignore_ascii_case(COUNT_MODALITY))
+        is_count(self.modality.as_deref())
     }
+}
+
+/// Whether `modality` names gene counts ([`COUNT_MODALITY`], ASCII case
+/// aside): `faba cluster`'s count fit, or `faba cluster-view`'s.
+pub(in crate::cluster) fn is_count(modality: Option<&str>) -> bool {
+    modality.is_some_and(|m| m.eq_ignore_ascii_case(COUNT_MODALITY))
 }
 
 /// The modality that names gene counts, and the count fit's tables.
@@ -79,12 +83,6 @@ fn words(v: &Value) -> Vec<String> {
         Value::Array(items) => items.iter().flat_map(words).collect(),
         other => vec![other.to_string()],
     }
-}
-
-/// The words option `id` (its clap id) has in `args`, as the saved
-/// command says them: none when unset.
-pub(super) fn value_words(args: &ClusterArgs, id: &str) -> Vec<String> {
-    fields(args).get(id).map(words).unwrap_or_default()
 }
 
 /// `args` as a `faba cluster` command: its inputs as absolute paths, then

@@ -1,6 +1,6 @@
 //! The command `faba cluster` saves beside a run.
 
-use crate::cluster::{command, ClusterArgs, ModelKind, ModulesArgs};
+use crate::cluster::{command, ClusterArgs, ModelKind};
 
 /// `words` parsed as `faba cluster` parses them, what was given recorded.
 fn parse_cluster(words: &[&str]) -> ClusterArgs {
@@ -146,38 +146,6 @@ fn the_saved_command_quotes_a_path_with_a_space() {
     let text = crate::script::text(&script, &argv);
     assert!(text.contains(&format!("--output '{out}'")), "{text}");
     assert!(text.contains("'/x y/a.zarr'"), "{text}");
-}
-
-/// `words` parsed as `faba cluster-view` parses them, what was given recorded.
-fn parse_modules(words: &[&str]) -> ModulesArgs {
-    use clap::{Args, FromArgMatches};
-    let m = ModulesArgs::augment_args(clap::Command::new("faba"))
-        .try_get_matches_from(words)
-        .unwrap();
-    let mut args = ModulesArgs::from_arg_matches(&m).unwrap();
-    args.record_given(&m);
-    args
-}
-
-/// `faba cluster-view` clusters with the blocks preset unless `--model link` is
-/// given, so its saved command says which, beside the options given to
-/// `faba cluster-view`; `--model crp`, which writes no modules, is refused.
-#[test]
-fn the_saved_command_of_cluster_view_names_its_preset() {
-    let args = parse_modules(&["faba", "/x.zarr", "--chains", "2", "--refit"]);
-    let argv = command(&args.blockmodel().unwrap());
-    assert_eq!(after(&argv, "--model"), "blocks");
-    assert_eq!(after(&argv, "--chains"), "2");
-    // Only `faba cluster`'s own options.
-    assert!(!argv.iter().any(|w| w == "--refit"), "{argv:?}");
-    let args = parse_modules(&["faba", "/x.zarr", "--model", "link"]);
-    let argv = command(&args.blockmodel().unwrap());
-    assert_eq!(after(&argv, "--model"), "link");
-    let refused = parse_modules(&["faba", "/x.zarr", "--model", "crp"])
-        .blockmodel()
-        .unwrap_err()
-        .to_string();
-    assert!(refused.contains("--model crp"), "{refused}");
 }
 
 /// The blockmodel's switches, an infinite profile strength among them, are

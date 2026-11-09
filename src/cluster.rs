@@ -10,10 +10,10 @@ use crate::run_record::RunRecord;
 use legume_numeric::mcmc::engine::McmcConfig;
 use log::{info, warn};
 use std::borrow::Cow;
+use std::io::IsTerminal;
 use std::path::Path;
 
 mod args;
-pub(crate) use args::MODEL_OPTIONS;
 mod browse;
 mod command;
 mod count;
@@ -36,8 +36,8 @@ mod write;
 use args::{check, inputs, output_dir, with_inputs};
 pub use args::{ClusterArgs, ModelKind};
 #[cfg(feature = "mcp")]
-pub(crate) use browse::read_fit_record;
-pub use browse::{run_modules, ModulesArgs};
+pub(crate) use browse::resolve;
+pub use browse::{fitting_hint, run_modules, ModulesArgs};
 use command::command;
 
 #[cfg(test)]
@@ -110,21 +110,11 @@ fn memory_estimate(
 }
 
 /// Cluster as `args` say; the modality fitted, none when no inputs were
-/// chosen. A blockmodel fit ends with its chains' traces, R-hat and advice
-/// on stderr (see [`progress::spark`]).
+/// chosen. On a terminal the chains are drawn in a view as they run (see
+/// [`progress::view`]), where `q` cancels and Ctrl+C stops them early; else
+/// on a bar on stderr. A blockmodel fit ends with its chains' traces, R-hat
+/// and advice on stderr (see [`progress::spark`]).
 pub fn run_cluster(args: &ClusterArgs) -> anyhow::Result<Option<String>> {
-    let progress = progress::Progress::on_stderr(args.chains);
-    let fitted = run_cluster_watched(args, &progress)?;
-    progress::spark::tell(&progress);
-    Ok(fitted)
-}
-
-/// [`run_cluster`], the chains counting their sweeps on `progress`.
-/// Cancelled, it writes nothing, not even its record.
-fn run_cluster_watched(
-    args: &ClusterArgs,
-    progress: &progress::Progress,
-) -> anyhow::Result<Option<String>> {
     let offered = if args.is_count() {
         (
             "count matrices",
@@ -136,10 +126,53 @@ fn run_cluster_watched(
             crate::qc::layout::is_site_matrix_name as fn(&str) -> bool,
         )
     };
-    let Some(args) = &with_inputs(args, "cluster", false, offered)? else {
+    // The inputs are asked for first, in a browser of their own.
+    let Some(data_files) = with_inputs(&args.data_files, "cluster", false, offered)? else {
         return Ok(None);
     };
-    let dir = output_dir(args);
+    let args = &ClusterArgs {
+        data_files,
+        ..args.clone()
+    };
+    let live = !args.batch_process
+        && std::io::stderr().is_terminal()
+        && data_beans::interactive::tui_available();
+    let (progress, modality) = if live {
+        let progress = progress::Progress::interruptible(args.chains);
+        let model = if args.is_count() {
+            "count blockmodel".to_string()
+        } else {
+            format!("{} model", args.model.name())
+        };
+        let dir = output_dir(args.output.as_deref(), &args.data_files);
+        let title = format!("fitting the {model} in {}", dir.display());
+        let watched = progress::view::watch(&title, &progress, |p| run_cluster_watched(args, p));
+        // A cancel asked for in the view is not a failure: nothing written,
+        // said so.
+        match watched {
+            Err(e) if e.is::<progress::Cancelled>() => {
+                eprintln!("faba cluster: {e}");
+                return Ok(None);
+            }
+            other => (progress, other?),
+        }
+    } else {
+        let progress = progress::Progress::on_stderr(args.chains);
+        let modality = run_cluster_watched(args, &progress)?;
+        (progress, modality)
+    };
+    progress::spark::tell(&progress);
+    Ok(Some(modality))
+}
+
+/// [`run_cluster`] of `args`, their inputs named, the chains counting their
+/// sweeps on `progress`; the modality fitted. Cancelled, it writes nothing,
+/// not even its record.
+fn run_cluster_watched(
+    args: &ClusterArgs,
+    progress: &progress::Progress,
+) -> anyhow::Result<String> {
+    let dir = output_dir(args.output.as_deref(), &args.data_files);
     let mut record = RunRecord::start("cluster", &dir.to_string_lossy())
         .inputs("matrices", &args.data_files)
         .options(args);
@@ -165,7 +198,7 @@ fn run_cluster_watched(
         }
     }
     record.finish(&outcome);
-    outcome.map(|written| Some(written.modality))
+    outcome.map(|written| written.modality)
 }
 
 /// The chains' schedule for `args`: `--burn-in` sweeps, then the
