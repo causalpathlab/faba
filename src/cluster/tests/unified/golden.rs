@@ -220,4 +220,3 @@ fn fixed_chains_are_bit_for_bit_those_recorded() {
         }
     }
 }
-
