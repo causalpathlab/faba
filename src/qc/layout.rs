@@ -116,6 +116,14 @@ pub fn is_site_matrix_name(name: &str) -> bool {
     })
 }
 
+/// Whether `name` is a `{batch}_count` gene count matrix's file name.
+pub fn is_count_matrix_name(name: &str) -> bool {
+    classify_matrix_name(name, true).is_some_and(|(stem, ..)| {
+        let (batch, kind) = split_stem(stem);
+        !batch.is_empty() && &*kind == COUNT
+    })
+}
+
 /// The batch a `{batch}_{kind}` matrix's file name carries, when it has a
 /// known kind.
 pub fn matrix_batch(name: &str) -> Option<Box<str>> {

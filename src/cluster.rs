@@ -125,11 +125,18 @@ fn run_cluster_watched(
     args: &ClusterArgs,
     progress: &progress::Progress,
 ) -> anyhow::Result<Option<String>> {
-    let site_matrices = (
-        "site matrices",
-        crate::qc::layout::is_site_matrix_name as fn(&str) -> bool,
-    );
-    let Some(args) = &with_inputs(args, "cluster", false, site_matrices)? else {
+    let offered = if args.is_count() {
+        (
+            "count matrices",
+            crate::qc::layout::is_count_matrix_name as fn(&str) -> bool,
+        )
+    } else {
+        (
+            "site matrices",
+            crate::qc::layout::is_site_matrix_name as fn(&str) -> bool,
+        )
+    };
+    let Some(args) = &with_inputs(args, "cluster", false, offered)? else {
         return Ok(None);
     };
     let dir = output_dir(args);
@@ -197,7 +204,7 @@ fn cluster(
     progress: &progress::Progress,
 ) -> anyhow::Result<Written> {
     check(args)?;
-    if args.modality.as_deref() == Some("count") {
+    if args.is_count() {
         return run::count::count_fit(args, &mcmc_config(args), dir, record, progress);
     }
     let inputs = inputs(args)?;

@@ -237,80 +237,18 @@ pub fn read_inputs(
     let mut cells: Vec<Cell> = Vec::new();
     let mut per_cell: Vec<Vec<(u32, u32, u32)>> = Vec::new();
     for input in inputs {
-        progress.check()?;
-        let (backend, resolved) = resolve_backend_file(&input.path, None)?;
-        let mut data = open_sparse_matrix(&resolved, &backend)?;
-        // Every column is read once: preload them when they fit the budget.
-        let nnz = data.num_non_zeros().unwrap_or(0);
-        let _reservation = data_beans::sparse_io::reserve_preload(nnz, &input.path);
-        if _reservation.is_some() {
-            data.preload_columns()?;
-        }
-        // Each row: its site, and whether it is the converted channel.
-        let mut rows: Vec<Option<(u32, bool)>> = Vec::new();
-        let mut other: Option<Box<str>> = None;
-        for name in data.row_names()? {
-            let Some((gene, m, chr, pos, channel)) = parse_row_channel(&name) else {
-                rows.push(None);
-                continue;
-            };
-            let (Some(converted), false) = (channel, chr.is_empty()) else {
-                rows.push(None);
-                continue;
-            };
-            if modality.get_or_insert_with(|| m.into()).as_ref() != m {
-                other.get_or_insert_with(|| m.into());
-                rows.push(None);
-                continue;
-            }
-            let key = (Box::<str>::from(gene), Box::<str>::from(chr), pos);
-            let next = sites.len() as u32;
-            let s = *index.entry(key).or_insert_with(|| {
-                sites.push(Site {
-                    gene: gene.into(),
-                    chr: chr.into(),
-                    pos,
-                });
-                next
-            });
-            rows.push(Some((s, converted)));
-        }
-        // Inputs are clustered together only if they hold the same sites.
-        if rows.iter().all(Option::is_none) {
-            if let (Some(m), Some(o)) = (&modality, &other) {
-                anyhow::bail!(
-                    "{} holds {o} sites, not {m} like the inputs before it",
-                    input.path
-                );
-            }
-        }
-        let barcodes = data.column_names()?;
-        let first = cells.len();
-        cells.extend(barcodes.iter().map(|b| Cell {
-            barcode: b.clone(),
-            batch: input.batch.clone(),
-            fit: input.fit,
-        }));
-        per_cell.resize_with(cells.len(), Vec::new);
-        let ncol = barcodes.len();
-        for start in (0..ncol).step_by(COLUMN_BLOCK) {
-            progress.check()?;
-            let block: Vec<usize> = (start..(start + COLUMN_BLOCK).min(ncol)).collect();
-            let (_, _, triplets) = data.read_triplets_by_columns(block)?;
-            for (row, col, value) in triplets {
-                let Some(Some((s, converted))) = rows.get(row as usize).copied() else {
-                    continue;
-                };
-                let n = value.round().max(0.0) as u32;
-                if n == 0 {
-                    continue;
-                }
-                // The two channels at a site merge in `Reads::from_cells`.
-                let entry = if converted { (s, n, 0) } else { (s, 0, n) };
-                per_cell[first + start + col as usize].push(entry);
-            }
-        }
-        info!("{}: {} cells", input.path, ncol);
+        let mut visit = SiteVisit {
+            input,
+            rows: Vec::new(),
+            other: None,
+            first: cells.len(),
+            modality: &mut modality,
+            sites: &mut sites,
+            index: &mut index,
+            cells: &mut cells,
+            per_cell: &mut per_cell,
+        };
+        walk_matrix(&input.path, progress, &mut visit)?;
     }
     let modality = modality.ok_or_else(|| anyhow::anyhow!("no site rows in the inputs"))?;
     Ok(SiteData {
@@ -319,6 +257,125 @@ pub fn read_inputs(
         cells,
         reads: Reads::from_cells(per_cell),
     })
+}
+
+/// What [`walk_matrix`] gives a matrix's reader: its row names, then its
+/// column names (cells), then each entry above 0, rounded to a whole
+/// count, as (row, column, count).
+pub(super) trait Visit {
+    fn rows(&mut self, names: &[Box<str>]) -> anyhow::Result<()>;
+    fn columns(&mut self, barcodes: &[Box<str>]);
+    fn entry(&mut self, row: usize, col: usize, n: u32);
+}
+
+/// One matrix at `path` read through to `visit`, columns a block at a
+/// time, preloaded when they fit the budget.
+pub(super) fn walk_matrix(
+    path: &str,
+    progress: &super::progress::Progress,
+    visit: &mut impl Visit,
+) -> anyhow::Result<()> {
+    progress.check()?;
+    let (backend, resolved) = resolve_backend_file(path, None)?;
+    let mut data = open_sparse_matrix(&resolved, &backend)?;
+    // Every column is read once: preload them when they fit the budget.
+    let nnz = data.num_non_zeros().unwrap_or(0);
+    let _reservation = data_beans::sparse_io::reserve_preload(nnz, path);
+    if _reservation.is_some() {
+        data.preload_columns()?;
+    }
+    visit.rows(&data.row_names()?)?;
+    let barcodes = data.column_names()?;
+    visit.columns(&barcodes);
+    let ncol = barcodes.len();
+    for start in (0..ncol).step_by(COLUMN_BLOCK) {
+        progress.check()?;
+        let block: Vec<usize> = (start..(start + COLUMN_BLOCK).min(ncol)).collect();
+        let (_, _, triplets) = data.read_triplets_by_columns(block)?;
+        for (row, col, value) in triplets {
+            let n = value.round().max(0.0) as u32;
+            if n > 0 {
+                visit.entry(row as usize, start + col as usize, n);
+            }
+        }
+    }
+    info!("{path}: {ncol} cells");
+    Ok(())
+}
+
+/// A site matrix's reader: its rows matched to the sites (and modality)
+/// of the inputs before it, its cells and their entries appended.
+struct SiteVisit<'v> {
+    input: &'v Input,
+    /// Each row: its site, and whether it is the converted channel.
+    rows: Vec<Option<(u32, bool)>>,
+    other: Option<Box<str>>,
+    first: usize,
+    modality: &'v mut Option<Box<str>>,
+    sites: &'v mut Vec<Site>,
+    index: &'v mut FxHashMap<(Box<str>, Box<str>, i64), u32>,
+    cells: &'v mut Vec<Cell>,
+    per_cell: &'v mut Vec<Vec<(u32, u32, u32)>>,
+}
+
+impl Visit for SiteVisit<'_> {
+    fn rows(&mut self, names: &[Box<str>]) -> anyhow::Result<()> {
+        for name in names {
+            let Some((gene, m, chr, pos, channel)) = parse_row_channel(name) else {
+                self.rows.push(None);
+                continue;
+            };
+            let (Some(converted), false) = (channel, chr.is_empty()) else {
+                self.rows.push(None);
+                continue;
+            };
+            if self.modality.get_or_insert_with(|| m.into()).as_ref() != m {
+                self.other.get_or_insert_with(|| m.into());
+                self.rows.push(None);
+                continue;
+            }
+            let key = (Box::<str>::from(gene), Box::<str>::from(chr), pos);
+            let next = self.sites.len() as u32;
+            let sites = &mut *self.sites;
+            let s = *self.index.entry(key).or_insert_with(|| {
+                sites.push(Site {
+                    gene: gene.into(),
+                    chr: chr.into(),
+                    pos,
+                });
+                next
+            });
+            self.rows.push(Some((s, converted)));
+        }
+        // Inputs are clustered together only if they hold the same sites.
+        if self.rows.iter().all(Option::is_none) {
+            if let (Some(m), Some(o)) = (&*self.modality, &self.other) {
+                anyhow::bail!(
+                    "{} holds {o} sites, not {m} like the inputs before it",
+                    self.input.path
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn columns(&mut self, barcodes: &[Box<str>]) {
+        self.cells.extend(barcodes.iter().map(|b| Cell {
+            barcode: b.clone(),
+            batch: self.input.batch.clone(),
+            fit: self.input.fit,
+        }));
+        self.per_cell.resize_with(self.cells.len(), Vec::new);
+    }
+
+    fn entry(&mut self, row: usize, col: usize, n: u32) {
+        let Some(Some((s, converted))) = self.rows.get(row).copied() else {
+            return;
+        };
+        // The two channels at a site merge in `Reads::from_cells`.
+        let entry = if converted { (s, n, 0) } else { (s, 0, n) };
+        self.per_cell[self.first + col].push(entry);
+    }
 }
 
 /// Drop cells covering fewer than `min_cell_sites` sites, then sites covered by

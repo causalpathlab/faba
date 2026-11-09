@@ -415,11 +415,16 @@ pub(super) fn inputs(args: &ClusterArgs) -> anyhow::Result<Vec<read::Input>> {
             .into();
         match crate::run_record::output_dir_of(f) {
             Some(dir) => {
-                let sites = crate::site_analysis::output_dir::output_site_matrices(
-                    &dir,
-                    args.modality.as_deref(),
-                )?;
-                for (batch, path) in sites.matrices {
+                let matrices = if args.is_count() {
+                    count_matrices(&dir)?
+                } else {
+                    crate::site_analysis::output_dir::output_site_matrices(
+                        &dir,
+                        args.modality.as_deref(),
+                    )?
+                    .matrices
+                };
+                for (batch, path) in matrices {
                     out.push(read::Input {
                         fit: fits(&path),
                         path,
@@ -446,6 +451,17 @@ pub(super) fn inputs(args: &ClusterArgs) -> anyhow::Result<Vec<read::Input>> {
     );
     qualify_batches(&mut out);
     Ok(out)
+}
+
+/// The `{batch}_count` matrices of output directory `dir`, as (batch, path).
+fn count_matrices(dir: &std::path::Path) -> anyhow::Result<Vec<(Box<str>, Box<str>)>> {
+    let layout = crate::qc::layout::scan_input_dir(&dir.to_string_lossy())?;
+    let found: Vec<_> = (layout.matrices.iter())
+        .filter(|m| &*m.kind == super::command::COUNT_MODALITY)
+        .map(|m| (m.batch.clone(), m.path.clone()))
+        .collect();
+    anyhow::ensure!(!found.is_empty(), "{} has no count matrices", dir.display());
+    Ok(found)
 }
 
 /// A batch name met in several folders is a different batch in each: those
@@ -486,7 +502,7 @@ pub(super) fn check(args: &ClusterArgs) -> anyhow::Result<()> {
         (0.0..1.0).contains(&args.holdout),
         "--holdout must be at least 0 and less than 1"
     );
-    if args.modality.as_deref() == Some("count") {
+    if args.is_count() {
         anyhow::ensure!(
             args.cell_roles >= 1 && args.gene_roles.is_none_or(|b| b >= 1),
             "--cell-roles and --gene-roles must be at least 1"
@@ -496,6 +512,15 @@ pub(super) fn check(args: &ClusterArgs) -> anyhow::Result<()> {
             "--community-gamma must be positive"
         );
         anyhow::ensure!(args.count_genes >= 1, "--count-genes must be at least 1");
+        // What only the site fits do, refused rather than ignored.
+        anyhow::ensure!(
+            args.holdout == 0.0,
+            "--holdout does not apply to --modality count"
+        );
+        anyhow::ensure!(
+            !args.given("model"),
+            "--model chooses a site fit's model; --modality count fits the count blockmodel"
+        );
         return Ok(());
     }
     if args.model == ModelKind::Crp {

@@ -235,7 +235,7 @@ fn print(m: &Modules) {
 
 /// [`print`]'s lines: the head, then one per gene module.
 fn printed(m: &Modules) -> Vec<String> {
-    let count = m.modality == "count";
+    let count = m.modality == crate::cluster::command::COUNT_MODALITY;
     let unit = if count { "UMI/cell" } else { "%/reads" };
     let mut head = format!("{:<8}{:>11}{:>8}", "module", "main genes", "range");
     for &c in &m.columns {

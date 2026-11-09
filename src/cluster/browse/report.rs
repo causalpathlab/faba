@@ -122,7 +122,7 @@ pub(super) fn data(m: &Modules, models: &FxHashMap<Box<str>, GeneModel>) -> Data
                 .collect(),
         })
         .collect();
-    let per_cell = m.modality == "count";
+    let per_cell = m.modality == crate::cluster::command::COUNT_MODALITY;
     let (on, off) = if per_cell {
         ("UMIs", "")
     } else {

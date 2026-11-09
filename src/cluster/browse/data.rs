@@ -268,7 +268,7 @@ impl Modules {
         let site_cells = cells_rows.as_ref().map(SiteRows::of).transpose()?;
         // A count fit's gene is one feature: no pileup to approximate, no
         // site counts to miss.
-        let count = modality == "count";
+        let count = modality == crate::cluster::command::COUNT_MODALITY;
         let approximate = Approximate {
             sizes: listed,
             pileup: site_cells.is_none() && !count,

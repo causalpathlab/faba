@@ -2,114 +2,100 @@
 //! [`crate::cluster::count`]) of gene count matrices, from reading them to
 //! its tables.
 
+use super::super::command::COUNT_MODALITY;
 use super::super::count::{self, Counts};
+use super::super::read::{walk_matrix, Visit};
+use super::super::summary::{chain_scores, main_labels};
 use super::super::{args, progress, read, write, Written};
 use crate::run_record::RunRecord;
 use data_beans::aux::feature_rows::split_count_row;
-use data_beans::hdf5_io::resolve_backend_file;
-use data_beans::sparse_io::open_sparse_matrix;
 use legume_numeric::mcmc::engine::{McmcConfig, McmcModel};
 use log::info;
 use rand::rngs::SmallRng;
 use rustc_hash::FxHashMap;
 use std::path::Path;
-
-/// Cells read from a matrix at a time.
-const COLUMN_BLOCK: usize = 4096;
-
-/// The count matrices `args` name: each data file, or each `{batch}_count`
-/// matrix of an output directory, with its batch.
-fn count_inputs(args: &args::ClusterArgs) -> anyhow::Result<Vec<(Box<str>, Box<str>)>> {
-    let mut out = Vec::new();
-    for f in &args.data_files {
-        match crate::run_record::output_dir_of(f) {
-            Some(dir) => {
-                let layout = crate::qc::layout::scan_input_dir(&dir.to_string_lossy())?;
-                let found: Vec<_> = layout
-                    .matrices
-                    .iter()
-                    .filter(|m| &*m.kind == "count")
-                    .map(|m| (m.path.clone(), m.batch.clone()))
-                    .collect();
-                anyhow::ensure!(!found.is_empty(), "{} has no count matrices", dir.display());
-                out.extend(found);
-            }
-            None => {
-                let name = crate::qc::layout::file_name(f);
-                let batch = crate::qc::layout::matrix_batch(&name).unwrap_or(name);
-                out.push((f.clone(), batch));
-            }
-        }
-    }
-    Ok(out)
-}
+use std::sync::{Arc, Mutex};
 
 /// The genes' names, the cells, and each cell's `(gene, count)`s.
 type CountsRead = (Vec<Box<str>>, Vec<read::Cell>, Vec<Vec<(u32, u32)>>);
 
-/// Every cell's spliced counts over the genes of every input: the genes'
-/// names, the cells (barcode and batch), and each cell's `(gene, count)`.
-fn read_counts(
-    inputs: &[(Box<str>, Box<str>)],
-    progress: &progress::Progress,
-) -> anyhow::Result<CountsRead> {
-    let mut genes: Vec<Box<str>> = Vec::new();
-    let mut index: FxHashMap<Box<str>, u32> = FxHashMap::default();
-    let mut cells = Vec::new();
-    let mut per_cell: Vec<Vec<(u32, u32)>> = Vec::new();
-    for (path, batch) in inputs {
-        progress.check()?;
-        let (backend, resolved) = resolve_backend_file(path, None)?;
-        let data = open_sparse_matrix(&resolved, &backend)?;
-        let rows: Vec<Option<u32>> = data
-            .row_names()?
-            .iter()
-            .map(|name| {
-                let (gene, false) = split_count_row(name)? else {
-                    return None;
-                };
-                let next = genes.len() as u32;
-                Some(*index.entry(gene.into()).or_insert_with(|| {
+/// A count matrix's reader: its spliced rows matched to the genes of the
+/// inputs before it, its cells and their counts appended.
+struct CountVisit<'v> {
+    input: &'v read::Input,
+    rows: Vec<Option<u32>>,
+    first: usize,
+    read: &'v mut CountsRead,
+    index: &'v mut FxHashMap<Box<str>, u32>,
+}
+
+impl Visit for CountVisit<'_> {
+    fn rows(&mut self, names: &[Box<str>]) -> anyhow::Result<()> {
+        let (genes, ..) = &mut *self.read;
+        for name in names {
+            let gene = match split_count_row(name) {
+                Some((gene, false)) => gene,
+                _ => {
+                    self.rows.push(None);
+                    continue;
+                }
+            };
+            let next = genes.len() as u32;
+            self.rows
+                .push(Some(*self.index.entry(gene.into()).or_insert_with(|| {
                     genes.push(gene.into());
                     next
-                }))
-            })
-            .collect();
+                })));
+        }
         anyhow::ensure!(
-            rows.iter().any(Option::is_some),
-            "{path} holds no spliced count rows"
+            self.rows.iter().any(Option::is_some),
+            "{} holds no spliced count rows",
+            self.input.path
         );
-        let barcodes = data.column_names()?;
-        let first = cells.len();
+        Ok(())
+    }
+
+    fn columns(&mut self, barcodes: &[Box<str>]) {
+        let (_, cells, per_cell) = &mut *self.read;
         cells.extend(barcodes.iter().map(|b| read::Cell {
             barcode: b.clone(),
-            batch: batch.clone(),
-            fit: true,
+            batch: self.input.batch.clone(),
+            fit: self.input.fit,
         }));
         per_cell.resize_with(cells.len(), Vec::new);
-        for start in (0..barcodes.len()).step_by(COLUMN_BLOCK) {
-            progress.check()?;
-            let block: Vec<usize> = (start..(start + COLUMN_BLOCK).min(barcodes.len())).collect();
-            let (_, _, triplets) = data.read_triplets_by_columns(block)?;
-            for (row, col, value) in triplets {
-                let (Some(Some(g)), x) = (rows.get(row as usize), value.round().max(0.0) as u32)
-                else {
-                    continue;
-                };
-                if x > 0 {
-                    per_cell[first + start + col as usize].push((*g, x));
-                }
-            }
-        }
-        info!("{path}: {} cells", barcodes.len());
     }
-    Ok((genes, cells, per_cell))
+
+    fn entry(&mut self, row: usize, col: usize, n: u32) {
+        if let Some(Some(g)) = self.rows.get(row) {
+            self.read.2[self.first + col].push((*g, n));
+        }
+    }
+}
+
+/// Every cell's spliced counts over the genes of every input.
+fn read_counts(
+    inputs: &[read::Input],
+    progress: &progress::Progress,
+) -> anyhow::Result<CountsRead> {
+    let mut read: CountsRead = Default::default();
+    let mut index = FxHashMap::default();
+    for input in inputs {
+        let mut visit = CountVisit {
+            input,
+            rows: Vec::new(),
+            first: read.1.len(),
+            read: &mut read,
+            index: &mut index,
+        };
+        walk_matrix(&input.path, progress, &mut visit)?;
+    }
+    Ok(read)
 }
 
 /// The `n` genes of highest dispersion (variance over mean of the counts,
 /// each cell's scaled to the median total) among those with any count,
 /// in their order; all of them when there are fewer.
-fn variable_genes(per_cell: &[Vec<(u32, u32)>], genes: usize, n: usize) -> Vec<usize> {
+fn variable_genes(per_cell: &[&[(u32, u32)]], genes: usize, n: usize) -> Vec<usize> {
     let totals: Vec<f64> = per_cell
         .iter()
         .map(|c| c.iter().map(|e| e.1 as f64).sum())
@@ -124,7 +110,7 @@ fn variable_genes(per_cell: &[Vec<(u32, u32)>], genes: usize, n: usize) -> Vec<u
     let (mut sum, mut sq) = (vec![0.0f64; genes], vec![0.0f64; genes]);
     for (cell, &t) in per_cell.iter().zip(&totals) {
         let scale = median / t.max(1.0);
-        for &(g, x) in cell {
+        for &(g, x) in cell.iter() {
             let y = x as f64 * scale;
             sum[g as usize] += y;
             sq[g as usize] += y * y;
@@ -145,7 +131,9 @@ fn variable_genes(per_cell: &[Vec<(u32, u32)>], genes: usize, n: usize) -> Vec<u
 }
 
 /// A chain's posterior means: each cell's and gene's role shares, each
-/// block's rate (log), each block's units, each cell's background share.
+/// block's rate (log) with its sd, each block's units, each cell's
+/// background share.
+#[derive(Default)]
 struct Means {
     cell: Vec<f32>,
     gene: Vec<f32>,
@@ -155,100 +143,119 @@ struct Means {
     background: Vec<f64>,
 }
 
-/// Row-major shares of each row of `x` (`k` per row), as f32.
-fn shares(x: &[f64], k: usize) -> impl Iterator<Item = f32> + '_ {
-    x.chunks(k).flat_map(|row| {
-        let total: f64 = row.iter().sum::<f64>().max(1e-300);
-        row.iter().map(move |v| (v / total) as f32)
-    })
-}
-
-/// The fit's draws: the model's, with each kept draw's shares, rates and
-/// allocation summed.
-struct Fit<'a> {
-    model: count::Model<'a>,
-    sizes: (usize, usize, usize, usize),
-}
-
-/// One kept draw.
-struct Draw {
-    log_likelihood: f64,
-    cell: Vec<f32>,
-    gene: Vec<f32>,
+/// A chain's kept draws summed as they come (none kept whole).
+#[derive(Default)]
+struct Tally {
+    draws: usize,
+    cell: Vec<f64>,
+    gene: Vec<f64>,
     log_rate: Vec<f64>,
-    units: Vec<u32>,
+    log_rate_sq: Vec<f64>,
+    units: Vec<f64>,
     background: Vec<f64>,
 }
 
+/// `x` added into `sums`, grown to its length.
+fn add(sums: &mut Vec<f64>, x: impl ExactSizeIterator<Item = f64>) {
+    sums.resize(x.len(), 0.0);
+    sums.iter_mut().zip(x).for_each(|(s, v)| *s += v);
+}
+
+/// Row-major shares of each row of `x` (`k` per row).
+fn shares(x: &[f64], k: usize) -> impl ExactSizeIterator<Item = f64> + '_ {
+    let totals: Vec<f64> = x
+        .chunks(k)
+        .map(|r| r.iter().sum::<f64>().max(1e-300))
+        .collect();
+    x.iter().enumerate().map(move |(i, v)| v / totals[i / k])
+}
+
+impl Tally {
+    /// The draw at `st` (`aa`, `bb` roles) added.
+    fn add(&mut self, st: &count::State, (aa, bb): (usize, usize)) {
+        self.draws += 1;
+        add(&mut self.cell, shares(&st.theta, aa));
+        add(&mut self.gene, shares(&st.psi, bb));
+        add(&mut self.log_rate, st.lambda.iter().map(|l| l.ln()));
+        add(
+            &mut self.log_rate_sq,
+            st.lambda.iter().map(|l| l.ln().powi(2)),
+        );
+        add(&mut self.units, st.blocks.iter().map(|&u| u as f64));
+        let units =
+            |c: usize| st.n0[c] as f64 + st.n[c * aa..(c + 1) * aa].iter().sum::<u32>() as f64;
+        add(
+            &mut self.background,
+            (0..st.n0.len()).map(|c| st.n0[c] as f64 / units(c).max(1.0)),
+        );
+    }
+
+    fn means(&self) -> Means {
+        let n = self.draws.max(1) as f64;
+        let mean = |v: &[f64]| -> Vec<f64> { v.iter().map(|x| x / n).collect() };
+        let log_rate = mean(&self.log_rate);
+        Means {
+            cell: self.cell.iter().map(|x| (x / n) as f32).collect(),
+            gene: self.gene.iter().map(|x| (x / n) as f32).collect(),
+            log_rate_sd: (self.log_rate_sq.iter().zip(&log_rate))
+                .map(|(s, m)| (s / n - m * m).max(0.0).sqrt())
+                .collect(),
+            log_rate,
+            units: mean(&self.units),
+            background: mean(&self.background),
+        }
+    }
+}
+
+/// The fit's chains: the model's sweeps, each chain's kept draws tallied.
+struct Fit<'a> {
+    model: count::Model<'a>,
+    roles: (usize, usize),
+}
+
+/// A chain: the model's state and its tally.
+struct Chain {
+    st: count::State,
+    tally: Arc<Mutex<Tally>>,
+}
+
 impl McmcModel for Fit<'_> {
-    type State = count::State;
-    type Sample = Draw;
+    type State = Chain;
+    /// A kept draw's log-likelihood, and its chain's tally.
+    type Sample = (f64, Arc<Mutex<Tally>>);
     type Result = (Vec<f64>, Means);
 
-    fn init(&self, rng: &mut SmallRng) -> count::State {
-        self.model.init(rng)
-    }
-
-    fn sweep(&self, st: &mut count::State, rng: &mut SmallRng) {
-        self.model.sweep(st, rng);
-    }
-
-    fn collect(&self, st: &count::State) -> Draw {
-        let (_, _, aa, bb) = self.sizes;
-        let units_of =
-            |c: usize| st.n0[c] as f64 + st.n[c * aa..(c + 1) * aa].iter().sum::<u32>() as f64;
-        Draw {
-            log_likelihood: self.model.log_likelihood(st),
-            cell: shares(&st.theta, aa).collect(),
-            gene: shares(&st.psi, bb).collect(),
-            log_rate: st.lambda.iter().map(|l| l.ln()).collect(),
-            units: st.blocks.clone(),
-            background: (0..st.n0.len())
-                .map(|c| st.n0[c] as f64 / units_of(c).max(1.0))
-                .collect(),
+    fn init(&self, rng: &mut SmallRng) -> Chain {
+        Chain {
+            st: self.model.start(rng),
+            tally: Arc::default(),
         }
     }
 
-    fn summarize(&self, draws: Vec<Draw>) -> (Vec<f64>, Means) {
-        let n = draws.len().max(1) as f64;
-        let mean32 = |f: &dyn Fn(&Draw) -> &[f32]| -> Vec<f32> {
-            let mut out = vec![0.0f64; draws.first().map_or(0, |d| f(d).len())];
-            for d in &draws {
-                out.iter_mut().zip(f(d)).for_each(|(o, &x)| *o += x as f64);
-            }
-            out.iter().map(|x| (x / n) as f32).collect()
-        };
-        let mean64 = |f: &dyn Fn(&Draw) -> Vec<f64>| -> Vec<f64> {
-            let mut out: Vec<f64> = Vec::new();
-            for d in &draws {
-                let x = f(d);
-                out.resize(x.len(), 0.0);
-                out.iter_mut().zip(&x).for_each(|(o, v)| *o += v);
-            }
-            out.iter().map(|x| x / n).collect()
-        };
-        let log_rate = mean64(&|d| d.log_rate.clone());
-        let sq = mean64(&|d| d.log_rate.iter().map(|x| x * x).collect());
-        let means = Means {
-            cell: mean32(&|d| &d.cell),
-            gene: mean32(&|d| &d.gene),
-            log_rate_sd: sq
-                .iter()
-                .zip(&log_rate)
-                .map(|(s, m)| (s - m * m).max(0.0).sqrt())
-                .collect(),
-            log_rate,
-            units: mean64(&|d| d.units.iter().map(|&u| u as f64).collect()),
-            background: mean64(&|d| d.background.clone()),
-        };
-        (draws.iter().map(|d| d.log_likelihood).collect(), means)
+    fn sweep(&self, ch: &mut Chain, rng: &mut SmallRng) {
+        self.model.sweep(&mut ch.st, rng);
+    }
+
+    fn collect(&self, ch: &Chain) -> Self::Sample {
+        ch.tally
+            .lock()
+            .expect("a chain's tally")
+            .add(&ch.st, self.roles);
+        (self.model.log_likelihood(&ch.st), ch.tally.clone())
+    }
+
+    fn summarize(&self, draws: Vec<Self::Sample>) -> (Vec<f64>, Means) {
+        let means = draws.first().map_or_else(Means::default, |(_, t)| {
+            t.lock().expect("a chain's tally").means()
+        });
+        (draws.into_iter().map(|(ll, _)| ll).collect(), means)
     }
 }
 
 impl progress::Traced for Fit<'_> {
     /// The counts' log-likelihood: what a count fit is watched by.
-    fn log_joint_of(&self, st: &count::State) -> Option<f64> {
-        Some(self.model.log_likelihood(st))
+    fn log_joint_of(&self, ch: &Chain) -> Option<f64> {
+        Some(self.model.log_likelihood(&ch.st))
     }
 }
 
@@ -261,9 +268,27 @@ pub(in crate::cluster) fn count_fit(
     record: &mut RunRecord,
     progress: &progress::Progress,
 ) -> anyhow::Result<Written> {
-    let inputs = count_inputs(args)?;
+    let inputs = args::inputs(args)?;
     let (all_genes, cells, per_cell) = read_counts(&inputs, progress)?;
-    let chosen = variable_genes(&per_cell, all_genes.len(), args.count_genes);
+    // Genes chosen over the fitted cells alone (`--fit`).
+    let fitted_rows: Vec<&[(u32, u32)]> = (per_cell.iter().zip(&cells))
+        .filter(|(_, c)| c.fit)
+        .map(|(r, _)| r.as_slice())
+        .collect();
+    let chosen = variable_genes(&fitted_rows, all_genes.len(), args.count_genes);
+    drop(fitted_rows);
+    let mut batches: Vec<&str> = (cells.iter().filter(|c| c.fit))
+        .map(|c| c.batch.as_ref())
+        .collect();
+    batches.sort_unstable();
+    batches.dedup();
+    if batches.len() > 1 {
+        log::warn!(
+            "count: {} batches fitted together, with no batch correction: a batch effect \
+             can come out as cell roles",
+            batches.len()
+        );
+    }
     let mut renumber = vec![u32::MAX; all_genes.len()];
     for (i, &g) in chosen.iter().enumerate() {
         renumber[g] = i as u32;
@@ -279,8 +304,9 @@ pub(in crate::cluster) fn count_fit(
                 .collect()
         })
         .collect();
+    // The fitted cells (`--fit`) with enough of the chosen genes.
     let kept: Vec<usize> = (0..cells.len())
-        .filter(|&c| restricted[c].len() >= args.min_cell_sites)
+        .filter(|&c| cells[c].fit && restricted[c].len() >= args.min_cell_sites)
         .collect();
     anyhow::ensure!(
         kept.len() >= 2 && !names.is_empty(),
@@ -288,8 +314,8 @@ pub(in crate::cluster) fn count_fit(
         kept.len(),
         names.len()
     );
-    let kept_rows: Vec<Vec<(u32, u32)>> = kept.iter().map(|&c| restricted[c].clone()).collect();
-    let counts = Counts::from_cells(names.len(), &kept_rows);
+    drop(per_cell);
+    let counts = Counts::from_cells(names.len(), kept.iter().map(|&c| restricted[c].as_slice()));
     info!(
         "count: {} of {} cells kept, {} of {} genes (most variable), {} nonzero counts",
         kept.len(),
@@ -316,18 +342,14 @@ pub(in crate::cluster) fn count_fit(
     let (aa, bb) = (settings.cell_roles, settings.gene_roles);
     let fit = Fit {
         model: count::Model::new(&counts, settings)?,
-        sizes: (kept.len(), names.len(), aa, bb),
+        roles: (aa, bb),
     };
     progress.check()?;
     let chains = progress::run(&fit, config, args.chains, progress)?;
+    progress.note_stop(config, record)?;
     let lls: Vec<Vec<f64>> = chains.iter().map(|(ll, _)| ll.clone()).collect();
-    let rhat = super::super::summary::centred_rhat(&lls);
+    let (chain_ll, rhat, best) = chain_scores(&lls);
     progress.summarised(rhat)?;
-    let mean = |v: &[f64]| v.iter().sum::<f64>() / v.len().max(1) as f64;
-    let chain_ll: Vec<f64> = lls.iter().map(|v| mean(v)).collect();
-    let best = (0..chains.len())
-        .max_by(|&x, &y| chain_ll[x].total_cmp(&chain_ll[y]))
-        .expect("a chain");
     let means = &chains[best].1;
     info!(
         "count: each chain's mean log-likelihood {:?}; split R-hat {rhat:.2}; tables from chain {best}",
@@ -362,7 +384,8 @@ pub(in crate::cluster) fn count_fit(
     // membership) and the modules' cells, for the module view.
     let mut umis = vec![0.0f64; names.len() * aa];
     let mut module_cells = vec![0.0f64; aa];
-    for (i, row) in kept_rows.iter().enumerate() {
+    for (i, &c) in kept.iter().enumerate() {
+        let row = &restricted[c];
         let theta = &means.cell[i * aa..(i + 1) * aa];
         for (m, &t) in module_cells.iter_mut().zip(theta) {
             *m += t as f64;
@@ -373,21 +396,19 @@ pub(in crate::cluster) fn count_fit(
             }
         }
     }
-    let main: Vec<usize> = means
-        .gene
-        .chunks(bb)
-        .map(|row| (0..bb).fold(0, |best, b| if row[b] > row[best] { b } else { best }))
+    let main: Vec<usize> = main_labels(&means.gene, bb)
+        .into_iter()
+        .map(usize::from)
         .collect();
     write::count_genes(&names, &main, &umis, &module_cells, &path("block_sites"))?;
     write::trace(&progress.traces(), &path("trace"))?;
     record.set_result(
         "tables",
         &serde_json::json!({
-            "modality": "count",
+            "modality": COUNT_MODALITY,
             "cells": ["count_cell_roles.parquet"],
             "genes": ["count_gene_roles.parquet", "count_blocks.parquet", "count_block_sites.parquet"],
             "trace": "count_trace.parquet",
-            "measure": "per_cell",
         }),
     );
     record.set_result(
@@ -403,13 +424,13 @@ pub(in crate::cluster) fn count_fit(
             "chain_log_likelihood": chain_ll,
             "rhat_log_likelihood": rhat,
             "best_chain": best,
-            "background_share": mean(&means.background),
+            "background_share": means.background.iter().sum::<f64>() / means.background.len().max(1) as f64,
         }),
     );
     let verdict = progress.verdict().expect("summarised");
     record.set_result("converged", &verdict.converged());
     Ok(Written {
-        modality: "count".into(),
+        modality: COUNT_MODALITY.into(),
         record: "count_blockmodel.run.json".into(),
     })
 }

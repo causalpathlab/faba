@@ -29,7 +29,6 @@
 //! into column totals (`sum_ab lambda_ab (sum_c theta_ca)(sum_g psi_gb)`
 //! and `(sum_c s_c)(sum_g r_g)`): no zero is visited.
 
-use legume_numeric::mcmc::engine::McmcModel;
 use rand::rngs::SmallRng;
 use rand::RngExt;
 use rand_distr::{Binomial, Distribution, Gamma};
@@ -42,6 +41,8 @@ pub struct Counts {
     pub ptr: Vec<usize>,
     pub gene: Vec<u32>,
     pub x: Vec<u32>,
+    /// `sum ln x!` over the nonzero counts: the likelihood's constant.
+    ln_factorials: f64,
 }
 
 impl Counts {
@@ -56,7 +57,7 @@ impl Counts {
     }
 
     /// From each cell's `(gene, count)` entries, zeros dropped.
-    pub fn from_cells(genes: usize, cells: &[Vec<(u32, u32)>]) -> Self {
+    pub fn from_cells<'c>(genes: usize, cells: impl IntoIterator<Item = &'c [(u32, u32)]>) -> Self {
         let mut out = Counts {
             genes,
             ptr: vec![0],
@@ -66,6 +67,7 @@ impl Counts {
             for &(g, x) in cell.iter().filter(|e| e.1 > 0) {
                 out.gene.push(g);
                 out.x.push(x);
+                out.ln_factorials += statrs::function::gamma::ln_gamma(x as f64 + 1.0);
             }
             out.ptr.push(out.gene.len());
         }
@@ -154,22 +156,51 @@ fn tables(n: u32, r: f64, rng: &mut SmallRng) -> u32 {
         .count() as u32
 }
 
+/// Units at or under which [`multinomial`] draws each unit's bucket
+/// (one uniform each) rather than a binomial per bucket: most counts are
+/// a few, and a binomial costs a power or more to set up.
+const ONE_BY_ONE: u32 = 12;
+
 /// `n` units shared out over `weights` (all finite and at least 0, not all
-/// 0), multinomially, into `out` (added to).
+/// 0), multinomially, into `out` (added to): a few units one by one, more
+/// as a binomial per bucket.
 fn multinomial(n: u32, weights: &[f64], out: &mut [u32], rng: &mut SmallRng) {
+    if n <= ONE_BY_ONE {
+        let total: f64 = weights.iter().sum();
+        for _ in 0..n {
+            let mut u = rng.random::<f64>() * total;
+            let mut k = weights.len() - 1;
+            for (i, &w) in weights.iter().enumerate() {
+                if u < w {
+                    k = i;
+                    break;
+                }
+                u -= w;
+            }
+            out[k] += 1;
+        }
+        return;
+    }
     let mut left = n;
     let mut rest: f64 = weights.iter().sum();
-    for (o, &w) in out.iter_mut().zip(weights) {
+    // The last bucket of positive weight takes what is left, so no unit
+    // is lost to rounding in `rest`.
+    let last = weights.iter().rposition(|&w| w > 0.0).unwrap_or(0);
+    for (i, (o, &w)) in out.iter_mut().zip(weights).enumerate() {
         if left == 0 {
             break;
         }
-        let p = (w / rest).clamp(0.0, 1.0);
-        let k = if p >= 1.0 {
+        let k = if i >= last {
             left
         } else {
-            Binomial::new(left as u64, p)
-                .expect("a probability")
-                .sample(rng) as u32
+            let p = (w / rest).clamp(0.0, 1.0);
+            if p >= 1.0 {
+                left
+            } else {
+                Binomial::new(left as u64, p)
+                    .expect("a probability")
+                    .sample(rng) as u32
+            }
         };
         *o += k;
         left -= k;
@@ -196,43 +227,70 @@ impl<'a> Model<'a> {
         )
     }
 
-    /// Every parameter drawn from its prior.
-    pub fn prior_draw(&self, rng: &mut SmallRng) -> State {
+    /// A state of these sizes, every parameter and count 0.
+    fn zeroed(&self) -> State {
         let (cc, gg, aa, bb) = self.sizes();
-        let s = &self.settings;
-        let w: Vec<f64> = (0..aa)
-            .map(|_| gamma(s.gamma / aa as f64, s.weight_rate, rng))
-            .collect();
-        let v: Vec<f64> = (0..bb)
-            .map(|_| gamma(s.gamma / bb as f64, s.weight_rate, rng))
-            .collect();
-        let (e0, f0) = s.rate_prior;
-        let cell_rate: Vec<f64> = (0..cc).map(|_| gamma(e0, f0, rng)).collect();
-        let gene_rate: Vec<f64> = (0..gg).map(|_| gamma(e0, f0, rng)).collect();
-        let theta = (0..cc * aa)
-            .map(|i| gamma(w[i % aa], cell_rate[i / aa], rng))
-            .collect();
-        let psi = (0..gg * bb)
-            .map(|i| gamma(v[i % bb], gene_rate[i / bb], rng))
-            .collect();
-        let lambda = (0..aa * bb).map(|_| gamma(s.kappa, s.kappa, rng)).collect();
-        let (a0, b0) = s.background;
         State {
-            theta,
-            psi,
-            lambda,
-            size: (0..cc).map(|_| gamma(a0, b0, rng)).collect(),
-            level: (0..gg).map(|_| gamma(a0, b0, rng)).collect(),
-            cell_rate,
-            gene_rate,
-            w,
-            v,
+            theta: vec![0.0; cc * aa],
+            psi: vec![0.0; gg * bb],
+            lambda: vec![0.0; aa * bb],
+            size: vec![0.0; cc],
+            level: vec![0.0; gg],
+            cell_rate: vec![0.0; cc],
+            gene_rate: vec![0.0; gg],
+            w: vec![0.0; aa],
+            v: vec![0.0; bb],
             n: vec![0; cc * aa],
             m: vec![0; gg * bb],
             blocks: vec![0; aa * bb],
             n0: vec![0; cc],
             m0: vec![0; gg],
         }
+    }
+
+    /// Each gene's `sum_b lambda_ab psi_gb` (`genes x A`): what a count of
+    /// the gene in cell role `a` is rated by, per unit of theta.
+    fn gene_rate_sums(&self, st: &State) -> Vec<f64> {
+        let (_, gg, aa, bb) = self.sizes();
+        let mut sums = vec![0.0; gg * aa];
+        for (g, row) in sums.chunks_exact_mut(aa).enumerate() {
+            let psi = &st.psi[g * bb..(g + 1) * bb];
+            for (a, x) in row.iter_mut().enumerate() {
+                let lambda = &st.lambda[a * bb..(a + 1) * bb];
+                *x = lambda.iter().zip(psi).map(|(l, p)| l * p).sum();
+            }
+        }
+        sums
+    }
+
+    /// Each gene's `lambda_ab psi_gb` (`genes x A x B`) and their sums over
+    /// `b` (`genes x A`): what a count of the gene in cell role `a` and
+    /// block `(a, b)` is rated by, per unit of theta.
+    fn gene_rates(&self, st: &State) -> (Vec<f64>, Vec<f64>) {
+        let (_, gg, aa, bb) = self.sizes();
+        let mut within = vec![0.0; gg * aa * bb];
+        let mut sums = vec![0.0; gg * aa];
+        for g in 0..gg {
+            let psi = &st.psi[g * bb..(g + 1) * bb];
+            for a in 0..aa {
+                let row = &mut within[(g * aa + a) * bb..(g * aa + a + 1) * bb];
+                for ((x, &l), &p) in row
+                    .iter_mut()
+                    .zip(&st.lambda[a * bb..(a + 1) * bb])
+                    .zip(psi)
+                {
+                    *x = l * p;
+                }
+                sums[g * aa + a] = row.iter().sum();
+            }
+        }
+        (within, sums)
+    }
+
+    /// One sweep: the allocation, then the parameters given it.
+    pub fn sweep(&self, st: &mut State, rng: &mut SmallRng) {
+        self.allocate(st, rng);
+        self.draw_parameters(st, rng);
     }
 
     /// Each nonzero count's units shared out over the background and the
@@ -243,10 +301,10 @@ impl<'a> Model<'a> {
         for t in [&mut st.n, &mut st.m, &mut st.blocks, &mut st.n0, &mut st.m0] {
             t.fill(0);
         }
+        let (within, sums) = self.gene_rates(st);
         // Per link: the background's rate then each cell role's (its gene
         // roles summed), and within a role each gene role's.
         let mut role = vec![0.0; 1 + aa];
-        let mut within = vec![0.0; aa * bb];
         let mut units = vec![0u32; 1 + aa];
         let mut per_b = vec![0u32; bb];
         for c in 0..cc {
@@ -254,14 +312,12 @@ impl<'a> Model<'a> {
             let theta = &st.theta[c * aa..(c + 1) * aa];
             for (&g, &x) in genes.iter().zip(xs) {
                 let g = g as usize;
-                let psi = &st.psi[g * bb..(g + 1) * bb];
                 role[0] = st.size[c] * st.level[g];
-                for a in 0..aa {
-                    let row = &mut within[a * bb..(a + 1) * bb];
-                    for b in 0..bb {
-                        row[b] = st.lambda[a * bb + b] * psi[b];
-                    }
-                    role[1 + a] = theta[a] * row.iter().sum::<f64>();
+                for (r, (&t, &l)) in role[1..]
+                    .iter_mut()
+                    .zip(theta.iter().zip(&sums[g * aa..(g + 1) * aa]))
+                {
+                    *r = t * l;
                 }
                 units.fill(0);
                 multinomial(x, &role, &mut units, rng);
@@ -274,7 +330,8 @@ impl<'a> Model<'a> {
                     }
                     st.n[c * aa + a] += k;
                     per_b.fill(0);
-                    multinomial(k, &within[a * bb..(a + 1) * bb], &mut per_b, rng);
+                    let rates = &within[(g * aa + a) * bb..(g * aa + a + 1) * bb];
+                    multinomial(k, rates, &mut per_b, rng);
                     for (b, &kb) in per_b.iter().enumerate() {
                         st.m[g * bb + b] += kb;
                         st.blocks[a * bb + b] += kb;
@@ -291,9 +348,7 @@ impl<'a> Model<'a> {
         let s = &self.settings;
         let (e0, f0) = s.rate_prior;
         // The cell side: each cell role's exposure per unit of theta.
-        let psi_total: Vec<f64> = (0..bb)
-            .map(|b| (0..gg).map(|g| st.psi[g * bb + b]).sum())
-            .collect();
+        let psi_total = column_totals(&st.psi, bb);
         let cell_exposure: Vec<f64> = (0..aa)
             .map(|a| (0..bb).map(|b| st.lambda[a * bb + b] * psi_total[b]).sum())
             .collect();
@@ -304,9 +359,7 @@ impl<'a> Model<'a> {
             (s.gamma, s.weight_rate, e0, f0),
             rng,
         );
-        let theta_total: Vec<f64> = (0..aa)
-            .map(|a| (0..cc).map(|c| st.theta[c * aa + a]).sum())
-            .collect();
+        let theta_total = column_totals(&st.theta, aa);
         let gene_exposure: Vec<f64> = (0..bb)
             .map(|b| {
                 (0..aa)
@@ -321,9 +374,7 @@ impl<'a> Model<'a> {
             (s.gamma, s.weight_rate, e0, f0),
             rng,
         );
-        let psi_total: Vec<f64> = (0..bb)
-            .map(|b| (0..gg).map(|g| st.psi[g * bb + b]).sum())
-            .collect();
+        let psi_total = column_totals(&st.psi, bb);
         for (a, &t) in theta_total.iter().enumerate() {
             for (b, &p) in psi_total.iter().enumerate() {
                 let k = a * bb + b;
@@ -344,27 +395,21 @@ impl<'a> Model<'a> {
     /// Each count's log-likelihood under `st`, summed: every nonzero
     /// count's `x ln mu - ln x!` less every rate's exposure.
     pub fn log_likelihood(&self, st: &State) -> f64 {
-        let (cc, gg, aa, bb) = self.sizes();
-        let mut out = 0.0;
+        let (cc, _, aa, bb) = self.sizes();
+        let sums = self.gene_rate_sums(st);
+        let mut out = -self.counts.ln_factorials;
         for c in 0..cc {
             let (genes, xs) = self.counts.of(c);
+            let theta = &st.theta[c * aa..(c + 1) * aa];
             for (&g, &x) in genes.iter().zip(xs) {
                 let g = g as usize;
-                let mut mu = st.size[c] * st.level[g];
-                for a in 0..aa {
-                    for b in 0..bb {
-                        mu += st.theta[c * aa + a] * st.lambda[a * bb + b] * st.psi[g * bb + b];
-                    }
-                }
-                out += x as f64 * mu.ln() - statrs::function::gamma::ln_gamma(x as f64 + 1.0);
+                let rates = &sums[g * aa..(g + 1) * aa];
+                let mu = st.size[c] * st.level[g]
+                    + theta.iter().zip(rates).map(|(t, l)| t * l).sum::<f64>();
+                out += x as f64 * mu.ln();
             }
         }
-        let theta_total: Vec<f64> = (0..aa)
-            .map(|a| (0..cc).map(|c| st.theta[c * aa + a]).sum())
-            .collect();
-        let psi_total: Vec<f64> = (0..bb)
-            .map(|b| (0..gg).map(|g| st.psi[g * bb + b]).sum())
-            .collect();
+        let (theta_total, psi_total) = (column_totals(&st.theta, aa), column_totals(&st.psi, bb));
         for (a, &t) in theta_total.iter().enumerate() {
             for (b, &p) in psi_total.iter().enumerate() {
                 out -= st.lambda[a * bb + b] * t * p;
@@ -372,6 +417,15 @@ impl<'a> Model<'a> {
         }
         out - st.size.iter().sum::<f64>() * st.level.iter().sum::<f64>()
     }
+}
+
+/// Each column's total of `x`, `k` columns per row.
+fn column_totals(x: &[f64], k: usize) -> Vec<f64> {
+    let mut out = vec![0.0; k];
+    for row in x.chunks_exact(k) {
+        out.iter_mut().zip(row).for_each(|(o, v)| *o += v);
+    }
+    out
 }
 
 /// One side's draws, the cells' or the genes' (`units x roles`): the
@@ -415,7 +469,7 @@ impl Model<'_> {
     /// weights at 1, the rates at their priors' means.
     pub fn start(&self, rng: &mut SmallRng) -> State {
         let (cc, gg, aa, bb) = self.sizes();
-        let mut st = self.prior_draw(rng);
+        let mut st = self.zeroed();
         let mut cell_total = vec![0.0f64; cc];
         let mut gene_total = vec![0.0f64; gg];
         for (c, n) in cell_total.iter_mut().enumerate() {
@@ -458,25 +512,24 @@ impl Model<'_> {
     }
 }
 
-impl McmcModel for Model<'_> {
-    type State = State;
-    type Sample = f64;
-    type Result = Vec<f64>;
+#[cfg(test)]
+mod tests {
+    use super::multinomial;
+    use rand::rngs::SmallRng;
+    use rand::SeedableRng;
 
-    fn init(&self, rng: &mut SmallRng) -> State {
-        self.start(rng)
-    }
-
-    fn sweep(&self, st: &mut State, rng: &mut SmallRng) {
-        self.allocate(st, rng);
-        self.draw_parameters(st, rng);
-    }
-
-    fn collect(&self, st: &State) -> f64 {
-        self.log_likelihood(st)
-    }
-
-    fn summarize(&self, samples: Vec<f64>) -> Vec<f64> {
-        samples
+    /// Every unit lands in a bucket of positive weight, few or many, with
+    /// weights that leave rounding in their running sum and trailing
+    /// buckets of weight 0.
+    #[test]
+    fn a_multinomial_places_every_unit() {
+        let mut rng = SmallRng::seed_from_u64(1);
+        let weights = [0.1, 1e-17, 0.3, 0.2, 1e-300, 0.0, 0.0];
+        for n in [1, 5, 12, 13, 40, 1000, 100_000] {
+            let mut out = [0u32; 7];
+            multinomial(n, &weights, &mut out, &mut rng);
+            assert_eq!(out.iter().sum::<u32>(), n, "{n} units: {out:?}");
+            assert_eq!(out[5] + out[6], 0, "none in a bucket of weight 0");
+        }
     }
 }

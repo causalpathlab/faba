@@ -221,9 +221,9 @@ fn no_record_or_an_older_one_omits_the_section() {
         .contains("cannot be read"));
 }
 
-/// A count fit's record holds the count model's settings, not the
-/// blockmodel's: the section is left out, saying so plainly, and the header
-/// names no preset.
+/// A count fit's record (its tables' modality `count`) holds the count
+/// model's settings, not the blockmodel's: the section is left out, saying
+/// so plainly, and the header names no preset.
 #[test]
 fn a_count_fit_draws_no_plate_and_claims_no_preset() {
     let tmp = tempfile::tempdir().unwrap();
@@ -233,6 +233,9 @@ fn a_count_fit_draws_no_plate_and_claims_no_preset() {
         .file_name("count_blockmodel.run.json")
         .options(&cluster(&["--modality", "count"]));
     record.set_result("model", &crate::cluster::count::Settings::default());
+    // As `faba cluster --modality count` records it: the tables' modality
+    // says which kind of fit this is.
+    record.set_result("tables", &serde_json::json!({"modality": "count"}));
     record.finish(&Ok(()));
     let m = Modules::load(dir, "count", None).unwrap();
     let data = serde_json::to_value(report::data(&m, &Default::default())).unwrap();

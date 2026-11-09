@@ -35,7 +35,18 @@ impl ClusterArgs {
     pub(super) fn given(&self, id: &str) -> bool {
         self.given.0.contains(id)
     }
+
+    /// Whether this is a fit of gene counts (`--modality count`), the count
+    /// blockmodel, rather than of a site modality.
+    pub(super) fn is_count(&self) -> bool {
+        self.modality
+            .as_deref()
+            .is_some_and(|m| m.eq_ignore_ascii_case(COUNT_MODALITY))
+    }
 }
+
+/// The modality that names gene counts, and the count fit's tables.
+pub(in crate::cluster) const COUNT_MODALITY: &str = "count";
 
 /// `word` as the saved command takes it: a word of an option that takes a
 /// path (or, as `--fit`, a pattern over paths) made absolute, so the script

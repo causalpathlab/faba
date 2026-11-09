@@ -1,7 +1,6 @@
 //! The model the tables come from, as `faba cluster`'s blockmodel recorded
 //! it beside them (`{m}_blockmodel.run.json`, see [`crate::run_record`]).
 
-use crate::cluster::count;
 use crate::cluster::unified::Recorded;
 use crate::cluster::{record_name, ModelKind};
 use std::path::Path;
@@ -51,7 +50,12 @@ pub(in crate::cluster::browse) fn settings(
     let Some(model) = record.pointer("/results/model") else {
         return Err(format!("{name} holds no blockmodel settings"));
     };
-    if serde_json::from_value::<count::Settings>(model.clone()).is_ok() {
+    // A count fit's record names its tables' modality, which is its kind.
+    if record
+        .pointer("/results/tables/modality")
+        .and_then(|m| m.as_str())
+        == Some(crate::cluster::command::COUNT_MODALITY)
+    {
         return Err(COUNT_FIT.to_string());
     }
     serde_json::from_value(model.clone()).map_err(|e| format!("{name} cannot be read: {e}"))

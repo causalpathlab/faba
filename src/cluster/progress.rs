@@ -13,8 +13,8 @@ use legume_numeric::mcmc::engine::{run_mcmc_parallel, McmcConfig, McmcModel};
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
 use std::io::IsTerminal;
-use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
 pub mod advice;
@@ -33,10 +33,12 @@ impl std::fmt::Display for Cancelled {
 
 impl std::error::Error for Cancelled {}
 
-/// Running, cancelled, or writing (too late to cancel).
+/// Running, cancelled, writing (too late to cancel), or stopped early by
+/// an interrupt (the chains stop, and what they kept is written).
 const RUNNING: u8 = 0;
 const CANCELLED: u8 = 1;
 const COMMITTED: u8 = 2;
+const STOPPED: u8 = 3;
 
 /// A chain's sweep count on a cache line of its own, so chains on other
 /// cores do not contend for it.
@@ -65,6 +67,10 @@ pub struct Progress {
     traces: Vec<Mutex<Vec<(usize, f64)>>>,
     /// Note each chain's log joint every so many sweeps.
     tracing: bool,
+    /// The process's interrupt flag (the first Ctrl+C or SIGTERM sets it,
+    /// see `legume_numeric::matrix::stop`), when this run is the command
+    /// line's: set, the chains stop early and what they kept is written.
+    interrupt: Option<Arc<AtomicBool>>,
 }
 
 /// Points a chain's trace keeps about: every k-th sweep is noted, k the
@@ -93,6 +99,7 @@ impl Progress {
             bar: false,
             traces: (0..chains).map(|_| Mutex::default()).collect(),
             tracing: false,
+            interrupt: None,
         }
     }
 
@@ -151,6 +158,7 @@ impl Progress {
     pub fn on_stderr(chains: usize) -> Self {
         Self {
             bar: true,
+            interrupt: Some(legume_numeric::matrix::stop::stop_flag()),
             ..Self::traced(chains)
         }
     }
@@ -189,15 +197,84 @@ impl Progress {
         self.state.load(Ordering::SeqCst) == CANCELLED
     }
 
-    /// [`Progress::cancelled`] for the chains' sweeps, which need only see
-    /// a cancel soon, not at once.
+    /// Whether the chains are to stop sweeping: cancelled, or stopped
+    /// early (an interrupt seen here first stops them). Read by the
+    /// chains' sweeps, which need only see it soon, not at once.
     fn stopping(&self) -> bool {
-        self.state.load(Ordering::Relaxed) == CANCELLED
+        match self.state.load(Ordering::Relaxed) {
+            CANCELLED | STOPPED => true,
+            RUNNING if self.interrupted() => {
+                self.stop_early();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether this run's interrupt flag is set.
+    fn interrupted(&self) -> bool {
+        self.interrupt
+            .as_ref()
+            .is_some_and(|f| f.load(Ordering::Relaxed))
+    }
+
+    /// Stop the chains early, keeping what they drew: what the first
+    /// interrupt does (see [`Progress::stopped_early`]).
+    pub fn stop_early(&self) {
+        let _ = self
+            .state
+            .compare_exchange(RUNNING, STOPPED, Ordering::SeqCst, Ordering::SeqCst);
+    }
+
+    /// When the chains were stopped early, the sweeps each finished; the
+    /// fit writes what they kept, and its record says so.
+    pub fn stopped_early(&self) -> Option<Vec<usize>> {
+        (self.state.load(Ordering::SeqCst) == STOPPED)
+            .then(|| (0..self.chains()).map(|i| self.done(i)).collect())
+    }
+
+    /// After the chains of `config`: when they were stopped early, say so
+    /// in `record` (`stopped_early`: the sweeps each chain finished and
+    /// those it was to run) and on stderr, or, when a chain kept fewer than
+    /// the 4 draws split R-hat needs (stopped in or just after its burn-in),
+    /// refuse to write: nothing to summarise.
+    pub fn note_stop(
+        &self,
+        config: &McmcConfig,
+        record: &mut crate::run_record::RunRecord,
+    ) -> anyhow::Result<()> {
+        let Some(done) = self.stopped_early() else {
+            return Ok(());
+        };
+        // Draws are kept at the burn-in's end and every `thin` sweeps on.
+        let kept = |d: usize| d.saturating_sub(config.warmup).div_ceil(config.thin.max(1));
+        let fewest = done.iter().map(|&d| kept(d)).min().unwrap_or(0);
+        anyhow::ensure!(
+            fewest >= 4,
+            "stopped early at sweeps {done:?} (burn-in {}): a chain kept {fewest} draws, \
+             fewer than 4, so nothing was written",
+            config.warmup
+        );
+        log::warn!(
+            "stopped early at sweeps {done:?} of {}: the tables are from the draws kept so far \
+             ({fewest} or more per chain), short of the run asked for",
+            sweeps(config)
+        );
+        record.set_result(
+            "stopped_early",
+            &serde_json::json!({"sweeps": done, "of": sweeps(config)}),
+        );
+        Ok(())
     }
 
     /// [`Cancelled`] when the run was: a fit checks between the steps
     /// before its chains, which do not stop part way.
     pub fn check(&self) -> anyhow::Result<()> {
+        // An interrupt before the chains run has no draws to keep: it
+        // cancels.
+        if self.interrupted() {
+            self.cancel();
+        }
         if self.cancelled() {
             return Err(Cancelled.into());
         }

@@ -414,8 +414,8 @@ pub fn block_sites(
 /// One row per gene and cell role with counts there, by gene role and
 /// gene: both roles (the gene's main gene role), the gene (`chr` empty and
 /// `pos` 0: a gene is one feature), its UMIs in the cell role's cells
-/// (each cell's counts by its membership), those cells (their memberships
-/// summed), and the UMIs per cell. The columns are `{m}_block_sites`'s,
+/// (each cell's counts by its membership) and those cells (their
+/// memberships summed). The columns are `{m}_block_sites`'s,
 /// with UMIs as `converted` and cells as `total`, so the module view reads
 /// a count fit as it reads a site fit.
 pub fn count_genes(
@@ -441,27 +441,25 @@ pub fn count_genes(
             rows.iter().map(|x| f(x) as f32).collect::<Vec<_>>(),
         ))
     };
-    write(
-        vec![
-            ("cell_role", i32s(&|&(_, a)| a) as ArrayRef),
-            ("gene_role", i32s(&|&(g, _)| main[g])),
-            (
-                "gene",
-                Arc::new(StringArray::from(
-                    rows.iter().map(|&(g, _)| names[g]).collect::<Vec<_>>(),
-                )),
-            ),
-            ("chr", Arc::new(StringArray::from(vec![""; rows.len()]))),
-            ("pos", Arc::new(Int64Array::from(vec![0i64; rows.len()]))),
-            ("converted", f32s(&|&(g, a)| umis[g * aa + a])),
-            ("total", f32s(&|&(_, a)| cells[a])),
-            (
-                "per_cell",
-                f32s(&|&(g, a)| umis[g * aa + a] / cells[a].max(1e-12)),
-            ),
-        ],
-        path,
-    )
+    // A gene is one feature: its own name, no chromosome, position 0.
+    let genes: Vec<Site> = names
+        .iter()
+        .map(|&gene| Site {
+            gene: gene.into(),
+            chr: "".into(),
+            pos: 0,
+        })
+        .collect();
+    let mut columns: Vec<(&str, ArrayRef)> = vec![
+        ("cell_role", i32s(&|&(_, a)| a) as ArrayRef),
+        ("gene_role", i32s(&|&(g, _)| main[g])),
+    ];
+    columns.extend(site_columns(&genes, rows.iter().map(|&(g, _)| g)));
+    columns.extend([
+        ("converted", f32s(&|&(g, a)| umis[g * aa + a]) as ArrayRef),
+        ("total", f32s(&|&(_, a)| cells[a])),
+    ]);
+    write(columns, path)
 }
 
 /// Posterior-mean reads under which a site's entry in a cell role is left

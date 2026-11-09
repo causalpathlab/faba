@@ -13,12 +13,14 @@ use legume_numeric::mcmc::engine::{run_mcmc_parallel, McmcConfig, McmcModel};
 use rand::rngs::SmallRng;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// A model that only counts its sweeps, and cancels `progress` at sweep
-/// `at` (counted over every chain).
+/// A model that only counts its sweeps, and at sweep `at` (counted over
+/// every chain) cancels `progress`, or stops it early as an interrupt does.
 struct Counting<'p> {
     sweeps: AtomicUsize,
     at: usize,
     progress: &'p Progress,
+    /// Stop early rather than cancel.
+    early: bool,
 }
 
 impl<'p> Counting<'p> {
@@ -27,6 +29,15 @@ impl<'p> Counting<'p> {
             sweeps: AtomicUsize::new(0),
             at,
             progress,
+            early: false,
+        }
+    }
+
+    /// Stopping `progress` early at sweep `at`.
+    fn stopping(at: usize, progress: &'p Progress) -> Self {
+        Self {
+            early: true,
+            ..Self::new(at, progress)
         }
     }
 }
@@ -40,7 +51,11 @@ impl McmcModel for Counting<'_> {
 
     fn sweep(&self, _: &mut (), _: &mut SmallRng) {
         if self.sweeps.fetch_add(1, Ordering::SeqCst) + 1 == self.at {
-            self.progress.cancel();
+            if self.early {
+                self.progress.stop_early();
+            } else {
+                self.progress.cancel();
+            }
         }
     }
 
@@ -94,6 +109,40 @@ fn a_cancel_stops_every_chain_at_its_next_sweep() {
         .unwrap_err()
         .is::<Cancelled>());
     assert_eq!(model.sweeps.load(Ordering::SeqCst), 0);
+}
+
+/// An early stop mid-run (the first interrupt): the chain stops at its
+/// next sweep, but the run is not cancelled: it returns the draws kept so
+/// far, the fit may write them, and its record says how far it got.
+/// Stopped before it kept 4 draws, the fit refuses to write. (One chain:
+/// chains queued behind busy threads would start after the stop with no
+/// draws, which the fit refuses as it should.)
+#[test]
+fn an_early_stop_keeps_the_draws_so_far() {
+    let cfg = config(100_000, 6, 1);
+    let p = Progress::new(1);
+    let model = Counting::stopping(40, &p);
+    let kept = progress::run(&model, &cfg, 1, &p).unwrap();
+    let swept = model.sweeps.load(Ordering::SeqCst);
+    assert_eq!(swept, 40, "one chain stops at the sweep after the stop");
+    assert_eq!(p.stopped_early(), Some(vec![40]));
+    // The draws after the burn-in, but the sweep the stop came in.
+    assert_eq!(kept, vec![40 - 6 - 1]);
+    assert!(!p.cancelled());
+    let mut record = crate::run_record::RunRecord::start("cluster", "unused");
+    p.note_stop(&cfg, &mut record).unwrap();
+    p.summarised(1.0).expect("a stopped run is written");
+    assert!(p.stopped_early().is_some(), "still stopped once written");
+
+    let p = Progress::new(1);
+    let model = Counting::stopping(8, &p);
+    progress::run(&model, &cfg, 1, &p).unwrap();
+    let mut record = crate::run_record::RunRecord::start("cluster", "unused");
+    let refused = p.note_stop(&cfg, &mut record).unwrap_err();
+    assert!(
+        refused.to_string().contains("nothing was written"),
+        "{refused}"
+    );
 }
 
 /// Once the fit commits to writing, a cancel is refused; a cancel first

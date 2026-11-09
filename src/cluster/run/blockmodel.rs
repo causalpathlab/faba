@@ -113,6 +113,7 @@ pub(in crate::cluster) fn blockmodel_fit(
         model = model.with_heldout(h);
     }
     let chains = super::super::progress::run(&model, config, args.chains, fit.progress)?;
+    fit.progress.note_stop(config, record)?;
     let summary = unified::summarize(&model, &chains);
     // Whether it converged is the verdict on the traces and the R-hat, a
     // chain it finds lagging not pooled, and on what pooling found short of
