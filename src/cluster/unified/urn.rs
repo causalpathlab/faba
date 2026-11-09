@@ -4,7 +4,7 @@
 //! with its own gene roles and reads, would share.
 
 use super::Weights;
-use crate::cluster::crp::ln_urn;
+use crate::cluster::fast;
 use rand::rngs::SmallRng;
 use rand::RngExt;
 use rand_distr::Distribution;
@@ -47,15 +47,16 @@ impl Cells {
     }
 
     /// The log weight of role `a` for a link of cell `c` (that link
-    /// counted out): `ln (n_ca + alpha beta_a)`.
+    /// counted out): the change in the cell's urn as role `a` gains it,
+    /// `ln (n_ca + alpha beta_a)`.
     pub(super) fn ln_weight(&self, urn: &Urn, c: usize, a: usize) -> f64 {
-        (urn.n[c * self.roles + a] as f64 + self.alpha * urn.beta[a]).ln()
+        fast::urn_step(self.alpha * urn.beta[a], urn.n[c * self.roles + a])
     }
 
     /// Cell `c`'s urn: its links per role under its Dirichlet.
     pub(super) fn term(&self, urn: &Urn, c: usize) -> f64 {
         let row = &urn.n[c * self.roles..(c + 1) * self.roles];
-        ln_urn(row, self.alpha, &urn.beta)
+        fast::ln_urn(row, self.alpha, &urn.beta)
     }
 
     /// Every cell's urn.

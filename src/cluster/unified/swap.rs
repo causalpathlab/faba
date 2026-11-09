@@ -2,7 +2,7 @@
 //! or a gene's links, each swap its own inverse.
 
 use super::{Model, State, Urn};
-use crate::cluster::crp::ln_urn;
+use crate::cluster::fast::ln_urn;
 use rand::rngs::SmallRng;
 use rand::RngExt;
 

@@ -43,6 +43,11 @@ fn tiny_links() -> Links {
 /// Each tiny-fixture site's gene.
 const TINY_GENES: [u32; 3] = [0, 0, 1];
 
+/// The relative error the sampler's fast f32 `ln` and `ln Gamma`
+/// (`legume_numeric::fast_math`) leave in a score against its exact
+/// definition.
+const FAST_MATH: f64 = 1e-3;
+
 /// The tiny link fixture with its reads fractionally weighted (each
 /// entry's converted and unconverted reads their own weight), and the
 /// fixture as read: the two the exact checks run over.
