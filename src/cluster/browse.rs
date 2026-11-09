@@ -9,10 +9,13 @@
 //! side (each in its main gene module), and one gene's full pileup over
 //! every gene role (see [`gene`]).
 //! `--html` (or `e`) writes the same as one page (see [`report`]).
+//! A within record (`faba cluster --within`) opens as the count fit and
+//! the fit within each of its cell modules (see [`within`]).
 
 use super::command::{is_count, COUNT_MODALITY};
 use crate::site_analysis::input_picker::{ask_reference, Reference};
 use crate::site_analysis::miami::genemodel::load_gene_models_where;
+use crate::site_analysis::pileup::{start_gene_models, SharedModels};
 use anyhow::Context;
 use clap::Args;
 use std::path::{Path, PathBuf};
@@ -23,7 +26,9 @@ mod order;
 mod report;
 mod text;
 mod view;
+mod within;
 
+pub(super) use data::read_record;
 pub use data::{gene_models, Count, Modules};
 #[cfg(test)]
 pub use order::diagonal;
@@ -39,7 +44,9 @@ pub struct ModulesArgs {
         help = "A fit's run record, or the output directory (or site matrices) whose block tables to open; browse for one when left out",
         long_help = "A `faba cluster` fit's run record, {modality}_blockmodel.run.json, or\n\
                      the output directory (or site matrices) whose block tables to open, as\n\
-                     they are. Left out, a browser asks, as `faba pileup`'s does."
+                     they are. A within record, {modality}_within.run.json (`faba cluster\n\
+                     --within`), opens the count fit and the fit within each of its cell\n\
+                     modules. Left out, a browser asks, as `faba pileup`'s does."
     )]
     data_files: Vec<Box<str>>,
 
@@ -49,6 +56,20 @@ pub struct ModulesArgs {
         help = "Which fit's tables to open from a directory (default: m6a, else atoi); count: the count fit's"
     )]
     modality: Option<Box<str>>,
+
+    #[arg(
+        long = "group",
+        value_name = "C",
+        help = "Of a within record: open the fit within this cell module of the count fit, as C3, 3 or bg",
+        long_help = "Of a within record ({modality}_within.run.json, which `faba cluster\n\
+                     --within` writes): open the fit within this cell module of the count\n\
+                     fit, as C3 or 3, or bg for its background cells. Every other option\n\
+                     then applies to that fit. Without it, the record opens as a list of\n\
+                     its fits, the count fit first; the levels printed are the count\n\
+                     fit's, and --html writes a page a fit, FILE for the count fit and\n\
+                     {FILE's stem}.{group}.html beside it, each linking to the others."
+    )]
+    group: Option<String>,
 
     #[arg(
         short = 'o',
@@ -187,13 +208,9 @@ fn fit_record(inputs: &[Box<str>]) -> anyhow::Result<Option<FitRecord>> {
     Ok(fits.pop())
 }
 
-/// The blockmodel fit the file at `path` describes when it is a `faba
-/// cluster` run record, from its contents: none for any other file
-/// (another command's record among them), refused for a crp fit's record,
-/// which has no modules. The modality is the one its `tables` say; an older
-/// record's, the one its name begins with, else the one whose tables are
-/// beside it. Each table it names is looked for beside it.
-fn read_fit_record(path: &Path) -> anyhow::Result<Option<FitRecord>> {
+/// The run record at `path`: its directory, its file name and its
+/// contents; none when the file there is not named as one.
+fn record_at(path: &Path) -> anyhow::Result<Option<(PathBuf, String, serde_json::Value)>> {
     let name = path
         .file_name()
         .and_then(|n| n.to_str())
@@ -204,6 +221,20 @@ fn read_fit_record(path: &Path) -> anyhow::Result<Option<FitRecord>> {
     let dir = crate::run_record::output_dir_of(&path.to_string_lossy())
         .with_context(|| format!("{} is not a run record", path.display()))?;
     let record = data::read_record(&dir, name).map_err(anyhow::Error::msg)?;
+    Ok(Some((dir, name.to_string(), record)))
+}
+
+/// The blockmodel fit the file at `path` describes when it is a `faba
+/// cluster` run record, from its contents: none for any other file
+/// (another command's record among them), refused for a crp fit's record,
+/// which has no modules. The modality is the one its `tables` say; an older
+/// record's, the one its name begins with, else the one whose tables are
+/// beside it. Each table it names is looked for beside it.
+fn read_fit_record(path: &Path) -> anyhow::Result<Option<FitRecord>> {
+    let Some((dir, name, record)) = record_at(path)? else {
+        return Ok(None);
+    };
+    let name = name.as_str();
     if record["job"].as_str() != Some("cluster") {
         return Ok(None);
     }
@@ -266,6 +297,14 @@ fn tables(dir: &Path, asked: Option<&str>) -> Option<String> {
     }
 }
 
+/// A fit to open: its tables' directory, its modality, and its run record
+/// when it was named by one.
+pub(crate) type Opened = (PathBuf, String, Option<Record>);
+
+/// What `--group` is told without a within record.
+const NO_GROUP: &str = "--group names a fit within a count fit's cell module: name a within \
+     record ({modality}_within.run.json), which `faba cluster --within` writes";
+
 pub fn run_modules(args: &ModulesArgs) -> anyhow::Result<()> {
     // No inputs named: browse for them, as `faba pileup` does.
     let batch = args.batch_process || args.html.is_some();
@@ -276,16 +315,60 @@ pub fn run_modules(args: &ModulesArgs) -> anyhow::Result<()> {
     let Some(inputs) = super::with_inputs(&args.data_files, "cluster-view", batch, offered)? else {
         return Ok(());
     };
-    let (dir, modality, record) =
-        resolve(&inputs, args.modality.as_deref(), args.output.as_deref())?;
+    let (modality, output) = (args.modality.as_deref(), args.output.as_deref());
+    let recorded = |dir: &Path| {
+        let near = dir.to_string_lossy();
+        crate::run_record::explicit_or_recorded(args.gtf.as_deref(), &near, "gff", "gene models")
+    };
+    match target(&inputs, modality, output, args.group.as_deref())? {
+        Target::Fit(opened, near) => show(args, opened, recorded(&near)),
+        Target::Nested(nested) => nested.show(args, recorded(nested.dir())),
+    }
+}
+
+/// What `faba cluster-view` opens.
+enum Target {
+    /// One fit, and the directory a GFF is recorded in for it: its own,
+    /// or the within record's, which serves every fit under it.
+    Fit(Opened, PathBuf),
+    /// A within record, whole.
+    Nested(within::Nested),
+}
+
+/// What `inputs` open: a within record whole, the fit within its `group`,
+/// or one fit as [`resolve`] opens it, which has no group to name.
+fn target(
+    inputs: &[Box<str>],
+    modality: Option<&str>,
+    output: Option<&str>,
+    group: Option<&str>,
+) -> anyhow::Result<Target> {
+    match within::Nested::find(inputs, modality, output)? {
+        Ok(nested) => match group {
+            Some(group) => {
+                let opened = nested.open(Some(nested.group(group)?))?;
+                Ok(Target::Fit(opened, nested.dir().to_path_buf()))
+            }
+            None => Ok(Target::Nested(nested)),
+        },
+        Err(fit) => {
+            anyhow::ensure!(group.is_none(), NO_GROUP);
+            let opened = opened(fit, inputs, modality, output)?;
+            let near = opened.0.clone();
+            Ok(Target::Fit(opened, near))
+        }
+    }
+}
+
+/// One fit, shown as `args` ask: its page written, its levels printed, or
+/// browsed; gene models from `gtf`.
+fn show(
+    args: &ModulesArgs,
+    (dir, modality, record): Opened,
+    gtf: Option<Box<str>>,
+) -> anyhow::Result<()> {
     // Shared with the thread that writes the report on `e`.
     let modules = std::sync::Arc::new(Modules::load(&dir, &modality, record)?);
-    let gtf = crate::run_record::explicit_or_recorded(
-        args.gtf.as_deref(),
-        &dir.to_string_lossy(),
-        "gff",
-        "gene models",
-    );
     if let Some(path) = &args.html {
         return write_html(&modules, gtf.as_deref(), path);
     }
@@ -296,7 +379,28 @@ pub fn run_modules(args: &ModulesArgs) -> anyhow::Result<()> {
             .for_each(|line| println!("{line}"));
         return Ok(());
     }
-    browse(&dir, &modules, gtf)
+    let models = start_gene_models(or_asked(gtf)?.as_deref());
+    browse(&dir, &modules, models)
+}
+
+/// What `faba cluster-view` would open from `data_files`, refused as the
+/// command refuses it, with nothing read but run records: the pages
+/// `--html html` would write, one for one fit, and for a within record
+/// opened whole one more for each fitted group; none without `html`.
+pub(crate) fn opens(
+    data_files: &[Box<str>],
+    modality: Option<&str>,
+    group: Option<&str>,
+    html: Option<&Path>,
+) -> anyhow::Result<Vec<PathBuf>> {
+    let target = target(data_files, modality, None, group)?;
+    let Some(html) = html else {
+        return Ok(Vec::new());
+    };
+    Ok(match target {
+        Target::Fit(..) => vec![html.to_path_buf()],
+        Target::Nested(nested) => nested.pages(html).into_iter().map(|(_, p)| p).collect(),
+    })
 }
 
 /// What `data_files` open, as they are: the directory, the modality and
@@ -308,8 +412,19 @@ pub(crate) fn resolve(
     data_files: &[Box<str>],
     modality: Option<&str>,
     output: Option<&str>,
-) -> anyhow::Result<(PathBuf, String, Option<Record>)> {
-    let Some(fit) = fit_record(data_files)? else {
+) -> anyhow::Result<Opened> {
+    opened(fit_record(data_files)?, data_files, modality, output)
+}
+
+/// [`resolve`], the fit's run record `data_files` name already read (see
+/// [`fit_record`]).
+fn opened(
+    fit: Option<FitRecord>,
+    data_files: &[Box<str>],
+    modality: Option<&str>,
+    output: Option<&str>,
+) -> anyhow::Result<Opened> {
+    let Some(fit) = fit else {
         let dir = super::output_dir(output, data_files);
         let modality = open_tables(&dir, modality)?;
         return Ok((dir, modality, None));
@@ -360,30 +475,42 @@ fn title(dir: &Path, modules: &Modules) -> String {
     format!("{} · {} · {model}", dir.display(), modules.modality)
 }
 
+/// Every gene model of `gtf`; none without one.
+fn all_models(
+    gtf: Option<&str>,
+) -> anyhow::Result<Vec<crate::site_analysis::miami::genemodel::GeneModel>> {
+    match gtf {
+        Some(gtf) => load_gene_models_where(gtf, |_| true),
+        None => Ok(Vec::new()),
+    }
+}
+
 /// `--html`: the modules as one page at `path`, gene models from `gtf`.
 fn write_html(modules: &Modules, gtf: Option<&str>, path: &str) -> anyhow::Result<()> {
-    let all = match gtf {
-        Some(gtf) => load_gene_models_where(gtf, |_| true)?,
-        None => Vec::new(),
-    };
+    let all = all_models(gtf)?;
     report::write(modules, &gene_models(modules, &all), Path::new(path))?;
     log::info!("wrote {path}");
     Ok(())
 }
 
+/// `gtf`, else the gene annotation the browser asks for (or downloads), as
+/// `faba pileup` does; none when none is chosen.
+fn or_asked(gtf: Option<Box<str>>) -> anyhow::Result<Option<Box<str>>> {
+    match gtf {
+        Some(gtf) => Ok(Some(gtf)),
+        None => Ok(ask_reference("cluster-view", Reference::Annotation, None)?
+            .map(|p| p.to_string_lossy().into())),
+    }
+}
+
 /// The browser, until it is quit: Enter on a gene opens its full pileup,
-/// and leaving that comes back to the browser as it was.
+/// and leaving that comes back to the browser as it was. `models` are the
+/// gene models, as [`start_gene_models`] reads them.
 fn browse(
     dir: &Path,
     modules: &std::sync::Arc<Modules>,
-    gtf: Option<Box<str>>,
+    models: Option<SharedModels>,
 ) -> anyhow::Result<()> {
-    let gtf = match gtf {
-        Some(gtf) => Some(gtf),
-        None => ask_reference("cluster-view", Reference::Annotation, None)?
-            .map(|p| p.to_string_lossy().into()),
-    };
-    let models = crate::site_analysis::pileup::start_gene_models(gtf.as_deref());
     let title = title(dir, modules);
     let mut view = ModulesView::new(&title, modules)
         .with_genes(models.clone())

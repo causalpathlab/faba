@@ -46,6 +46,36 @@ pub(super) struct Data {
     model: plate::Section,
     /// The fit's trace and its verdict, or why there is none.
     trace: trace::Section,
+    /// The pages of the fits this one is nested with, this one among them
+    /// (see [`Data::among`]); none for a fit on its own.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    nav: Vec<Link>,
+}
+
+/// One of a nested fit's pages, as each of them links to it: the count
+/// fit's, or that of the fit within one of its cell modules.
+#[derive(Serialize, Debug, Clone, PartialEq)]
+pub(super) struct Link {
+    /// `count`, `C3`, `bg`.
+    pub label: String,
+    /// Its page, a file beside this one; none for this page, and for a
+    /// group that has no fit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub href: Option<String>,
+    /// This page.
+    pub here: bool,
+    /// What it is: its cells, and what became of its fit.
+    pub note: String,
+}
+
+impl Data {
+    /// The page as one of a nested fit's: `place` after its title (`within
+    /// C3`), and the pages `nav` links to above the modules.
+    pub(super) fn among(mut self, place: &str, nav: Vec<Link>) -> Self {
+        self.title = format!("{} · {place}", self.title);
+        self.nav = nav;
+        self
+    }
 }
 
 /// A gene module, its genes in its order.
@@ -144,6 +174,7 @@ pub(super) fn data(m: &Modules, models: &FxHashMap<Box<str>, GeneModel>) -> Data
         modules,
         model: plate::section(&m.run),
         trace: trace::section(&m.fit),
+        nav: Vec::new(),
     }
 }
 

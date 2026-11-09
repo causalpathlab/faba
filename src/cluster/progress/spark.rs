@@ -68,14 +68,19 @@ pub fn tell(progress: &Progress) {
     if traces.iter().all(Vec::is_empty) {
         return;
     }
-    let lines = lines(&traces, &verdict, WIDTH);
+    let level = match verdict.converged() {
+        true => log::Level::Info,
+        false => log::Level::Warn,
+    };
+    say(&lines(&traces, &verdict, WIDTH), level);
+}
+
+/// `lines` on stderr when it is a terminal, else in the log at `level`,
+/// their indents dropped.
+pub fn say(lines: &[String], level: log::Level) {
     if std::io::stderr().is_terminal() {
         lines.iter().for_each(|l| eprintln!("{l}"));
     } else {
-        let level = match verdict.converged() {
-            true => log::Level::Info,
-            false => log::Level::Warn,
-        };
         lines
             .iter()
             .for_each(|l| log::log!(level, "{}", l.trim_start()));

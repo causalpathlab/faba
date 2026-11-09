@@ -256,6 +256,42 @@ pub struct ClusterArgs {
     )]
     pub(super) seed: u64,
 
+    #[arg(
+        long = "within",
+        value_name = "RECORD",
+        value_hint = clap::ValueHint::FilePath,
+        help = "Fit within each cell module of a count fit, named by its run record (count_blockmodel.run.json)",
+        long_help = "The second round of two: fit the sites within each cell module of a count\n\
+                     fit, named by its run record (`count_blockmodel.run.json`, as `faba cluster\n\
+                     --modality count` writes it). Each cell goes to its main count module, or to\n\
+                     `bg` when its background share is above --within-background; each group of\n\
+                     at least --within-min-cells cells is fitted on its own, one after the other,\n\
+                     into `within/{modality}/{group}/` under the output directory (default: the\n\
+                     count fit's), with `{modality}_within.run.json` naming them all and\n\
+                     `{modality}_within_cells.parquet` giving each cell its nested label (`C3.2`).\n\
+                     The site matrices default to those beside the count fit's inputs; --model\n\
+                     defaults to blocks. Open the result with `faba cluster-view`."
+    )]
+    pub(super) within: Option<Box<str>>,
+
+    #[arg(
+        long = "within-background",
+        requires = "within",
+        value_name = "SHARE",
+        default_value_t = 0.5,
+        help = "With --within: a cell whose background share in the count fit is above this goes to the group `bg`, not to its count module"
+    )]
+    pub(super) within_background: f64,
+
+    #[arg(
+        long = "within-min-cells",
+        requires = "within",
+        value_name = "N",
+        default_value_t = 50,
+        help = "With --within: a group with fewer cells to fit is skipped"
+    )]
+    pub(super) within_min_cells: usize,
+
     /// The options given, for the command saved beside the run.
     #[arg(skip)]
     #[serde(skip)]
@@ -488,6 +524,24 @@ pub(super) fn check(args: &ClusterArgs) -> anyhow::Result<()> {
         (0.0..1.0).contains(&args.holdout),
         "--holdout must be at least 0 and less than 1"
     );
+    if args.within.is_some() {
+        anyhow::ensure!(
+            !args.is_count(),
+            "--within fits sites within a count fit's cell modules: give --modality m6a or atoi, not count"
+        );
+        anyhow::ensure!(
+            args.model != ModelKind::Crp,
+            "--within fits the blockmodel (--model link or blocks), not --model crp"
+        );
+        anyhow::ensure!(
+            (0.0..=1.0).contains(&args.within_background),
+            "--within-background is a share, from 0 to 1"
+        );
+        anyhow::ensure!(
+            args.within_min_cells >= 2,
+            "--within-min-cells must be at least 2"
+        );
+    }
     if args.is_count() {
         anyhow::ensure!(
             args.cell_roles >= 1 && args.gene_roles.is_none_or(|b| b >= 1),

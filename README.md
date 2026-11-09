@@ -164,8 +164,8 @@ faba <COMMAND> [OPTIONS]
 | **QC — choose and apply thresholds after profiling** ||
 | `qc`                      | Pick thresholds in a full-screen view, then filter a faba output directory into a new fileset |
 | **Clustering: cells by their own sites** ||
-| `cluster`                 | Cluster cells by their site reads: link communities over (cell, gene) links with cell memberships (default), cell and gene modules with a methylation shift per pair (`--model blocks`), or a Chinese-restaurant-process mixture |
-| `cluster-view` (`modules`, `blocks`) | View a `cluster` fit (`--model link` or `blocks`) from its run record `{m}_blockmodel.run.json`, or from its input directory (it never fits: run `cluster` first): its gene modules against its cell modules, each module's sites, the genes you pin side by side, and a gene's full pileup, one track per cell module; `--html` writes it as one self-contained page to share |
+| `cluster`                 | Cluster cells by their site reads: link communities over (cell, gene) links with cell memberships (default), cell and gene modules with a methylation shift per pair (`--model blocks`), or a Chinese-restaurant-process mixture. `--modality count` fits cell modules by gene counts instead; `--within` its run record then fits the sites within each of those cell modules |
+| `cluster-view` (`modules`, `blocks`) | View a `cluster` fit (`--model link` or `blocks`) from its run record `{m}_blockmodel.run.json`, or from its input directory (it never fits: run `cluster` first): its gene modules against its cell modules, each module's sites, the genes you pin side by side, and a gene's full pileup, one track per cell module; `--html` writes it as one self-contained page to share. A `--within` record (`{m}_within.run.json`) opens as the list of its fits, the count fit first; `--group C3` opens the one within a cell module |
 | **Inspection & reference** ||
 | `pwm`                     | Build a position weight matrix around genomic sites |
 | `pileup` (`inspect`)      | ASCII pileup, or a faceted Miami plot, for one gene |
@@ -213,7 +213,7 @@ Producers write every candidate and apply no p-value cutoff. qc is where cells, 
 2. count, atoi, dartseq, apa, depth and snp each write one modality. run writes the pipeline (SNP, then count, A-to-I, m6A, APA) into one directory. dartseq needs control BAMs; without them, run skips m6A.
 3. qc filters a directory into a new one, with the site thresholds given. It does not edit the input. With `dry_run` it writes nothing and returns what the cell QC keeps and what each threshold removes: try thresholds that way first.
 4. pileup, metagene and pwm read a directory's sites. metagene and pwm return their table and its figure as an image. pileup returns a binned table for a gene or region (and, with `figure`, a Miami SVG, as an image too). cluster_view shows a cluster fit level by level, from its run record ({m}_blockmodel.run.json) or the directory holding its tables: the modules, then a gene module, a gene, the cell modules, the trace and verdict, the settings.
-5. cluster fits cells by their own site reads (link, blocks or crp) and writes its tables to `out`.
+5. cluster fits cells by their own site reads (link, blocks or crp) and writes its tables to `out`. In two rounds: first `modality` count, cell modules by gene counts (it writes count_blockmodel.run.json); then, with `within` naming that record, m6a or atoi within each of its cell modules. The second round writes {m}_within.run.json, which cluster_view opens: the list of its fits, and with `group` the fit within one cell module.
 
 The producers (count, depth, atoi, dartseq, apa, snp, run, qc, cluster) take `background`: on large BAMs set it, and the call returns a job id at once.
 
@@ -228,7 +228,7 @@ legume-mcp adds where the records are, the `notebook` tool (open with a plan: th
 | `count`, `atoi`, `dartseq`, `apa`, `depth`, `snp` | one modality each, into a new directory |
 | `run` | the pipeline (SNP, then count, A-to-I, m6A, APA) into one directory |
 | `qc` | filters a directory into a new one |
-| `cluster` | fits cells by their own site reads; writes its tables to a new directory |
+| `cluster` | fits cells by their own site reads, by gene counts (`modality` count), or by site reads within a count fit's cell modules (`within`); writes its tables to a new directory |
 | `pileup`, `metagene`, `pwm`, `cluster_view` | read what was written |
 | `notebook`, `job_status`, `job_wait`, `job_cancel` | from legume-mcp |
 
@@ -252,6 +252,28 @@ faba cluster out/ --model blocks --chains 4 --sweeps 600 --burn-in 200
 # Open the fit, as it is
 faba cluster-view out/m6a_blockmodel.run.json
 ```
+
+**In two rounds.** Counts and site reads are not fitted jointly: a cell has far more UMIs than
+site reads, so the counts would decide the modules alone. Instead the cells are first clustered
+by their gene counts, and the sites are then fitted within each of those cell modules:
+
+```sh
+# Round 1: cell modules by gene counts (writes out/count_blockmodel.run.json)
+faba cluster out/ --modality count
+# Round 2: m6A (or A-to-I: --modality atoi) within each count cell module
+faba cluster --within out/count_blockmodel.run.json
+# The count fit and the fits within it; --group C3 opens one of them
+faba cluster-view out/m6a_within.run.json
+```
+
+The second round reads the site matrices beside the count fit's inputs, unless some are named,
+and matches cells by batch and barcode. Each cell goes to its main count module (`C1`, `C2`, …),
+or to `bg` when its background share in the count fit is above `--within-background` (0.5). A
+group with fewer than `--within-min-cells` (50) cells to fit is skipped. Each group's fit is an
+ordinary one (`--model blocks` unless another is named) under `within/{m}/{group}/`, with its
+own run record and verdict; `{m}_within.run.json` lists them, and `{m}_within_cells.parquet`
+gives each cell its group and its site module there. `cluster-view --html fit.html` writes the
+count fit's page and `fit.{group}.html` beside it for each fitted group, linked to each other.
 
 **Watching the chains.** On a terminal `faba cluster` draws each chain's log joint live while it
 fits (`q` cancels, Ctrl+C stops the chains early and writes what they kept). When it is done it

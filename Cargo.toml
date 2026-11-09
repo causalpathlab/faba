@@ -1,6 +1,6 @@
 [package]
 name = "faba"
-version = "0.18.11"
+version = "0.18.12"
 edition = "2021"
 rust-version = "1.91"
 license = "MIT"

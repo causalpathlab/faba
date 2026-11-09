@@ -63,9 +63,15 @@
 .trace-tip i, .trace .legend i { display: inline-block; width: 12px; height: 3px; margin-right: 6px; vertical-align: middle; }
 .verdict { margin: 0; font-family: var(--mono); font-size: 0.9rem; color: var(--fg); }
 .verdict.check { color: var(--accent); }
+.nav { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 0 0 12px; font-family: var(--mono); font-size: 0.9rem; }
+.nav[hidden] { display: none; }
+.nav a { color: var(--accent); }
+.nav span { color: var(--dim); }
+.nav .here { color: var(--fg); font-weight: 600; }
 </style>
 <div class="wrap">
   <h1 id="title">gene modules × cell modules</h1>
+  <nav class="nav" id="nav" hidden></nav>
   <p class="lede">The gene modules and cell modules of the <code>faba cluster</code> blockmodel. Click a pane or press <kbd>Tab</kbd> to focus it, then <kbd>↑</kbd>/<kbd>↓</kbd> to move. Choosing a gene module (left) fills the sites pane (right); <kbd>Space</kbd> on a site (or Shift-dragging its row down) pins its gene to the strip below, which grows a row at a time as genes are added; there the pinned genes (from any module) run side by side; Delete unpins one (or Shift-drag it off the strip; Shift-drag along it to reorder; a plain click only selects), <kbd>Shift</kbd>+<kbd>X</kbd> clears them, and Enter opens one's pileup. When the cell modules do not all fit across a grid, its columns narrow and then <kbd>[</kbd>/<kbd>]</kbd> scroll them in every grid together, those hidden counted in its corner. Each level is a margin of the next. Press <kbd>/</kbd> and type a gene name to jump to it.</p>
 
   <div class="scroller">
@@ -176,6 +182,17 @@ const modules = DATA.modules.map(m => {
   return {name: m.name, size: m.size, range: m.range, genes, cells};
 });
 document.getElementById("title").textContent = DATA.title;
+// A nested fit's pages: the count fit's, and one within each of its cell
+// modules; a group without a fit is named, not linked.
+(DATA.nav || []).forEach(l => {
+  const e = document.createElement(l.href ? "a" : "span");
+  if (l.href) e.href = l.href;
+  if (l.here) e.className = "here";
+  e.textContent = l.label;
+  e.title = l.note;
+  document.getElementById("nav").append(e);
+});
+document.getElementById("nav").hidden = !(DATA.nav || []).length;
 document.querySelectorAll(".on-name").forEach(e => e.textContent = `${DATA.on} (${DATA.on[0]})`);
 document.querySelectorAll(".off-name").forEach(e => e.textContent = `${DATA.off} (${DATA.off[0]})`);
 document.getElementById("stat").textContent = `${modules.length} gene modules × ${CM} cell modules · ${DATA.modality}`;

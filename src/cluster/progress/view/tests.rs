@@ -190,13 +190,34 @@ fn a_fit_that_panics_is_an_error() {
         watch_with(
             "t",
             &p,
+            true,
             |_| -> anyhow::Result<u8> { panic!("a fit") },
             tick_until_done,
         )
     });
     let err = out.expect("no panic past the view").unwrap_err();
     assert!(err.to_string().contains("panicked: a fit"), "{err}");
-    let out = watch_with("t", &Progress::new(1), |_| Ok(7), tick_until_done);
+    let out = watch_with("t", &Progress::new(1), true, |_| Ok(7), tick_until_done);
+    assert_eq!(out.unwrap(), 7);
+}
+
+/// A view that is not to stay (one fit of several) leaves once its fit is
+/// in, with no key.
+#[test]
+fn a_view_not_to_stay_leaves_once_the_fit_is_in() {
+    let out = watch_with(
+        "t",
+        &Progress::new(1),
+        false,
+        |_| Ok(7),
+        |v| {
+            while !v.done() {
+                v.tick();
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Ok(())
+        },
+    );
     assert_eq!(out.unwrap(), 7);
 }
 
@@ -271,6 +292,7 @@ fn a_stop_too_late_leaves_once_written() {
     let left = watch_with(
         "t",
         &p,
+        true,
         |p| {
             p.commit()?;
             Ok(7)

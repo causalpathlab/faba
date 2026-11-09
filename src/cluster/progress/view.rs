@@ -28,8 +28,8 @@ struct Fitting<'a, T> {
     progress: &'a Progress,
     /// The fit's result, once it comes.
     pending: Pending<'a, anyhow::Result<T>>,
-    /// A key came after the fit, or a cancel too late to stop it: leave
-    /// as soon as the result is in.
+    /// Leave as soon as the result is in: a key came after the fit, a
+    /// cancel came too late to stop it, or the view was never to stay.
     skip: bool,
     status: Option<&'static str>,
     start: Instant,
@@ -256,7 +256,7 @@ impl<T> Screen for Fitting<'_, T> {
         match self.pending.out() {
             None => self.pending.gone(),
             Some(Err(_)) => true,
-            // The verdict stays up until a key.
+            // The verdict stays up until a key, unless the view is to leave.
             Some(Ok(_)) => self.skip,
         }
     }
@@ -269,19 +269,23 @@ impl<T> Screen for Fitting<'_, T> {
 }
 
 /// Run `work` (a fit counting its sweeps on `progress`) on a thread, with
-/// the view under `title` until it is done; its result.
+/// the view under `title` until it is done; its result. With `stay` the
+/// view of a fit that is written stays up until a key (the last thing
+/// shown); without, it leaves at once, for what comes next.
 pub fn watch<T: Send>(
     title: &str,
     progress: &Progress,
+    stay: bool,
     work: impl FnOnce(&Progress) -> anyhow::Result<T> + Send,
 ) -> anyhow::Result<T> {
-    watch_with(title, progress, work, |screen| run_view(screen))
+    watch_with(title, progress, stay, work, |screen| run_view(screen))
 }
 
 /// [`watch`], the view shown by `show`; a fit that panics is an error.
 fn watch_with<T: Send>(
     title: &str,
     progress: &Progress,
+    stay: bool,
     work: impl FnOnce(&Progress) -> anyhow::Result<T> + Send,
     show: impl FnOnce(&mut Fitting<T>) -> anyhow::Result<()>,
 ) -> anyhow::Result<T> {
@@ -293,7 +297,7 @@ fn watch_with<T: Send>(
                 title,
                 progress,
                 pending: Pending::new(rx),
-                skip: false,
+                skip: !stay,
                 status: None,
                 start: Instant::now(),
             };
