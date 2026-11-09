@@ -119,7 +119,18 @@ pub fn modules(m: &Modules) -> Vec<String> {
             m.gene_sizes[g].to_string(),
             format!("{:.2}", m.shift_range(g)),
         ];
-        row.extend(values(m.block(g)));
+        if m.per_cell() {
+            // A count module's UMIs per gene and cell, beside each cell
+            // module's size (the block's own total sums its genes' cells).
+            let sizes = m.columns.iter().map(|&c| m.cell_sizes[c]);
+            row.extend(
+                m.block(g).iter().zip(sizes).flat_map(|(r, n)| {
+                    [r.number().unwrap_or_else(|| "-".into()), format!("{n:.1}")]
+                }),
+            );
+        } else {
+            row.extend(values(m.block(g)));
+        }
         out.push(row.join("\t"));
     }
     out
