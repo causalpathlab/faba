@@ -47,6 +47,13 @@ pub struct Shown {
     pub trace: bool,
 
     #[arg(
+        long = "batches",
+        conflicts_with = "html",
+        help = "Print how each cell module spreads over the batches: shared, one condition's, or batch-specific"
+    )]
+    pub batches: bool,
+
+    #[arg(
         long = "settings",
         conflicts_with = "html",
         help = "Print the settings the fit ran with"
@@ -57,7 +64,12 @@ pub struct Shown {
 impl Shown {
     /// Whether any level beside the modules is asked for.
     pub fn any(&self) -> bool {
-        self.module.is_some() || self.gene.is_some() || self.cells || self.trace || self.settings
+        self.module.is_some()
+            || self.gene.is_some()
+            || self.cells
+            || self.batches
+            || self.trace
+            || self.settings
     }
 }
 
@@ -83,6 +95,9 @@ pub fn printed(m: &Modules, shown: &Shown) -> anyhow::Result<Vec<String>> {
     }
     if let Some(name) = &shown.gene {
         part(gene(m, name)?);
+    }
+    if shown.batches {
+        part(batches(m));
     }
     if shown.trace {
         part(trace(m));
@@ -252,6 +267,42 @@ fn gene(m: &Modules, name: &str) -> anyhow::Result<Vec<String>> {
         out.push(row.join("\t"));
     }
     Ok(out)
+}
+
+/// How each cell module spreads over the batches (see
+/// [`crate::cluster::batches`]): a line a module, in the panes' order, its
+/// label, evenness and share in each batch; then each condition's batches.
+fn batches(m: &Modules) -> Vec<String> {
+    let Some(b) = &m.batches else {
+        return vec!["batches: the cells are of one batch".into()];
+    };
+    let d = &b.design;
+    let mut out = vec![format!(
+        "batches: each cell module's share in each batch (its cells by batch size); \
+         under {:.2} evenness over a condition's replicates it is batch-specific",
+        crate::cluster::batches::EVEN
+    )];
+    let order = d.order();
+    out.push(
+        ["module", "label", "evenness"]
+            .into_iter()
+            .map(String::from)
+            .chain(order.iter().map(|&i| d.batches[i].clone()))
+            .collect::<Vec<_>>()
+            .join("\t"),
+    );
+    for &c in &m.columns {
+        let s = &b.spread[c];
+        let even = s.evenness.map_or("-".into(), |e| format!("{e:.2}"));
+        let shares = order.iter().map(|&i| format!("{:.3}", s.per_batch[i]));
+        let row: Vec<String> = [format!("C{}", c + 1), s.label.word(), even]
+            .into_iter()
+            .chain(shares)
+            .collect();
+        out.push(row.join("\t"));
+    }
+    out.extend(d.listing().into_iter().map(|l| format!("condition {l}")));
+    out
 }
 
 /// The fit's trace and verdict: each chain's log joint (a count fit's

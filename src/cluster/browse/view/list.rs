@@ -69,9 +69,11 @@ impl ModulesView<'_> {
     /// The next sort: the module's order, each column, reads, cells.
     pub(super) fn next_sort(&mut self) {
         let sort = match self.sort {
-            Sort::Module => Sort::Column(0),
-            Sort::Column(k) if k + 1 < self.m.cell_roles => Sort::Column(k + 1),
-            Sort::Column(_) => Sort::Reads,
+            Sort::Module => Sort::Column(self.shown[0]),
+            Sort::Column(k) => match self.shown.iter().find(|&&p| p > k) {
+                Some(&p) => Sort::Column(p),
+                None => Sort::Reads,
+            },
             Sort::Reads => Sort::Cells,
             Sort::Cells => Sort::Module,
         };

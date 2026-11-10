@@ -5,6 +5,7 @@
 //! counts.
 
 use super::order::{diagonal, standardized};
+use crate::cluster::batches::{spread, Design, Spread};
 use crate::cluster::read::{Site, SiteStats};
 use crate::cluster::unified::Recorded;
 use crate::common::{column, read_record_batch};
@@ -15,6 +16,7 @@ use arrow::array::StringArray;
 use genomic_data::coordinates::chr_eq;
 use rustc_hash::FxHashMap;
 use sites::from_sites;
+use std::collections::BTreeMap;
 use std::ops::Range;
 use std::path::Path;
 use tables::{main_roles, posterior_sizes, read_shifts, role_sizes, site_counts};
@@ -188,6 +190,37 @@ pub struct Pileup<'a> {
     pub dropped: Vec<&'a str>,
 }
 
+/// The fitted cells' tally by batch (see [`tables::cell_batches`]), and
+/// how each cell module spreads over the batches by it.
+#[derive(Debug)]
+pub struct Batches {
+    cells: Vec<f64>,
+    units: Vec<f64>,
+    pub design: Design,
+    /// By cell role (not column).
+    pub spread: Vec<Spread>,
+}
+
+impl Batches {
+    fn new(names: Vec<String>, cells: Vec<f64>, units: Vec<f64>, roles: usize) -> Self {
+        let design = Design::of(&names, &BTreeMap::new());
+        let spread = spread(&design, &cells, &units, roles);
+        Self {
+            cells,
+            units,
+            design,
+            spread,
+        }
+    }
+
+    /// The batches read as replicates of the conditions `groups` names
+    /// (batch to condition; the rest from their names).
+    fn regroup(&mut self, groups: &BTreeMap<String, String>) {
+        self.design = Design::of(&self.design.batches, groups);
+        self.spread = spread(&self.design, &self.cells, &self.units, self.spread.len());
+    }
+}
+
 /// What `faba cluster`'s blockmodel wrote, as the browser reads it.
 #[derive(Debug)]
 pub struct Modules {
@@ -243,6 +276,9 @@ pub struct Modules {
     main: FxHashMap<Box<str>, usize>,
     /// Whether the fit converged, and its trace (see [`Fit`]).
     pub fit: Fit,
+    /// How the cell modules spread over the batches; none when the cell
+    /// table has no batch (or one batch only).
+    pub batches: Option<Batches>,
 }
 
 impl Modules {
@@ -262,8 +298,15 @@ impl Modules {
         // A table older runs did not write: none when it is missing.
         let optional = |name: &str| path(name).is_file().then(|| table(name)).transpose();
         let (cell_roles, gene_roles, shift) = read_shifts(&table("blocks")?)?;
-        let (cell_sizes, listed) =
-            posterior_sizes(&table("cell_roles")?, || table("block_cells"), cell_roles)?;
+        let cells = table("cell_roles")?;
+        let (cell_sizes, listed, fitted) =
+            posterior_sizes(&cells, || table("block_cells"), cell_roles)?;
+        // A table with no batch (or one) has no batches to spread over.
+        let batches = tables::cell_batches(&cells, &fitted, cell_roles)
+            .ok()
+            .filter(|(names, ..)| names.len() > 1)
+            .map(|(names, in_batch, units)| Batches::new(names, in_batch, units, cell_roles));
+        drop(cells);
         let genes_table = table("gene_roles")?;
         let names: &StringArray = column(&genes_table, "gene")?;
         let main = main_roles(&genes_table, |i| names.value(i), gene_roles)
@@ -336,6 +379,7 @@ impl Modules {
             count_settings,
             main,
             fit: Fit::read(dir, modality, &record),
+            batches,
         };
         // A count fit's genes are its sites, their reads UMIs per cell.
         if count {
@@ -373,6 +417,24 @@ impl Modules {
             .for_each(|m| m.reads.iter_mut().for_each(mark));
         self.blocks.iter_mut().flatten().for_each(mark);
         self.whole.iter_mut().for_each(mark);
+    }
+
+    /// The batches read as replicates of the conditions `groups` names
+    /// (batch to condition; the rest from their names).
+    /// Refused when `groups` names a batch the cell table does not have.
+    pub fn regroup(&mut self, groups: &BTreeMap<String, String>) -> anyhow::Result<()> {
+        let Some(b) = self.batches.as_mut().filter(|_| !groups.is_empty()) else {
+            return Ok(());
+        };
+        let known = &b.design.batches;
+        if let Some(name) = groups.keys().find(|g| !known.contains(g)) {
+            anyhow::bail!(
+                "--batch-groups names {name}, not a batch of this fit: it has {}",
+                known.join(", ")
+            );
+        }
+        b.regroup(groups);
+        Ok(())
     }
 
     /// Every member's, site's and block's reads put in column order, once,
