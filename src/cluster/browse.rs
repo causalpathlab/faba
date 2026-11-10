@@ -60,10 +60,10 @@ pub struct ModulesArgs {
     #[arg(
         long = "group",
         value_name = "C",
-        help = "Of a within record: open the fit within this cell module of the count fit, as C3, 3 or bg",
+        help = "Of a within record: open the fit within this cell module of the count fit, as C3 or 3",
         long_help = "Of a within record ({modality}_within.run.json, which `faba cluster\n\
                      --within` writes): open the fit within this cell module of the count\n\
-                     fit, as C3 or 3, or bg for its background cells. Every other option\n\
+                     fit, as C3 or 3. Every other option\n\
                      then applies to that fit. Without it, the record opens as a list of\n\
                      its fits, the count fit first; the levels printed are the count\n\
                      fit's, and --html writes a page a fit, FILE for the count fit and\n\

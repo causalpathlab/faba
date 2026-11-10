@@ -1,6 +1,6 @@
 [package]
 name = "faba"
-version = "0.18.12"
+version = "0.18.13"
 edition = "2021"
 rust-version = "1.91"
 license = "MIT"
@@ -86,6 +86,7 @@ indicatif = { version = "^0.18", features = ["rayon"] }
 log = "0.4"
 
 statrs = { version = "0.18", default-features = false }
+special = "0.13"
 coitrees = "0.4"
 parquet = "59"
 

@@ -56,7 +56,7 @@ pub(super) struct Data {
 /// fit's, or that of the fit within one of its cell modules.
 #[derive(Serialize, Debug, Clone, PartialEq)]
 pub(super) struct Link {
-    /// `count`, `C3`, `bg`.
+    /// `count`, `C3`.
     pub label: String,
     /// Its page, a file beside this one; none for this page, and for a
     /// group that has no fit.

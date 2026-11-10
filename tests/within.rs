@@ -105,11 +105,22 @@ fn the_second_round_fits_within_the_firsts_cell_modules() {
     .into_iter()
     .chain(["--min-cell-sites", "1", "--min-site-cells", "1"]);
 
-    let mut count = vec!["cluster", "--modality", "count"];
+    // The count fit by variational inference: a k-means start, a few
+    // epochs.
     let folder = at("");
-    count.push(&folder);
-    count.extend(chains.clone());
-    faba(&count);
+    faba(&[
+        "cluster",
+        "--modality",
+        "count",
+        &folder,
+        "--batch-process",
+        "--chains",
+        "2",
+        "--epochs",
+        "20",
+        "--min-cell-sites",
+        "1",
+    ]);
     let count_record = at("count_blockmodel.run.json");
     assert!(Path::new(&count_record).is_file(), "no {count_record}");
 

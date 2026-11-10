@@ -3,6 +3,7 @@
 //! marked; once done, whether a chain lags the best.
 
 use crate::cluster::progress::advice::{lagging, lags};
+use crate::cluster::progress::ELBO;
 use crate::site_analysis::miami::palette::{color, Palette};
 use data_beans::interactive::ui::{DIM, HIGHLIGHT};
 use ratatui::layout::Rect;
@@ -51,6 +52,7 @@ pub(in crate::cluster) fn draw(
     area: Rect,
     traces: &[Vec<(usize, f64)>],
     (total, warmup): (usize, usize),
+    quantity: &str,
 ) {
     if area.height < ROWS || area.width < COLS {
         return;
@@ -90,14 +92,21 @@ pub(in crate::cluster) fn draw(
     let chart = Chart::new(sets)
         .x_axis(
             Axis::default()
-                .title(Span::styled("sweep", DIM))
+                .title(Span::styled(
+                    if quantity == ELBO {
+                        "k-means iteration, then epoch"
+                    } else {
+                        "sweep"
+                    },
+                    DIM,
+                ))
                 .style(DIM)
                 .bounds([0.0, total as f64])
                 .labels(["0".to_string(), total.to_string()]),
         )
         .y_axis(
             Axis::default()
-                .title(Span::styled("log joint", DIM))
+                .title(Span::styled(quantity.to_string(), DIM))
                 .style(DIM)
                 .bounds([lo, hi])
                 .labels([format!("{lo:.digits$}"), format!("{hi:.digits$}")]),

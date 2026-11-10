@@ -303,10 +303,15 @@ impl Modules {
         let main = (from.sites.iter())
             .filter_map(|s| Some((s.gene.clone(), *main.get(s.gene.as_ref())?)))
             .collect();
-        let count_settings = (record.as_ref().ok())
-            .filter(|_| count)
-            .and_then(|(_, r)| r.pointer("/results/model"))
-            .cloned();
+        // A count fit's model, and how variational inference ran (none in
+        // an older record).
+        let count_settings = (record.as_ref().ok()).filter(|_| count).and_then(|(_, r)| {
+            let model = r.pointer("/results/model")?.clone();
+            Some(match r.pointer("/results/vi") {
+                Some(vi) => serde_json::json!({"model": model, "vi": vi}),
+                None => model,
+            })
+        });
         let mut modules = Self {
             modality: modality.to_string(),
             cell_roles,

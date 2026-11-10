@@ -291,7 +291,7 @@ fn cluster(
 ) -> anyhow::Result<Written> {
     check(args)?;
     if args.is_count() {
-        return run::count::count_fit(args, &mcmc_config(args), dir, record, progress);
+        return run::count::count_fit(args, dir, record, progress);
     }
     let all = read::read_inputs(&inputs(args)?, progress)?;
     site_fit(args, dir, record, progress, all)

@@ -26,7 +26,7 @@ fn each_chain_is_a_line_on_one_scale_after_its_climb() {
         chain(90, |i| i as f64 / 89.0 * 10.0),
     ];
     let v = Verdict::of(&traces, 10, 100, 1.02);
-    let out = lines(&traces, &v, 30);
+    let out = lines(&traces, &v, "log joint", 30);
     assert_eq!(out.len(), 1 + 3 + 2, "{out:#?}");
     assert!(
         out[0].contains("0.0 to 10.0"),
@@ -52,7 +52,7 @@ fn each_chain_is_a_line_on_one_scale_after_its_climb() {
 fn a_short_trace_takes_a_cell_per_point() {
     let traces = [chain(5, |i| i as f64), chain(5, |i| 4.0 - i as f64)];
     let v = Verdict::of(&traces, 0, 15, 1.5);
-    let out = lines(&traces, &v, 30);
+    let out = lines(&traces, &v, "log joint", 30);
     // A tenth of 15 points is one: the first climbing point is left out.
     assert_eq!(cells(&out[1]).chars().count(), 14);
     assert!(out[3].contains("chains disagree"), "{out:#?}");
@@ -65,6 +65,6 @@ fn flat_traces_draw_at_mid_height() {
     let flat: Vec<(usize, f64)> = (1..=20).map(|n| (n, 3.0)).collect();
     let traces = [flat.clone(), flat];
     let v = Verdict::of(&traces, 0, 30, 1.0);
-    let out = lines(&traces, &v, 10);
+    let out = lines(&traces, &v, "log joint", 10);
     assert_eq!(cells(&out[1]), "▄".repeat(10));
 }

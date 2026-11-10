@@ -17,8 +17,7 @@ fn cell(batch: &str, barcode: &str) -> Cell {
 }
 
 /// A count fit in `dir`, its record's path: cells B0..B4 of batch `b`. B0
-/// and B1 are in cell module 1 (B1's background share just at a half), B2
-/// in module 2, B3 in module 2 but mostly background, B4 not kept. Its
+/// and B1 are in cell module 1, B2 and B3 in module 2, B4 not kept. Its
 /// matrices were in the folders `a` (two of them) and `c`.
 fn count_fit(dir: &Path) -> PathBuf {
     count_fit_of(dir, &["a/x_count.zarr", "a/y_count.zarr", "c/z_count.zarr"])
@@ -34,12 +33,11 @@ fn count_fit_of(dir: &Path, matrices: &[&str]) -> PathBuf {
         Some([0.2, 0.8]),
         None,
     ];
-    let level = [0.1, 0.5, 0.2, 0.8, 0.0];
-    let rows: Vec<RoleRow> = (cells.iter().zip(&member).zip(level))
-        .map(|((cell, m), level)| RoleRow {
+    let rows: Vec<RoleRow> = (cells.iter().zip(&member))
+        .map(|(cell, m)| RoleRow {
             cell,
             membership: m.as_ref().map(|m| m.as_slice()),
-            level: m.map(|_| level),
+            level: None,
         })
         .collect();
     write::cell_roles(&rows, 2, &dir.join("count_cell_roles.parquet")).unwrap();
@@ -54,24 +52,19 @@ fn count_fit_of(dir: &Path, matrices: &[&str]) -> PathBuf {
 }
 
 /// The count fit's main module and group of one site cell, read alone.
-fn of(count: &CountCells, batch: &str, barcode: &str) -> Option<(i32, Group)> {
+fn of(count: &CountCells, batch: &str, barcode: &str) -> Option<Group> {
     count.group(&[cell(batch, barcode)]).ok()?.of[0]
 }
 
-/// A cell goes to its main cell module, numbered from 0, or to the
-/// background when its share there is above the threshold; one the count
+/// A cell goes to its main cell module, numbered from 0; one the count
 /// fit did not keep has no group.
 #[test]
-fn a_cell_is_grouped_by_its_main_module_or_as_background() {
-    assert_eq!(Group::of(3, Some(0.2), 0.5), Some(Group::Role(2)));
-    assert_eq!(Group::of(3, Some(0.5), 0.5), Some(Group::Role(2)));
-    assert_eq!(Group::of(3, Some(0.51), 0.5), Some(Group::Background));
-    assert_eq!(Group::of(1, None, 0.5), Some(Group::Role(0)));
-    assert_eq!(Group::of(0, None, 0.5), None);
-    assert_eq!(Group::Role(2).name(), "C3");
-    assert_eq!(Group::Background.name(), "bg");
-    // The modules first, in their order, the background last.
-    assert!(Group::Role(9) < Group::Background && Group::Role(0) < Group::Role(1));
+fn a_cell_is_grouped_by_its_main_module() {
+    assert_eq!(Group::of(3), Some(Group(2)));
+    assert_eq!(Group::of(1), Some(Group(0)));
+    assert_eq!(Group::of(0), None);
+    assert_eq!(Group(2).name(), "C3");
+    assert!(Group(0) < Group(1));
 }
 
 /// The count fit is read from its record or its directory: the cells it
@@ -81,17 +74,14 @@ fn a_count_fit_is_read_from_its_record_or_its_directory() {
     let tmp = tempfile::tempdir().unwrap();
     let record = count_fit(tmp.path());
     for named in [record.as_path(), tmp.path()] {
-        let count = CountCells::read(&named.to_string_lossy(), 0.5).unwrap();
+        let count = CountCells::read(&named.to_string_lossy()).unwrap();
         assert!(count.record.is_absolute() && count.record.ends_with(COUNT_RECORD));
-        assert_eq!(of(&count, "b", "B0"), Some((1, Group::Role(0))));
-        assert_eq!(of(&count, "b", "B1"), Some((1, Group::Role(0))));
-        assert_eq!(of(&count, "b", "B2"), Some((2, Group::Role(1))));
-        assert_eq!(of(&count, "b", "B3"), Some((2, Group::Background)));
+        assert_eq!(of(&count, "b", "B0"), Some(Group(0)));
+        assert_eq!(of(&count, "b", "B1"), Some(Group(0)));
+        assert_eq!(of(&count, "b", "B2"), Some(Group(1)));
+        assert_eq!(of(&count, "b", "B3"), Some(Group(1)));
         assert_eq!(of(&count, "b", "B4"), None);
     }
-    // A background share of 1 sends no cell to the background.
-    let count = CountCells::read(&record.to_string_lossy(), 1.0).unwrap();
-    assert_eq!(of(&count, "b", "B3"), Some((2, Group::Role(1))));
 }
 
 /// The sites are looked for where the count fit's matrices are, each
@@ -113,13 +103,13 @@ fn the_sites_default_to_the_folders_of_the_count_fits_matrices() {
     ];
     let matrices: Vec<&str> = matrices.iter().map(String::as_str).collect();
     let record = count_fit_of(&here, &matrices);
-    let count = CountCells::read(&record.to_string_lossy(), 0.5).unwrap();
+    let count = CountCells::read(&record.to_string_lossy()).unwrap();
     assert_eq!(
         count.folders(),
         [at("a").into(), at("c").into()] as [Box<str>; 2]
     );
     let record = count_fit_of(&here, &["/gone/a/x_count.zarr", "/gone/a/y_count.zarr"]);
-    let count = CountCells::read(&record.to_string_lossy(), 0.5).unwrap();
+    let count = CountCells::read(&record.to_string_lossy()).unwrap();
     let here: Box<str> = here.to_string_lossy().into();
     assert_eq!(count.folders(), [here]);
 }
@@ -130,12 +120,12 @@ fn the_sites_default_to_the_folders_of_the_count_fits_matrices() {
 fn what_is_not_a_count_fit_is_refused() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().to_string_lossy().into_owned();
-    let err = CountCells::read(&dir, 0.5).unwrap_err().to_string();
+    let err = CountCells::read(&dir).unwrap_err().to_string();
     assert!(err.contains("no count_blockmodel.run.json there"), "{err}");
     let site = tmp.path().join("m6a_blockmodel.run.json");
     let fit = json!({ "job": "cluster", "results": { "tables": { "modality": "m6a" } } });
     std::fs::write(&site, fit.to_string()).unwrap();
-    let err = CountCells::read(&site.to_string_lossy(), 0.5).unwrap_err();
+    let err = CountCells::read(&site.to_string_lossy()).unwrap_err();
     let err = err.to_string();
     assert!(
         err.contains("is not a count fit's run record")
@@ -152,21 +142,17 @@ fn what_is_not_a_count_fit_is_refused() {
 fn site_cells_are_matched_to_the_count_fits_by_batch_and_barcode() {
     let tmp = tempfile::tempdir().unwrap();
     let record = count_fit(tmp.path());
-    let count = CountCells::read(&record.to_string_lossy(), 0.5).unwrap();
+    let count = CountCells::read(&record.to_string_lossy()).unwrap();
     let cells: Vec<Cell> = ["B3", "B1", "B9", "B2", "B0", "B4"]
         .iter()
         .map(|b| cell("sites", b))
         .collect();
     let grouped = count.group(&cells).unwrap();
-    let expected: BTreeMap<Group, Vec<usize>> = [
-        (Group::Role(0), vec![1, 4]),
-        (Group::Role(1), vec![3]),
-        (Group::Background, vec![0]),
-    ]
-    .into();
+    let expected: BTreeMap<Group, Vec<usize>> =
+        [(Group(0), vec![1, 4]), (Group(1), vec![0, 3])].into();
     assert_eq!(grouped.groups, expected);
     assert_eq!((grouped.matched(), grouped.of.len()), (4, 6));
-    assert_eq!(grouped.of[0], Some((2, Group::Background)));
+    assert_eq!(grouped.of[0], Some(Group(1)));
     assert_eq!(grouped.of[2], None);
     let err = count.group(&[cell("sites", "X1")]).unwrap_err().to_string();
     assert!(
@@ -191,17 +177,17 @@ fn a_count_fit_of_several_batches_matches_within_the_batch() {
         })
         .collect();
     write::cell_roles(&rows, 2, &tmp.path().join("count_cell_roles.parquet")).unwrap();
-    let count = CountCells::read(&record.to_string_lossy(), 0.5).unwrap();
-    assert_eq!(of(&count, "b1", "B0"), Some((1, Group::Role(0))));
-    assert_eq!(of(&count, "b2", "B0"), Some((2, Group::Role(1))));
+    let count = CountCells::read(&record.to_string_lossy()).unwrap();
+    assert_eq!(of(&count, "b1", "B0"), Some(Group(0)));
+    assert_eq!(of(&count, "b2", "B0"), Some(Group(1)));
     assert_eq!(of(&count, "b3", "B0"), None);
     // Sites of several batches are not matched by barcode alone either.
     let record = count_fit(tmp.path());
-    let count = CountCells::read(&record.to_string_lossy(), 0.5).unwrap();
+    let count = CountCells::read(&record.to_string_lossy()).unwrap();
     let grouped = count
         .group(&[cell("b", "B0"), cell("other", "B0")])
         .unwrap();
-    assert_eq!(grouped.of, [Some((1, Group::Role(0))), None]);
+    assert_eq!(grouped.of, [Some(Group(0)), None]);
 }
 
 /// A batch met in several folders is named with its folder, as typed in
@@ -221,7 +207,7 @@ fn a_batch_named_with_its_folder_is_matched_however_the_folder_was_typed() {
         })
         .collect();
     write::cell_roles(&rows, 2, &tmp.path().join("count_cell_roles.parquet")).unwrap();
-    let count = CountCells::read(&record.to_string_lossy(), 0.5).unwrap();
+    let count = CountCells::read(&record.to_string_lossy()).unwrap();
     let sites = [
         cell("/runs/a/b", "B0"),
         cell("/runs/c/b", "B0"),
@@ -229,7 +215,7 @@ fn a_batch_named_with_its_folder_is_matched_however_the_folder_was_typed() {
         cell("xa/b", "B0"),
     ];
     let grouped = count.group(&sites).unwrap();
-    let (first, second) = (Some((1, Group::Role(0))), Some((2, Group::Role(1))));
+    let (first, second) = (Some(Group(0)), Some(Group(1)));
     assert_eq!(grouped.of, [first, second, first, None]);
     // `b` alone is either folder's; two site batches of one name are none.
     assert_eq!(of(&count, "b", "B0"), None);
@@ -257,7 +243,7 @@ fn the_nested_table_labels_each_cell_by_group_and_site_module() {
         NestedRow {
             cell: &cells[1],
             count_role: Some(1),
-            group: Some("bg".into()),
+            group: Some("C1".into()),
             site_role: None,
         },
         NestedRow {
@@ -268,7 +254,7 @@ fn the_nested_table_labels_each_cell_by_group_and_site_module() {
         },
     ];
     let labels: Vec<Option<String>> = rows.iter().map(NestedRow::label).collect();
-    assert_eq!(labels, [Some("C3.2".into()), Some("bg".into()), None]);
+    assert_eq!(labels, [Some("C3.2".into()), Some("C1".into()), None]);
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("m6a_within_cells.parquet");
     write::nested_cells(&rows, &path).unwrap();
@@ -276,7 +262,7 @@ fn the_nested_table_labels_each_cell_by_group_and_site_module() {
     assert_eq!(t.num_rows(), 3);
     let label = column::<StringArray>(&t, "label").unwrap();
     let read: Vec<Option<&str>> = label.iter().collect();
-    assert_eq!(read, [Some("C3.2"), Some("bg"), None]);
+    assert_eq!(read, [Some("C3.2"), Some("C1"), None]);
     let role = column::<Int32Array>(&t, "site_role").unwrap();
     assert_eq!(role.iter().collect::<Vec<_>>(), [Some(2), None, None]);
     let count = column::<Int32Array>(&t, "count_role").unwrap();
@@ -289,7 +275,7 @@ fn the_nested_table_labels_each_cell_by_group_and_site_module() {
 /// words: its status, its chains' R-hat and verdict, why it has no fit.
 #[test]
 fn a_groups_fit_is_listed_and_said_in_words() {
-    let mut fitted = GroupFit::new(Group::Role(2), 120, Status::Fitted);
+    let mut fitted = GroupFit::new(Group(2), 120, Status::Fitted);
     fitted.dir = Some("within/m6a/C3".into());
     fitted.record = Some("m6a_blockmodel.run.json".into());
     fitted.rhat = Some(1.018);
@@ -297,9 +283,9 @@ fn a_groups_fit_is_listed_and_said_in_words() {
     let mut early = fitted.clone();
     early.converged = Some(false);
     early.stopped_early = true;
-    let mut skipped = GroupFit::new(Group::Background, 7, Status::Skipped);
+    let mut skipped = GroupFit::new(Group(4), 7, Status::Skipped);
     skipped.why = Some("7 cells to fit, fewer than --within-min-cells 50".into());
-    let waiting = GroupFit::new(Group::Role(3), 60, Status::NotRun);
+    let waiting = GroupFit::new(Group(3), 60, Status::NotRun);
     assert_eq!(fitted.what(), "fitted, R-hat 1.02, converged");
     assert_eq!(
         fitted.line(),
@@ -335,8 +321,8 @@ fn a_groups_fit_is_listed_and_said_in_words() {
 }
 
 /// `--within` fits sites with the blockmodel, within groups worth
-/// fitting: a count modality, the mixture, a share outside 0 to 1 and a
-/// group of one cell are refused before anything is read.
+/// fitting: a count modality, the mixture and a group of one cell are
+/// refused before anything is read.
 #[test]
 fn settings_within_cannot_fit_with_are_refused() {
     let check = |words: &[&str]| {
@@ -345,11 +331,10 @@ fn settings_within_cannot_fit_with_are_refused() {
         args::check(&parse_args(&all)).map_err(|e| e.to_string())
     };
     assert!(check(&[]).is_ok());
-    assert!(check(&["--model", "blocks", "--within-background", "1"]).is_ok());
+    assert!(check(&["--model", "blocks"]).is_ok());
     for (words, says) in [
         (&["--modality", "count"][..], "not count"),
         (&["--model", "crp"], "not --model crp"),
-        (&["--within-background", "1.5"], "from 0 to 1"),
         (&["--within-min-cells", "1"], "at least 2"),
     ] {
         let err = check(words).unwrap_err();

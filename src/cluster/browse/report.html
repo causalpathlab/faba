@@ -125,7 +125,7 @@
       </div>
     </div>
     <div class="trace" id="trace" hidden>
-      <div class="model-head"><h2>Trace</h2><span class="note">each chain's log joint by sweep as it ran; the dashed line is where the burn-in ends</span></div>
+      <div class="model-head"><h2>Trace</h2><span class="note" id="trace-note">each chain's log joint by sweep as it ran; the dashed line is where the burn-in ends</span></div>
       <div class="trace-plot"><canvas id="c-trace"></canvas><div class="trace-tip" id="trace-tip" hidden></div></div>
       <div class="legend" id="trace-legend"></div>
       <p class="verdict" id="trace-said"></p>
@@ -254,8 +254,8 @@ function drawTrace(at) {
   ctx.fillText(hi.toFixed(digits), l - 6, t + 6); ctx.fillText(lo.toFixed(digits), l - 6, t + ph - 6);
   ctx.textAlign = "left"; ctx.fillText("0", l, t + ph + 14);
   ctx.textAlign = "right"; ctx.fillText(String(TRACE.sweeps), l + pw, t + ph + 14);
-  ctx.textAlign = "center"; ctx.fillText("sweep", l + pw / 2, t + ph + 14);
-  ctx.save(); ctx.translate(14, t + ph / 2); ctx.rotate(-Math.PI / 2); ctx.fillText("log joint", 0, 0); ctx.restore();
+  ctx.textAlign = "center"; ctx.fillText(TRACE.quantity === "ELBO" ? "k-means iteration, then epoch" : "sweep", l + pw / 2, t + ph + 14);
+  ctx.save(); ctx.translate(14, t + ph / 2); ctx.rotate(-Math.PI / 2); ctx.fillText(TRACE.quantity || "log joint", 0, 0); ctx.restore();
   ctx.save(); ctx.beginPath(); ctx.rect(l, t, pw, ph); ctx.clip();
   if (TRACE.burnIn > 0 && TRACE.burnIn < total) {
     ctx.strokeStyle = dim; ctx.setLineDash([4, 4]);
@@ -276,13 +276,14 @@ function drawTrace(at) {
   const near = TRACE.chains.map(c => ({c, p: nearest(c.points, at)}));
   near.forEach(({c, p}) => { ctx.fillStyle = c.color; ctx.beginPath(); ctx.arc(x(p[0]), y(p[1]), 3, 0, 2 * Math.PI); ctx.fill(); });
   ctx.restore();
-  tip.innerHTML = `sweep ${near[0].p[0]}` + near.map(({c, p}) => `<br><i style="background:${c.color}"></i>${esc(c.name)} ${p[1].toFixed(1)}`).join("");
+  tip.innerHTML = `${TRACE.quantity === "ELBO" ? "step" : "sweep"} ${near[0].p[0]}` + near.map(({c, p}) => `<br><i style="background:${c.color}"></i>${esc(c.name)} ${p[1].toFixed(1)}`).join("");
   tip.hidden = false;
   const left = x(at) + 12, flip = left + tip.offsetWidth > w;
   tip.style.left = `${flip ? x(at) - 12 - tip.offsetWidth : left}px`;
 }
 if (TRACE.chains) {
   document.getElementById("model").hidden = false;
+  if (TRACE.quantity === "ELBO") document.getElementById("trace-note").textContent = "each restart's ELBO by epoch as it ran; the dashed line is where its k-means start ends";
   document.getElementById("trace").hidden = false;
   document.getElementById("trace-legend").innerHTML = TRACE.chains.map(c => `<span class="key"><i style="background:${c.color}"></i>${esc(c.name)}</span>`).join("");
   const said = document.getElementById("trace-said");

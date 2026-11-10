@@ -202,7 +202,7 @@ pub fn cell_roles(rows: &[RoleRow], k: usize, path: &Path) -> anyhow::Result<()>
 
 /// One row per cell of a fit within a count fit's cell modules (`faba
 /// cluster --within`): its main count module (1..; none when the count fit
-/// did not keep it), the group it was fitted in (`C3`, or `bg`), and its
+/// did not keep it), the group it was fitted in (`C3`), and its
 /// main site module (1..) within that group, when its group was fitted and
 /// kept it.
 pub struct NestedRow<'a> {

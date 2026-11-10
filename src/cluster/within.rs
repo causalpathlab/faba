@@ -4,8 +4,7 @@
 //! Counts and site reads carry unequal weight (every gene counts in every
 //! cell, a site has reads in few), so they are not fitted jointly. The
 //! count fit (`faba cluster --modality count`) groups the cells first: each
-//! in its main cell module, or in `bg` when its background share there is
-//! above `--within-background`. Each group with at least
+//! in its main cell module. Each group with at least
 //! `--within-min-cells` cells to fit is then fitted on its own site reads,
 //! one after the other, into `within/{modality}/{group}/` under the output
 //! directory: the tables and run record `faba cluster` writes for any site
@@ -20,7 +19,7 @@ use super::{args, progress, read, write, ClusterArgs, ModelKind};
 use crate::common::{column, read_record_batch};
 use crate::run_record::RunRecord;
 use anyhow::Context;
-use arrow::array::{Array, Float32Array, Int32Array, StringArray};
+use arrow::array::{Array, Int32Array, StringArray};
 use rustc_hash::FxHashMap;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -34,34 +33,26 @@ pub(super) fn record_name(m: &str) -> String {
     format!("{m}_within.run.json")
 }
 
-/// A group of the count fit's cells: those of one cell module (numbered
-/// from 0), or those mostly background. Modules first, in order.
+/// A group of the count fit's cells: those of one cell module, numbered
+/// from 0.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(super) enum Group {
-    Role(usize),
-    Background,
-}
+pub(super) struct Group(pub(super) usize);
 
 impl Group {
-    /// `C3` for the third cell module, as the count fit's view names it;
-    /// `bg` for the background.
+    /// `C3` for the third cell module, as the count fit's view names it.
     pub(super) fn name(self) -> String {
-        match self {
-            Group::Role(k) => format!("C{}", k + 1),
-            Group::Background => "bg".into(),
-        }
+        format!("C{}", self.0 + 1)
     }
 
-    /// The group of a count fit's cell, from its main `role` (1..) and its
-    /// `level` (its background share): `bg` when that is above
-    /// `background`. None for a role that is no module's.
-    fn of(role: i32, level: Option<f32>, background: f64) -> Option<Self> {
-        let role = usize::try_from(role.checked_sub(1)?).ok()?;
-        Some(if level.is_some_and(|l| f64::from(l) > background) {
-            Group::Background
-        } else {
-            Group::Role(role)
-        })
+    /// The group of a count fit's cell, from its main `role` (1..). None
+    /// for a role that is no module's.
+    fn of(role: i32) -> Option<Self> {
+        Some(Group(usize::try_from(role.checked_sub(1)?).ok()?))
+    }
+
+    /// Its cell module as the count fit's table numbers it (1..).
+    fn role(self) -> i32 {
+        self.0 as i32 + 1
     }
 }
 
@@ -98,7 +89,7 @@ impl Status {
 /// `results.within.groups`.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(in crate::cluster) struct GroupFit {
-    /// `C3`, or `bg`.
+    /// `C3`.
     pub group: String,
     /// Its cells among those read.
     pub cells: usize,
@@ -165,7 +156,7 @@ impl GroupFit {
 }
 
 /// By barcode: a cell's main count module (1..) and its group.
-type ByBarcode = FxHashMap<Box<str>, (i32, Group)>;
+type ByBarcode = FxHashMap<Box<str>, Group>;
 
 /// By batch, then barcode.
 type ByBatch = FxHashMap<Box<str>, ByBarcode>;
@@ -192,9 +183,9 @@ pub(super) struct CountCells {
 /// The site cells against the count fit's.
 #[derive(Debug, Default, PartialEq)]
 struct Grouped {
-    /// Each site cell's main count module (1..) and group, in the order
-    /// read; none for a cell the count fit has no group for.
-    of: Vec<Option<(i32, Group)>>,
+    /// Each site cell's group, in the order read; none for a cell the
+    /// count fit has no group for.
+    of: Vec<Option<Group>>,
     /// The cells of each group, as indices in that order.
     groups: BTreeMap<Group, Vec<usize>>,
 }
@@ -208,9 +199,9 @@ impl Grouped {
 
 impl CountCells {
     /// The count fit `--within` names (its run record, or the directory it
-    /// is in), its cells grouped: `bg` above the background share
-    /// `background`. Refused when it is not a count fit's record.
-    fn read(named: &str, background: f64) -> anyhow::Result<Self> {
+    /// is in), its cells grouped. Refused when it is not a count fit's
+    /// record.
+    fn read(named: &str) -> anyhow::Result<Self> {
         let path = match Path::new(named) {
             dir if dir.is_dir() => dir.join(COUNT_RECORD),
             file => file.to_path_buf(),
@@ -234,7 +225,7 @@ impl CountCells {
             .pointer("/results/tables/cells/0")
             .and_then(|t| t.as_str());
         let table = dir.join(table.with_context(|| format!("{named} names no cell table"))?);
-        let cells = Self::cells(&table, background)
+        let cells = Self::cells(&table)
             .with_context(|| format!("reading the count fit's cells, {}", table.display()))?;
         Ok(Self {
             record: crate::run_record::absolute(&path.to_string_lossy()).into(),
@@ -245,24 +236,29 @@ impl CountCells {
     }
 
     /// The cells of the count fit's cell table at `path`, those it kept.
-    fn cells(path: &Path, background: f64) -> anyhow::Result<ByBatch> {
+    fn cells(path: &Path) -> anyhow::Result<ByBatch> {
         let t = read_record_batch(path)?;
         let barcode = column::<StringArray>(&t, "barcode")?;
         let batch = column::<StringArray>(&t, "batch")?;
         let role = column::<Int32Array>(&t, "role")?;
-        let level = column::<Float32Array>(&t, "level").ok();
+        if t.schema().column_with_name("level").is_some() {
+            log::warn!(
+                "{}: a count fit with a background (faba before 0.18.13); its background \
+                 cells now go to their main modules: fit the counts again for modules \
+                 without one",
+                path.display()
+            );
+        }
         let mut out: ByBatch = FxHashMap::default();
         for i in 0..t.num_rows() {
             // A cell the count fit did not keep has no role, and no group.
             if !role.is_valid(i) {
                 continue;
             }
-            let main = role.value(i);
-            let share = level.and_then(|l| l.is_valid(i).then(|| l.value(i)));
-            if let Some(group) = Group::of(main, share, background) {
+            if let Some(group) = Group::of(role.value(i)) {
                 out.entry(batch.value(i).into())
                     .or_default()
-                    .insert(barcode.value(i).into(), (main, group));
+                    .insert(barcode.value(i).into(), group);
             }
         }
         anyhow::ensure!(!out.is_empty(), "the count fit kept no cells");
@@ -332,7 +328,7 @@ impl CountCells {
         let mut out = Grouped::default();
         for (i, cell) in cells.iter().enumerate() {
             let of = (batches.get(&*cell.batch)).and_then(|b| b.get(&cell.barcode).copied());
-            if let Some((_, group)) = of {
+            if let Some(group) = of {
                 out.groups.entry(group).or_default().push(i);
             }
             out.of.push(of);
@@ -364,7 +360,7 @@ pub(super) fn run(args: &ClusterArgs) -> anyhow::Result<Option<String>> {
         args.model = ModelKind::Blocks;
     }
     args::check(&args)?;
-    let count = CountCells::read(named, args.within_background)?;
+    let count = CountCells::read(named)?;
     if args.data_files.is_empty() {
         args.data_files = count.folders();
         anyhow::ensure!(
@@ -507,8 +503,8 @@ pub(super) fn run(args: &ClusterArgs) -> anyhow::Result<Option<String>> {
     let rows: Vec<write::NestedRow> = (all.cells.iter().zip(&grouped.of).zip(&site_roles))
         .map(|((cell, of), &site_role)| write::NestedRow {
             cell,
-            count_role: of.map(|(main, _)| main),
-            group: of.map(|(_, group)| group.name()),
+            count_role: of.map(|g| g.role()),
+            group: of.map(|g| g.name()),
             site_role,
         })
         .collect();
@@ -517,7 +513,6 @@ pub(super) fn run(args: &ClusterArgs) -> anyhow::Result<Option<String>> {
         &serde_json::json!({
             "modality": m,
             "count_record": count.record,
-            "background": args.within_background,
             "min_cells": args.within_min_cells,
             "cells": {
                 "read": all.cells.len(),

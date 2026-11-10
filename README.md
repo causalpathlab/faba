@@ -217,7 +217,7 @@ Producers write every candidate and apply no p-value cutoff. qc is where cells, 
 
 The producers (count, depth, atoi, dartseq, apa, snp, run, qc, cluster) take `background`: on large BAMs set it, and the call returns a job id at once.
 
-Every write goes to `out`, which must not exist. Leave `out` out and the output goes in today's results folder, named after the input and the tool. Paths resolve against the server's working directory. Common flags have their own arguments; further flags go in `options`, as `faba <command> --help` lists them; `options` cannot name the output or open a view. Results give the paths written and what the run recorded (`results`: a fit's R-hat, its cluster sizes).
+Every write goes to `out`, which must not exist. Leave `out` out and the output goes in today's results folder, named after the input and the tool. Paths resolve against the server's working directory. Common flags have their own arguments; further flags go in `options`, as `faba <command> --help` lists them; `options` cannot name the output or open a view. Results give the paths written and what the run recorded (`results`: a site fit's R-hat or a count fit's ELBO verdict, its cluster sizes).
 ```
 
 legume-mcp adds where the records are, the `notebook` tool (open with a plan: the question, the data, how the result will be checked) and the background jobs below.
@@ -266,9 +266,16 @@ faba cluster --within out/count_blockmodel.run.json
 faba cluster-view out/m6a_within.run.json
 ```
 
+The count fit is by variational inference (after Gopalan, Hofman and Blei's hierarchical Poisson
+factorization): each restart (`--chains`, 4) starts from k-means++ on the cells' normalized
+profiles, then the genes' profiles over those clusters, then runs online minibatch epochs (`--svi-epochs` 10 of
+`--batch-size` 1000 cells), then coordinate ascent until an epoch moves the ELBO by less than
+`--tol` (1e-5) per count, at most `--epochs` (200) in all. Only nonzero counts are visited, and
+nothing cells × genes is held dense. The tables are the best restart's by ELBO; the trace is each
+restart's ELBO by epoch, and the verdict says whether the best one settled.
+
 The second round reads the site matrices beside the count fit's inputs, unless some are named,
-and matches cells by batch and barcode. Each cell goes to its main count module (`C1`, `C2`, …),
-or to `bg` when its background share in the count fit is above `--within-background` (0.5). A
+and matches cells by batch and barcode. Each cell goes to its main count module (`C1`, `C2`, …). A
 group with fewer than `--within-min-cells` (50) cells to fit is skipped. Each group's fit is an
 ordinary one (`--model blocks` unless another is named) under `within/{m}/{group}/`, with its
 own run record and verdict; `{m}_within.run.json` lists them, and `{m}_within_cells.parquet`

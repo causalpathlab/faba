@@ -74,7 +74,21 @@ pub struct Progress {
     /// see `legume_numeric::matrix::stop`), when this run is the command
     /// line's: set, the chains stop early and what they kept is written.
     interrupt: Option<Arc<AtomicBool>>,
+    /// What the trace holds, when not the log joint: the count model's
+    /// ELBO (see [`Progress::begin_vi`]).
+    quantity: OnceLock<&'static str>,
+    /// A fit by variational inference's verdict, once it ends.
+    optimised: OnceLock<advice::Verdict>,
 }
+
+/// The line under a fit by variational inference's traces, its k-means
+/// start `warmup` steps.
+pub(in crate::cluster) fn vi_caption(warmup: usize) -> String {
+    format!(" │ the k-means start ends at step {warmup}; then each restart's epochs")
+}
+
+/// What a fit by variational inference traces.
+pub(in crate::cluster) const ELBO: &str = "ELBO";
 
 /// Points a chain's trace keeps about: every k-th sweep is noted, k the
 /// fewest sweeps that keep it under this many.
@@ -104,6 +118,8 @@ impl Progress {
             traces: (0..chains).map(|_| Mutex::default()).collect(),
             tracing: false,
             interrupt: None,
+            quantity: OnceLock::new(),
+            optimised: OnceLock::new(),
         }
     }
 
@@ -134,6 +150,9 @@ impl Progress {
     /// they ran (see [`advice::Verdict::of`]), and once they are pooled on
     /// what that found unsettled; none until they are summarised.
     pub fn verdict(&self) -> Option<advice::Verdict> {
+        if let Some(v) = self.optimised.get() {
+            return Some(v.clone());
+        }
         let ((total, warmup), rhat) = (self.schedule()?, self.rhat()?);
         let verdict = advice::Verdict::of(&self.traces(), warmup, total, rhat);
         Some(verdict.with_unsettled(self.unsettled.get().cloned().unwrap_or_default()))
@@ -229,7 +248,7 @@ impl Progress {
     /// Whether the chains are to stop sweeping: cancelled, or stopped
     /// early (an interrupt seen here first stops them). Read by the
     /// chains' sweeps, which need only see it soon, not at once.
-    fn stopping(&self) -> bool {
+    pub fn stopping(&self) -> bool {
         match self.state.load(Ordering::Relaxed) {
             CANCELLED | STOPPED => true,
             RUNNING if self.interrupted() => {
@@ -330,6 +349,53 @@ impl Progress {
             Err(CANCELLED) => Err(Cancelled.into()),
             _ => Ok(()),
         }
+    }
+
+    /// For a fit run outside the chain engine, the count model's by
+    /// variational inference: `total` steps a restart (each restart a
+    /// chain), the first `warmup` its k-means start's iterations, the rest
+    /// its epochs; its trace the ELBO.
+    pub fn begin_vi(&self, total: usize, warmup: usize) {
+        let _ = self.schedule.set((total, warmup));
+        let _ = self.quantity.set(ELBO);
+    }
+
+    /// What the trace holds: `log joint`, or `ELBO` for a fit by
+    /// variational inference.
+    pub fn quantity(&self) -> &'static str {
+        self.quantity.get().copied().unwrap_or("log joint")
+    }
+
+    /// Whether this is a fit by variational inference (see
+    /// [`Progress::begin_vi`]).
+    pub fn is_vi(&self) -> bool {
+        self.quantity() == ELBO
+    }
+
+    /// Chain `i` at step `n` at least, started now if it was not.
+    pub fn reach(&self, i: usize, n: usize) {
+        let _ = self.started[i].get_or_init(Instant::now);
+        self.done[i].0.fetch_max(n, Ordering::Relaxed);
+    }
+
+    /// A point of chain `i`'s trace, when traced: in place of its last
+    /// when that is at the same step (an estimate made exact).
+    pub fn note(&self, i: usize, at: usize, value: f64) {
+        if self.tracing {
+            let mut trace = self.trace_of(i);
+            match trace.last_mut() {
+                Some(last) if last.0 == at => last.1 = value,
+                _ => trace.push((at, value)),
+            }
+        }
+    }
+
+    /// Once a fit by variational inference ends, before anything is
+    /// written: its `verdict` noted, and commit to writing ([`Cancelled`]
+    /// when the run was).
+    pub fn optimised(&self, verdict: advice::Verdict) -> anyhow::Result<()> {
+        let _ = self.optimised.set(verdict);
+        self.commit()
     }
 
     /// The chains' split R-hat, once they are summarised.
@@ -447,20 +513,26 @@ where
         progress,
         seed: config.seed,
     };
-    // Off a terminal indicatif hides the bar: no thread to draw it.
-    let out = if progress.bar && std::io::stderr().is_terminal() {
+    let out = barred(progress, || run_mcmc_parallel(&watched, config, chains));
+    progress.check()?;
+    Ok(out)
+}
+
+/// `work`, with `progress` drawn on a bar on stderr meanwhile when it is
+/// [`Progress::on_stderr`] (off a terminal indicatif hides the bar: no
+/// thread to draw it).
+pub fn barred<T: Send>(progress: &Progress, work: impl FnOnce() -> T + Send) -> T {
+    if progress.bar && std::io::stderr().is_terminal() {
         let (stop, stopped) = std::sync::mpsc::channel::<()>();
         std::thread::scope(|s| {
             s.spawn(|| draw_bar(progress, stopped));
-            let out = run_mcmc_parallel(&watched, config, chains);
+            let out = work();
             drop(stop);
             out
         })
     } else {
-        run_mcmc_parallel(&watched, config, chains)
-    };
-    progress.check()?;
-    Ok(out)
+        work()
+    }
 }
 
 /// How often the bar is brought up to date.
@@ -484,10 +556,11 @@ fn draw_bar(progress: &Progress, stopped: std::sync::mpsc::Receiver<()>) {
         let sampling = least >= warmup;
         if shown != Some(sampling) {
             shown = Some(sampling);
-            bar.set_message(if sampling {
-                format!("sweeps over {chains} chains, sampling")
-            } else {
-                format!("sweeps over {chains} chains, burn-in to {warmup}")
+            bar.set_message(match (progress.is_vi(), sampling) {
+                (true, true) => format!("epochs over {chains} restarts"),
+                (true, false) => format!("k-means starts of {chains} restarts"),
+                (false, true) => format!("sweeps over {chains} chains, sampling"),
+                (false, false) => format!("sweeps over {chains} chains, burn-in to {warmup}"),
             });
         }
         bar.set_position(progress.sum() as u64);

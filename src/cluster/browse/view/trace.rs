@@ -5,6 +5,7 @@
 
 use super::ModulesView;
 use crate::cluster::progress::view::trace::{chain_style, draw};
+use crate::cluster::progress::ELBO;
 use data_beans::interactive::ui::{help_line, panel, DIM, HIGHLIGHT};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -45,7 +46,10 @@ impl ModulesView<'_> {
         let (Ok(t), Some(verdict)) = (&self.m.fit.trace, self.m.fit.verdict()) else {
             return;
         };
-        let block = panel(" trace · each chain's log joint by sweep ".into(), true);
+        let block = match t.quantity.as_str() {
+            ELBO => panel(" trace · each restart's ELBO by epoch ".into(), true),
+            _ => panel(" trace · each chain's log joint by sweep ".into(), true),
+        };
         let inner = block.inner(area);
         frame.render_widget(block, area);
         let mut names = vec![Span::raw(" ")];
@@ -56,7 +60,10 @@ impl ModulesView<'_> {
         let under = vec![
             Line::from(names),
             Line::from(Span::styled(
-                format!(" │ the burn-in ends at sweep {}", t.burn_in),
+                match t.quantity.as_str() {
+                    ELBO => crate::cluster::progress::vi_caption(t.burn_in),
+                    _ => format!(" │ the burn-in ends at sweep {}", t.burn_in),
+                },
                 DIM,
             )),
             Line::raw(""),
@@ -66,7 +73,13 @@ impl ModulesView<'_> {
         let [plot, below] =
             Layout::vertical([Constraint::Fill(1), Constraint::Length(under.len() as u16)])
                 .areas(inner);
-        draw(frame, plot, &t.chains, (self.m.fit.span(), t.burn_in));
+        draw(
+            frame,
+            plot,
+            &t.chains,
+            (self.m.fit.span(), t.burn_in),
+            &t.quantity,
+        );
         frame.render_widget(Paragraph::new(under), below);
     }
 }
