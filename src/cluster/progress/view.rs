@@ -43,9 +43,12 @@ impl<T> Fitting<'_, T> {
     fn chain_line(&self, i: usize, (total, warmup): (usize, usize), width: u16) -> Line<'static> {
         let done = self.progress.done(i).min(total);
         let running = self.progress.running(i);
+        let vi = self.progress.is_vi();
         let phase = match running {
             None => "waiting ",
+            Some(_) if done < warmup && vi => "k-means ",
             Some(_) if done < warmup => "burn-in ",
+            Some(_) if vi => "epochs  ",
             Some(_) => "sampling",
         };
         let unknown = Cow::Borrowed("--:--:--");
@@ -58,7 +61,10 @@ impl<T> Fitting<'_, T> {
         };
         let tail = format!(" {done}/{total} {phase}  {taken} taken  {left} left");
         // Numbered from 0 by its seed's offset, as the run record's best chain.
-        let head = format!(" chain {i:<3}");
+        let head = match self.progress.is_vi() {
+            true => format!(" restart {i:<3}"),
+            false => format!(" chain {i:<3}"),
+        };
         let w = usize::from(width)
             .saturating_sub(head.len() + tail.len() + 1)
             .max(4);
@@ -78,7 +84,8 @@ impl<T> Fitting<'_, T> {
     ) -> Vec<Line<'static>> {
         let Some(verdict) = self.progress.verdict() else {
             let done = (0..self.progress.chains()).all(|i| self.progress.done(i) >= total);
-            return done
+            // An ELBO's level says nothing of lagging: its verdict comes.
+            return (done && !self.progress.is_vi())
                 .then(|| trace::verdict(traces, warmup))
                 .flatten()
                 .into_iter()
@@ -109,7 +116,10 @@ impl<T> Fitting<'_, T> {
             .map(|i| self.chain_line(i, schedule, area.width))
             .collect();
         bars.push(Line::from(Span::styled(
-            format!(" │ the burn-in ends at sweep {}", schedule.1),
+            match self.progress.is_vi() {
+                true => super::vi_caption(schedule.1),
+                false => format!(" │ the burn-in ends at sweep {}", schedule.1),
+            },
             DIM,
         )));
         let traces = self.progress.traces();
@@ -124,7 +134,7 @@ impl<T> Fitting<'_, T> {
         ])
         .areas(area);
         frame.render_widget(Paragraph::new(bars), bars_at);
-        trace::draw(frame, plot_at, &traces, schedule);
+        trace::draw(frame, plot_at, &traces, schedule, self.progress.quantity());
         frame.render_widget(Paragraph::new(after), after_at);
     }
 
@@ -209,7 +219,9 @@ impl<T> Screen for Fitting<'_, T> {
         );
         let schedule = self.progress.schedule();
         let block = panel(
-            if schedule.is_some() {
+            if self.progress.is_vi() {
+                " fitting "
+            } else if schedule.is_some() {
                 " sampling "
             } else {
                 " reading "

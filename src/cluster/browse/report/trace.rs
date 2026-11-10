@@ -4,6 +4,7 @@
 //! [`crate::cluster::progress::advice`]).
 
 use super::super::data::Fit;
+use crate::cluster::progress::ELBO;
 use crate::report::thousandth;
 use crate::site_analysis::miami::palette::{color, Palette};
 use serde::Serialize;
@@ -23,6 +24,8 @@ pub(super) enum Section {
 #[serde(rename_all = "camelCase")]
 pub(super) struct Drawn {
     chains: Vec<Chain>,
+    /// `log joint`, or `ELBO` (a fit by variational inference).
+    quantity: String,
     sweeps: usize,
     burn_in: usize,
     rhat: Option<f64>,
@@ -57,7 +60,10 @@ pub(super) fn section(fit: &Fit) -> Section {
         .map(|(i, points)| {
             let (r, g, b) = color(&Palette::Category20, i);
             Chain {
-                name: format!("chain {i}"),
+                name: match t.quantity.as_str() {
+                    ELBO => format!("restart {i}"),
+                    _ => format!("chain {i}"),
+                },
                 color: format!("#{r:02x}{g:02x}{b:02x}"),
                 points: points.iter().map(|&(n, v)| (n, thousandth(v))).collect(),
             }
@@ -65,6 +71,7 @@ pub(super) fn section(fit: &Fit) -> Section {
         .collect();
     Section::Drawn(Box::new(Drawn {
         chains,
+        quantity: t.quantity.clone(),
         sweeps: fit.span(),
         burn_in: t.burn_in,
         rhat: verdict.rhat.is_finite().then_some(verdict.rhat),

@@ -4,6 +4,7 @@
 
 use super::advice::Verdict;
 use super::Progress;
+use crate::cluster::progress::ELBO;
 use std::io::IsTerminal;
 
 /// A sparkline's cells, low to high.
@@ -17,7 +18,16 @@ const WIDTH: usize = 60;
 /// its points, every chain on one scale; then the verdict and its advice.
 /// Each chain's first tenth of points is left out: there it climbs from
 /// its start, which would flatten the rest.
-pub fn lines(traces: &[Vec<(usize, f64)>], verdict: &Verdict, width: usize) -> Vec<String> {
+pub fn lines(
+    traces: &[Vec<(usize, f64)>],
+    verdict: &Verdict,
+    quantity: &str,
+    width: usize,
+) -> Vec<String> {
+    let (what, step, one) = match quantity {
+        ELBO => ("ELBO per restart", "steps", "restart"),
+        _ => ("log joint per chain", "sweeps", "chain"),
+    };
     let settled: Vec<&[(usize, f64)]> = traces.iter().map(|t| &t[t.len() / 10..]).collect();
     let all = || settled.iter().flat_map(|t| t.iter());
     let (lo, hi) = all().fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), p| {
@@ -26,11 +36,11 @@ pub fn lines(traces: &[Vec<(usize, f64)>], verdict: &Verdict, width: usize) -> V
     let from = all().map(|p| p.0).min().unwrap_or(0);
     let to = all().map(|p| p.0).max().unwrap_or(0);
     let mut out = vec![format!(
-        " log joint per chain, sweeps {from} to {to}, {lo:.1} to {hi:.1}"
+        " {what}, {step} {from} to {to}, {lo:.1} to {hi:.1}"
     )];
     out.extend(
         (settled.iter().enumerate())
-            .map(|(i, t)| format!(" chain {i:<3}{}", sparkline(t, (lo, hi), width))),
+            .map(|(i, t)| format!(" {one} {i:<3}{}", sparkline(t, (lo, hi), width))),
     );
     out.push(format!(" {}", verdict.said()));
     out.push(format!(" {}", verdict.advice()));
@@ -72,7 +82,7 @@ pub fn tell(progress: &Progress) {
         true => log::Level::Info,
         false => log::Level::Warn,
     };
-    say(&lines(&traces, &verdict, WIDTH), level);
+    say(&lines(&traces, &verdict, progress.quantity(), WIDTH), level);
 }
 
 /// `lines` on stderr when it is a terminal, else in the log at `level`,

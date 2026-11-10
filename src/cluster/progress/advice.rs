@@ -57,6 +57,15 @@ pub enum Status {
     Disagree(Vec<usize>),
     /// No R-hat to go by: too few draws.
     Unknown,
+    /// A fit by variational inference: whether its best restart's ELBO
+    /// settled within the tolerance, and how far below it the worst
+    /// restart ended, per count.
+    Optimised {
+        converged: bool,
+        stopped: bool,
+        asked: usize,
+        spread: f64,
+    },
 }
 
 /// A fit's convergence: its split R-hat and what the chains say, the
@@ -96,6 +105,31 @@ impl Verdict {
             status,
             sweeps,
             chains: traces.len(),
+            unsettled: Vec::new(),
+        }
+    }
+
+    /// The verdict on a fit by variational inference: its best restart
+    /// `converged` (its ELBO settled) in `epochs` of the `asked` epochs at
+    /// most, or was `stopped` early; `restarts` in all, the worst ending
+    /// `spread` below the best per count.
+    pub fn vi(
+        converged: bool,
+        stopped: bool,
+        (epochs, asked): (usize, usize),
+        restarts: usize,
+        spread: f64,
+    ) -> Self {
+        Self {
+            rhat: f64::NAN,
+            status: Status::Optimised {
+                converged,
+                stopped,
+                asked,
+                spread,
+            },
+            sweeps: epochs,
+            chains: restarts,
             unsettled: Vec::new(),
         }
     }
@@ -146,6 +180,24 @@ impl Verdict {
             }
             Status::Disagree(lag) => format!("R-hat {rhat:.2}: chains disagree, {}", lags(lag)),
             Status::Unknown => "R-hat not known".to_string(),
+            Status::Optimised {
+                converged,
+                stopped,
+                spread,
+                ..
+            } => {
+                let settled = match (converged, stopped) {
+                    (true, _) => format!("ELBO settled in {} epochs", self.sweeps),
+                    (false, true) => format!("stopped early after {} epochs", self.sweeps),
+                    (false, false) => format!("ELBO still rising after {} epochs", self.sweeps),
+                };
+                match self.chains {
+                    0 | 1 => settled,
+                    n => format!(
+                        "{settled}; {n} restarts, the worst {spread:.4} per count below the best"
+                    ),
+                }
+            }
         }
     }
 
@@ -169,22 +221,47 @@ impl Verdict {
             Status::Unknown => {
                 format!("too few draws to compare the chains: run longer (--sweeps {more})")
             }
+            Status::Optimised {
+                converged: true, ..
+            } => "nothing to rerun: the fit can be read as it is (the best restart's tables)"
+                .to_string(),
+            Status::Optimised {
+                converged: false,
+                stopped: true,
+                asked,
+                ..
+            } => {
+                format!("stopped before it settled: run again to let it finish (--epochs {asked})")
+            }
+            Status::Optimised {
+                converged: false,
+                asked,
+                ..
+            } => format!("run again with --epochs {}", 2 * asked.max(1)),
         }
     }
 
     /// Whether the traces and the R-hat alone say the fit can be read.
     fn converged_on_traces(&self) -> bool {
-        matches!(self.status, Status::Agree | Status::OneChain)
+        matches!(
+            self.status,
+            Status::Agree
+                | Status::OneChain
+                | Status::Optimised {
+                    converged: true,
+                    ..
+                }
+        )
     }
 
     /// The R-hat and `ok` or `check`, for a header.
     pub fn badge(&self) -> String {
-        let rhat = match self.status {
-            Status::Unknown => "-".to_string(),
-            _ => format!("{:.2}", self.rhat),
-        };
         let word = if self.converged() { "ok" } else { "check" };
-        format!("R-hat {rhat} {word}")
+        match self.status {
+            Status::Optimised { .. } => format!("ELBO {word}"),
+            Status::Unknown => format!("R-hat - {word}"),
+            _ => format!("R-hat {:.2} {word}", self.rhat),
+        }
     }
 }
 

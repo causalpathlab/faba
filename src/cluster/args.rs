@@ -26,10 +26,11 @@ pub struct ClusterArgs {
         help = "Which sites to take from an output directory (default: m6a, else atoi); count: cluster the gene count matrices instead",
         long_help = "Which sites to take from an output directory (default: m6a, else atoi).\n\
                      count: a Poisson blockmodel of the `{batch}_count` matrices' spliced counts\n\
-                     over the --count-genes most variable genes, with a background of cell size\n\
-                     times gene level that belongs to no role (Ball, Karrer and Newman 2011;\n\
-                     Schein et al. 2016): --cell-roles, --gene-roles (default 8) and\n\
-                     --community-gamma apply. Its tables are count_*.parquet."
+                     over the --count-genes most variable genes (Ball, Karrer and Newman\n\
+                     2011; Schein et al. 2016), fitted by variational inference (Gopalan,\n\
+                     Hofman and Blei 2015) from a k-means start: --cell-roles, --gene-roles\n\
+                     (default 8), --svi-epochs, --batch-size, --epochs, --tol and --chains\n\
+                     (restarts) apply. Its tables are count_*.parquet."
     )]
     pub(super) modality: Option<Box<str>>,
 
@@ -207,9 +208,42 @@ pub struct ClusterArgs {
     #[arg(
         long,
         default_value_t = 4,
-        help = "Independent chains, run in parallel"
+        help = "Independent chains, run in parallel (with --modality count: restarts, each from \
+                k-means seeds of its own, the starts in parallel, then the fits one after another; \
+                the best kept)"
     )]
     pub(super) chains: usize,
+
+    #[arg(
+        long,
+        value_name = "N",
+        default_value_t = crate::cluster::count::vi::Options::default().svi_epochs,
+        help = "With --modality count: stochastic (minibatch) epochs before coordinate ascent"
+    )]
+    pub(super) svi_epochs: usize,
+
+    #[arg(
+        long,
+        value_name = "N",
+        default_value_t = crate::cluster::count::vi::Options::default().batch_size,
+        help = "With --modality count: cells per minibatch; every cell in one batch is plain coordinate ascent"
+    )]
+    pub(super) batch_size: usize,
+
+    #[arg(
+        long,
+        value_name = "N",
+        default_value_t = crate::cluster::count::vi::Options::default().epochs,
+        help = "With --modality count: epochs at most, stochastic and coordinate ascent together"
+    )]
+    pub(super) epochs: usize,
+
+    #[arg(
+        long,
+        default_value_t = crate::cluster::count::vi::Options::default().tol,
+        help = "With --modality count: converged when an epoch of coordinate ascent moves the ELBO by less than this per count"
+    )]
+    pub(super) tol: f64,
 
     #[arg(
         long,
@@ -263,25 +297,15 @@ pub struct ClusterArgs {
         help = "Fit within each cell module of a count fit, named by its run record (count_blockmodel.run.json)",
         long_help = "The second round of two: fit the sites within each cell module of a count\n\
                      fit, named by its run record (`count_blockmodel.run.json`, as `faba cluster\n\
-                     --modality count` writes it). Each cell goes to its main count module, or to\n\
-                     `bg` when its background share is above --within-background; each group of\n\
-                     at least --within-min-cells cells is fitted on its own, one after the other,\n\
-                     into `within/{modality}/{group}/` under the output directory (default: the\n\
-                     count fit's), with `{modality}_within.run.json` naming them all and\n\
+                     --modality count` writes it). Each cell goes to its main count module; each\n\
+                     module of at least --within-min-cells cells is fitted on its own, one after\n\
+                     the other, into `within/{modality}/{group}/` under the output directory\n\
+                     (default: the count fit's), with `{modality}_within.run.json` naming them all and\n\
                      `{modality}_within_cells.parquet` giving each cell its nested label (`C3.2`).\n\
                      The site matrices default to those beside the count fit's inputs; --model\n\
                      defaults to blocks. Open the result with `faba cluster-view`."
     )]
     pub(super) within: Option<Box<str>>,
-
-    #[arg(
-        long = "within-background",
-        requires = "within",
-        value_name = "SHARE",
-        default_value_t = 0.5,
-        help = "With --within: a cell whose background share in the count fit is above this goes to the group `bg`, not to its count module"
-    )]
-    pub(super) within_background: f64,
 
     #[arg(
         long = "within-min-cells",
@@ -514,12 +538,39 @@ pub(super) fn output_dir(output: Option<&str>, data_files: &[Box<str>]) -> PathB
 /// Settings that would make the fit meaningless, refused up front.
 pub(super) fn check(args: &ClusterArgs) -> anyhow::Result<()> {
     anyhow::ensure!(args.chains >= 1, "--chains must be at least 1");
-    // Split R-hat needs at least two draws in each half of every chain.
-    anyhow::ensure!(
-        args.sweeps.saturating_sub(args.burn_in) / args.thin.max(1) >= 4,
-        "--sweeps less --burn-in must leave at least 4 draws per chain (after --thin)"
-    );
     let positive = |x: f64| x > 0.0 && x.is_finite();
+    if args.is_count() {
+        // A count fit is by variational inference: no draws to keep.
+        for flag in ["sweeps", "burn_in", "thin"] {
+            anyhow::ensure!(
+                !args.given(flag),
+                "--{} sets a sampler's draws; --modality count fits by variational inference \
+                 (--epochs, --batch-size, --tol)",
+                flag.replace('_', "-")
+            );
+        }
+        anyhow::ensure!(
+            args.epochs >= 1 && args.batch_size >= 1,
+            "--epochs and --batch-size must be at least 1"
+        );
+        anyhow::ensure!(
+            args.tol >= 0.0 && args.tol.is_finite(),
+            "--tol must be 0 or more"
+        );
+    } else {
+        for flag in ["svi_epochs", "batch_size", "epochs", "tol"] {
+            anyhow::ensure!(
+                !args.given(flag),
+                "--{} applies to --modality count only",
+                flag.replace('_', "-")
+            );
+        }
+        // Split R-hat needs at least two draws in each half of every chain.
+        anyhow::ensure!(
+            args.sweeps.saturating_sub(args.burn_in) / args.thin.max(1) >= 4,
+            "--sweeps less --burn-in must leave at least 4 draws per chain (after --thin)"
+        );
+    }
     anyhow::ensure!(
         (0.0..1.0).contains(&args.holdout),
         "--holdout must be at least 0 and less than 1"
@@ -534,10 +585,6 @@ pub(super) fn check(args: &ClusterArgs) -> anyhow::Result<()> {
             "--within fits the blockmodel (--model link or blocks), not --model crp"
         );
         anyhow::ensure!(
-            (0.0..=1.0).contains(&args.within_background),
-            "--within-background is a share, from 0 to 1"
-        );
-        anyhow::ensure!(
             args.within_min_cells >= 2,
             "--within-min-cells must be at least 2"
         );
@@ -546,10 +593,6 @@ pub(super) fn check(args: &ClusterArgs) -> anyhow::Result<()> {
         anyhow::ensure!(
             args.cell_roles >= 1 && args.gene_roles.is_none_or(|b| b >= 1),
             "--cell-roles and --gene-roles must be at least 1"
-        );
-        anyhow::ensure!(
-            positive(args.community_gamma),
-            "--community-gamma must be positive"
         );
         anyhow::ensure!(args.count_genes >= 1, "--count-genes must be at least 1");
         // What only the site fits do, refused rather than ignored.
@@ -560,6 +603,10 @@ pub(super) fn check(args: &ClusterArgs) -> anyhow::Result<()> {
         anyhow::ensure!(
             !args.given("model"),
             "--model chooses a site fit's model; --modality count fits the count blockmodel"
+        );
+        anyhow::ensure!(
+            !args.given("community_gamma"),
+            "--community-gamma does not apply to --modality count (its role weights have a fixed shape)"
         );
         return Ok(());
     }

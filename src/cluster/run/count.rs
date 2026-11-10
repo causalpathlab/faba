@@ -3,18 +3,18 @@
 //! its tables.
 
 use super::super::command::COUNT_MODALITY;
-use super::super::count::{self, Counts};
+use super::super::count::{self, vi, Counts};
+use super::super::progress::advice;
 use super::super::read::{walk_matrix, Visit};
-use super::super::summary::{chain_scores, main_labels};
+use super::super::summary::main_labels;
 use super::super::{args, progress, read, write, Written};
 use crate::run_record::RunRecord;
 use data_beans::aux::feature_rows::split_count_row;
-use legume_numeric::mcmc::engine::{McmcConfig, McmcModel};
 use log::info;
 use rand::rngs::SmallRng;
+use rand::SeedableRng;
 use rustc_hash::FxHashMap;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
 
 /// The count fit's run record, which `faba cluster --within` and the
 /// viewer look for by this name.
@@ -134,140 +134,11 @@ fn variable_genes(per_cell: &[&[(u32, u32)]], genes: usize, n: usize) -> Vec<usi
     chosen
 }
 
-/// A chain's posterior means: each cell's and gene's role shares, each
-/// block's rate (log) with its sd, each block's units, each cell's
-/// background share.
-#[derive(Default)]
-struct Means {
-    cell: Vec<f32>,
-    gene: Vec<f32>,
-    log_rate: Vec<f64>,
-    log_rate_sd: Vec<f64>,
-    units: Vec<f64>,
-    background: Vec<f64>,
-}
-
-/// A chain's kept draws summed as they come (none kept whole).
-#[derive(Default)]
-struct Tally {
-    draws: usize,
-    cell: Vec<f64>,
-    gene: Vec<f64>,
-    log_rate: Vec<f64>,
-    log_rate_sq: Vec<f64>,
-    units: Vec<f64>,
-    background: Vec<f64>,
-}
-
-/// `x` added into `sums`, grown to its length.
-fn add(sums: &mut Vec<f64>, x: impl ExactSizeIterator<Item = f64>) {
-    sums.resize(x.len(), 0.0);
-    sums.iter_mut().zip(x).for_each(|(s, v)| *s += v);
-}
-
-/// Row-major shares of each row of `x` (`k` per row).
-fn shares(x: &[f64], k: usize) -> impl ExactSizeIterator<Item = f64> + '_ {
-    let totals: Vec<f64> = x
-        .chunks(k)
-        .map(|r| r.iter().sum::<f64>().max(1e-300))
-        .collect();
-    x.iter().enumerate().map(move |(i, v)| v / totals[i / k])
-}
-
-impl Tally {
-    /// The draw at `st` (`aa`, `bb` roles) added.
-    fn add(&mut self, st: &count::State, (aa, bb): (usize, usize)) {
-        self.draws += 1;
-        add(&mut self.cell, shares(&st.theta, aa));
-        add(&mut self.gene, shares(&st.psi, bb));
-        add(&mut self.log_rate, st.lambda.iter().map(|l| l.ln()));
-        add(
-            &mut self.log_rate_sq,
-            st.lambda.iter().map(|l| l.ln().powi(2)),
-        );
-        add(&mut self.units, st.blocks.iter().map(|&u| u as f64));
-        let units =
-            |c: usize| st.n0[c] as f64 + st.n[c * aa..(c + 1) * aa].iter().sum::<u32>() as f64;
-        add(
-            &mut self.background,
-            (0..st.n0.len()).map(|c| st.n0[c] as f64 / units(c).max(1.0)),
-        );
-    }
-
-    fn means(&self) -> Means {
-        let n = self.draws.max(1) as f64;
-        let mean = |v: &[f64]| -> Vec<f64> { v.iter().map(|x| x / n).collect() };
-        let log_rate = mean(&self.log_rate);
-        Means {
-            cell: self.cell.iter().map(|x| (x / n) as f32).collect(),
-            gene: self.gene.iter().map(|x| (x / n) as f32).collect(),
-            log_rate_sd: (self.log_rate_sq.iter().zip(&log_rate))
-                .map(|(s, m)| (s / n - m * m).max(0.0).sqrt())
-                .collect(),
-            log_rate,
-            units: mean(&self.units),
-            background: mean(&self.background),
-        }
-    }
-}
-
-/// The fit's chains: the model's sweeps, each chain's kept draws tallied.
-struct Fit<'a> {
-    model: count::Model<'a>,
-    roles: (usize, usize),
-}
-
-/// A chain: the model's state and its tally.
-struct Chain {
-    st: count::State,
-    tally: Arc<Mutex<Tally>>,
-}
-
-impl McmcModel for Fit<'_> {
-    type State = Chain;
-    /// A kept draw's log-likelihood, and its chain's tally.
-    type Sample = (f64, Arc<Mutex<Tally>>);
-    type Result = (Vec<f64>, Means);
-
-    fn init(&self, rng: &mut SmallRng) -> Chain {
-        Chain {
-            st: self.model.start(rng),
-            tally: Arc::default(),
-        }
-    }
-
-    fn sweep(&self, ch: &mut Chain, rng: &mut SmallRng) {
-        self.model.sweep(&mut ch.st, rng);
-    }
-
-    fn collect(&self, ch: &Chain) -> Self::Sample {
-        ch.tally
-            .lock()
-            .expect("a chain's tally")
-            .add(&ch.st, self.roles);
-        (self.model.log_likelihood(&ch.st), ch.tally.clone())
-    }
-
-    fn summarize(&self, draws: Vec<Self::Sample>) -> (Vec<f64>, Means) {
-        let means = draws.first().map_or_else(Means::default, |(_, t)| {
-            t.lock().expect("a chain's tally").means()
-        });
-        (draws.into_iter().map(|(ll, _)| ll).collect(), means)
-    }
-}
-
-impl progress::Traced for Fit<'_> {
-    /// The counts' log-likelihood: what a count fit is watched by.
-    fn log_joint_of(&self, ch: &Chain) -> Option<f64> {
-        Some(self.model.log_likelihood(&ch.st))
-    }
-}
-
-/// Fit `args`' count matrices, write the tables in `dir` from the chain of
-/// highest mean log-likelihood, and fill the record.
+/// Fit `args`' count matrices by variational inference (see
+/// [`count::vi`]), write the tables in `dir` from the restart of highest
+/// ELBO, and fill the record.
 pub(in crate::cluster) fn count_fit(
     args: &args::ClusterArgs,
-    config: &McmcConfig,
     dir: &Path,
     record: &mut RunRecord,
     progress: &progress::Progress,
@@ -331,10 +202,17 @@ pub(in crate::cluster) fn count_fit(
     let settings = count::Settings {
         cell_roles: args.cell_roles,
         gene_roles: args.gene_roles.unwrap_or(8),
-        gamma: args.community_gamma,
         ..count::Settings::default()
     };
+    let options = vi::Options {
+        svi_epochs: args.svi_epochs,
+        batch_size: args.batch_size,
+        epochs: args.epochs,
+        tol: args.tol,
+        ..vi::Options::default()
+    };
     record.set_result("model", &settings);
+    record.set_result("vi", &options);
     record.set_result(
         "cells",
         &serde_json::json!({"read": cells.len(), "kept": kept.len(), "fitted": kept.len()}),
@@ -344,20 +222,50 @@ pub(in crate::cluster) fn count_fit(
         &serde_json::json!({"read": all_genes.len(), "kept": names.len()}),
     );
     let (aa, bb) = (settings.cell_roles, settings.gene_roles);
-    let fit = Fit {
-        model: count::Model::new(&counts, settings)?,
-        roles: (aa, bb),
-    };
     progress.check()?;
-    let chains = progress::run(&fit, config, args.chains, progress)?;
-    progress.note_stop(config, record)?;
-    let lls: Vec<Vec<f64>> = chains.iter().map(|(ll, _)| ll.clone()).collect();
-    let (chain_ll, rhat, best) = chain_scores(&lls);
-    progress.summarised(rhat)?;
-    let means = &chains[best].1;
+    let restarts = args.chains;
+    // Each restart's steps: its k-means start's iterations, then its epochs.
+    let warmup = vi::KMEANS_ITERS;
+    progress.begin_vi(warmup + options.epochs, warmup);
+    let (best, ends) = progress::barred(progress, || {
+        restarts_fit(&counts, &settings, &options, args.seed, restarts, progress)
+    })?;
+    if progress.cancelled() {
+        return Err(progress::Cancelled.into());
+    }
+    // Stopped before any restart finished an epoch: nothing to write, as
+    // a cancel.
+    let Some((best, fitted)) = best else {
+        log::warn!("stopped before any restart finished an epoch: nothing to write");
+        return Err(progress::Cancelled.into());
+    };
+    let per: Vec<f64> = ends.iter().flatten().map(|e| e.per_count).collect();
+    let spread = per.iter().copied().fold(f64::NEG_INFINITY, f64::max)
+        - per.iter().copied().fold(f64::INFINITY, f64::min);
+    let stopped = progress.stopped_early().is_some();
+    if stopped {
+        let epochs: Vec<Option<usize>> =
+            ends.iter().map(|e| e.as_ref().map(|e| e.epochs)).collect();
+        log::warn!(
+            "stopped early: the tables are from the epochs run so far ({epochs:?} by restart)"
+        );
+        record.set_result("stopped_early", &serde_json::json!({"epochs": epochs}));
+    }
+    progress.optimised(advice::Verdict::vi(
+        fitted.converged,
+        stopped,
+        (fitted.epochs, options.epochs),
+        per.len(),
+        spread,
+    ))?;
+    let means = vi::summarize(&fitted);
     info!(
-        "count: each chain's mean log-likelihood {:?}; split R-hat {rhat:.2}; tables from chain {best}",
-        chain_ll.iter().map(|x| x.round()).collect::<Vec<_>>()
+        "count: each restart's ELBO per count {:?}; tables from restart {best} ({} epochs: {})",
+        per.iter()
+            .map(|x| (x * 1e4).round() / 1e4)
+            .collect::<Vec<_>>(),
+        fitted.epochs,
+        progress.verdict().expect("optimised").said(),
     );
     std::fs::create_dir_all(dir)?;
     let path = |name: &str| dir.join(format!("count_{name}.parquet"));
@@ -371,9 +279,6 @@ pub(in crate::cluster) fn count_fit(
         .collect();
     for (i, &c) in kept.iter().enumerate() {
         rows[c].membership = Some(&means.cell[i * aa..(i + 1) * aa]);
-        // The `level` column: the cell's share of its units in the
-        // background.
-        rows[c].level = Some(means.background[i] as f32);
     }
     write::cell_roles(&rows, aa, &path("cell_roles"))?;
     write::gene_roles(&names, &means.gene, bb, &path("gene_roles"))?;
@@ -406,6 +311,17 @@ pub(in crate::cluster) fn count_fit(
         .collect();
     write::count_genes(&names, &main, &umis, &module_cells, &path("block_sites"))?;
     write::trace(&progress.traces(), &path("trace"))?;
+    // Roles a fit by VI keeps but gives no units to.
+    let empty = |units: Vec<f64>| -> Vec<usize> {
+        (units.iter().enumerate())
+            .filter(|(_, &u)| u < 1.0)
+            .map(|(k, _)| k + 1)
+            .collect()
+    };
+    let cell_units = (means.units.chunks_exact(bb))
+        .map(|row| row.iter().sum())
+        .collect();
+    let gene_units = count::column_totals(&means.units, bb);
     record.set_result(
         "tables",
         &serde_json::json!({
@@ -418,17 +334,35 @@ pub(in crate::cluster) fn count_fit(
     record.set_result(
         "trace",
         &serde_json::json!({
-            "sweeps": progress::sweeps(config),
-            "burn_in": config.warmup,
+            "sweeps": warmup + options.epochs,
+            "burn_in": warmup,
+            "quantity": progress.quantity(),
         }),
     );
     record.set_result(
         "count",
         &serde_json::json!({
-            "chain_log_likelihood": chain_ll,
-            "rhat_log_likelihood": rhat,
-            "best_chain": best,
-            "background_share": means.background.iter().sum::<f64>() / means.background.len().max(1) as f64,
+            "vi": {
+                "restarts": (ends.iter().enumerate()).map(|(i, e)| match e {
+                    Some(e) => serde_json::json!({
+                        "restart": i,
+                        "elbo": e.elbo,
+                        "elbo_per_count": e.per_count,
+                        "epochs": e.epochs,
+                        "svi_epochs": e.svi_epochs,
+                        "converged": e.converged,
+                    }),
+                    None => serde_json::json!({"restart": i, "ran": false}),
+                }).collect::<Vec<_>>(),
+                "best": best,
+                "converged": fitted.converged,
+                "stopped_early": stopped,
+                "epochs": fitted.epochs,
+                "asked": options.epochs,
+                "spread_per_count": spread,
+                "tol": options.tol,
+            },
+            "empty_roles": {"cell": empty(cell_units), "gene": empty(gene_units)},
         }),
     );
     let verdict = progress.verdict().expect("summarised");
@@ -437,4 +371,111 @@ pub(in crate::cluster) fn count_fit(
         modality: COUNT_MODALITY.into(),
         record: RECORD.into(),
     })
+}
+
+/// The best restart's fit and index, and each restart's end (see
+/// [`restarts_fit`]).
+type Restarts = (Option<(usize, vi::Fitted)>, Vec<Option<End>>);
+
+/// How a restart ended, for the record.
+struct End {
+    elbo: f64,
+    per_count: f64,
+    epochs: usize,
+    svi_epochs: usize,
+    converged: bool,
+}
+
+/// Each restart's fit: the k-means starts side by side (each on its own
+/// thread), then the variational fits one after another, each using every
+/// thread. Restart `i`'s random numbers are seeded `seed + i`; its k-means
+/// iterations, then its epochs, are counted on `progress` as chain `i` and
+/// its ELBO traced there. The best restart's fit (by ELBO) and its index,
+/// none when no restart finished an epoch; each restart's end, none for
+/// one stopped before an epoch ended or whose start failed.
+fn restarts_fit(
+    counts: &Counts,
+    settings: &count::Settings,
+    options: &vi::Options,
+    seed: u64,
+    restarts: usize,
+    progress: &progress::Progress,
+) -> anyhow::Result<Restarts> {
+    let stop = || progress.stopping();
+    let cancelled = || progress.cancelled();
+    // The profiles serve the starts alone: dropped once they are made.
+    let profiles = vi::Profiles::new(counts);
+    let starts: Vec<anyhow::Result<(vi::Start, SmallRng)>> = std::thread::scope(|s| {
+        let profiles = &profiles;
+        let handles: Vec<_> = (0..restarts)
+            .map(|i| {
+                s.spawn(move || {
+                    let mut rng = SmallRng::seed_from_u64(seed.wrapping_add(i as u64));
+                    progress.reach(i, 0);
+                    let tick = |n: usize| progress.reach(i, n);
+                    vi::kmeans_start(counts, profiles, settings, &mut rng, &tick, &stop)
+                        .map(|start| (start, rng))
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("a k-means start does not panic"))
+            .collect()
+    });
+    drop(profiles);
+    // Every start done (its iterations may have ended early): a restart
+    // waits at its first epoch for its turn.
+    let warmup = vi::KMEANS_ITERS;
+    (0..restarts).for_each(|i| progress.reach(i, warmup));
+    let mut best: Option<(usize, vi::Fitted)> = None;
+    let mut ends = Vec::with_capacity(restarts);
+    let mut failed = None;
+    for (i, start) in starts.into_iter().enumerate() {
+        let (start, mut rng) = match start {
+            Ok(start) => start,
+            Err(e) => {
+                log::warn!("restart {i}: {e:#}");
+                failed.get_or_insert(e);
+                ends.push(None);
+                continue;
+            }
+        };
+        if stop() {
+            ends.push(None);
+            continue;
+        }
+        let epoch = |e: usize, f: f64| {
+            progress.reach(i, warmup + e);
+            progress.note(i, warmup + e, f);
+        };
+        let hooks = vi::Hooks {
+            epoch: &epoch,
+            stop: &stop,
+            cancelled: &cancelled,
+        };
+        let Some(fitted) = vi::fit(counts, settings, options, start, &mut rng, &hooks) else {
+            ends.push(None);
+            continue;
+        };
+        // A restart that settled before its last epoch has nothing left.
+        if fitted.converged {
+            progress.reach(i, warmup + options.epochs);
+        }
+        ends.push(Some(End {
+            elbo: fitted.elbo,
+            per_count: fitted.elbo_per_count(counts),
+            epochs: fitted.epochs,
+            svi_epochs: fitted.svi_epochs,
+            converged: fitted.converged,
+        }));
+        // Only the best restart's factors are kept.
+        if best.as_ref().is_none_or(|(_, b)| fitted.elbo > b.elbo) {
+            best = Some((i, fitted));
+        }
+    }
+    if let (None, Some(e), false) = (&best, failed, stop()) {
+        return Err(e);
+    }
+    Ok((best, ends))
 }

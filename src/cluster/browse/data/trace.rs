@@ -8,11 +8,15 @@ use arrow::array::{Float64Array, Int32Array, Int64Array};
 use serde_json::Value;
 use std::path::Path;
 
-/// Each chain's traced log joint, by sweep, and the burn-in's sweeps.
+/// Each chain's traced log joint, by sweep, and the burn-in's sweeps;
+/// for a fit by variational inference each restart's ELBO by epoch, no
+/// burn-in.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Trace {
     pub chains: Vec<Vec<(usize, f64)>>,
     pub burn_in: usize,
+    /// `log joint`, or `ELBO`.
+    pub quantity: String,
 }
 
 /// What the fit's run record and trace say of its convergence.
@@ -49,6 +53,10 @@ impl Fit {
             .or_else(|| number("/options/chains"))
             .unwrap_or(0);
         let name = format!("{modality}_trace.parquet");
+        let quantity = at("/results/trace/quantity")
+            .and_then(Value::as_str)
+            .unwrap_or("log joint")
+            .to_string();
         let trace = match (dir.join(&name).is_file(), number("/results/trace/burn_in")) {
             (false, _) => Err(format!(
                 "no {name} beside the tables: older fits kept no trace (fit again with `faba cluster`)"
@@ -61,7 +69,11 @@ impl Fit {
                 .map_err(|e| format!("{name} cannot be read: {e:#}"))
                 .and_then(|chains| match chains.iter().all(Vec::is_empty) {
                     true => Err(format!("{name} holds no points")),
-                    false => Ok(Trace { chains, burn_in }),
+                    false => Ok(Trace {
+                        chains,
+                        burn_in,
+                        quantity,
+                    }),
                 }),
         };
         // What pooling the chains found short of convergence: none in an
@@ -75,12 +87,28 @@ impl Fit {
                     .collect()
             })
             .unwrap_or_default();
-        let verdict = rhat.map(|rhat| {
-            match &trace {
-                Ok(t) => Verdict::of(&t.chains, t.burn_in, sweeps, rhat),
-                Err(_) => Verdict::of(&vec![Vec::new(); ran], 0, sweeps, rhat),
-            }
-            .with_unsettled(unsettled)
+        // A fit by variational inference: its own verdict, no R-hat.
+        let vi = at("/results/count/vi").map(|vi| {
+            let ran = (vi["restarts"].as_array().into_iter().flatten())
+                .filter(|r| r.get("elbo").is_some())
+                .count();
+            let number = |k: &str| vi[k].as_u64().unwrap_or(0) as usize;
+            Verdict::vi(
+                vi["converged"].as_bool().unwrap_or(false),
+                vi["stopped_early"].as_bool().unwrap_or(false),
+                (number("epochs"), number("asked")),
+                ran,
+                vi["spread_per_count"].as_f64().unwrap_or(0.0),
+            )
+        });
+        let verdict = vi.or_else(|| {
+            rhat.map(|rhat| {
+                match &trace {
+                    Ok(t) => Verdict::of(&t.chains, t.burn_in, sweeps, rhat),
+                    Err(_) => Verdict::of(&vec![Vec::new(); ran], 0, sweeps, rhat),
+                }
+                .with_unsettled(unsettled)
+            })
         });
         Self {
             sweeps,

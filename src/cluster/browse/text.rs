@@ -6,6 +6,7 @@
 //! line is a row, so a reader (or a program) can take the columns apart.
 
 use super::Modules;
+use crate::cluster::progress::ELBO;
 
 /// What the printout shows instead of the modules (level 1): each level
 /// the browser opens, named on the command line. Asking for one prints it
@@ -257,22 +258,23 @@ fn gene(m: &Modules, name: &str) -> anyhow::Result<Vec<String>> {
 /// log-likelihood) at a few sweeps, the verdict and what to do about it.
 fn trace(m: &Modules) -> Vec<String> {
     let fit = &m.fit;
-    let mut out = vec![format!("trace: {} sweeps per chain", fit.span())];
+    let mut out = vec![match &fit.trace {
+        Ok(t) if t.quantity == ELBO => format!("trace: {} steps per restart", fit.span()),
+        _ => format!("trace: {} sweeps per chain", fit.span()),
+    }];
     match &fit.trace {
+        Ok(t) if t.quantity == ELBO => {
+            out.push(format!(
+                "k-means start {} steps, then epochs of variational inference",
+                t.burn_in
+            ));
+            out.push(format!("restart\tstep\t{}", t.quantity));
+            push_points(&mut out, &t.chains);
+        }
         Ok(t) => {
             out.push(format!("burn-in {} sweeps", t.burn_in));
-            out.push("chain\tsweep\tlog joint".into());
-            for (i, chain) in t.chains.iter().enumerate() {
-                // About ten points a chain, the last always.
-                let step = (chain.len() / 10).max(1);
-                let picked = chain
-                    .iter()
-                    .enumerate()
-                    .filter(|&(j, _)| j % step == 0 || j + 1 == chain.len());
-                for (_, (sweep, v)) in picked {
-                    out.push(format!("{i}\t{sweep}\t{v:.1}"));
-                }
-            }
+            out.push(format!("chain\tsweep\t{}", t.quantity));
+            push_points(&mut out, &t.chains);
         }
         Err(why) => out.push(format!("no trace: {why}")),
     }
@@ -287,6 +289,18 @@ fn trace(m: &Modules) -> Vec<String> {
         None => out.push("verdict: none (no R-hat recorded)".into()),
     }
     out
+}
+
+/// About ten points of each of `chains`, the last always, a line each.
+fn push_points(out: &mut Vec<String>, chains: &[Vec<(usize, f64)>]) {
+    for (i, chain) in chains.iter().enumerate() {
+        let step = (chain.len() / 10).max(1);
+        let picked =
+            (chain.iter().enumerate()).filter(|&(j, _)| j % step == 0 || j + 1 == chain.len());
+        for (_, (sweep, v)) in picked {
+            out.push(format!("{i}\t{sweep}\t{v:.1}"));
+        }
+    }
 }
 
 /// The settings the fit ran with, as its run record holds them (named by

@@ -67,8 +67,8 @@ output goes in today's results folder, named after the input and the tool. \
 Paths resolve against the server's working directory. Common flags have \
 their own arguments; further flags go in `options`, as `faba <command> \
 --help` lists them; `options` cannot name the output or open a view. Results \
-give the paths written and what the run recorded (`results`: a fit's R-hat, \
-its cluster sizes).";
+give the paths written and what the run recorded (`results`: a site fit's \
+R-hat or a count fit's ELBO verdict, its cluster sizes).";
 
 fn schema(properties: Value, required: &[&str]) -> Value {
     json!({ "type": "object", "properties": properties, "required": required })
@@ -220,7 +220,7 @@ fn tools() -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "cluster",
-            "Cluster cells by their site reads (`faba cluster`). `data` is a faba directory or site matrices. `model` is link (the default), blocks or crp. Tables go to `out`, a new directory, not back into `data`. With `modality` count, cluster cells by their gene counts instead (count matrices; a background group takes cells no module explains). With `within`, the run record of such a count fit (count_blockmodel.run.json), fit the sites within each of its cell modules, one fit a module (`model` blocks unless given), into `out`/within/{m}/{group}/, with `out`/{m}_within.run.json naming them all and {m}_within_cells.parquet giving each cell its nested label (C3.2); `data` may then be left out, and the matrices are those beside the count fit's inputs.",
+            "Cluster cells by their site reads (`faba cluster`). `data` is a faba directory or site matrices. `model` is link (the default), blocks or crp. Tables go to `out`, a new directory, not back into `data`. With `modality` count, cluster cells by their gene counts instead (count matrices), fitted by variational inference from a k-means start: `chains` restarts (the best kept), `svi_epochs`, `batch_size`, `epochs` and `tol` apply, `sweeps` and `burn_in` do not; its verdict is whether the best restart's ELBO settled. With `within`, the run record of such a count fit (count_blockmodel.run.json), fit the sites within each of its cell modules, one fit a module (`model` blocks unless given), into `out`/within/{m}/{group}/, with `out`/{m}_within.run.json naming them all and {m}_within_cells.parquet giving each cell its nested label (C3.2); `data` may then be left out, and the matrices are those beside the count fit's inputs.",
             schema(
                 json!({
                     "data": { "type": "array", "items": { "type": "string" }, "description": "A faba directory, or site (or, with `modality` count, count) matrices; required unless `within` is given" },
@@ -229,8 +229,12 @@ fn tools() -> Vec<ToolSpec> {
                     "cell_roles": { "type": "integer", "minimum": 1 },
                     "gene_roles": { "type": "integer", "minimum": 1 },
                     "chains": { "type": "integer", "minimum": 1 },
-                    "sweeps": { "type": "integer", "minimum": 1 },
-                    "burn_in": { "type": "integer", "minimum": 0 },
+                    "sweeps": { "type": "integer", "minimum": 1, "description": "Site fits only" },
+                    "burn_in": { "type": "integer", "minimum": 0, "description": "Site fits only" },
+                    "svi_epochs": { "type": "integer", "minimum": 0, "description": "Count fits: stochastic epochs before coordinate ascent" },
+                    "batch_size": { "type": "integer", "minimum": 1, "description": "Count fits: cells per minibatch" },
+                    "epochs": { "type": "integer", "minimum": 1, "description": "Count fits: epochs at most" },
+                    "tol": { "type": "number", "minimum": 0, "description": "Count fits: converged when an epoch moves the ELBO by less than this per count" },
                     "fit": { "type": "string", "description": "Fit only matrices whose path matches this pattern (`*`, `?`); the rest are assigned after" },
                     "out": out(), "options": options(),
                 }),
@@ -239,12 +243,12 @@ fn tools() -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "cluster_view",
-            "View a `cluster` fit (`faba cluster-view --batch-process`), level by level as the browser does: by default the gene modules against the cell modules (level 1). `module` prints one gene module's genes and sites with their values in each cell module (level 2); `gene` one gene's sites in each cell module over every gene module (levels 3 and 4); `cells` the cell modules' sizes; `trace` each chain's trace, the verdict and its advice; `settings` the settings the fit ran with. Several may be given; rows are tab-separated. Values are % converted for a site fit, UMIs per cell for a count fit. `data` is the fit's run record or the directory holding its tables; this never fits. A within record ({m}_within.run.json, from `cluster` with `within`) prints the count fit's modules, each group's fit (cells, R-hat, verdict; why one was skipped) and the modules within each fitted group; with `group`, every argument applies to the fit within that cell module, and without it the levels asked for are the count fit's. With `html`, write one self-contained page to a new file instead; a within record without `group` writes a page a fit, `html` for the count fit and {stem}.{group}.html beside it for each group, linked to each other.",
+            "View a `cluster` fit (`faba cluster-view --batch-process`), level by level as the browser does: by default the gene modules against the cell modules (level 1). `module` prints one gene module's genes and sites with their values in each cell module (level 2); `gene` one gene's sites in each cell module over every gene module (levels 3 and 4); `cells` the cell modules' sizes; `trace` each chain's trace (a count fit's: each restart's ELBO by epoch), the verdict and its advice; `settings` the settings the fit ran with. Several may be given; rows are tab-separated. Values are % converted for a site fit, UMIs per cell for a count fit. `data` is the fit's run record or the directory holding its tables; this never fits. A within record ({m}_within.run.json, from `cluster` with `within`) prints the count fit's modules, each group's fit (cells, R-hat, verdict; why one was skipped) and the modules within each fitted group; with `group`, every argument applies to the fit within that cell module, and without it the levels asked for are the count fit's. With `html`, write one self-contained page to a new file instead; a within record without `group` writes a page a fit, `html` for the count fit and {stem}.{group}.html beside it for each group, linked to each other.",
             schema(
                 json!({
                     "data": { "type": "string", "description": "A `cluster` fit: its run record `{m}_blockmodel.run.json`, the output directory holding its block tables, or a within record `{m}_within.run.json`" },
                     "modality": fit_modality(),
-                    "group": { "type": "string", "description": "Of a within record: the cell module of the count fit whose fit to view, as C3 or 3, or bg for its background cells" },
+                    "group": { "type": "string", "description": "Of a within record: the cell module of the count fit whose fit to view, as C3 or 3" },
                     "module": { "type": "string", "description": "A gene module to print, as M3 or 3" },
                     "gene": { "type": "string", "description": "A gene to print, by key or symbol" },
                     "cells": { "type": "boolean", "description": "Print the cell modules and their sizes" },
@@ -421,12 +425,6 @@ const TYPED: &[(&[&str], &str, Kind, &str)] = &[
         "within",
         Kind::Path,
         "A count fit's run record (count_blockmodel.run.json): fit the sites within each of its cell modules",
-    ),
-    (
-        &["cluster"],
-        "within_background",
-        Kind::Number,
-        "With `within`: a cell whose background share in the count fit is above this goes to the group bg (default 0.5)",
     ),
     (
         &["cluster"],
@@ -1249,7 +1247,17 @@ fn cluster(a: &Arguments, cx: &Call) -> Result<Value> {
         push_flag(&mut argv, "--model", model);
     }
     push_opt(&mut argv, "--fit", a.str("fit"));
-    argv.extend(a.numbers(&["cell_roles", "gene_roles", "chains", "sweeps", "burn_in"])?);
+    argv.extend(a.numbers(&[
+        "cell_roles",
+        "gene_roles",
+        "chains",
+        "sweeps",
+        "burn_in",
+        "svi_epochs",
+        "batch_size",
+        "epochs",
+        "tol",
+    ])?);
     argv.extend(a.options(&[])?);
     run_out(a, cx, argv, &out, &what)
 }

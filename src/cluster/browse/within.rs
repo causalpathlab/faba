@@ -130,7 +130,7 @@ impl Nested {
         self.groups.iter().filter(|f| f.status == Status::Fitted)
     }
 
-    /// The group named `name`: `C3`, `c3`, `3` or `bg`.
+    /// The group named `name`: `C3`, `c3` or `3`.
     pub(super) fn group(&self, name: &str) -> anyhow::Result<&GroupFit> {
         let wanted = match name.parse::<usize>() {
             Ok(k) => format!("C{k}"),

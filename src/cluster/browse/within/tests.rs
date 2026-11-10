@@ -14,7 +14,7 @@ fn fit_record(modality: &str) -> String {
 
 /// A within record in `dir`, its path: the count fit beside it (its
 /// tables and record; the record names one that is gone, as after the
-/// folder moved), C1 fitted under `within/m6a/C1`, C2 skipped, bg failed.
+/// folder moved), C1 fitted under `within/m6a/C1`, C2 skipped, C3 failed.
 fn nested(dir: &Path) -> PathBuf {
     count_tables(dir);
     std::fs::write(dir.join(within::COUNT_RECORD), fit_record("count")).unwrap();
@@ -29,7 +29,7 @@ fn nested(dir: &Path) -> PathBuf {
             { "group": "C1", "cells": 80, "status": "fitted", "dir": "within/m6a/C1",
               "record": "m6a_blockmodel.run.json", "rhat": 1.02, "converged": true },
             { "group": "C2", "cells": 9, "status": "skipped", "why": "9 cells to fit" },
-            { "group": "bg", "cells": 60, "status": "failed", "why": "no sites past the filters" },
+            { "group": "C3", "cells": 60, "status": "failed", "why": "no sites past the filters" },
         ],
     } } });
     let path = dir.join(within::record_name("m6a"));
@@ -100,14 +100,14 @@ fn a_group_is_named_as_its_cell_module() {
         ("C1", "C1"),
         ("c2", "C2"),
         ("1", "C1"),
-        ("bg", "bg"),
-        ("BG", "bg"),
+        ("C3", "C3"),
+        ("3", "C3"),
     ] {
         assert_eq!(nested.group(name).unwrap().group, group, "{name}");
     }
     let err = nested.group("C9").unwrap_err().to_string();
     assert!(
-        err.contains("no group C9 in m6a_within.run.json") && err.contains("C1, C2, bg"),
+        err.contains("no group C9 in m6a_within.run.json") && err.contains("C1, C2, C3"),
         "{err}"
     );
 }
@@ -166,7 +166,7 @@ fn the_printout_is_every_fits_modules() {
         [
             "C1\t80 cells\tfitted, R-hat 1.02, converged",
             "C2\t9 cells\tskipped: 9 cells to fit",
-            "bg\t60 cells\tfailed: no sites past the filters",
+            "C3\t60 cells\tfailed: no sites past the filters",
         ]
     );
     assert_eq!(lines[heads[1] - 1], "m6a within C1");
@@ -190,8 +190,8 @@ fn the_pages_link_to_each_other() {
         Path::new("out/my fit.C1.html")
     );
     assert_eq!(
-        group_page(Path::new("fit.html"), "bg"),
-        Path::new("fit.bg.html")
+        group_page(Path::new("fit.html"), "C3"),
+        Path::new("fit.C3.html")
     );
     assert_eq!(
         href(Path::new("out/my fit#1.C1.html")),
@@ -203,7 +203,7 @@ fn the_pages_link_to_each_other() {
     let html = Path::new("out/fit.html");
     let on_count = nested.links(html, None);
     let labels: Vec<&str> = on_count.iter().map(|l| l.label.as_str()).collect();
-    assert_eq!(labels, ["count", "C1", "C2", "bg"]);
+    assert_eq!(labels, ["count", "C1", "C2", "C3"]);
     let hrefs =
         |links: &[Link]| -> Vec<Option<String>> { links.iter().map(|l| l.href.clone()).collect() };
     assert_eq!(
@@ -236,7 +236,7 @@ fn a_page_is_written_for_every_fit() {
     let group = std::fs::read_to_string(group_page(&html, "C1")).unwrap();
     assert!(count.contains("every cell") && count.contains(r#""href":"fit.C1.html""#));
     assert!(group.contains("within C1") && group.contains(r#""href":"fit.html""#));
-    assert!(!group_page(&html, "C2").exists() && !group_page(&html, "bg").exists());
+    assert!(!group_page(&html, "C2").exists() && !group_page(&html, "C3").exists());
 }
 
 /// The list: the count fit, then a line a group. The arrows move within
