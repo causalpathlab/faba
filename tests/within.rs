@@ -92,18 +92,10 @@ fn the_second_round_fits_within_the_firsts_cell_modules() {
     let dir = tmp.path();
     fixture(dir);
     let at = |name: &str| dir.join(name).to_string_lossy().into_owned();
-    // Short chains over everything written: the filters are for real depth.
-    let chains = [
-        "--batch-process",
-        "--chains",
-        "2",
-        "--sweeps",
-        "40",
-        "--burn-in",
-        "20",
-    ]
-    .into_iter()
-    .chain(["--min-cell-sites", "1", "--min-site-cells", "1"]);
+    // Short fits over everything written: the filters are for real depth.
+    let chains = ["--batch-process", "--chains", "2", "--epochs", "20"]
+        .into_iter()
+        .chain(["--min-cell-sites", "1", "--min-site-cells", "1"]);
 
     // The count fit by variational inference: a k-means start, a few
     // epochs.

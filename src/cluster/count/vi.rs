@@ -819,6 +819,7 @@ pub fn summarize(fitted: &Fitted) -> Summary {
 
 mod start;
 pub use start::{kmeans_start, Profiles, Start, ITERS as KMEANS_ITERS};
+pub(in crate::cluster) use start::{soft, spherical, Rows};
 
 #[cfg(test)]
 mod tests;

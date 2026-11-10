@@ -13,6 +13,7 @@ use ratatui::Terminal;
 
 mod batches;
 mod data;
+mod figure;
 mod gene;
 mod model;
 mod posterior;

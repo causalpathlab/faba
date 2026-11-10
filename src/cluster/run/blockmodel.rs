@@ -14,7 +14,7 @@ impl<'a> FitData<'a> {
     /// from `fitted`, the placed ones' from `placed` (`k` weights per cell,
     /// in the order of the controls; levels empty when there are none), and
     /// none for cells not kept.
-    fn rows<'b>(
+    pub(super) fn rows<'b>(
         &self,
         k: usize,
         fitted: (&'b [f32], &[f64]),
@@ -140,7 +140,7 @@ pub(in crate::cluster) fn blockmodel_fit(
     let m = data.modality.to_ascii_lowercase();
     let path = |name: &str| dir.join(format!("{m}_{name}.parquet"));
     write::cell_roles(&rows, a, &path("cell_roles"))?;
-    write_tables(&path, &fit, (&names, b), &best, &model)?;
+    write_tables(&path, &fit, (&names, b), &best, model.baseline())?;
     // Each chain's log joint as it ran, and the schedule it ran in.
     write::trace(&fit.progress.traces(), &path("trace"))?;
     record.set_result(
@@ -168,12 +168,12 @@ pub(in crate::cluster) fn blockmodel_fit(
 /// genes' (`names`, in `b` gene roles) roles, the blocks, their genes,
 /// cells and sites, the sites' reads per cell role, and the sites' own
 /// statistics, from the tables' means `best`.
-fn write_tables(
+pub(super) fn write_tables(
     path: &dyn Fn(&str) -> std::path::PathBuf,
     fit: &FitData,
     (names, b): (&[&str], usize),
     best: &unified::Means,
-    model: &unified::Model,
+    baseline: &[f64],
 ) -> anyhow::Result<()> {
     let data = fit.data;
     let k = best.blocks();
@@ -215,7 +215,7 @@ fn write_tables(
         &data.sites,
         &best.site_on,
         &best.site_off,
-        &best.site_lift(model.baseline()),
+        &best.site_lift(baseline),
         k,
         b,
         &path("block_sites"),

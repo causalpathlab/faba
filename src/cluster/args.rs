@@ -208,9 +208,9 @@ pub struct ClusterArgs {
     #[arg(
         long,
         default_value_t = 4,
-        help = "Independent chains, run in parallel (with --modality count: restarts, each from \
-                k-means seeds of its own, the starts in parallel, then the fits one after another; \
-                the best kept)"
+        help = "Independent chains, run in parallel; for a fit by variational inference \
+                (--modality count, --model blocks), restarts, each from k-means seeds of its own, \
+                the starts in parallel, then the fits one after another, the best kept"
     )]
     pub(super) chains: usize,
 
@@ -218,7 +218,7 @@ pub struct ClusterArgs {
         long,
         value_name = "N",
         default_value_t = crate::cluster::count::vi::Options::default().svi_epochs,
-        help = "With --modality count: stochastic (minibatch) epochs before coordinate ascent"
+        help = "A fit by variational inference (--modality count, --model blocks): stochastic (minibatch) epochs before coordinate ascent"
     )]
     pub(super) svi_epochs: usize,
 
@@ -226,7 +226,7 @@ pub struct ClusterArgs {
         long,
         value_name = "N",
         default_value_t = crate::cluster::count::vi::Options::default().batch_size,
-        help = "With --modality count: cells per minibatch; every cell in one batch is plain coordinate ascent"
+        help = "A fit by variational inference: cells per minibatch; every cell in one batch is plain coordinate ascent"
     )]
     pub(super) batch_size: usize,
 
@@ -234,14 +234,14 @@ pub struct ClusterArgs {
         long,
         value_name = "N",
         default_value_t = crate::cluster::count::vi::Options::default().epochs,
-        help = "With --modality count: epochs at most, stochastic and coordinate ascent together"
+        help = "A fit by variational inference: epochs at most, stochastic and coordinate ascent together"
     )]
     pub(super) epochs: usize,
 
     #[arg(
         long,
         default_value_t = crate::cluster::count::vi::Options::default().tol,
-        help = "With --modality count: converged when an epoch of coordinate ascent moves the ELBO by less than this per count"
+        help = "A fit by variational inference (--modality count, --model blocks): converged when an epoch of coordinate ascent moves the ELBO by less than this per count (per read for --model blocks)"
     )]
     pub(super) tol: f64,
 
@@ -535,17 +535,36 @@ pub(super) fn output_dir(output: Option<&str>, data_files: &[Box<str>]) -> PathB
     }
 }
 
+/// Whether `args` fit by variational inference: the count fit, and the
+/// site blockmodel at infinite strength (the blocks preset's).
+pub(super) fn is_vi(args: &ClusterArgs) -> bool {
+    args.is_count() || (args.model == ModelKind::Blocks && blockmodel(args).strength.is_infinite())
+}
+
 /// Settings that would make the fit meaningless, refused up front.
 pub(super) fn check(args: &ClusterArgs) -> anyhow::Result<()> {
     anyhow::ensure!(args.chains >= 1, "--chains must be at least 1");
     let positive = |x: f64| x > 0.0 && x.is_finite();
-    if args.is_count() {
-        // A count fit is by variational inference: no draws to keep.
+    if is_vi(args) {
+        // A fit by variational inference: no draws to keep.
         for flag in ["sweeps", "burn_in", "thin"] {
             anyhow::ensure!(
                 !args.given(flag),
-                "--{} sets a sampler's draws; --modality count fits by variational inference \
+                "--{} sets a sampler's draws; this fit is by variational inference \
                  (--epochs, --batch-size, --tol)",
+                flag.replace('_', "-")
+            );
+        }
+        anyhow::ensure!(
+            args.holdout == 0.0,
+            "--holdout is not for a fit by variational inference"
+        );
+        // Its role weights' global weights are fixed: nothing to draw.
+        for flag in ["global", "community_gamma"] {
+            anyhow::ensure!(
+                !args.given(flag),
+                "--{} sets the global weights a sampler draws; this fit by variational \
+                 inference keeps them uniform",
                 flag.replace('_', "-")
             );
         }
@@ -561,7 +580,7 @@ pub(super) fn check(args: &ClusterArgs) -> anyhow::Result<()> {
         for flag in ["svi_epochs", "batch_size", "epochs", "tol"] {
             anyhow::ensure!(
                 !args.given(flag),
-                "--{} applies to --modality count only",
+                "--{} applies to a fit by variational inference only (--modality count, --model blocks)",
                 flag.replace('_', "-")
             );
         }
