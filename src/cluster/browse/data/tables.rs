@@ -124,15 +124,16 @@ pub(super) fn role_sizes(roles: impl Iterator<Item = usize>, n: usize) -> Vec<us
 }
 
 /// Each of `n` cell roles' posterior size: the memberships (`role_1` ..
-/// in `{m}_cell_roles`) of the fitted cells, summed; and whether they are
-/// approximate. A cell is fitted by the table's `fitted` column; older
-/// tables have none, and their fitted cells are taken to be those listed
-/// in `{m}_block_cells`, read by `block_cells` (see [`listed_rows`]).
+/// in `{m}_cell_roles`) of the fitted cells, summed; whether they are
+/// approximate; and the fitted cells' rows. A cell is fitted by the table's
+/// `fitted` column; older tables have none, and their fitted cells are
+/// taken to be those listed in `{m}_block_cells`, read by `block_cells`
+/// (see [`listed_rows`]).
 pub(super) fn posterior_sizes(
     cells: &RecordBatch,
     block_cells: impl FnOnce() -> anyhow::Result<RecordBatch>,
     n: usize,
-) -> anyhow::Result<(Vec<f64>, bool)> {
+) -> anyhow::Result<(Vec<f64>, bool, Vec<usize>)> {
     let approximate = cells.column_by_name("fitted").is_none();
     let rows = if approximate {
         listed_rows(cells, &block_cells()?)?
@@ -152,7 +153,39 @@ pub(super) fn posterior_sizes(
                 .sum())
         })
         .collect::<anyhow::Result<_>>()?;
-    Ok((sizes, approximate))
+    Ok((sizes, approximate, rows))
+}
+
+/// The fitted cells' (`rows` of `{m}_cell_roles`) tally by batch: the
+/// batches by name, the cells in each, and the `n` cell roles' shares
+/// summed in each (roles x batches). A cell with no shares is left out.
+pub(super) fn cell_batches(
+    cells: &RecordBatch,
+    rows: &[usize],
+    n: usize,
+) -> anyhow::Result<(Vec<String>, Vec<f64>, Vec<f64>)> {
+    let batch: &StringArray = column(cells, "batch")?;
+    let weights: Vec<&Float32Array> = (0..n)
+        .map(|c| column(cells, &format!("role_{}", c + 1)))
+        .collect::<anyhow::Result<_>>()?;
+    let kept = |i: usize| batch.is_valid(i) && weights.iter().all(|w| w.is_valid(i));
+    let mut names: Vec<&str> = rows
+        .iter()
+        .filter(|&&i| kept(i))
+        .map(|&i| batch.value(i))
+        .collect();
+    names.sort_unstable();
+    names.dedup();
+    let nb = names.len();
+    let (mut count, mut units) = (vec![0f64; nb], vec![0f64; n * nb]);
+    for &i in rows.iter().filter(|&&i| kept(i)) {
+        let b = names.binary_search(&batch.value(i)).expect("listed");
+        count[b] += 1.0;
+        for (k, w) in weights.iter().enumerate() {
+            units[k * nb + b] += f64::from(w.value(i));
+        }
+    }
+    Ok((names.into_iter().map(String::from).collect(), count, units))
 }
 
 /// The rows of `cells` that `block_cells` lists, by batch and barcode:

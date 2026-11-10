@@ -33,12 +33,12 @@ impl ModulesView<'_> {
                 DIM,
             ));
         }
-        let from = self.col_from.min(self.m.columns.len());
+        let from = self.col_from.min(self.shown.len());
         let mut used: usize = spans.iter().map(|s| s.width()).sum();
-        let cols = self.m.columns.len();
-        for (k, (&c, r)) in self.m.columns[from..]
-            .iter()
-            .zip(&member.reads[from..])
+        let cols = self.shown.len();
+        let shown = self.shown[from..].iter();
+        for (k, (c, r)) in shown
+            .map(|&p| (self.m.columns[p], &member.reads[p]))
             .enumerate()
         {
             let name = format!("  C{} ", c + 1);
@@ -114,12 +114,15 @@ impl ModulesView<'_> {
         if self.pane != Pane::Modules {
             keys.push(("Esc", "back"));
         }
-        if self.col_fit < self.m.cell_roles {
+        if self.col_fit < self.shown.len() {
             keys.push(("[/]", "cell modules"));
         }
         keys.extend([("Tab", "pane"), ("/", "find gene")]);
         if self.report.is_some() {
             keys.push(("e", "export report"));
+        }
+        if self.m.batches.is_some() {
+            keys.extend([("b", "batches"), ("B", "filter")]);
         }
         keys.extend([("t", "trace"), ("q", "quit")]);
         crate::tui::wrap_help(help_line(&keys), width)

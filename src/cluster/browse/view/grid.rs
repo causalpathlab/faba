@@ -11,7 +11,6 @@ use data_beans::interactive::ui::{compact, DIM, HIGHLIGHT, PLAIN};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
-use std::ops::Range;
 
 /// Columns per cell module in the grids: a bar and a 3-digit %, or a box.
 pub(super) const CELL: u16 = 6;
@@ -350,8 +349,9 @@ impl ModulesView<'_> {
     /// hidden either side counted in the corner. How many are shown.
     fn draw_grid(&self, buf: &mut Buffer, area: Rect, rows: &[Row], at: Placing) -> usize {
         let cell_w = self.cell_w;
-        let cols = self.visible(cells_room(area.width, at.label_w, at.extra_w));
-        for (k, &c) in self.m.columns[cols.clone()].iter().enumerate() {
+        let span = self.visible(cells_room(area.width, at.label_w, at.extra_w));
+        let cols = &self.shown[span.clone()];
+        for (k, c) in cols.iter().map(|&p| self.m.columns[p]).enumerate() {
             let x = area.x + at.label_w + k as u16 * cell_w;
             let name = format!("C{}", c + 1);
             // A compact head too long to keep a gap gives just the number.
@@ -364,7 +364,7 @@ impl ModulesView<'_> {
                 buf.set_stringn(x, area.y, name, cell_w as usize, DIM);
             }
         }
-        let hidden = hidden_marks(cols.start, self.m.cell_roles - cols.end);
+        let hidden = hidden_marks(span.start, self.shown.len() - span.end);
         let room = at.label_w.saturating_sub(1) as usize;
         buf.set_stringn(area.x, area.y, corner(&hidden, at.head, room), room, DIM);
         let fit = (area.height.saturating_sub(1) / 2) as usize;
@@ -377,7 +377,7 @@ impl ModulesView<'_> {
             buf.set_stringn(area.x, y, &row.label, room, style);
             let width = area.width.saturating_sub(at.label_w + 1);
             let grid = Rect::new(area.x + at.label_w, y, width, 2);
-            let cells = (cols.clone(), cell_w);
+            let cells = (cols, cell_w);
             let end = match at.stretch {
                 Some(s) => heat_row(
                     buf,
@@ -428,19 +428,14 @@ pub(super) fn cells_room(width: u16, label_w: u16, extra_w: u16) -> u16 {
     width.saturating_sub(label_w + extra_w)
 }
 
-/// One grid row of mirror bars for the cell modules `cols` of `reads`, in
+/// One grid row of mirror bars for the cell modules at places `cols` of `reads`, in
 /// cells `cell_w` wide, each with its methylated % to its right when there
 /// is room, on the row's own scale over all of them; the column after the
 /// last cell drawn.
-fn grid_row(
-    buf: &mut Buffer,
-    area: Rect,
-    reads: &[Count],
-    (cols, cell_w): (Range<usize>, u16),
-) -> u16 {
+fn grid_row(buf: &mut Buffer, area: Rect, reads: &[Count], (cols, cell_w): (&[usize], u16)) -> u16 {
     let peak = peak(reads);
     let mut end = area.x;
-    for (k, r) in reads[cols].iter().enumerate() {
+    for (k, r) in cols.iter().map(|&c| &reads[c]).enumerate() {
         let x = area.x + k as u16 * cell_w;
         if x + cell_w > area.right() + 1 {
             break;
@@ -465,7 +460,7 @@ fn heat_row(
     buf: &mut Buffer,
     area: Rect,
     reads: &[Count],
-    (cols, cell_w): (Range<usize>, u16),
+    (cols, cell_w): (&[usize], u16),
     (look, ramp): (Look, Ramp),
     stretch: &Stretch,
     numbered: bool,
@@ -473,7 +468,7 @@ fn heat_row(
     let z = standardized(reads);
     let numbered = numbered && cell_w == CELL;
     let mut end = area.x;
-    for (k, c) in cols.enumerate() {
+    for (k, &c) in cols.iter().enumerate() {
         let r = &reads[c];
         let x = area.x + k as u16 * cell_w;
         if x + cell_w > area.right() + 1 {
@@ -489,9 +484,8 @@ fn heat_row(
                 (fill, ink, format!("{z:+.1}"))
             }
             _ => {
-                let g = stretch.gray(ramp, f);
-                let ink = if g > 140 { Color::Black } else { Color::White };
-                (Color::Rgb(g, g, g), ink, r.number().unwrap_or_default())
+                let (fill, ink) = gray_cell(stretch.gray(ramp, f));
+                (fill, ink, r.number().unwrap_or_default())
             }
         };
         let (w, h) = box_size(r.total, stretch.deepest, cell_w);
@@ -546,4 +540,10 @@ fn scrollbar(buf: &mut Buffer, area: Rect, from: usize, shown: usize, len: usize
         let on = (top..top + thumb).contains(&k);
         buf.set_string(x, area.y + 1 + k, if on { "┃" } else { "│" }, DIM);
     }
+}
+
+/// A gray box's fill and the ink that reads on it: dark on the light ones.
+pub(super) fn gray_cell(g: u8) -> (Color, Color) {
+    let ink = if g > 140 { Color::Black } else { Color::White };
+    (Color::Rgb(g, g, g), ink)
 }

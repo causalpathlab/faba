@@ -282,6 +282,22 @@ own run record and verdict; `{m}_within.run.json` lists them, and `{m}_within_ce
 gives each cell its group and its site module there. `cluster-view --html fit.html` writes the
 count fit's page and `fit.{group}.html` beside it for each fitted group, linked to each other.
 
+**Batch effects, after the fit.** Batches fitted together can come out as modules of their own.
+`cluster-view` reads each cell module's spread over the batches off the cell table, each batch's
+cells weighing alike, with the batches as replicates of conditions: a batch's name less its
+replicate token (`rep1_mut` and `mut_r2` are replicates of `mut`; a folder, `runA/mut`, is one
+too), or as `--batch-groups rep1_mut=mut,...` says. A module even over each condition's
+replicates (normalized entropy at least 0.8, each condition weighing alike however many
+replicates it has) is shared, or that condition's when 80% of it is in one condition; uneven, it
+is batch-specific, as a condition's replicates should agree. A module mostly where no condition
+has two replicates, or with under 10 cells' worth, is not judged. In the browser, `b` opens the modules against the batches
+and `B` has the panes show the modules that are not batch-specific, then those that are, then
+all; `--batches` prints the same.
+
+```bash
+faba cluster-view out/count_blockmodel.run.json --batches
+```
+
 **Watching the chains.** On a terminal `faba cluster` draws each chain's log joint live while it
 fits (`q` cancels, Ctrl+C stops the chains early and writes what they kept). When it is done it
 prints the same traces as one sparkline per chain on one scale, then a

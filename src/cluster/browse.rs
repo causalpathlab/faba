@@ -110,6 +110,14 @@ pub struct ModulesArgs {
     )]
     batch_process: bool,
 
+    #[arg(
+        long = "batch-groups",
+        value_name = "BATCH=CONDITION,...",
+        help = "Which condition each batch is a replicate of, as rep1_mut=mut,rep2_mut=mut; \
+                the rest are read off their names, less a replicate token (rep1_mut: mut)"
+    )]
+    batch_groups: Option<String>,
+
     /// The levels printed under --batch-process instead of the modules.
     #[command(flatten)]
     shown: text::Shown,
@@ -120,6 +128,21 @@ pub struct ModulesArgs {
 }
 
 impl ModulesArgs {
+    /// `--batch-groups`, batch to condition.
+    fn batch_groups(&self) -> anyhow::Result<std::collections::BTreeMap<String, String>> {
+        let Some(given) = &self.batch_groups else {
+            return Ok(Default::default());
+        };
+        (given.split(',').filter(|p| !p.trim().is_empty()))
+            .map(|pair| match pair.split_once('=') {
+                Some((b, c)) if !b.trim().is_empty() && !c.trim().is_empty() => {
+                    Ok((b.trim().to_string(), c.trim().to_string()))
+                }
+                _ => anyhow::bail!("--batch-groups {pair}: give BATCH=CONDITION"),
+            })
+            .collect()
+    }
+
     /// The session the browser runs in; none under --batch-process or
     /// --html. Matrices named start a new one; with none, live sessions
     /// are offered first.
@@ -322,7 +345,10 @@ pub fn run_modules(args: &ModulesArgs) -> anyhow::Result<()> {
     };
     match target(&inputs, modality, output, args.group.as_deref())? {
         Target::Fit(opened, near) => show(args, opened, recorded(&near)),
-        Target::Nested(nested) => nested.show(args, recorded(nested.dir())),
+        Target::Nested(nested) => {
+            let nested = nested.with_batch_groups(args.batch_groups()?);
+            nested.show(args, recorded(nested.dir()))
+        }
     }
 }
 
@@ -368,7 +394,9 @@ fn show(
     gtf: Option<Box<str>>,
 ) -> anyhow::Result<()> {
     // Shared with the thread that writes the report on `e`.
-    let modules = std::sync::Arc::new(Modules::load(&dir, &modality, record)?);
+    let mut modules = Modules::load(&dir, &modality, record)?;
+    modules.regroup(&args.batch_groups()?)?;
+    let modules = std::sync::Arc::new(modules);
     if let Some(path) = &args.html {
         return write_html(&modules, gtf.as_deref(), path);
     }

@@ -55,7 +55,7 @@ impl ModulesView<'_> {
             .collect();
         let packed = pack(&widths, area.width.saturating_sub(TRACK_LABEL));
         let model = u16::from(!self.models.is_empty() || self.pending.is_some());
-        let tracks = 1 + m.cell_roles - self.col_from;
+        let tracks = 1 + self.shown.len() - self.col_from;
         // A line a side per track, the pointer, the names and the rule.
         let least = model + 2 * tracks as u16 + 3;
         let fit = ((area.height / least) as usize).clamp(1, packed.len());
@@ -110,13 +110,13 @@ impl ModulesView<'_> {
         if t == 0 {
             0
         } else {
-            t + self.col_from
+            1 + self.shown[t - 1 + self.col_from]
         }
     }
 
     /// The rows one row of the strip has room for.
     fn strip_rows(&self, area: Rect, model: u16) -> Rows {
-        let tracks = 1 + self.m.cell_roles - self.col_from;
+        let tracks = 1 + self.shown.len() - self.col_from;
         let avail = area.height.saturating_sub(model + 2);
         let lines = (avail / (2 * tracks as u16)).max(1);
         Rows {
@@ -144,7 +144,7 @@ impl ModulesView<'_> {
             let label = format!("{name:<4}{:>6}", m.cells_label(n));
             buf.set_stringn(area.x, y, label, TRACK_LABEL as usize - 1, style);
         }
-        let below = m.cell_roles - (self.col_from + rows.tracks.saturating_sub(1));
+        let below = self.shown.len() - (self.col_from + rows.tracks.saturating_sub(1));
         let hidden = hidden_marks(self.col_from, below);
         let y = area.bottom().saturating_sub(2);
         buf.set_stringn(area.x, y, hidden, TRACK_LABEL as usize - 1, DIM);

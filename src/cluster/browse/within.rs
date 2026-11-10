@@ -38,9 +38,21 @@ pub(super) struct Nested {
     /// The count fit's run record.
     count: PathBuf,
     groups: Vec<GroupFit>,
+    /// `--batch-groups`, for every fit opened.
+    batch_groups: std::collections::BTreeMap<String, String>,
 }
 
 impl Nested {
+    /// The same, each fit's batches read as `groups` say (see
+    /// [`Modules::regroup`]).
+    pub(super) fn with_batch_groups(
+        mut self,
+        groups: std::collections::BTreeMap<String, String>,
+    ) -> Self {
+        self.batch_groups = groups;
+        self
+    }
+
     /// The within record `inputs` name: one named alone, else the one in
     /// the directory they open (`-o`, else the first input's) when it
     /// holds no block tables of that modality on their own, which a
@@ -117,6 +129,7 @@ impl Nested {
             modality,
             count,
             groups,
+            batch_groups: Default::default(),
         }))
     }
 
@@ -185,7 +198,8 @@ impl Nested {
     /// The modules of the fit [`Self::open`] opens, and where its tables are.
     fn load(&self, group: Option<&GroupFit>) -> anyhow::Result<(PathBuf, Modules)> {
         let (dir, modality, record) = self.open(group)?;
-        let modules = Modules::load(&dir, &modality, record)?;
+        let mut modules = Modules::load(&dir, &modality, record)?;
+        modules.regroup(&self.batch_groups)?;
         Ok((dir, modules))
     }
 

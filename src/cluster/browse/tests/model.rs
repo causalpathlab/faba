@@ -422,6 +422,7 @@ fn a_level_is_printed_without_batch_process_but_not_with_html() {
         &["--module", "M1"][..],
         &["--gene", "G1"],
         &["--cells"],
+        &["--batches"],
         &["--trace"],
         &["--settings"],
     ] {

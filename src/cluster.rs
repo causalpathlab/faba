@@ -14,6 +14,7 @@ use std::io::IsTerminal;
 use std::path::Path;
 
 mod args;
+pub(crate) mod batches;
 mod browse;
 mod command;
 mod count;

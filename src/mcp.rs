@@ -243,7 +243,7 @@ fn tools() -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "cluster_view",
-            "View a `cluster` fit (`faba cluster-view --batch-process`), level by level as the browser does: by default the gene modules against the cell modules (level 1). `module` prints one gene module's genes and sites with their values in each cell module (level 2); `gene` one gene's sites in each cell module over every gene module (levels 3 and 4); `cells` the cell modules' sizes; `trace` each chain's trace (a count fit's: each restart's ELBO by epoch), the verdict and its advice; `settings` the settings the fit ran with. Several may be given; rows are tab-separated. Values are % converted for a site fit, UMIs per cell for a count fit. `data` is the fit's run record or the directory holding its tables; this never fits. A within record ({m}_within.run.json, from `cluster` with `within`) prints the count fit's modules, each group's fit (cells, R-hat, verdict; why one was skipped) and the modules within each fitted group; with `group`, every argument applies to the fit within that cell module, and without it the levels asked for are the count fit's. With `html`, write one self-contained page to a new file instead; a within record without `group` writes a page a fit, `html` for the count fit and {stem}.{group}.html beside it for each group, linked to each other.",
+            "View a `cluster` fit (`faba cluster-view --batch-process`), level by level as the browser does: by default the gene modules against the cell modules (level 1). `module` prints one gene module's genes and sites with their values in each cell module (level 2); `gene` one gene's sites in each cell module over every gene module (levels 3 and 4); `cells` the cell modules' sizes; `batches` how each cell module spreads over the batches (shared, one condition's, or batch-specific: uneven over a condition's replicates), the conditions read off the batch names less a replicate token or given by `batch_groups`; `trace` each chain's trace (a count fit's: each restart's ELBO by epoch), the verdict and its advice; `settings` the settings the fit ran with. Several may be given; rows are tab-separated. Values are % converted for a site fit, UMIs per cell for a count fit. `data` is the fit's run record or the directory holding its tables; this never fits. A within record ({m}_within.run.json, from `cluster` with `within`) prints the count fit's modules, each group's fit (cells, R-hat, verdict; why one was skipped) and the modules within each fitted group; with `group`, every argument applies to the fit within that cell module, and without it the levels asked for are the count fit's. With `html`, write one self-contained page to a new file instead; a within record without `group` writes a page a fit, `html` for the count fit and {stem}.{group}.html beside it for each group, linked to each other.",
             schema(
                 json!({
                     "data": { "type": "string", "description": "A `cluster` fit: its run record `{m}_blockmodel.run.json`, the output directory holding its block tables, or a within record `{m}_within.run.json`" },
@@ -252,6 +252,8 @@ fn tools() -> Vec<ToolSpec> {
                     "module": { "type": "string", "description": "A gene module to print, as M3 or 3" },
                     "gene": { "type": "string", "description": "A gene to print, by key or symbol" },
                     "cells": { "type": "boolean", "description": "Print the cell modules and their sizes" },
+                    "batches": { "type": "boolean", "description": "Print how each cell module spreads over the batches: shared, one condition's, or batch-specific" },
+                    "batch_groups": { "type": "string", "description": "Which condition each batch is a replicate of, as rep1_mut=mut,rep2_mut=mut; the rest are read off their names" },
                     "trace": { "type": "boolean", "description": "Print each chain's trace, the verdict and its advice" },
                     "settings": { "type": "boolean", "description": "Print the settings the fit ran with" },
                     "gtf": { "type": "string", "description": "Gene annotation for the models drawn in the HTML page" },
@@ -1276,6 +1278,7 @@ fn cluster_view(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
     let mut argv = vec!["cluster-view".into(), data.clone()];
     push_opt(&mut argv, "--modality", a.str("modality"));
     push_opt(&mut argv, "--group", a.str("group"));
+    push_opt(&mut argv, "--batch-groups", a.str("batch_groups"));
     if let Some(gtf) = a.path_opt("gtf")? {
         push_flag(&mut argv, "--gtf", &gtf);
     }
@@ -1284,7 +1287,7 @@ fn cluster_view(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
     argv.push("--batch-process".into());
     push_opt(&mut argv, "--module", a.str("module"));
     push_opt(&mut argv, "--gene", a.str("gene"));
-    for level in ["cells", "trace", "settings"] {
+    for level in ["cells", "batches", "trace", "settings"] {
         if a.flag(level)? {
             argv.push(format!("--{level}"));
         }

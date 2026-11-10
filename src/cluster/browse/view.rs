@@ -29,6 +29,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 mod bars;
+mod batches;
 mod chrome;
 mod columns;
 mod find;
@@ -111,6 +112,11 @@ pub(super) enum Spot {
 /// State of the browser, independent of the terminal so it can be tested.
 pub struct ModulesView<'a> {
     m: &'a Modules,
+    /// The cell modules the panes show, as column places in order: every
+    /// one, or those the batch filter keeps (see [`batches`]).
+    pub(super) shown: Vec<usize>,
+    /// Which cell modules the panes show, by how they spread over batches.
+    pub(super) filter: batches::Filter,
     title: String,
     pub(super) pane: Pane,
     /// The gene role in focus.
@@ -172,6 +178,10 @@ pub struct ModulesView<'a> {
     hits: Hits<Spot>,
     /// The fit's trace is open, full pane.
     tracing: bool,
+    /// The cell modules' spread over the batches is open, full pane, its
+    /// rows from this one.
+    batching: bool,
+    batch_from: usize,
     done: bool,
 }
 
@@ -179,6 +189,8 @@ impl<'a> ModulesView<'a> {
     pub fn new(title: &str, m: &'a Modules) -> Self {
         let mut view = Self {
             m,
+            shown: (0..m.cell_roles).collect(),
+            filter: batches::Filter::All,
             title: title.to_string(),
             pane: Pane::Modules,
             module: m.order.first().copied().unwrap_or(0),
@@ -211,6 +223,8 @@ impl<'a> ModulesView<'a> {
             site_labels: Kept::default(),
             hits: Hits::default(),
             tracing: false,
+            batching: false,
+            batch_from: 0,
             done: false,
         };
         view.relist();
@@ -233,7 +247,7 @@ impl<'a> ModulesView<'a> {
 
     /// The first cell module shown, a place among the columns.
     pub(super) fn first_column(&self) -> usize {
-        self.col_from
+        self.shown.get(self.col_from).copied().unwrap_or(0)
     }
 
     /// Say `msg` on the footer until the next key.
@@ -376,16 +390,18 @@ impl Screen for ModulesView<'_> {
     fn render(&mut self, frame: &mut Frame) {
         self.hits.clear();
         let area = frame.area();
-        let m = self.m;
+        let gene_modules = self.m.order.len();
         let mut extra = format!(
-            "{} gene modules × {} cell modules",
-            m.order.len(),
-            m.cell_roles
+            "{gene_modules} gene modules × {} cell modules",
+            self.shown.len()
         );
+        if let Some(shown) = self.filter.shown() {
+            extra.push_str(&format!(" ({shown})"));
+        }
         if let Some(badge) = self.badge() {
             extra.push_str(&format!(" · {badge}"));
         }
-        if self.tracing {
+        if self.tracing || self.batching {
             let [head, body, foot] = Layout::vertical([
                 Constraint::Length(1),
                 Constraint::Fill(1),
@@ -393,13 +409,16 @@ impl Screen for ModulesView<'_> {
             ])
             .areas(area);
             frame.render_widget(header("cluster-view", &self.title, &extra), head);
-            return self.draw_trace(frame, body, foot);
+            return match self.tracing {
+                true => self.draw_trace(frame, body, foot),
+                false => self.draw_batches(frame, body, foot),
+            };
         }
         self.fit_columns(area.width);
         let help = self.footer(area.width);
         // Half the screen for the grids, more when the modules need it,
         // and room left for the strip.
-        let modules_h = 2 * m.order.len() as u16 + 3;
+        let modules_h = 2 * gene_modules as u16 + 3;
         let top_h = (area.height / 2)
             .max(modules_h.min(area.height.saturating_sub(14)))
             .max(4.min(area.height));
