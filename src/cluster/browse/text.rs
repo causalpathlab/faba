@@ -12,7 +12,7 @@ use crate::cluster::progress::ELBO;
 /// the browser opens, named on the command line. Asking for one prints it
 /// as text, as --batch-process does; with --html, which writes the page of
 /// every level, it is refused.
-#[derive(clap::Args, Debug, Default, Clone, PartialEq)]
+#[derive(clap::Args, Debug, Clone, PartialEq)]
 pub struct Shown {
     /// A gene module's genes and sites (`M3` or `3`).
     #[arg(
@@ -47,6 +47,43 @@ pub struct Shown {
     pub trace: bool,
 
     #[arg(
+        long = "go",
+        conflicts_with = "html",
+        help = "Print the GO terms (or --gmt gene sets) over-represented in each gene module"
+    )]
+    pub go: bool,
+
+    #[arg(
+        long = "gaf",
+        value_name = "FILE",
+        help = "GO annotations for --go and the browser's a (default: lupin's cached GO Consortium file for the genes' species)"
+    )]
+    pub gaf: Option<String>,
+
+    #[arg(
+        long = "obo",
+        value_name = "FILE",
+        help = "The GO graph for --gaf, terms propagated up it (default: lupin's cached go-basic.obo)"
+    )]
+    pub obo: Option<String>,
+
+    #[arg(
+        long = "gmt",
+        value_name = "FILE",
+        conflicts_with = "gaf",
+        help = "Gene sets to test instead of GO, a GMT file"
+    )]
+    pub gmt: Option<String>,
+
+    #[arg(
+        long = "go-min-weight",
+        value_name = "WEIGHT",
+        default_value_t = 0.5,
+        help = "A gene counts in its main gene module for --go when its weight there is at least this"
+    )]
+    pub go_min_weight: f64,
+
+    #[arg(
         long = "batches",
         conflicts_with = "html",
         help = "Print how each cell module spreads over the batches: shared, one condition's, or batch-specific"
@@ -61,6 +98,19 @@ pub struct Shown {
     pub settings: bool,
 }
 
+impl Default for Shown {
+    /// As the command line has it: no level, GO's weight cut at 0.5.
+    fn default() -> Self {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Line {
+            #[command(flatten)]
+            shown: Shown,
+        }
+        Line::parse_from(["shown"]).shown
+    }
+}
+
 impl Shown {
     /// Whether any level beside the modules is asked for.
     pub fn any(&self) -> bool {
@@ -68,6 +118,7 @@ impl Shown {
             || self.gene.is_some()
             || self.cells
             || self.batches
+            || self.go
             || self.trace
             || self.settings
     }
@@ -98,6 +149,9 @@ pub fn printed(m: &Modules, shown: &Shown) -> anyhow::Result<Vec<String>> {
     }
     if shown.batches {
         part(batches(m));
+    }
+    if shown.go {
+        part(go_lines(m, shown)?);
     }
     if shown.trace {
         part(trace(m));
@@ -267,6 +321,25 @@ fn gene(m: &Modules, name: &str) -> anyhow::Result<Vec<String>> {
         out.push(row.join("\t"));
     }
     Ok(out)
+}
+
+/// The GO terms (or gene sets) of each gene module (see [`super::go`]).
+fn go_lines(m: &Modules, shown: &Shown) -> anyhow::Result<Vec<String>> {
+    let ask = shown.go_ask();
+    let source = ask.source(m).map_err(anyhow::Error::msg)?;
+    Ok(super::go::table(m, &source, ask.min_weight)?.lines())
+}
+
+impl Shown {
+    /// What `--go` and the browser's `a` ask of GO.
+    pub fn go_ask(&self) -> super::go::Ask {
+        super::go::Ask {
+            gaf: self.gaf.clone(),
+            gmt: self.gmt.clone(),
+            obo: self.obo.clone(),
+            min_weight: self.go_min_weight,
+        }
+    }
 }
 
 /// How each cell module spreads over the batches (see

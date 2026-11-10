@@ -23,6 +23,7 @@ use std::path::{Path, PathBuf};
 mod data;
 mod figure;
 mod gene;
+mod go;
 mod order;
 mod report;
 mod text;
@@ -452,6 +453,13 @@ fn write_figure(m: &Modules, args: &ModulesArgs, dir: &Path, prefix: &str) -> an
         m.diagonal.len(),
         m.cell_roles,
     );
+    // A figure never replaces a file, as a page does not.
+    for path in crate::figure::saved_paths(prefix) {
+        anyhow::ensure!(
+            !Path::new(&path).exists(),
+            "{path} exists: name a new --figure"
+        );
+    }
     let drawn = figure::draw(m, args.plot, args.look, &title, size).map_err(anyhow::Error::msg)?;
     for path in crate::figure::save_with_png(&drawn, prefix)? {
         println!("{path}");
@@ -484,7 +492,7 @@ fn show(
         return Ok(());
     }
     let models = start_gene_models(or_asked(gtf)?.as_deref());
-    browse(&dir, &modules, models)
+    browse(&dir, &modules, models, args.shown.go_ask())
 }
 
 /// What `faba cluster-view` would open from `data_files`, refused as the
@@ -614,10 +622,12 @@ fn browse(
     dir: &Path,
     modules: &std::sync::Arc<Modules>,
     models: Option<SharedModels>,
+    go: go::Ask,
 ) -> anyhow::Result<()> {
     let title = title(dir, modules);
     let mut view = ModulesView::new(&title, modules)
         .with_genes(models.clone())
+        .with_go(go)
         .with_report(
             dir.join(format!("{}_cluster_view.html", modules.modality)),
             modules.clone(),

@@ -671,7 +671,7 @@ fn strip_extension(prefix: &str) -> &str {
 }
 
 /// The files a save under `prefix` writes: the PDF, then the PNG.
-fn saved_paths(prefix: &str) -> [String; 2] {
+pub(crate) fn saved_paths(prefix: &str) -> [String; 2] {
     let prefix = strip_extension(prefix);
     [format!("{prefix}.pdf"), format!("{prefix}.png")]
 }

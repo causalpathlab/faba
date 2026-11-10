@@ -129,3 +129,68 @@ fn batches_prints_a_line_a_module() {
         "{lines:?}"
     );
 }
+
+/// `a` opens the GO pane on the gene module in focus, its terms read on a
+/// thread: with 40 genes, gene module 1 the first 20, and a GMT whose `UP`
+/// holds 12 of them, `UP` is gene module 1's term, named by its id.
+#[test]
+fn a_opens_the_gene_modules_terms() {
+    use super::super::go::Ask;
+    let mut m = loaded();
+    m.gene_main = (0..40)
+        .map(|i| {
+            (
+                format!("ENSG{i:011}_G{i}").into(),
+                usize::from(i >= 20),
+                0.9,
+            )
+        })
+        .collect();
+    let tmp = tempfile::tempdir().unwrap();
+    let set = |name: &str, genes: std::ops::Range<usize>| {
+        let g: Vec<String> = genes.map(|i| format!("G{i}")).collect();
+        format!("{name}\t-\t{}", g.join("\t"))
+    };
+    let gmt = tmp.path().join("sets.gmt");
+    let lines = [set("UP", 0..12), set("REST", 12..40)];
+    std::fs::write(&gmt, lines.join("\n")).unwrap();
+    let ask = Ask {
+        gaf: None,
+        gmt: Some(gmt.to_string_lossy().into()),
+        obo: None,
+        min_weight: 0.5,
+    };
+    let mut v = ModulesView::new("test", &m).with_go(ask);
+    assert!(
+        screen(&mut v, 140, 30).contains("a GO terms"),
+        "in the footer"
+    );
+    // Gene module 1 in focus.
+    for key in [KeyCode::Up, KeyCode::Down] {
+        for _ in 0..m.gene_roles {
+            if v.module != 0 {
+                press(&mut v, key);
+            }
+        }
+    }
+    assert_eq!(v.module, 0);
+    press(&mut v, KeyCode::Char('a'));
+    let mut s = String::new();
+    for _ in 0..500 {
+        Screen::tick(&mut v);
+        s = screen(&mut v, 140, 30);
+        if !s.contains("reading") {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(
+        s.contains("GO · gene module M1") && s.contains(" UP "),
+        "{s}"
+    );
+    press(&mut v, KeyCode::Char('a'));
+    assert!(
+        screen(&mut v, 140, 30).contains("gene modules ·"),
+        "a closes it"
+    );
+}

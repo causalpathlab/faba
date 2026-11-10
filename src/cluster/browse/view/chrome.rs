@@ -124,6 +124,9 @@ impl ModulesView<'_> {
         if self.m.batches.is_some() {
             keys.extend([("b", "batches"), ("B", "filter")]);
         }
+        if self.go_ask.is_some() {
+            keys.push(("a", "GO terms"));
+        }
         keys.extend([("t", "trace"), ("q", "quit")]);
         crate::tui::wrap_help(help_line(&keys), width)
     }

@@ -33,6 +33,7 @@ mod batches;
 mod chrome;
 mod columns;
 mod find;
+mod go;
 mod grid;
 mod input;
 mod list;
@@ -182,6 +183,12 @@ pub struct ModulesView<'a> {
     /// rows from this one.
     batching: bool,
     batch_from: usize,
+    /// What GO is asked (none: not for this view), its terms while they
+    /// are read and once they are, and whether the pane is open.
+    go_ask: Option<super::go::Ask>,
+    go: Option<go::Pending>,
+    go_table: Option<Result<super::go::Table, String>>,
+    going: bool,
     done: bool,
 }
 
@@ -225,10 +232,20 @@ impl<'a> ModulesView<'a> {
             tracing: false,
             batching: false,
             batch_from: 0,
+            go_ask: None,
+            go: None,
+            go_table: None,
+            going: false,
             done: false,
         };
         view.relist();
         view
+    }
+
+    /// GO terms of the gene modules, as `ask` asks, on `a`.
+    pub fn with_go(mut self, ask: super::go::Ask) -> Self {
+        self.go_ask = Some(ask);
+        self
     }
 
     /// Draw gene models from `genes` once they have loaded.
@@ -372,7 +389,8 @@ impl Screen for ModulesView<'_> {
         let waiting = self.pending.is_some();
         self.take_genes();
         let wrote = self.take_written();
-        (waiting && self.pending.is_none()) || wrote
+        let go = self.take_go();
+        (waiting && self.pending.is_none()) || wrote || go
     }
 
     fn takes_mouse(&self) -> bool {
@@ -401,7 +419,7 @@ impl Screen for ModulesView<'_> {
         if let Some(badge) = self.badge() {
             extra.push_str(&format!(" · {badge}"));
         }
-        if self.tracing || self.batching {
+        if self.tracing || self.batching || self.going {
             let [head, body, foot] = Layout::vertical([
                 Constraint::Length(1),
                 Constraint::Fill(1),
@@ -409,9 +427,10 @@ impl Screen for ModulesView<'_> {
             ])
             .areas(area);
             frame.render_widget(header("cluster-view", &self.title, &extra), head);
-            return match self.tracing {
-                true => self.draw_trace(frame, body, foot),
-                false => self.draw_batches(frame, body, foot),
+            return match (self.tracing, self.batching) {
+                (true, _) => self.draw_trace(frame, body, foot),
+                (_, true) => self.draw_batches(frame, body, foot),
+                _ => self.draw_go(frame, body, foot),
             };
         }
         self.fit_columns(area.width);

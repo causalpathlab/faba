@@ -98,17 +98,22 @@ pub(super) fn read_shifts(blocks: &RecordBatch) -> anyhow::Result<(usize, usize,
     Ok((cell_roles, gene_roles, shift))
 }
 
-/// Each row's main role (the `role` column, from 1, one of `n`) by its
-/// `key`; rows without a role are left out.
-pub(super) fn main_roles<K: Eq + std::hash::Hash>(
+/// Each gene of `{m}_gene_roles` with a main role: its key, that role
+/// (from 0, of `n`) and its weight (1 when the table has none).
+pub(super) fn gene_main(
     table: &RecordBatch,
-    key: impl Fn(usize) -> K,
     n: usize,
-) -> anyhow::Result<FxHashMap<K, usize>> {
+) -> anyhow::Result<Vec<(Box<str>, usize, f32)>> {
+    let names: &StringArray = column(table, "gene")?;
     let role: &Int32Array = column(table, "role")?;
+    let weight =
+        (table.column_by_name("weight")).and_then(|c| c.as_any().downcast_ref::<Float32Array>());
     (0..table.num_rows())
         .filter(|&i| role.is_valid(i))
-        .map(|i| Ok((key(i), role_at(role, i, n)?)))
+        .map(|i| {
+            let w = weight.filter(|w| w.is_valid(i)).map_or(1.0, |w| w.value(i));
+            Ok((names.value(i).into(), role_at(role, i, n)?, w))
+        })
         .collect()
 }
 

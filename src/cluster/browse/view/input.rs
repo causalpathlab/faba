@@ -125,7 +125,7 @@ impl ModulesView<'_> {
 
     /// A mouse event, for `Screen::mouse`: whether it did anything.
     pub(super) fn on_mouse(&mut self, event: MouseEvent) -> bool {
-        if self.find.is_some() || self.tracing || self.batching {
+        if self.find.is_some() || self.tracing || self.batching || self.going {
             return false;
         }
         let spot = self.hits.at(event.column, event.row);
@@ -165,6 +165,9 @@ impl ModulesView<'_> {
         if self.batching {
             return self.batches_key(key);
         }
+        if self.going {
+            return self.go_key(key);
+        }
         // The grid in focus, a place in `looks`.
         let grid = (self.pane != Pane::Genes).then(|| self.pane.index());
         let (sites, genes) = (self.pane == Pane::Sites, self.pane == Pane::Genes);
@@ -173,6 +176,7 @@ impl ModulesView<'_> {
             KeyCode::Char('e') => self.export(),
             KeyCode::Char('t') => self.open_trace(),
             KeyCode::Char('b') => self.open_batches(),
+            KeyCode::Char('a') => self.open_go(),
             KeyCode::Char('B') => self.next_filter(),
             KeyCode::Char('/') => self.open_find(),
             KeyCode::Tab => self.pane = self.pane.cycled(1),

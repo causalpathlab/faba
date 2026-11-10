@@ -243,7 +243,7 @@ fn tools() -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "cluster_view",
-            "View a `cluster` fit (`faba cluster-view --batch-process`), level by level as the browser does: by default the gene modules against the cell modules (level 1). `module` prints one gene module's genes and sites with their values in each cell module (level 2); `gene` one gene's sites in each cell module over every gene module (levels 3 and 4); `cells` the cell modules' sizes; `batches` how each cell module spreads over the batches (shared, one condition's, or batch-specific: uneven over a condition's replicates), the conditions read off the batch names less a replicate token or given by `batch_groups`; `trace` each chain's trace (a count fit's: each restart's ELBO by epoch), the verdict and its advice; with `figure`, a figure instead (`plot`: the modules grid coloured by `look`, the trace, or the batches; `width` and `height` in inches lay it out for a page), returned as an image; `settings` the settings the fit ran with. Several may be given; rows are tab-separated. Values are % converted for a site fit, UMIs per cell for a count fit. `data` is the fit's run record or the directory holding its tables; this never fits. A within record ({m}_within.run.json, from `cluster` with `within`) prints the count fit's modules, each group's fit (cells, R-hat, verdict; why one was skipped) and the modules within each fitted group; with `group`, every argument applies to the fit within that cell module, and without it the levels asked for are the count fit's. With `html`, write one self-contained page to a new file instead; a within record without `group` writes a page a fit, `html` for the count fit and {stem}.{group}.html beside it for each group, linked to each other.",
+            "View a `cluster` fit (`faba cluster-view --batch-process`), level by level as the browser does: by default the gene modules against the cell modules (level 1). `module` prints one gene module's genes and sites with their values in each cell module (level 2); `gene` one gene's sites in each cell module over every gene module (levels 3 and 4); `cells` the cell modules' sizes; `go` the GO terms (or `gmt` gene sets) over-represented in each gene module, against the fit's own annotated genes (files default to lupin's cache); `batches` how each cell module spreads over the batches (shared, one condition's, or batch-specific: uneven over a condition's replicates), the conditions read off the batch names less a replicate token or given by `batch_groups`; `trace` each chain's trace (a count fit's: each restart's ELBO by epoch), the verdict and its advice; with `figure`, a figure instead (`plot`: the modules grid coloured by `look`, the trace, or the batches; `width` and `height` in inches lay it out for a page), returned as an image; `settings` the settings the fit ran with. Several may be given; rows are tab-separated. Values are % converted for a site fit, UMIs per cell for a count fit. `data` is the fit's run record or the directory holding its tables; this never fits. A within record ({m}_within.run.json, from `cluster` with `within`) prints the count fit's modules, each group's fit (cells, R-hat, verdict; why one was skipped) and the modules within each fitted group; with `group`, every argument applies to the fit within that cell module, and without it the levels asked for are the count fit's. With `html`, write one self-contained page to a new file instead; a within record without `group` writes a page a fit, `html` for the count fit and {stem}.{group}.html beside it for each group, linked to each other.",
             schema(
                 json!({
                     "data": { "type": "string", "description": "A `cluster` fit: its run record `{m}_blockmodel.run.json`, the output directory holding its block tables, or a within record `{m}_within.run.json`" },
@@ -253,6 +253,11 @@ fn tools() -> Vec<ToolSpec> {
                     "gene": { "type": "string", "description": "A gene to print, by key or symbol" },
                     "cells": { "type": "boolean", "description": "Print the cell modules and their sizes" },
                     "batches": { "type": "boolean", "description": "Print how each cell module spreads over the batches: shared, one condition's, or batch-specific" },
+                    "go": { "type": "boolean", "description": "Print the GO terms over-represented in each gene module (hypergeometric against the fit's annotated genes, BH over every module and term)" },
+                    "gaf": { "type": "string", "description": "GO annotations for `go` (default: lupin's cached GO Consortium file for the genes' species)" },
+                    "obo": { "type": "string", "description": "The GO graph for `gaf` (default: lupin's cached go-basic.obo)" },
+                    "gmt": { "type": "string", "description": "Gene sets to test for `go` instead of GO, a GMT file" },
+                    "go_min_weight": { "type": "number", "minimum": 0, "maximum": 1, "description": "A gene counts in its main gene module for `go` at this weight or more (default 0.5)" },
                     "batch_groups": { "type": "string", "description": "Which condition each batch is a replicate of, as rep1_mut=mut,rep2_mut=mut; the rest are read off their names" },
                     "trace": { "type": "boolean", "description": "Print each chain's trace, the verdict and its advice" },
                     "settings": { "type": "boolean", "description": "Print the settings the fit ran with" },
@@ -877,7 +882,8 @@ fn recorded_results(dir: &str) -> Option<Value> {
 /// PDF and PNG it writes are new; both are added to `outputs`.
 fn figure_prefix(table: &str, outputs: &mut Vec<PathBuf>) -> Result<(String, String)> {
     let prefix = table.strip_suffix(".tsv").unwrap_or(table);
-    let (pdf, png) = (format!("{prefix}.pdf"), format!("{prefix}.png"));
+    // Exactly the files a figure saved under `prefix` writes.
+    let [pdf, png] = crate::figure::saved_paths(prefix);
     fresh(&pdf)?;
     fresh(&png)?;
     outputs.extend([PathBuf::from(&pdf), PathBuf::from(&png)]);
@@ -1284,6 +1290,12 @@ fn cluster_view(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
     push_opt(&mut argv, "--modality", a.str("modality"));
     push_opt(&mut argv, "--group", a.str("group"));
     push_opt(&mut argv, "--batch-groups", a.str("batch_groups"));
+    for file in ["gaf", "obo", "gmt"] {
+        if let Some(path) = a.path_opt(file)? {
+            push_flag(&mut argv, &format!("--{file}"), &path);
+        }
+    }
+    argv.extend(a.numbers(&["go_min_weight"])?);
     if let Some(gtf) = a.path_opt("gtf")? {
         push_flag(&mut argv, "--gtf", &gtf);
     }
@@ -1292,20 +1304,15 @@ fn cluster_view(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
     argv.push("--batch-process".into());
     push_opt(&mut argv, "--module", a.str("module"));
     push_opt(&mut argv, "--gene", a.str("gene"));
-    for level in ["cells", "batches", "trace", "settings"] {
+    for level in ["cells", "batches", "go", "trace", "settings"] {
         if a.flag(level)? {
             argv.push(format!("--{level}"));
         }
     }
     if let Some(figure) = a.path_opt("figure")? {
-        // As `--figure` names its files: the prefix without .pdf or .png.
-        let prefix = [".pdf", ".png"]
-            .iter()
-            .find_map(|x| figure.strip_suffix(x))
-            .unwrap_or(&figure)
-            .to_string();
         let mut outputs = Vec::new();
-        let (_, png) = figure_prefix(&prefix, &mut outputs)?;
+        // The prefix checked is the one written under.
+        let (prefix, png) = figure_prefix(&figure, &mut outputs)?;
         push_flag(&mut argv, "--figure", &prefix);
         push_opt(&mut argv, "--plot", a.str("plot"));
         push_opt(&mut argv, "--look", a.str("look"));
