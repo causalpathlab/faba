@@ -242,13 +242,21 @@ Every write goes to an `out` that must not exist yet: no tool replaces a directo
 
 ## Clustering on real data
 
-`faba cluster` fits by MCMC, so a fit is only worth reading once its chains
-agree. Run several (`--chains`, 4 by default) and give them enough sweeps (`--sweeps`, burn-in
-included; `--burn-in`):
+`faba cluster --model blocks` (cell and gene modules of the site reads) fits by variational
+inference, as the count fit does: each restart (`--chains`, 4) starts from k-means++ on the
+cells' residuals over their genes, runs `--svi-epochs` minibatch epochs, then coordinate ascent
+until an epoch moves the ELBO by less than `--tol` per read, and the best restart by ELBO is kept.
+A read's likelihood is bounded by Pólya-Gamma (Jaakkola and Jordan), one bound per read and block,
+so each link (a cell's reads at one gene) weighs every block at a few sums; the shifts and the
+cells' levels trade a constant through their priors after every global step. On the paper data
+(11,919 cells, 2.35M links) a restart takes about two minutes. `--model link` and `--model crp`
+still fit by MCMC: such a fit is only worth reading once its chains agree, so run several
+(`--chains`) and give them enough sweeps (`--sweeps`, `--burn-in`); `--holdout` is for those fits
+alone.
 
 ```sh
-# Cell and gene modules from a faba output directory, watching the chains as they run
-faba cluster out/ --model blocks --chains 4 --sweeps 600 --burn-in 200
+# Cell and gene modules from a faba output directory, watching the restarts as they run
+faba cluster out/ --model blocks
 # Open the fit, as it is
 faba cluster-view out/m6a_blockmodel.run.json
 ```

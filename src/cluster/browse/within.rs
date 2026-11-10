@@ -209,7 +209,7 @@ impl Nested {
         if let Some(path) = &args.html {
             return self.write_html(gtf.as_deref(), Path::new(path.as_ref()));
         }
-        if args.shown.any() {
+        if args.shown.any() || args.figure.is_some() {
             return super::show(args, self.open(None)?, gtf);
         }
         if crate::tui::batch(args.batch_process, "cluster-view") {

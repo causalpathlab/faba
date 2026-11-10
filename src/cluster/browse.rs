@@ -21,6 +21,7 @@ use clap::Args;
 use std::path::{Path, PathBuf};
 
 mod data;
+mod figure;
 mod gene;
 mod order;
 mod report;
@@ -103,6 +104,48 @@ pub struct ModulesArgs {
     html: Option<Box<str>>,
 
     #[arg(
+        long = "figure",
+        value_name = "PREFIX",
+        conflicts_with = "html",
+        help = "Write the modules grid (gene modules against cell modules) as PREFIX.pdf and PREFIX.png, coloured as --look says, instead of browsing"
+    )]
+    figure: Option<Box<str>>,
+
+    #[arg(
+        long = "plot",
+        value_enum,
+        default_value_t = figure::Plot::Modules,
+        requires = "figure",
+        help = "Which figure --figure writes: the modules grid, the fit's trace, or the cell modules against the batches"
+    )]
+    plot: figure::Plot,
+
+    #[arg(
+        long = "width",
+        value_name = "INCHES",
+        requires = "figure",
+        help = "The figure's width in inches (with --height: laid out for that size, its text kept readable)"
+    )]
+    width: Option<f64>,
+
+    #[arg(
+        long = "height",
+        value_name = "INCHES",
+        requires = "figure",
+        help = "The figure's height in inches"
+    )]
+    height: Option<f64>,
+
+    #[arg(
+        long = "look",
+        value_enum,
+        default_value_t = figure::Look::Shift,
+        requires = "figure",
+        help = "What colours a block in --figure: its fitted shift (a count fit's log rate), its methylated % (UMIs per cell), or that standardized across the cell modules"
+    )]
+    look: figure::Look,
+
+    #[arg(
         long = "batch-process",
         visible_alias = "batch-mode",
         default_value_t = false,
@@ -146,10 +189,15 @@ impl ModulesArgs {
     /// The session the browser runs in; none under --batch-process or
     /// --html. Matrices named start a new one; with none, live sessions
     /// are offered first.
+    /// Whether this writes or prints instead of browsing: no session, no
+    /// input browser.
+    fn writes(&self) -> bool {
+        self.batch_process || self.html.is_some() || self.figure.is_some()
+    }
+
     pub fn view_session(&self) -> Option<legume_tui::Options> {
         let target = !self.data_files.is_empty();
-        let batch = self.batch_process || self.html.is_some();
-        (!batch).then(|| self.session.options(target))
+        (!self.writes()).then(|| self.session.options(target))
     }
 }
 
@@ -330,7 +378,7 @@ const NO_GROUP: &str = "--group names a fit within a count fit's cell module: na
 
 pub fn run_modules(args: &ModulesArgs) -> anyhow::Result<()> {
     // No inputs named: browse for them, as `faba pileup` does.
-    let batch = args.batch_process || args.html.is_some();
+    let batch = args.writes();
     let offered = (
         "a fit's run record or site matrices",
         is_view_input as fn(&str) -> bool,
@@ -386,6 +434,31 @@ fn target(
     }
 }
 
+/// The figure `args` ask for of `m` (its tables in `dir`) as `prefix`.pdf
+/// and `prefix`.png; the paths written, printed. Refused when it has none
+/// to draw, or a size is half given or not positive.
+fn write_figure(m: &Modules, args: &ModulesArgs, dir: &Path, prefix: &str) -> anyhow::Result<()> {
+    let size = match (args.width, args.height) {
+        (None, None) => None,
+        (Some(w), Some(h)) if w > 0.0 && h > 0.0 && w.is_finite() && h.is_finite() => Some((w, h)),
+        _ => anyhow::bail!("--width and --height go together, each a positive number of inches"),
+    };
+    let fit = dir
+        .file_name()
+        .map_or(dir.display().to_string(), |n| n.to_string_lossy().into());
+    let title = format!(
+        "{fit} · {} · {} gene modules × {} cell modules",
+        m.modality,
+        m.diagonal.len(),
+        m.cell_roles,
+    );
+    let drawn = figure::draw(m, args.plot, args.look, &title, size).map_err(anyhow::Error::msg)?;
+    for path in crate::figure::save_with_png(&drawn, prefix)? {
+        println!("{path}");
+    }
+    Ok(())
+}
+
 /// One fit, shown as `args` ask: its page written, its levels printed, or
 /// browsed; gene models from `gtf`.
 fn show(
@@ -396,6 +469,9 @@ fn show(
     // Shared with the thread that writes the report on `e`.
     let mut modules = Modules::load(&dir, &modality, record)?;
     modules.regroup(&args.batch_groups()?)?;
+    if let Some(prefix) = &args.figure {
+        return write_figure(&modules, args, &dir, prefix);
+    }
     let modules = std::sync::Arc::new(modules);
     if let Some(path) = &args.html {
         return write_html(&modules, gtf.as_deref(), path);

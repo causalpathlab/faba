@@ -4,15 +4,13 @@
 
 use super::super::command::COUNT_MODALITY;
 use super::super::count::{self, vi, Counts};
-use super::super::progress::advice;
 use super::super::read::{walk_matrix, Visit};
 use super::super::summary::main_labels;
 use super::super::{args, progress, read, write, Written};
+use super::vi::End;
 use crate::run_record::RunRecord;
 use data_beans::aux::feature_rows::split_count_row;
 use log::info;
-use rand::rngs::SmallRng;
-use rand::SeedableRng;
 use rustc_hash::FxHashMap;
 use std::path::Path;
 
@@ -204,13 +202,7 @@ pub(in crate::cluster) fn count_fit(
         gene_roles: args.gene_roles.unwrap_or(8),
         ..count::Settings::default()
     };
-    let options = vi::Options {
-        svi_epochs: args.svi_epochs,
-        batch_size: args.batch_size,
-        epochs: args.epochs,
-        tol: args.tol,
-        ..vi::Options::default()
-    };
+    let options = super::vi::options(args);
     record.set_result("model", &settings);
     record.set_result("vi", &options);
     record.set_result(
@@ -223,12 +215,28 @@ pub(in crate::cluster) fn count_fit(
     );
     let (aa, bb) = (settings.cell_roles, settings.gene_roles);
     progress.check()?;
-    let restarts = args.chains;
     // Each restart's steps: its k-means start's iterations, then its epochs.
     let warmup = vi::KMEANS_ITERS;
     progress.begin_vi(warmup + options.epochs, warmup);
     let (best, ends) = progress::barred(progress, || {
-        restarts_fit(&counts, &settings, &options, args.seed, restarts, progress)
+        // The profiles serve the starts alone: moved into theirs, dropped
+        // with it once they are made.
+        let profiles = vi::Profiles::new(&counts);
+        let (counts, settings) = (&counts, &settings);
+        super::vi::restarts(
+            progress,
+            (args.seed, args.chains),
+            (warmup, options.epochs),
+            move |rng, tick, stop| vi::kmeans_start(counts, &profiles, settings, rng, tick, stop),
+            |start, rng, hooks| vi::fit(counts, settings, &options, start, rng, hooks),
+            |f| End {
+                elbo: f.elbo,
+                per_unit: f.elbo_per_count(counts),
+                epochs: f.epochs,
+                svi_epochs: f.svi_epochs,
+                converged: f.converged,
+            },
+        )
     })?;
     if progress.cancelled() {
         return Err(progress::Cancelled.into());
@@ -239,34 +247,20 @@ pub(in crate::cluster) fn count_fit(
         log::warn!("stopped before any restart finished an epoch: nothing to write");
         return Err(progress::Cancelled.into());
     };
-    let per: Vec<f64> = ends.iter().flatten().map(|e| e.per_count).collect();
-    let spread = per.iter().copied().fold(f64::NEG_INFINITY, f64::max)
-        - per.iter().copied().fold(f64::INFINITY, f64::min);
+    let ended = ends[best].expect("the best restart ended");
     let stopped = progress.stopped_early().is_some();
-    if stopped {
-        let epochs: Vec<Option<usize>> =
-            ends.iter().map(|e| e.as_ref().map(|e| e.epochs)).collect();
-        log::warn!(
-            "stopped early: the tables are from the epochs run so far ({epochs:?} by restart)"
-        );
-        record.set_result("stopped_early", &serde_json::json!({"epochs": epochs}));
-    }
-    progress.optimised(advice::Verdict::vi(
-        fitted.converged,
-        stopped,
-        (fitted.epochs, options.epochs),
-        per.len(),
-        spread,
-    ))?;
     let means = vi::summarize(&fitted);
-    info!(
-        "count: each restart's ELBO per count {:?}; tables from restart {best} ({} epochs: {})",
-        per.iter()
-            .map(|x| (x * 1e4).round() / 1e4)
-            .collect::<Vec<_>>(),
-        fitted.epochs,
-        progress.verdict().expect("optimised").said(),
-    );
+    // The verdict, and the commit to writing: nothing is written before.
+    super::vi::conclude(
+        progress,
+        record,
+        ("count", "count"),
+        &ends,
+        (best, ended),
+        (warmup, options.epochs, options.tol),
+        stopped,
+        serde_json::json!({"empty_roles": super::vi::empty_roles(&means.units, bb)}),
+    )?;
     std::fs::create_dir_all(dir)?;
     let path = |name: &str| dir.join(format!("count_{name}.parquet"));
     let mut rows: Vec<write::RoleRow> = cells
@@ -311,17 +305,6 @@ pub(in crate::cluster) fn count_fit(
         .collect();
     write::count_genes(&names, &main, &umis, &module_cells, &path("block_sites"))?;
     write::trace(&progress.traces(), &path("trace"))?;
-    // Roles a fit by VI keeps but gives no units to.
-    let empty = |units: Vec<f64>| -> Vec<usize> {
-        (units.iter().enumerate())
-            .filter(|(_, &u)| u < 1.0)
-            .map(|(k, _)| k + 1)
-            .collect()
-    };
-    let cell_units = (means.units.chunks_exact(bb))
-        .map(|row| row.iter().sum())
-        .collect();
-    let gene_units = count::column_totals(&means.units, bb);
     record.set_result(
         "tables",
         &serde_json::json!({
@@ -331,151 +314,8 @@ pub(in crate::cluster) fn count_fit(
             "trace": "count_trace.parquet",
         }),
     );
-    record.set_result(
-        "trace",
-        &serde_json::json!({
-            "sweeps": warmup + options.epochs,
-            "burn_in": warmup,
-            "quantity": progress.quantity(),
-        }),
-    );
-    record.set_result(
-        "count",
-        &serde_json::json!({
-            "vi": {
-                "restarts": (ends.iter().enumerate()).map(|(i, e)| match e {
-                    Some(e) => serde_json::json!({
-                        "restart": i,
-                        "elbo": e.elbo,
-                        "elbo_per_count": e.per_count,
-                        "epochs": e.epochs,
-                        "svi_epochs": e.svi_epochs,
-                        "converged": e.converged,
-                    }),
-                    None => serde_json::json!({"restart": i, "ran": false}),
-                }).collect::<Vec<_>>(),
-                "best": best,
-                "converged": fitted.converged,
-                "stopped_early": stopped,
-                "epochs": fitted.epochs,
-                "asked": options.epochs,
-                "spread_per_count": spread,
-                "tol": options.tol,
-            },
-            "empty_roles": {"cell": empty(cell_units), "gene": empty(gene_units)},
-        }),
-    );
-    let verdict = progress.verdict().expect("summarised");
-    record.set_result("converged", &verdict.converged());
     Ok(Written {
         modality: COUNT_MODALITY.into(),
         record: RECORD.into(),
     })
-}
-
-/// The best restart's fit and index, and each restart's end (see
-/// [`restarts_fit`]).
-type Restarts = (Option<(usize, vi::Fitted)>, Vec<Option<End>>);
-
-/// How a restart ended, for the record.
-struct End {
-    elbo: f64,
-    per_count: f64,
-    epochs: usize,
-    svi_epochs: usize,
-    converged: bool,
-}
-
-/// Each restart's fit: the k-means starts side by side (each on its own
-/// thread), then the variational fits one after another, each using every
-/// thread. Restart `i`'s random numbers are seeded `seed + i`; its k-means
-/// iterations, then its epochs, are counted on `progress` as chain `i` and
-/// its ELBO traced there. The best restart's fit (by ELBO) and its index,
-/// none when no restart finished an epoch; each restart's end, none for
-/// one stopped before an epoch ended or whose start failed.
-fn restarts_fit(
-    counts: &Counts,
-    settings: &count::Settings,
-    options: &vi::Options,
-    seed: u64,
-    restarts: usize,
-    progress: &progress::Progress,
-) -> anyhow::Result<Restarts> {
-    let stop = || progress.stopping();
-    let cancelled = || progress.cancelled();
-    // The profiles serve the starts alone: dropped once they are made.
-    let profiles = vi::Profiles::new(counts);
-    let starts: Vec<anyhow::Result<(vi::Start, SmallRng)>> = std::thread::scope(|s| {
-        let profiles = &profiles;
-        let handles: Vec<_> = (0..restarts)
-            .map(|i| {
-                s.spawn(move || {
-                    let mut rng = SmallRng::seed_from_u64(seed.wrapping_add(i as u64));
-                    progress.reach(i, 0);
-                    let tick = |n: usize| progress.reach(i, n);
-                    vi::kmeans_start(counts, profiles, settings, &mut rng, &tick, &stop)
-                        .map(|start| (start, rng))
-                })
-            })
-            .collect();
-        handles
-            .into_iter()
-            .map(|h| h.join().expect("a k-means start does not panic"))
-            .collect()
-    });
-    drop(profiles);
-    // Every start done (its iterations may have ended early): a restart
-    // waits at its first epoch for its turn.
-    let warmup = vi::KMEANS_ITERS;
-    (0..restarts).for_each(|i| progress.reach(i, warmup));
-    let mut best: Option<(usize, vi::Fitted)> = None;
-    let mut ends = Vec::with_capacity(restarts);
-    let mut failed = None;
-    for (i, start) in starts.into_iter().enumerate() {
-        let (start, mut rng) = match start {
-            Ok(start) => start,
-            Err(e) => {
-                log::warn!("restart {i}: {e:#}");
-                failed.get_or_insert(e);
-                ends.push(None);
-                continue;
-            }
-        };
-        if stop() {
-            ends.push(None);
-            continue;
-        }
-        let epoch = |e: usize, f: f64| {
-            progress.reach(i, warmup + e);
-            progress.note(i, warmup + e, f);
-        };
-        let hooks = vi::Hooks {
-            epoch: &epoch,
-            stop: &stop,
-            cancelled: &cancelled,
-        };
-        let Some(fitted) = vi::fit(counts, settings, options, start, &mut rng, &hooks) else {
-            ends.push(None);
-            continue;
-        };
-        // A restart that settled before its last epoch has nothing left.
-        if fitted.converged {
-            progress.reach(i, warmup + options.epochs);
-        }
-        ends.push(Some(End {
-            elbo: fitted.elbo,
-            per_count: fitted.elbo_per_count(counts),
-            epochs: fitted.epochs,
-            svi_epochs: fitted.svi_epochs,
-            converged: fitted.converged,
-        }));
-        // Only the best restart's factors are kept.
-        if best.as_ref().is_none_or(|(_, b)| fitted.elbo > b.elbo) {
-            best = Some((i, fitted));
-        }
-    }
-    if let (None, Some(e), false) = (&best, failed, stop()) {
-        return Err(e);
-    }
-    Ok((best, ends))
 }

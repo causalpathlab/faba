@@ -88,19 +88,24 @@ impl Fit {
             })
             .unwrap_or_default();
         // A fit by variational inference: its own verdict, no R-hat.
-        let vi = at("/results/count/vi").map(|vi| {
-            let ran = (vi["restarts"].as_array().into_iter().flatten())
-                .filter(|r| r.get("elbo").is_some())
-                .count();
-            let number = |k: &str| vi[k].as_u64().unwrap_or(0) as usize;
-            Verdict::vi(
-                vi["converged"].as_bool().unwrap_or(false),
-                vi["stopped_early"].as_bool().unwrap_or(false),
-                (number("epochs"), number("asked")),
-                ran,
-                vi["spread_per_count"].as_f64().unwrap_or(0.0),
-            )
-        });
+        let vi = at("/results/count/vi")
+            .or_else(|| at("/results/blocks/vi"))
+            .map(|vi| {
+                let ran = (vi["restarts"].as_array().into_iter().flatten())
+                    .filter(|r| r.get("elbo").is_some())
+                    .count();
+                let number = |k: &str| vi[k].as_u64().unwrap_or(0) as usize;
+                Verdict::vi(
+                    vi["converged"].as_bool().unwrap_or(false),
+                    vi["stopped_early"].as_bool().unwrap_or(false),
+                    (number("epochs"), number("asked")),
+                    ran,
+                    match vi["spread_per_count"].as_f64() {
+                        Some(x) => (x, "count"),
+                        None => (vi["spread_per_read"].as_f64().unwrap_or(0.0), "read"),
+                    },
+                )
+            });
         let verdict = vi.or_else(|| {
             rhat.map(|rhat| {
                 match &trace {

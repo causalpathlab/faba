@@ -59,12 +59,13 @@ pub enum Status {
     Unknown,
     /// A fit by variational inference: whether its best restart's ELBO
     /// settled within the tolerance, and how far below it the worst
-    /// restart ended, per count.
+    /// restart ended, per `unit` (count or read).
     Optimised {
         converged: bool,
         stopped: bool,
         asked: usize,
         spread: f64,
+        unit: &'static str,
     },
 }
 
@@ -112,13 +113,13 @@ impl Verdict {
     /// The verdict on a fit by variational inference: its best restart
     /// `converged` (its ELBO settled) in `epochs` of the `asked` epochs at
     /// most, or was `stopped` early; `restarts` in all, the worst ending
-    /// `spread` below the best per count.
+    /// `spread` below the best per `unit` (count or read).
     pub fn vi(
         converged: bool,
         stopped: bool,
         (epochs, asked): (usize, usize),
         restarts: usize,
-        spread: f64,
+        (spread, unit): (f64, &'static str),
     ) -> Self {
         Self {
             rhat: f64::NAN,
@@ -127,6 +128,7 @@ impl Verdict {
                 stopped,
                 asked,
                 spread,
+                unit,
             },
             sweeps: epochs,
             chains: restarts,
@@ -184,6 +186,7 @@ impl Verdict {
                 converged,
                 stopped,
                 spread,
+                unit,
                 ..
             } => {
                 let settled = match (converged, stopped) {
@@ -194,7 +197,7 @@ impl Verdict {
                 match self.chains {
                     0 | 1 => settled,
                     n => format!(
-                        "{settled}; {n} restarts, the worst {spread:.4} per count below the best"
+                        "{settled}; {n} restarts, the worst {spread:.4} per {unit} below the best"
                     ),
                 }
             }

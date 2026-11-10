@@ -20,7 +20,7 @@ const SOFT: f64 = 0.5;
 pub const ITERS: usize = 30;
 
 /// Label `label`'s softened share of role `j`, of `k` roles.
-fn soft(label: usize, j: usize, k: usize) -> f64 {
+pub(in crate::cluster) fn soft(label: usize, j: usize, k: usize) -> f64 {
     SOFT / k as f64 + if j == label { 1.0 - SOFT } else { 0.0 }
 }
 
@@ -162,11 +162,11 @@ const PARTS: usize = 64;
 
 /// Sparse rows of unit length: row `i`'s entries `v[ptr[i]..ptr[i + 1]]`
 /// at columns `index`, `dim` columns in all.
-struct Rows<'a> {
-    ptr: &'a [usize],
-    index: &'a [u32],
-    v: &'a [f32],
-    dim: usize,
+pub(in crate::cluster) struct Rows<'a> {
+    pub ptr: &'a [usize],
+    pub index: &'a [u32],
+    pub v: &'a [f32],
+    pub dim: usize,
 }
 
 impl Rows<'_> {
@@ -195,7 +195,7 @@ impl Rows<'_> {
 /// seeds (by the cosine distance `1 - dot`), then at most [`ITERS`] Lloyd
 /// iterations, each told to `tick`, an emptied cluster seeded again with
 /// the row farthest from its own. Each row's cluster.
-fn spherical(
+pub(in crate::cluster) fn spherical(
     rows: &Rows,
     k: usize,
     rng: &mut SmallRng,

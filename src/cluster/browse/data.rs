@@ -480,6 +480,11 @@ impl Modules {
         &self.blocks[g]
     }
 
+    /// Cell role `c`'s (not column) shift in gene role `g`.
+    pub fn shift(&self, c: usize, g: usize) -> f64 {
+        self.shift[c * self.gene_roles + g]
+    }
+
     /// The range of gene role `g`'s shifts across the cell roles.
     pub fn shift_range(&self, g: usize) -> f64 {
         crate::cluster::unified::shift_range(&self.shift, self.cell_roles, self.gene_roles, g)

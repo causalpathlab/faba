@@ -25,10 +25,13 @@ mod fit;
 mod progress;
 mod read;
 /// Each model's fit, from the read and filtered input to its tables.
+mod site_vi;
 mod run {
     pub(super) mod blockmodel;
     pub(super) mod count;
     pub(super) mod crp;
+    pub(super) mod sites;
+    pub(super) mod vi;
 }
 mod summary;
 mod unified;
@@ -71,6 +74,28 @@ fn memory_estimate(
     args: &ClusterArgs,
 ) -> usize {
     let reads = entries * (12 + 16 + if copied { 12 } else { 0 });
+    if args::is_vi(args) {
+        // The blockmodel by variational inference: the links' copy of the
+        // reads and each link's gene; per restart each cell's role weights
+        // and level, each gene's role weights and the blocks'; the best
+        // restart's kept beside the one running; and the tables: each cell's
+        // and gene's links and each site's reads per block, with the
+        // statistics' fixed parts over the genes.
+        let s = args::blockmodel(args);
+        let k = s.cell_roles * s.gene_roles;
+        let genes = sites.min(links);
+        let restart = cells * (s.cell_roles + 2) * 8 + genes * s.gene_roles * 8;
+        // The start's profiles (each link's residual and its f32 row entry)
+        // shared by the restarts' starts; the statistics' 64 fixed parts.
+        return reads
+            + entries * 20
+            + links * (8 + 4)
+            + links * (8 + 4)
+            + 2 * restart
+            + (cells + genes) * k * 8
+            + sites * k * 16
+            + 64 * (genes * s.gene_roles + 2 * k + 1) * 8;
+    }
     let (shared, chain) = match args.model {
         // The picture chains start from; per chain two f64 per site for
         // each live cluster (a guess of 32), split-merge scratch, labels
@@ -391,6 +416,7 @@ fn site_fit(
     };
     match args.model {
         ModelKind::Crp => run::crp::crp_fit(args, &config, dir, record, fit, &fit_reads),
+        ModelKind::Blocks if args::is_vi(args) => run::sites::blocks_fit(args, dir, record, fit),
         ModelKind::Link | ModelKind::Blocks => {
             run::blockmodel::blockmodel_fit(args, &config, dir, record, fit)
         }

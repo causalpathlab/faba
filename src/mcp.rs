@@ -220,7 +220,7 @@ fn tools() -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "cluster",
-            "Cluster cells by their site reads (`faba cluster`). `data` is a faba directory or site matrices. `model` is link (the default), blocks or crp. Tables go to `out`, a new directory, not back into `data`. With `modality` count, cluster cells by their gene counts instead (count matrices), fitted by variational inference from a k-means start: `chains` restarts (the best kept), `svi_epochs`, `batch_size`, `epochs` and `tol` apply, `sweeps` and `burn_in` do not; its verdict is whether the best restart's ELBO settled. With `within`, the run record of such a count fit (count_blockmodel.run.json), fit the sites within each of its cell modules, one fit a module (`model` blocks unless given), into `out`/within/{m}/{group}/, with `out`/{m}_within.run.json naming them all and {m}_within_cells.parquet giving each cell its nested label (C3.2); `data` may then be left out, and the matrices are those beside the count fit's inputs.",
+            "Cluster cells by their site reads (`faba cluster`). `data` is a faba directory or site matrices. `model` is link (the default), blocks or crp; blocks (cell and gene modules) is fitted by variational inference from a k-means start, as a count fit is (`chains` restarts, `svi_epochs`, `batch_size`, `epochs`, `tol`; not `sweeps` or `burn_in`), link and crp by MCMC. Tables go to `out`, a new directory, not back into `data`. With `modality` count, cluster cells by their gene counts instead (count matrices), fitted by variational inference from a k-means start: `chains` restarts (the best kept), `svi_epochs`, `batch_size`, `epochs` and `tol` apply, `sweeps` and `burn_in` do not; its verdict is whether the best restart's ELBO settled. With `within`, the run record of such a count fit (count_blockmodel.run.json), fit the sites within each of its cell modules, one fit a module (`model` blocks unless given), into `out`/within/{m}/{group}/, with `out`/{m}_within.run.json naming them all and {m}_within_cells.parquet giving each cell its nested label (C3.2); `data` may then be left out, and the matrices are those beside the count fit's inputs.",
             schema(
                 json!({
                     "data": { "type": "array", "items": { "type": "string" }, "description": "A faba directory, or site (or, with `modality` count, count) matrices; required unless `within` is given" },
@@ -229,12 +229,12 @@ fn tools() -> Vec<ToolSpec> {
                     "cell_roles": { "type": "integer", "minimum": 1 },
                     "gene_roles": { "type": "integer", "minimum": 1 },
                     "chains": { "type": "integer", "minimum": 1 },
-                    "sweeps": { "type": "integer", "minimum": 1, "description": "Site fits only" },
-                    "burn_in": { "type": "integer", "minimum": 0, "description": "Site fits only" },
-                    "svi_epochs": { "type": "integer", "minimum": 0, "description": "Count fits: stochastic epochs before coordinate ascent" },
-                    "batch_size": { "type": "integer", "minimum": 1, "description": "Count fits: cells per minibatch" },
-                    "epochs": { "type": "integer", "minimum": 1, "description": "Count fits: epochs at most" },
-                    "tol": { "type": "number", "minimum": 0, "description": "Count fits: converged when an epoch moves the ELBO by less than this per count" },
+                    "sweeps": { "type": "integer", "minimum": 1, "description": "MCMC site fits only (not --model blocks)" },
+                    "burn_in": { "type": "integer", "minimum": 0, "description": "MCMC site fits only (not --model blocks)" },
+                    "svi_epochs": { "type": "integer", "minimum": 0, "description": "Fits by variational inference (count, model blocks): stochastic epochs before coordinate ascent" },
+                    "batch_size": { "type": "integer", "minimum": 1, "description": "Fits by variational inference: cells per minibatch" },
+                    "epochs": { "type": "integer", "minimum": 1, "description": "Fits by variational inference: epochs at most" },
+                    "tol": { "type": "number", "minimum": 0, "description": "Fits by variational inference: converged when an epoch moves the ELBO by less than this per count (per read for model blocks)" },
                     "fit": { "type": "string", "description": "Fit only matrices whose path matches this pattern (`*`, `?`); the rest are assigned after" },
                     "out": out(), "options": options(),
                 }),
@@ -243,7 +243,7 @@ fn tools() -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "cluster_view",
-            "View a `cluster` fit (`faba cluster-view --batch-process`), level by level as the browser does: by default the gene modules against the cell modules (level 1). `module` prints one gene module's genes and sites with their values in each cell module (level 2); `gene` one gene's sites in each cell module over every gene module (levels 3 and 4); `cells` the cell modules' sizes; `batches` how each cell module spreads over the batches (shared, one condition's, or batch-specific: uneven over a condition's replicates), the conditions read off the batch names less a replicate token or given by `batch_groups`; `trace` each chain's trace (a count fit's: each restart's ELBO by epoch), the verdict and its advice; `settings` the settings the fit ran with. Several may be given; rows are tab-separated. Values are % converted for a site fit, UMIs per cell for a count fit. `data` is the fit's run record or the directory holding its tables; this never fits. A within record ({m}_within.run.json, from `cluster` with `within`) prints the count fit's modules, each group's fit (cells, R-hat, verdict; why one was skipped) and the modules within each fitted group; with `group`, every argument applies to the fit within that cell module, and without it the levels asked for are the count fit's. With `html`, write one self-contained page to a new file instead; a within record without `group` writes a page a fit, `html` for the count fit and {stem}.{group}.html beside it for each group, linked to each other.",
+            "View a `cluster` fit (`faba cluster-view --batch-process`), level by level as the browser does: by default the gene modules against the cell modules (level 1). `module` prints one gene module's genes and sites with their values in each cell module (level 2); `gene` one gene's sites in each cell module over every gene module (levels 3 and 4); `cells` the cell modules' sizes; `batches` how each cell module spreads over the batches (shared, one condition's, or batch-specific: uneven over a condition's replicates), the conditions read off the batch names less a replicate token or given by `batch_groups`; `trace` each chain's trace (a count fit's: each restart's ELBO by epoch), the verdict and its advice; with `figure`, a figure instead (`plot`: the modules grid coloured by `look`, the trace, or the batches; `width` and `height` in inches lay it out for a page), returned as an image; `settings` the settings the fit ran with. Several may be given; rows are tab-separated. Values are % converted for a site fit, UMIs per cell for a count fit. `data` is the fit's run record or the directory holding its tables; this never fits. A within record ({m}_within.run.json, from `cluster` with `within`) prints the count fit's modules, each group's fit (cells, R-hat, verdict; why one was skipped) and the modules within each fitted group; with `group`, every argument applies to the fit within that cell module, and without it the levels asked for are the count fit's. With `html`, write one self-contained page to a new file instead; a within record without `group` writes a page a fit, `html` for the count fit and {stem}.{group}.html beside it for each group, linked to each other.",
             schema(
                 json!({
                     "data": { "type": "string", "description": "A `cluster` fit: its run record `{m}_blockmodel.run.json`, the output directory holding its block tables, or a within record `{m}_within.run.json`" },
@@ -258,6 +258,11 @@ fn tools() -> Vec<ToolSpec> {
                     "settings": { "type": "boolean", "description": "Print the settings the fit ran with" },
                     "gtf": { "type": "string", "description": "Gene annotation for the models drawn in the HTML page" },
                     "html": { "type": "string", "description": "Write the page here; must not exist" },
+                    "figure": { "type": "string", "description": "Write a figure as {figure}.pdf and {figure}.png (neither may exist) and return it as an image" },
+                    "plot": { "type": "string", "enum": ["modules", "trace", "batches"], "description": "Which figure: the modules grid (gene modules against cell modules; default), the fit's trace, or the cell modules against the batches" },
+                    "look": { "type": "string", "enum": ["shift", "percent", "z"], "description": "What colours the modules grid's blocks: the fitted shift (a count fit's log rate; default), the methylated % (UMIs per cell), or that standardized across the cell modules" },
+                    "width": { "type": "number", "exclusiveMinimum": 0, "description": "The figure's width in inches, with `height`: laid out for that size, its text kept readable (e.g. 3.5 for a column, 7 for a page)" },
+                    "height": { "type": "number", "exclusiveMinimum": 0, "description": "The figure's height in inches, with `width`" },
                     "options": options(),
                 }),
                 &["data"],
@@ -1291,6 +1296,23 @@ fn cluster_view(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
         if a.flag(level)? {
             argv.push(format!("--{level}"));
         }
+    }
+    if let Some(figure) = a.path_opt("figure")? {
+        // As `--figure` names its files: the prefix without .pdf or .png.
+        let prefix = [".pdf", ".png"]
+            .iter()
+            .find_map(|x| figure.strip_suffix(x))
+            .unwrap_or(&figure)
+            .to_string();
+        let mut outputs = Vec::new();
+        let (_, png) = figure_prefix(&prefix, &mut outputs)?;
+        push_flag(&mut argv, "--figure", &prefix);
+        push_opt(&mut argv, "--plot", a.str("plot"));
+        push_opt(&mut argv, "--look", a.str("look"));
+        argv.extend(a.numbers(&["width", "height"])?);
+        let what = format!("a figure of {data}");
+        cx.run_making(command(&argv)?, &outputs, &what)?;
+        return with_figure(json!({}), Some(&png));
     }
     if let Some(html) = html {
         for page in &pages {
