@@ -90,12 +90,18 @@ fn ln_choose(n: u64, k: u64) -> f64 {
 /// It makes no distributional assumption, so it stays exact however tiny a
 /// cell of the table gets.
 pub fn fisher_exact_greater(a_w: u64, u_w: u64, a_m: u64, u_m: u64) -> f32 {
+    (ln_fisher_exact_greater(a_w, u_w, a_m, u_m).exp() as f32).clamp(0.0, 1.0)
+}
+
+/// [`fisher_exact_greater`]'s `ln p`, which does not underflow however
+/// small `p` is.
+pub fn ln_fisher_exact_greater(a_w: u64, u_w: u64, a_m: u64, u_m: u64) -> f64 {
     let r1 = a_w + u_w; // WT row total
     let r2 = a_m + u_m; // MUT row total
     let c1 = a_w + a_m; // converted column total
     let n = r1 + r2;
     if r1 == 0 || r2 == 0 || c1 == 0 || c1 == n {
-        return 1.0; // degenerate margin: the table carries no information
+        return 0.0; // degenerate margin: the table carries no information
     }
     let c2 = n - c1; // unconverted column total
     let ln_denom = ln_choose(n, r1);
@@ -115,12 +121,17 @@ pub fn fisher_exact_greater(a_w: u64, u_w: u64, a_m: u64, u_m: u64) -> f32 {
             max = lp;
         } else {
             sum += (lp - max).exp();
+            // Past its mode the tail only falls: what is left is less than
+            // its first term times the tables left, nothing at this size.
+            if lp < max - 50.0 {
+                break;
+            }
         }
     }
     if max == f64::NEG_INFINITY {
-        return 1.0;
+        return 0.0;
     }
-    ((max + sum.ln()).exp() as f32).clamp(0.0, 1.0)
+    (max + sum.ln()).min(0.0)
 }
 
 /// Two-sample WT-vs-MUT conversion p-value for DART m6A, delegating to

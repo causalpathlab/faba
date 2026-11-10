@@ -8,18 +8,17 @@ use super::order::{diagonal, standardized};
 use crate::cluster::batches::{spread, Design, Spread};
 use crate::cluster::read::{Site, SiteStats};
 use crate::cluster::unified::Recorded;
-use crate::common::{column, read_record_batch};
+use crate::common::read_record_batch;
 use crate::site_analysis::miami::genemodel::GeneModel;
 use crate::site_analysis::pileup::query_symbol;
 use anyhow::Context;
-use arrow::array::StringArray;
 use genomic_data::coordinates::chr_eq;
 use rustc_hash::FxHashMap;
 use sites::from_sites;
 use std::collections::BTreeMap;
 use std::ops::Range;
 use std::path::Path;
-use tables::{main_roles, posterior_sizes, read_shifts, role_sizes, site_counts};
+use tables::{posterior_sizes, read_shifts, role_sizes, site_counts};
 use tables::{BlockSites, SiteRows};
 
 mod run;
@@ -279,6 +278,9 @@ pub struct Modules {
     /// How the cell modules spread over the batches; none when the cell
     /// table has no batch (or one batch only).
     pub batches: Option<Batches>,
+    /// Every gene the fit has (sites or not): its key, its main gene role
+    /// and that role's weight, in the table's order.
+    pub gene_main: Vec<(Box<str>, usize, f32)>,
 }
 
 impl Modules {
@@ -308,9 +310,11 @@ impl Modules {
             .map(|(names, in_batch, units)| Batches::new(names, in_batch, units, cell_roles));
         drop(cells);
         let genes_table = table("gene_roles")?;
-        let names: &StringArray = column(&genes_table, "gene")?;
-        let main = main_roles(&genes_table, |i| names.value(i), gene_roles)
+        let gene_main = tables::gene_main(&genes_table, gene_roles)
             .with_context(|| format!("{modality}_gene_roles"))?;
+        let main: FxHashMap<&str, usize> = (gene_main.iter())
+            .map(|(g, r, _)| (g.as_ref(), *r))
+            .collect();
         let gene_sizes = role_sizes(main.values().copied(), gene_roles);
         let rows = table("block_sites")?;
         let cells_rows = optional("site_cells")?;
@@ -380,6 +384,7 @@ impl Modules {
             main,
             fit: Fit::read(dir, modality, &record),
             batches,
+            gene_main,
         };
         // A count fit's genes are its sites, their reads UMIs per cell.
         if count {

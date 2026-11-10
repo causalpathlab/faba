@@ -306,6 +306,20 @@ all; `--batches` prints the same.
 faba cluster-view out/count_blockmodel.run.json --batches
 ```
 
+**GO terms of the gene modules.** `cluster-view --go` tests each gene module's genes (those whose
+main gene module it is, at a weight of at least `--go-min-weight`, 0.5) against the fit's own genes
+that GO annotates: the hypergeometric tail of the overlap, Haldane's odds ratio, and BH over every
+(module, term) pair, for terms of 5 to 500 annotated genes, propagated up the GO graph (`is_a`,
+`part_of`) with NAS and ND evidence left out. A module's terms are listed by p, a parent left out
+when it holds the same genes. The annotations default to lupin's cached GO Consortium file for the
+genes' species (human or mouse); `--gaf` and `--obo` name others, `--gmt` any gene sets. In the
+browser, `a` opens the gene module in focus's terms (↑/↓ steps the module); MCP's `cluster_view`
+takes `go`.
+
+```bash
+faba cluster-view out/m6a_blockmodel.run.json --go
+```
+
 **Watching the chains.** On a terminal `faba cluster` draws each chain's log joint live while it
 fits (`q` cancels, Ctrl+C stops the chains early and writes what they kept). When it is done it
 prints the same traces as one sparkline per chain on one scale, then a

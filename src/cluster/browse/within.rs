@@ -216,7 +216,7 @@ impl Nested {
             self.printed().iter().for_each(|line| println!("{line}"));
             return Ok(());
         }
-        self.browse(gtf)
+        self.browse(gtf, args.shown.go_ask())
     }
 
     /// The printout: the count fit's modules, a line a group, then the
@@ -300,7 +300,7 @@ impl Nested {
     /// browser, and leaving that comes back to the list as it was. The
     /// gene annotation is asked for once, when the first fit opens, and
     /// read once for every fit opened.
-    fn browse(&self, gtf: Option<Box<str>>) -> anyhow::Result<()> {
+    fn browse(&self, gtf: Option<Box<str>>, go: super::go::Ask) -> anyhow::Result<()> {
         let mut list = List::new(self);
         let mut gtf = gtf;
         let mut models = None;
@@ -320,7 +320,12 @@ impl Nested {
                 let gtf = super::or_asked(gtf.take())?;
                 models = Some(start_gene_models(gtf.as_deref()));
             }
-            super::browse(&dir, &Arc::new(modules), models.clone().flatten())?;
+            super::browse(
+                &dir,
+                &Arc::new(modules),
+                models.clone().flatten(),
+                go.clone(),
+            )?;
         }
     }
 
