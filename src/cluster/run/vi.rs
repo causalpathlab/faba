@@ -3,8 +3,8 @@
 //! own, the best by ELBO kept; and their verdict and record.
 
 use super::super::args::ClusterArgs;
-use super::super::count::vi::{Hooks, Options};
 use super::super::progress::{self, advice};
+use super::super::vi::{Hooks, Options};
 use crate::run_record::RunRecord;
 use rand::rngs::SmallRng;
 use rand::SeedableRng;

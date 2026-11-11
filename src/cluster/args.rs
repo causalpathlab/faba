@@ -147,7 +147,7 @@ pub struct ClusterArgs {
     #[arg(
         long,
         value_name = "N",
-        default_value_t = crate::cluster::count::vi::Options::default().svi_epochs,
+        default_value_t = crate::cluster::vi::Options::default().svi_epochs,
         help = "Stochastic (minibatch) epochs before coordinate ascent"
     )]
     pub(super) svi_epochs: usize,
@@ -155,7 +155,7 @@ pub struct ClusterArgs {
     #[arg(
         long,
         value_name = "N",
-        default_value_t = crate::cluster::count::vi::Options::default().batch_size,
+        default_value_t = crate::cluster::vi::Options::default().batch_size,
         help = "Cells per minibatch; every cell in one batch is plain coordinate ascent"
     )]
     pub(super) batch_size: usize,
@@ -163,14 +163,14 @@ pub struct ClusterArgs {
     #[arg(
         long,
         value_name = "N",
-        default_value_t = crate::cluster::count::vi::Options::default().epochs,
+        default_value_t = crate::cluster::vi::Options::default().epochs,
         help = "Epochs at most, stochastic and coordinate ascent together"
     )]
     pub(super) epochs: usize,
 
     #[arg(
         long,
-        default_value_t = crate::cluster::count::vi::Options::default().tol,
+        default_value_t = crate::cluster::vi::Options::default().tol,
         help = "Converged when an epoch of coordinate ascent moves the ELBO by less than this per count (per read for a site fit)"
     )]
     pub(super) tol: f64,

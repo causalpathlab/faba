@@ -25,10 +25,9 @@
 //! bound as it is (`nu` and `delta` trade a constant freely otherwise).
 
 use super::count::sum_parts;
-use super::count::vi::{Hooks, Options};
 use super::links::Links;
+use super::vi::{self, Hooks, Options};
 use rand::rngs::SmallRng;
-use rand::seq::SliceRandom;
 use rayon::prelude::*;
 use statrs::function::gamma::{digamma, ln_gamma};
 
@@ -551,11 +550,9 @@ fn score(
     Some(swept.after + fit.global_terms(g))
 }
 
-/// Fit `data` from `start` (see [`fit`] in the count model for the
-/// schedule): a local step for every cell, stochastic epochs when a batch is
-/// fewer than every cell, then coordinate ascent to the tolerance, at most
-/// `options.epochs` in all. None when cancelled, or stopped before an
-/// epoch ended.
+/// Fit `data` from `start` on the shared schedule (see
+/// [`crate::cluster::vi`]), the shifts translated after each global step.
+/// None when cancelled, or stopped before an epoch ended.
 pub fn fit(
     fit: &Fit,
     options: &Options,
@@ -563,113 +560,128 @@ pub fn fit(
     rng: &mut SmallRng,
     hooks: &Hooks,
 ) -> Option<Fitted> {
-    let cc = fit.data.cells();
-    let cancelled = hooks.cancelled;
-    let (mut globals, mut locals) = (start.globals, start.locals);
-    let all: Vec<usize> = (0..cc).collect();
-    fit.sweep(
-        &all,
-        &mut locals,
-        &globals,
-        2 * LOCAL_ITERS,
-        None,
-        false,
-        cancelled,
-    )?;
-    let batches = cc.div_ceil(options.batch_size.max(1));
-    let svi = if batches > 1 {
-        options.svi_epochs.min(options.epochs)
-    } else {
-        0
+    let cells = fit.data.cells();
+    let mut steps = SiteSteps {
+        fit,
+        all: (0..cells).collect(),
+        globals: start.globals,
+        locals: start.locals,
+        cancelled: hooks.cancelled,
     };
-    let batch = cc.div_ceil(batches.max(1));
-    let tau0 = batches as f64;
-    let (mut t, mut done) = (0usize, 0);
-    let mut order = all.clone();
-    'svi: for e in 1..=svi {
-        order.shuffle(rng);
-        for cells in order.chunks(batch) {
-            if (hooks.stop)() {
-                break 'svi;
-            }
-            let mut stats = fit.stats();
-            fit.sweep(
-                cells,
-                &mut locals,
-                &globals,
-                LOCAL_ITERS,
-                Some(&mut stats),
+    let (elbo, ran) = vi::run(&mut steps, cells, options, rng, hooks)?;
+    Some(Fitted {
+        globals: steps.globals,
+        locals: steps.locals,
+        elbo,
+        svi_epochs: ran.svi_epochs,
+        epochs: ran.epochs,
+        converged: ran.converged,
+    })
+}
+
+/// The site fit's steps, its state as they leave it.
+struct SiteSteps<'f, 'h> {
+    fit: &'f Fit<'f>,
+    all: Vec<usize>,
+    globals: Globals,
+    locals: Locals,
+    cancelled: &'h (dyn Fn() -> bool + Sync),
+}
+
+impl vi::Steps for SiteSteps<'_, '_> {
+    /// The epoch's ELBO at its end, and its statistics.
+    type Pass = (f64, Stats);
+    type End = f64;
+
+    fn units(&self) -> f64 {
+        self.fit.data.reads()
+    }
+
+    fn first(&mut self) -> Option<()> {
+        let (all, cancelled) = (&self.all, self.cancelled);
+        let globals = &self.globals;
+        (self.fit)
+            .sweep(
+                all,
+                &mut self.locals,
+                globals,
+                2 * LOCAL_ITERS,
+                None,
                 false,
                 cancelled,
-            )?;
-            let rho = (tau0 + t as f64).powf(-options.forget);
-            fit.global_step(&mut globals, &stats, cc as f64 / cells.len() as f64, rho);
-            fit.translate(&mut globals, &mut locals);
-            t += 1;
-        }
-        // The last stochastic epoch is scored by the next local steps.
-        if e < svi {
-            (hooks.epoch)(e, score(fit, &all, &mut locals, &globals, cancelled)?);
-        }
-        done = e;
+            )
+            .map(|_| ())
     }
-    // Coordinate ascent: each epoch's local steps score the state at its
-    // start as they go; converged, the epoch ends there.
-    let (mut last, mut converged, mut end) = (None::<f64>, false, None);
-    for e in (svi + 1)..=options.epochs {
-        if (hooks.stop)() || done < e - 1 {
-            break;
-        }
+
+    fn batch(&mut self, cells: &[usize], scale: f64, rho: f64) -> Option<()> {
+        let fit = self.fit;
         let mut stats = fit.stats();
-        let swept = fit.sweep(
-            &all,
-            &mut locals,
-            &globals,
+        fit.sweep(
+            cells,
+            &mut self.locals,
+            &self.globals,
             LOCAL_ITERS,
             Some(&mut stats),
             false,
-            cancelled,
+            self.cancelled,
         )?;
-        let terms = fit.global_terms(&globals);
-        let f = swept.before + terms;
-        (hooks.epoch)(e - 1, f);
-        if last.is_some_and(|prev| (f - prev).abs() / fit.data.reads().max(1.0) < options.tol) {
-            converged = true;
-            end = Some(swept.after + terms);
-            break;
-        }
-        last = Some(f);
-        fit.global_step(&mut globals, &stats, 1.0, 1.0);
-        fit.translate(&mut globals, &mut locals);
-        done = e;
+        fit.global_step(&mut self.globals, &stats, scale, rho);
+        fit.translate(&mut self.globals, &mut self.locals);
+        Some(())
     }
-    if done == 0 && end.is_none() {
-        return None;
+
+    fn score(&mut self) -> Option<f64> {
+        score(
+            self.fit,
+            &self.all,
+            &mut self.locals,
+            &self.globals,
+            self.cancelled,
+        )
     }
-    let elbo = match end {
-        Some(f) => f,
-        None => {
-            let swept = fit.sweep(
-                &all,
-                &mut locals,
-                &globals,
-                LOCAL_ITERS,
-                None,
-                true,
-                cancelled,
-            )?;
-            swept.after + fit.global_terms(&globals)
-        }
-    };
-    (hooks.epoch)(done, elbo);
-    Some(Fitted {
-        globals,
-        locals,
-        elbo,
-        svi_epochs: svi.min(done),
-        epochs: done,
-        converged,
-    })
+
+    fn epoch(&mut self) -> Option<(f64, Self::Pass)> {
+        let fit = self.fit;
+        let mut stats = fit.stats();
+        let swept = fit.sweep(
+            &self.all,
+            &mut self.locals,
+            &self.globals,
+            LOCAL_ITERS,
+            Some(&mut stats),
+            false,
+            self.cancelled,
+        )?;
+        let terms = fit.global_terms(&self.globals);
+        Some((swept.before + terms, (swept.after + terms, stats)))
+    }
+
+    fn converged(&mut self, (after, _): Self::Pass) -> f64 {
+        after
+    }
+
+    fn step(&mut self, (_, stats): Self::Pass) {
+        self.fit.global_step(&mut self.globals, &stats, 1.0, 1.0);
+        self.fit.translate(&mut self.globals, &mut self.locals);
+    }
+
+    fn last(&mut self) -> Option<f64> {
+        let fit = self.fit;
+        let swept = fit.sweep(
+            &self.all,
+            &mut self.locals,
+            &self.globals,
+            LOCAL_ITERS,
+            None,
+            true,
+            self.cancelled,
+        )?;
+        Some(swept.after + fit.global_terms(&self.globals))
+    }
+
+    fn elbo(end: &f64) -> f64 {
+        *end
+    }
 }
 
 mod start;

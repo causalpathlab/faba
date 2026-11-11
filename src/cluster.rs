@@ -30,6 +30,7 @@ mod run {
     pub(super) mod vi;
 }
 mod settings;
+mod vi;
 mod weights;
 mod within;
 mod write;

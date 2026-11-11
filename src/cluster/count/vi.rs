@@ -30,40 +30,11 @@
 //! the epoch's start at no extra cost.
 
 use super::{sum_parts, Counts, Settings};
+use crate::cluster::vi::{self, Hooks, Options};
 use rand::rngs::SmallRng;
-use rand::seq::SliceRandom;
 use rayon::prelude::*;
 use special::Gamma as _;
 use statrs::function::gamma::{digamma, ln_gamma};
-
-/// How a fit by variational inference runs.
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct Options {
-    /// Stochastic epochs before coordinate ascent (none when one batch
-    /// holds every cell), each of batches of `batch_size` cells.
-    pub svi_epochs: usize,
-    pub batch_size: usize,
-    /// Epochs in all, stochastic and coordinate ascent.
-    pub epochs: usize,
-    /// Converged when an epoch of coordinate ascent moves the ELBO by less
-    /// than this per count.
-    pub tol: f64,
-    /// The step size's decay, `rho_t = (tau0 + t)^(-forget)`, `tau0` the
-    /// batches of an epoch.
-    pub forget: f64,
-}
-
-impl Default for Options {
-    fn default() -> Self {
-        Self {
-            svi_epochs: 10,
-            batch_size: 1000,
-            epochs: 200,
-            tol: 1e-5,
-            forget: 0.7,
-        }
-    }
-}
 
 /// Local passes of a cell's step at most, and the relative change of its
 /// role shapes under which it stops.
@@ -595,21 +566,9 @@ impl Fitted {
     }
 }
 
-/// What a fit is told and asked as it runs: each epoch's number and ELBO
-/// (exact; an epoch told again, its local step done, replaces the value
-/// before it), whether to stop (and write what it has), and whether it was
-/// cancelled (nothing to write).
-pub struct Hooks<'h> {
-    pub epoch: &'h (dyn Fn(usize, f64) + Sync),
-    pub stop: &'h (dyn Fn() -> bool + Sync),
-    pub cancelled: &'h (dyn Fn() -> bool + Sync),
-}
-
-/// Fit `counts` from `start`: a local step for every cell, then stochastic
-/// epochs (when a batch is fewer than every cell), then coordinate ascent
-/// to the tolerance, at most `options.epochs` epochs in all, then a last
-/// local step for every cell, its pass the tables'. None when it was
-/// cancelled, or stopped before an epoch ended.
+/// Fit `counts` from `start` on the shared schedule (see
+/// [`crate::cluster::vi`]). None when it was cancelled, or stopped before
+/// an epoch ended.
 pub fn fit(
     counts: &Counts,
     settings: &Settings,
@@ -619,121 +578,142 @@ pub fn fit(
     hooks: &Hooks,
 ) -> Option<Fitted> {
     let fit = Fit::new(counts, settings);
-    let (cc, aa) = (counts.cells(), fit.aa);
-    let cancelled = hooks.cancelled;
-    let mut locals = initial_locals(&fit, &start);
-    let mut globals = start.globals;
-    let all: Vec<usize> = (0..cc).collect();
-    // Every cell fitted to the start's globals before any global step.
-    let cache = globals.cache();
-    let init = fit.sweep(
-        &all,
-        &mut locals,
-        &cache,
-        2 * LOCAL_ITERS,
-        None,
-        false,
-        cancelled,
-    )?;
-    let mut theta_total = init.theta_new;
-    let batches = cc.div_ceil(options.batch_size.max(1));
-    let svi = if batches > 1 {
-        options.svi_epochs.min(options.epochs)
-    } else {
-        0
+    let locals = initial_locals(&fit, &start);
+    let mut steps = CountSteps {
+        all: (0..counts.cells()).collect(),
+        theta_total: Vec::new(),
+        globals: start.globals,
+        locals,
+        cancelled: hooks.cancelled,
+        fit: &fit,
     };
-    // Batches as even as the cells allow: none a scrap scaled up.
-    let batch = cc.div_ceil(batches.max(1));
-    let tau0 = batches as f64;
-    let mut t = 0usize;
-    let mut order = all.clone();
-    let mut done = 0;
-    'svi: for e in 1..=svi {
-        order.shuffle(rng);
-        for cells in order.chunks(batch) {
-            if (hooks.stop)() {
-                break 'svi;
-            }
-            let cache = globals.cache();
-            let mut u = vec![0.0; counts.genes * aa];
-            let swept = fit.sweep(
-                cells,
-                &mut locals,
-                &cache,
-                LOCAL_ITERS,
-                Some(&mut u),
-                false,
-                cancelled,
-            )?;
-            for ((t, new), old) in theta_total
-                .iter_mut()
-                .zip(&swept.theta_new)
-                .zip(&swept.theta_old)
-            {
-                *t += new - old;
-            }
-            let rho = (tau0 + t as f64).powf(-options.forget);
-            let scale = cc as f64 / cells.len() as f64;
-            let stats = fit.stats(&u, &cache);
-            global_step(&mut globals, &fit.prior, &stats, &theta_total, scale, rho);
-            t += 1;
-        }
-        // Drift from the running sums, set right once an epoch.
-        theta_total = totals(&locals, aa);
-        // The last stochastic epoch is scored by the next epoch's (or the
-        // last) local steps, which start from it.
-        if e < svi {
-            (hooks.epoch)(e, score(&fit, &all, &mut locals, &globals, cancelled)?);
-        }
-        done = e;
-    }
-    // Coordinate ascent. Each epoch's local steps score the state at its
-    // start (the previous epoch's end) as they go, and the state they
-    // leave; converged, the epoch ends there, its global step not taken.
-    let mut last: Option<f64> = None;
-    let mut converged = false;
-    let mut end: Option<(f64, Vec<f64>, Stats)> = None;
-    for e in (svi + 1)..=options.epochs {
-        if (hooks.stop)() || done < e - 1 {
-            break;
-        }
-        let (cache, kl, swept, stats) = fit.full(&all, &mut locals, &globals, cancelled)?;
-        let f = swept.before + fit.global_terms(kl, &cache, &theta_total);
-        theta_total = swept.theta_new;
-        let after = swept.after + fit.global_terms(kl, &cache, &theta_total);
-        (hooks.epoch)(e - 1, f);
-        if last.is_some_and(|prev| (f - prev).abs() / counts.total().max(1.0) < options.tol) {
-            converged = true;
-            end = Some((after, swept.n, stats));
-            break;
-        }
-        last = Some(f);
-        global_step(&mut globals, &fit.prior, &stats, &theta_total, 1.0, 1.0);
-        done = e;
-    }
-    if done == 0 && end.is_none() {
-        return None;
-    }
-    // The last local step, its pass the tables', when the loop did not end
-    // on one.
-    let (elbo, n, stats) = match end {
-        Some(end) => end,
-        None => {
-            let (cache, kl, swept, stats) = fit.full(&all, &mut locals, &globals, cancelled)?;
-            let f = swept.after + fit.global_terms(kl, &cache, &swept.theta_new);
-            (f, swept.n, stats)
-        }
-    };
-    (hooks.epoch)(done, elbo);
+    let ((elbo, n, stats), ran) = vi::run(&mut steps, counts.cells(), options, rng, hooks)?;
     Some(Fitted {
-        globals,
+        globals: steps.globals,
         n,
         stats,
         elbo,
-        svi_epochs: svi.min(done),
-        epochs: done,
-        converged,
+        svi_epochs: ran.svi_epochs,
+        epochs: ran.epochs,
+        converged: ran.converged,
     })
+}
+
+/// The count fit's steps, its state as they leave it: each role's
+/// `Theta_a` summed over the cells as they go (set right once a stochastic
+/// epoch).
+struct CountSteps<'f, 'h> {
+    fit: &'f Fit<'f>,
+    all: Vec<usize>,
+    locals: Locals,
+    globals: Globals,
+    theta_total: Vec<f64>,
+    cancelled: &'h (dyn Fn() -> bool + Sync),
+}
+
+impl vi::Steps for CountSteps<'_, '_> {
+    /// The epoch's ELBO at its end, each gene's counts, the statistics.
+    type Pass = (f64, Vec<f64>, Stats);
+    type End = (f64, Vec<f64>, Stats);
+
+    fn units(&self) -> f64 {
+        self.fit.counts.total()
+    }
+
+    fn first(&mut self) -> Option<()> {
+        let cache = self.globals.cache();
+        let swept = self.fit.sweep(
+            &self.all,
+            &mut self.locals,
+            &cache,
+            2 * LOCAL_ITERS,
+            None,
+            false,
+            self.cancelled,
+        )?;
+        self.theta_total = swept.theta_new;
+        Some(())
+    }
+
+    fn batch(&mut self, cells: &[usize], scale: f64, rho: f64) -> Option<()> {
+        let fit = self.fit;
+        let cache = self.globals.cache();
+        let mut u = vec![0.0; fit.counts.genes * fit.aa];
+        let swept = fit.sweep(
+            cells,
+            &mut self.locals,
+            &cache,
+            LOCAL_ITERS,
+            Some(&mut u),
+            false,
+            self.cancelled,
+        )?;
+        for ((t, new), old) in self
+            .theta_total
+            .iter_mut()
+            .zip(&swept.theta_new)
+            .zip(&swept.theta_old)
+        {
+            *t += new - old;
+        }
+        let stats = fit.stats(&u, &cache);
+        let theta = &self.theta_total;
+        global_step(&mut self.globals, &fit.prior, &stats, theta, scale, rho);
+        Some(())
+    }
+
+    fn end_svi_epoch(&mut self) {
+        // Drift from the running sums, set right once an epoch.
+        self.theta_total = totals(&self.locals, self.fit.aa);
+    }
+
+    fn score(&mut self) -> Option<f64> {
+        score(
+            self.fit,
+            &self.all,
+            &mut self.locals,
+            &self.globals,
+            self.cancelled,
+        )
+    }
+
+    fn epoch(&mut self) -> Option<(f64, Self::Pass)> {
+        let fit = self.fit;
+        let (cache, kl, swept, stats) =
+            fit.full(&self.all, &mut self.locals, &self.globals, self.cancelled)?;
+        let f = swept.before + fit.global_terms(kl, &cache, &self.theta_total);
+        self.theta_total = swept.theta_new;
+        let after = swept.after + fit.global_terms(kl, &cache, &self.theta_total);
+        Some((f, (after, swept.n, stats)))
+    }
+
+    fn converged(&mut self, pass: Self::Pass) -> Self::End {
+        pass
+    }
+
+    fn step(&mut self, (_, _, stats): Self::Pass) {
+        let prior = &self.fit.prior;
+        global_step(
+            &mut self.globals,
+            prior,
+            &stats,
+            &self.theta_total,
+            1.0,
+            1.0,
+        );
+    }
+
+    fn last(&mut self) -> Option<Self::End> {
+        let fit = self.fit;
+        let (cache, kl, swept, stats) =
+            fit.full(&self.all, &mut self.locals, &self.globals, self.cancelled)?;
+        let f = swept.after + fit.global_terms(kl, &cache, &swept.theta_new);
+        Some((f, swept.n, stats))
+    }
+
+    fn elbo(end: &Self::End) -> f64 {
+        end.0
+    }
 }
 
 /// Every cell's locals before its first step: theta's shapes from the
