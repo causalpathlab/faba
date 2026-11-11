@@ -103,7 +103,7 @@ fn aliases_never_give_one_gene_anothers_terms() {
         .insert("NEW".into(), alias(&["NEW", "CCC", "SHARED"]));
     sets.gene_aliases
         .insert("TWO".into(), alias(&["TWO", "SHARED"]));
-    let m = matched(&sets, &genes);
+    let m = matched(&sets.gene_aliases, &genes);
     assert_eq!(m.get("AAA"), Some(&0));
     assert_eq!(m.get("BBB"), Some(&1));
     assert_eq!(m.get("OLD"), None);

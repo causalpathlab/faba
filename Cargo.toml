@@ -1,6 +1,6 @@
 [package]
 name = "faba"
-version = "0.18.16"
+version = "0.18.17"
 edition = "2021"
 rust-version = "1.91"
 license = "MIT"
@@ -54,7 +54,7 @@ mcp = ["dep:legume-mcp"]
 hdf5 = ["data-beans/hdf5"]
 
 [dependencies]
-data-beans = { version = "0.10", default-features = false, features = ["aux", "tui"] }
+data-beans = { version = "0.10.12", default-features = false, features = ["aux", "tui"] }
 # Detachable sessions for the views, the image protocol of the attached
 # terminal, and the runner of the child `faba run` follows.
 legume-tui = "0.3.3"
@@ -78,7 +78,6 @@ clap = { version = "4.5.20", features = ["derive"] }
 flate2 = "1.0.34"
 num_cpus = "1.16.0"
 rayon = "1.10.0"
-tempfile = "3.2"
 rand = "0.10.1"
 rand_distr = "0.6"
 
@@ -102,6 +101,7 @@ serde_json = "1.0"
 [dev-dependencies]
 # Drives the real binary through pseudo-terminals in the session tests.
 legume-tui = { version = "0.3.3", default-features = false, features = ["testing"] }
+tempfile = "3.2"
 
 [target."cfg(unix)".dependencies.rustix]
 version = "1"

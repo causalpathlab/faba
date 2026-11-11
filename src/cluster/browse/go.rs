@@ -18,11 +18,12 @@
 //! takes another's terms.
 
 use super::Modules;
-use data_beans::aux::gene_sets::{read_gaf, read_gmt, GafOpts, GeneSets};
+use data_beans::aux::gene_sets::{
+    read_gaf_without_evidence, read_gmt, GafOpts, GeneSets, UNSUPPORTED_EVIDENCE,
+};
 use data_beans::aux::ontology::Ontology;
 use faba::hypothesis_tests::ln_fisher_exact_greater;
 use rustc_hash::{FxHashMap, FxHashSet};
-use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 
 /// The sizes, in the universe's genes, of the terms tested.
@@ -32,8 +33,6 @@ const LEAST_MODULE: usize = 5;
 /// Terms listed per module at most, and the q they need.
 const TOP: usize = 10;
 pub(super) const Q: f64 = 0.05;
-/// GAF evidence left out (see the module).
-const DROPPED_EVIDENCE: [&str; 2] = ["NAS", "ND"];
 
 /// Where the gene sets come from: GO annotations with the GO graph, or a
 /// GMT.
@@ -195,69 +194,71 @@ fn ensembl(key: &str) -> Option<&str> {
     Some(id.split('.').next().unwrap_or(id))
 }
 
-/// The gene sets of `source`, read.
-fn read(source: &Source) -> anyhow::Result<(GeneSets, FxHashMap<Box<str>, &'static str>)> {
+/// A source's gene sets, read: the sets, each annotated gene's row of the
+/// fit's genes (see [`matched`]), and each GO term's namespace (BP, MF or CC).
+struct Loaded {
+    sets: GeneSets,
+    rows: FxHashMap<Box<str>, usize>,
+    namespaces: FxHashMap<Box<str>, &'static str>,
+}
+
+/// The gene sets of `source`, read and matched to `genes`. A GAF's genes
+/// not matched are left out before propagation; its OBO is parsed while
+/// the GAF is read.
+fn read(source: &Source, genes: &[(Box<str>, usize, f32)]) -> anyhow::Result<Loaded> {
     match source {
-        Source::Gmt(gmt) => Ok((read_gmt(&gmt.to_string_lossy())?, FxHashMap::default())),
+        Source::Gmt(gmt) => {
+            let sets = read_gmt(&gmt.to_string_lossy())?;
+            let rows = matched(&sets.gene_aliases, genes);
+            Ok(Loaded {
+                sets,
+                rows,
+                namespaces: FxHashMap::default(),
+            })
+        }
         Source::Go { gaf, obo } => {
-            let onto = Ontology::load_obo(&obo.to_string_lossy())?;
-            let kept = without_dropped_evidence(gaf)?;
-            let raw = read_gaf(&kept.path().to_string_lossy(), &GafOpts { no_iea: false })?;
-            Ok((raw.into_gene_sets(Some(&onto)), namespaces(obo)?))
+            let (onto, raw) = rayon::join(
+                || Ontology::load_obo(&obo.to_string_lossy()),
+                || {
+                    read_gaf_without_evidence(
+                        &gaf.to_string_lossy(),
+                        &GafOpts::default(),
+                        &UNSUPPORTED_EVIDENCE,
+                    )
+                },
+            );
+            let (onto, mut raw) = (onto?, raw?);
+            let rows = matched(raw.gene_aliases(), genes);
+            raw.retain_genes(|gene| rows.contains_key(gene));
+            let sets = raw.into_gene_sets(Some(&onto));
+            let namespaces = (sets.term_genes.keys())
+                .filter_map(|t| {
+                    let short = match onto.namespace(t)? {
+                        "biological_process" => "BP",
+                        "molecular_function" => "MF",
+                        "cellular_component" => "CC",
+                        _ => return None,
+                    };
+                    Some((t.clone(), short))
+                })
+                .collect();
+            Ok(Loaded {
+                sets,
+                rows,
+                namespaces,
+            })
         }
     }
 }
 
-/// `gaf` without its [`DROPPED_EVIDENCE`] rows, as a file of its own that
-/// lasts as long as the handle.
-fn without_dropped_evidence(gaf: &Path) -> anyhow::Result<tempfile::NamedTempFile> {
-    let reader = legume_numeric::matrix::common_io::open_buf_reader(&gaf.to_string_lossy())?;
-    let mut out = tempfile::Builder::new().suffix(".gaf").tempfile()?;
-    {
-        let mut w = std::io::BufWriter::new(out.as_file_mut());
-        for line in reader.lines() {
-            let line = line?;
-            let evidence = line.split('\t').nth(6).unwrap_or("");
-            if !line.starts_with('!') && DROPPED_EVIDENCE.contains(&evidence) {
-                continue;
-            }
-            writeln!(w, "{line}")?;
-        }
-        w.flush()?;
-    }
-    Ok(out)
-}
-
-/// Each GO term's namespace, BP, MF or CC, from the OBO.
-fn namespaces(obo: &Path) -> anyhow::Result<FxHashMap<Box<str>, &'static str>> {
-    let reader = legume_numeric::matrix::common_io::open_buf_reader(&obo.to_string_lossy())?;
-    let mut out = FxHashMap::default();
-    let mut id: Option<Box<str>> = None;
-    for line in reader.lines() {
-        let line = line?;
-        if line.starts_with('[') {
-            id = None;
-        } else if let Some(x) = line.strip_prefix("id: ") {
-            id = Some(x.trim().into());
-        } else if let Some(ns) = line.strip_prefix("namespace: ") {
-            let short = match ns.trim() {
-                "biological_process" => "BP",
-                "molecular_function" => "MF",
-                "cellular_component" => "CC",
-                _ => continue,
-            };
-            if let Some(id) = id.take() {
-                out.insert(id, short);
-            }
-        }
-    }
-    Ok(out)
-}
-
-/// Each annotated gene (by its key in `sets`) matched to a row of `genes`:
+/// Each annotated gene (by its key in `aliases`, which holds its aliases)
+/// matched to a row of `genes`:
 /// by symbol or Ensembl id, then, for those left, by an alias unique to it
 /// onto a row no other took (see the module).
-fn matched(sets: &GeneSets, genes: &[(Box<str>, usize, f32)]) -> FxHashMap<Box<str>, usize> {
+fn matched(
+    aliases: &FxHashMap<Box<str>, FxHashSet<Box<str>>>,
+    genes: &[(Box<str>, usize, f32)],
+) -> FxHashMap<Box<str>, usize> {
     let mut by_name: FxHashMap<String, usize> = FxHashMap::default();
     for (row, (key, ..)) in genes.iter().enumerate() {
         by_name
@@ -269,8 +270,8 @@ fn matched(sets: &GeneSets, genes: &[(Box<str>, usize, f32)]) -> FxHashMap<Box<s
     }
     let mut out = FxHashMap::default();
     let mut taken: FxHashSet<usize> = FxHashSet::default();
-    // Every gene of every set is a key of `gene_aliases` (GAF and GMT alike).
-    let mut keys: Vec<&Box<str>> = sets.gene_aliases.keys().collect();
+    // Every gene of every set is a key of `aliases` (GAF and GMT alike).
+    let mut keys: Vec<&Box<str>> = aliases.keys().collect();
     keys.sort();
     for gene in keys {
         if let Some(&row) = by_name.get(&gene.to_ascii_lowercase()) {
@@ -281,19 +282,15 @@ fn matched(sets: &GeneSets, genes: &[(Box<str>, usize, f32)]) -> FxHashMap<Box<s
     }
     // An alias names one gene alone to count.
     let mut owners: FxHashMap<String, usize> = FxHashMap::default();
-    for aliases in sets.gene_aliases.values() {
-        for a in aliases {
+    for of in aliases.values() {
+        for a in of {
             *owners.entry(a.to_ascii_lowercase()).or_default() += 1;
         }
     }
-    let mut left: Vec<&Box<str>> = sets
-        .gene_aliases
-        .keys()
-        .filter(|g| !out.contains_key(*g))
-        .collect();
+    let mut left: Vec<&Box<str>> = aliases.keys().filter(|g| !out.contains_key(*g)).collect();
     left.sort();
     for gene in left {
-        let hit = sets.gene_aliases[gene]
+        let hit = aliases[gene]
             .iter()
             .map(|a| a.to_ascii_lowercase())
             .find_map(|a| {
@@ -322,8 +319,11 @@ pub fn terms(
     source: &Source,
     min_weight: f64,
 ) -> anyhow::Result<Table> {
-    let (sets, ns) = read(source)?;
-    let rows = matched(&sets, genes);
+    let Loaded {
+        sets,
+        rows,
+        namespaces: ns,
+    } = read(source, genes)?;
     // Each term's rows; the universe: every row some term has.
     let mut term_rows: Vec<(&Box<str>, Vec<usize>)> = (sets.term_genes.iter())
         .map(|(t, g)| {
