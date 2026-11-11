@@ -56,7 +56,7 @@ fn a_short_trace_takes_a_cell_per_point() {
     // A tenth of 15 points is one: the first climbing point is left out.
     assert_eq!(cells(&out[1]).chars().count(), 14);
     assert!(out[3].contains("chains disagree"), "{out:#?}");
-    assert!(out[4].contains("--sweeps 30"), "{out:#?}");
+    assert!(out[4].contains("fit again"), "{out:#?}");
 }
 
 /// A flat trace (every chain at one level) draws mid-height, not a NaN.

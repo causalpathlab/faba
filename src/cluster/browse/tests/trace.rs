@@ -107,10 +107,7 @@ fn t_opens_the_trace_with_the_verdict_and_esc_or_t_closes_it() {
         press(&mut v, KeyCode::Char('t'));
         let s = screen(&mut v, 120, 30);
         assert!(s.contains("R-hat 1.31: chains disagree"), "{s}");
-        assert!(
-            s.contains("run longer (--sweeps 400) and check the traces"),
-            "{s}"
-        );
+        assert!(s.contains("fit again with `faba cluster`"), "{s}");
         assert!(s.contains("close") && !s.contains("gene modules ·"), "{s}");
         let buf = drawn(&mut v, 120, 30);
         let braille = (0..30)
@@ -154,7 +151,7 @@ fn an_older_single_chain_is_one_chain() {
     let m = Modules::load(tmp.path(), "m6a", None).unwrap();
     let v = m.fit.verdict().unwrap();
     assert_eq!(v.said(), "one chain (R-hat 1.01)");
-    assert!(v.advice().contains("--chains"), "{}", v.advice());
+    assert!(v.advice().contains("compare restarts"), "{}", v.advice());
 }
 
 /// A trace whose chains skip one (no rows for it) reads it back empty;

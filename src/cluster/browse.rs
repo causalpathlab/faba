@@ -318,8 +318,8 @@ fn read_fit_record(path: &Path) -> anyhow::Result<Option<FitRecord>> {
     let blockmodel = !results["model"].is_null() || !results["blockmodel"].is_null();
     anyhow::ensure!(
         blockmodel || results["posterior"].is_null(),
-        "{} is the record of a `faba cluster --model crp` fit, which has no modules: \
-         name a blockmodel fit's (--model link or blocks)",
+        "{} is the record of a `faba cluster --model crp` fit (faba before 0.19), which \
+         has no modules: name a blockmodel fit's, or fit again with `faba cluster`",
         path.display()
     );
     anyhow::ensure!(blockmodel, "{} records no blockmodel fit", path.display());

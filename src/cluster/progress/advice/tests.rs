@@ -36,7 +36,11 @@ fn a_chain_far_below_lags_and_more_sweeps_are_advised() {
     assert_eq!(v.status, Status::Lags(vec![2]));
     assert!(!v.converged());
     assert_eq!(v.said(), "chain 2 lags (R-hat 1.04)");
-    assert_eq!(v.advice(), "run again with --sweeps 2000 or more --chains");
+    assert!(
+        v.advice().contains("fit again with `faba cluster`"),
+        "{}",
+        v.advice()
+    );
     assert_eq!(v.badge(), "R-hat 1.04 check");
     let v = verdict(&[0.0, -30.0, -30.0], 1.04);
     assert_eq!(v.said(), "chains 1, 2 lag (R-hat 1.04)");
@@ -49,10 +53,7 @@ fn an_r_hat_past_the_bound_says_the_chains_disagree() {
     assert_eq!(v.status, Status::Disagree(Vec::new()));
     assert!(!v.converged());
     assert_eq!(v.said(), "R-hat 1.31: chains disagree");
-    assert_eq!(
-        v.advice(),
-        "run longer (--sweeps 2000) and check the traces"
-    );
+    assert_eq!(v.advice(), super::advice_again());
     assert_eq!(v.badge(), "R-hat 1.31 check");
     let v = verdict(&[0.0, -30.0], 1.31);
     assert_eq!(v.said(), "R-hat 1.31: chains disagree, chain 1 lags");
@@ -66,7 +67,7 @@ fn one_chain_has_nothing_to_hold_it_against() {
     assert_eq!(v.status, Status::OneChain);
     assert!(v.converged());
     assert_eq!(v.said(), "one chain (R-hat 1.01)");
-    assert!(v.advice().contains("--chains"), "{}", v.advice());
+    assert!(v.advice().contains("compare restarts"), "{}", v.advice());
 }
 
 /// One chain whose halves disagree: its halves are what disagree, and
@@ -77,10 +78,7 @@ fn one_chain_past_the_bound_says_its_halves_disagree() {
     assert_eq!(v.status, Status::Disagree(Vec::new()));
     assert!(!v.converged());
     assert_eq!(v.said(), "R-hat 1.30: one chain, its halves disagree");
-    assert_eq!(
-        v.advice(),
-        "run longer (--sweeps 2000) with --chains 4 and check the trace"
-    );
+    assert_eq!(v.advice(), super::advice_again());
 }
 
 /// No R-hat (too few draws) is not converged: run longer.
@@ -90,7 +88,11 @@ fn no_r_hat_asks_for_more_sweeps() {
     assert_eq!(v.status, Status::Unknown);
     assert!(!v.converged());
     assert_eq!(v.said(), "R-hat not known");
-    assert!(v.advice().contains("--sweeps 2000"), "{}", v.advice());
+    assert!(
+        v.advice().contains("fit again with `faba cluster`"),
+        "{}",
+        v.advice()
+    );
     assert_eq!(v.badge(), "R-hat - check");
 }
 
@@ -125,7 +127,11 @@ fn what_the_pooling_found_unsettled_is_not_converged() {
             "{}",
             v.said()
         );
-        assert!(v.advice().contains("--sweeps 2000"), "{}", v.advice());
+        assert!(
+            v.advice().contains("fit again with `faba cluster`"),
+            "{}",
+            v.advice()
+        );
     }
     let v = verdict(&[0.0, 0.2], 1.02).with_unsettled(Vec::new());
     assert!(v.converged());

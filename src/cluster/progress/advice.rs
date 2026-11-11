@@ -6,6 +6,14 @@
 /// of faba before 0.19, whose records the browser still reads).
 const RHAT_OK: f64 = 1.05;
 
+/// The advice on an MCMC fit (faba before 0.19) short of convergence: fit
+/// again by variational inference, not run longer, as the sampler is gone.
+pub(in crate::cluster) fn advice_again() -> String {
+    "an MCMC fit of faba before 0.19: fit again with `faba cluster` (variational \
+     inference) rather than read it"
+        .to_string()
+}
+
 /// How far below the best chain a chain's mean log joint lags, in median
 /// within-chain sds.
 const FAR: f64 = 3.0;
@@ -201,24 +209,16 @@ impl Verdict {
 
     /// One line on what to do, naming the flags.
     pub fn advice(&self) -> String {
-        let more = 2 * self.sweeps.max(1);
         if !self.unsettled.is_empty() && self.converged_on_traces() {
-            return format!("run again with --sweeps {more} or more --chains");
+            return advice_again();
         }
         match self.status {
             Status::Agree => "nothing to rerun: the fit can be read as it is".to_string(),
             Status::OneChain => {
-                "nothing to hold it against: run again with --chains 4 to see whether others agree"
+                "one chain, nothing to hold it against: fit again with `faba cluster` to compare restarts"
                     .to_string()
             }
-            Status::Lags(_) => format!("run again with --sweeps {more} or more --chains"),
-            Status::Disagree(_) if self.chains == 1 => {
-                format!("run longer (--sweeps {more}) with --chains 4 and check the trace")
-            }
-            Status::Disagree(_) => format!("run longer (--sweeps {more}) and check the traces"),
-            Status::Unknown => {
-                format!("too few draws to compare the chains: run longer (--sweeps {more})")
-            }
+            Status::Lags(_) | Status::Disagree(_) | Status::Unknown => advice_again(),
             Status::Optimised {
                 converged: true, ..
             } => "nothing to rerun: the fit can be read as it is (the best restart's tables)"

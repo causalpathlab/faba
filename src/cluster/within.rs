@@ -103,12 +103,13 @@ pub(in crate::cluster) struct GroupFit {
     /// Its fit's run record, in that directory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub record: Option<String>,
-    /// Its chains' split R-hat.
+    /// Its chains' split R-hat: an MCMC fit's (faba before 0.19), as an
+    /// older within record keeps it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rhat: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub converged: Option<bool>,
-    /// Its chains were stopped early: its tables are from fewer draws.
+    /// It was stopped early: its tables are from fewer epochs.
     #[serde(default)]
     pub stopped_early: bool,
 }

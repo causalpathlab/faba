@@ -271,77 +271,59 @@ Example:\n  \
 
     #[command(
         name = "cluster",
-        about = "Cluster cells by their own site reads: a blockmodel of cell and gene roles (presets link, the default, and blocks), or a CRP mixture",
+        about = "Cluster cells by their own site reads (or, --modality count, gene counts): a blockmodel of cell and gene modules by variational inference",
         long_about = "Cluster cells by their own site reads\n\n\
-            A blockmodel over links (--model link or blocks): a cell's reads at one gene's\n\
-            sites form a link, and each link takes a cell role (--cell-roles) from the\n\
-            cell's membership weights and a gene role (--gene-roles) from the gene's. A\n\
-            (cell role, gene role) block has a methylation profile over sites, centred on\n\
-            each site's pooled fraction and, with --shift on, shifted by the block's shift,\n\
-            so gene roles are gene modules. --profile-strength sets how far a profile may\n\
-            leave its centre (`inf`: not at all, and each cell then has its own\n\
-            methylation level on top, prior sd --cell-sd; a finite strength integrates\n\
-            the profile out, so no cell level can enter); --global hdp (the default)\n\
-            draws global weights over the cell roles and over the gene roles, so popular\n\
-            roles draw links and roles not needed empty. Memberships and profiles are\n\
-            integrated out; several chains of collapsed Gibbs on each link's roles,\n\
-            whole-cell and whole-gene role swaps, global-weight draws, and shift and level\n\
-            updates (with translations of shifts against levels, whole and per cell role)\n\
-            run in parallel, each move exact. Two presets, each switch given overriding\n\
-            them:\n\
-            - link (the default): one gene role, no shift, strength 5: link communities\n\
-            - blocks: 8 gene roles, the shift, strength inf (cell levels): cell and gene\n\
-              modules\n\
-            Gene roles need --shift on: a site belongs to one gene, so without a shift a\n\
-            gene's role never reaches its reads. Cells left out of the fit are placed\n\
-            against the fitted roles.\n\n\
-            A Chinese-restaurant-process mixture (--model crp): each cell in one cluster,\n\
-            the number of clusters learned, with split-merge moves and each cell's confidence.\n\n\
-            Outputs, in the output directory, of the blockmodel (link and blocks alike, the\n\
-            tables `faba cluster-view` reads), from the best chain's posterior means:\n\
-            - {modality}_cell_roles.parquet (every input cell's roles and `fitted`: in the\n\
-              fit, not placed after; at strength inf its `level`), _gene_roles (each\n\
-              gene's roles), _blocks (each\n\
-              block's shift, 0 with --shift off), _block_genes, _block_cells, _block_sites\n\
-              (what each block holds, most enriched first; sites with a read or more),\n\
-              _site_cells (each site's posterior-mean reads per cell role over every gene\n\
-              role, the full pileups), _site_stats (each site's raw reads and cells), and\n\
-              _trace (each chain's log joint about 200 times over its sweeps: chain, sweep,\n\
-              log_joint; the run's sweeps and burn-in in the run record)\n\
-            - {modality}_blockmodel.run.json: the run record, with the model's settings and\n\
-              the tables of each side it wrote (`faba cluster-view` opens the fit from it)\n\
-            of crp:\n\
-            - {modality}_cell_clusters.parquet: every input cell's cluster and confidence\n\
-            - {modality}_site_clusters.parquet: each site's reads and posterior fraction per\n\
-              cluster\n\
-            - {modality}_cluster.run.json: the run record\n\
-            Each run record has split R-hat across chains (above 1.05: not converged) and,\n\
-            with --holdout, held-out reads; the command beside it (.cmd.sh) runs it again.\n\
-            On a terminal the chains are shown as they run: a bar per chain, its burn-in\n\
-            marked, each chain's log joint traced under the bars, then the R-hat and the\n\
-            verdict; `q` cancels (nothing is written) and Ctrl+C stops the chains early\n\
-            (what they kept is written, and the run record says so). Elsewhere a bar on\n\
-            stderr counts the sweeps. A blockmodel fit ends with each chain's log joint as\n\
-            a sparkline on stderr, the R-hat, and what to do when the chains disagree.",
+            A blockmodel over links: a cell's reads at one gene's sites form a link, which\n\
+            the cell's weights over its cell roles (--cell-roles, 8) and the gene's over\n\
+            its gene roles (--gene-roles, 8) share among the (cell role, gene role)\n\
+            blocks. A read is converted with the sigmoid of its site's pooled logit plus\n\
+            its block's shift (prior sd --shift-sd) plus its cell's own level (prior sd\n\
+            --cell-sd), so gene roles are gene modules, and cell roles cell modules. It is\n\
+            fitted by variational inference, a Polya-Gamma bound per read and block: each\n\
+            restart (--chains, 4) starts from k-means++ of the cells' residuals, runs\n\
+            --svi-epochs minibatch epochs of --batch-size cells, then coordinate ascent\n\
+            until an epoch moves the ELBO by less than --tol per read, at most --epochs in\n\
+            all; the best restart by ELBO is kept. Cells left out of the fit (--fit) are\n\
+            placed against it. With --modality count, a Poisson blockmodel of the gene\n\
+            counts, fitted alike; with --within, the sites within each of a count fit's\n\
+            cell modules. (The MCMC fits, --model link and crp, the sampler's --sweeps and\n\
+            --holdout, were removed in faba 0.19; older records still open.)\n\n\
+            Outputs, in the output directory (the tables `faba cluster-view` reads):\n\
+            - {modality}_cell_roles.parquet (every input cell's roles, `fitted`: in the fit,\n\
+              not placed after, and its `level`), _gene_roles (each gene's roles), _blocks\n\
+              (each block's shift), _block_genes, _block_cells, _block_sites (what each\n\
+              block holds, most enriched first; sites with a read or more), _site_cells\n\
+              (each site's reads per cell role over every gene role, the full pileups),\n\
+              _site_stats (each site's raw reads and cells), and _trace (each restart's\n\
+              ELBO by step: chain, sweep, log_joint, as older fits named them)\n\
+            - {modality}_blockmodel.run.json: the run record, with the model's settings,\n\
+              the verdict (results.fit) and the tables it wrote (`faba cluster-view` opens\n\
+              the fit from it); the command beside it (.cmd.sh) runs it again.\n\
+            On a terminal the restarts are shown as they run: a bar per restart, its\n\
+            k-means start marked, each restart's ELBO traced under the bars, then the\n\
+            verdict; `q` cancels (nothing is written) and Ctrl+C stops the restarts early\n\
+            (what they reached is written, and the run record says so). Elsewhere a bar on\n\
+            stderr counts the steps. A fit ends with each restart's ELBO as a sparkline on\n\
+            stderr, the verdict and what to do when it has not settled.",
         after_long_help = "\
 Example:\n  \
-  faba cluster out/ --fit '*_wt_*' --cell-roles 8\n  \
-  faba cluster out/ --fit '*_wt_*' --model blocks --cell-roles 8 --gene-roles 8\n  \
-  faba cluster out/ --gene-roles 4 --shift on\n  \
-  faba cluster out/ --model crp --chains 4 --sweeps 200"
+  faba cluster out/ --fit '*_wt_*' --cell-roles 8 --gene-roles 8\n  \
+  faba cluster out/ --modality count\n  \
+  faba cluster --within out/count_blockmodel.run.json\n  \
+  faba cluster out/ --chains 8 --epochs 400"
     )]
     Cluster(ClusterArgs),
 
     #[command(
         name = "cluster-view",
         aliases = ["modules", "blocks"],
-        about = "View a `faba cluster` blockmodel fit (link or blocks): gene modules against cell modules, sites, genes and pileups",
-        long_about = view_help("View a `faba cluster` fit (--model link or blocks): its gene modules against its\n\
+        about = "View a `faba cluster` blockmodel fit: gene modules against cell modules, sites, genes and pileups",
+        long_about = view_help("View a `faba cluster` fit: its gene modules against its\n\
             cell modules, full screen (`faba modules` and `faba blocks` are older names).\n\
             Name the fit's run record, {modality}_blockmodel.run.json, or the output\n\
             directory of its site matrices: its tables open as they are. It never fits:\n\
             with no tables there, run `faba cluster` first; it has none of `faba cluster`'s\n\
-            options for the model, the sampler or the reads, and says to run that.\n\n\
+            options for the model, the fit or the reads, and says to run that.\n\n\
             Four levels, each a margin of the next, all posterior-mean reads of the fitted\n\
             cells. 1 gene modules: every gene module against every cell module. 2 sites: the\n\
             sites of the module in focus, each with its reads, converted, unconverted and\n\
@@ -356,12 +338,11 @@ Example:\n  \
             so: fit again with `faba cluster`.\n\n\
             Reads are mirror bars, converted up and unconverted down; `v` shows a grid as a %\n\
             heatmap or a heatmap of each row's z across the cell modules, diagonally ordered;\n\
-            `/` finds a gene. The tables are written by `faba cluster` (either blockmodel\n\
-            preset, or custom settings), and opened as their run record says, its preset\n\
-            in the header.\n\
-            The header says whether the fit converged (its split R-hat, `ok` or `check`);\n\
-            `t` shows each chain's log joint as it ran ({modality}_trace), with what to do\n\
-            about it. Without a terminal (or with --batch-process) the modules are printed\n\
+            `/` finds a gene. The tables are written by `faba cluster`, and opened as their\n\
+            run record says, its preset in the header.\n\
+            The header says whether the fit converged (its ELBO, `ok` or `check`; an older\n\
+            MCMC fit's split R-hat); `t` shows each restart's ELBO as it ran\n\
+            ({modality}_trace), with what to do about it. Without a terminal (or with --batch-process) the modules are printed\n\
             instead; --html writes them as one self-contained page instead (`e` in the\n\
             browser), the trace drawn in its Model section."),
         after_long_help = "Example:\n  faba cluster-view out/m6a_blockmodel.run.json\n  faba cluster-view out/\n  faba cluster-view out/ --modality atoi\n  faba cluster-view out/ --html cluster.html"
