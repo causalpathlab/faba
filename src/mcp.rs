@@ -263,8 +263,6 @@ fn tools() -> Vec<ToolSpec> {
                     "figure": { "type": "string", "description": "Write a figure as {figure}.pdf and {figure}.png (neither may exist) and return it as an image" },
                     "plot": { "type": "string", "enum": ["modules", "trace", "batches"], "description": "Which figure: the modules grid (gene modules against cell modules; default), the fit's trace, or the cell modules against the batches" },
                     "look": { "type": "string", "enum": ["shift", "percent", "z"], "description": "What colours the modules grid's blocks: the fitted shift (a count fit's log rate; default), the methylated % (UMIs per cell), or that standardized across the cell modules" },
-                    "width": { "type": "number", "exclusiveMinimum": 0, "description": "The figure's width in inches, with `height`: laid out for that size, its text kept readable (e.g. 3.5 for a column, 7 for a page)" },
-                    "height": { "type": "number", "exclusiveMinimum": 0, "description": "The figure's height in inches, with `width`" },
                     "options": options(),
                 }),
                 &["data"],
@@ -322,6 +320,13 @@ fn tools() -> Vec<ToolSpec> {
         ),
     ];
     for s in specs.iter_mut() {
+        // Every tool that draws a figure takes its size alike.
+        if SIZED.contains(&s.name.as_str()) {
+            s.input_schema["properties"]["width"] = json!({ "type": "number", "exclusiveMinimum": 0,
+                "description": "The figure's width in inches, laid out for it, its text kept readable (e.g. 3.5 for a column, 7 for a page); alone or with `height`, the other the figure's own" });
+            s.input_schema["properties"]["height"] = json!({ "type": "number", "exclusiveMinimum": 0,
+                "description": "The figure's height in inches; alone or with `width`" });
+        }
         for &(_, key, kind, about) in TYPED.iter().filter(|t| t.0.contains(&s.name.as_str())) {
             s.input_schema["properties"][key] = typed_schema(kind, about);
         }
@@ -650,6 +655,20 @@ impl Arguments {
 
     /// The numbers given among `keys`, as `--key-name value`. A value that
     /// starts like a flag is `--key-name=-1`, so clap keeps the number.
+    /// The figure's size, `width` and `height` in inches, as the command's
+    /// `--fig-width` and `--fig-height` (see [`crate::figure::SizeArgs`]).
+    fn size(&self) -> Result<Vec<String>> {
+        let mut v = Vec::new();
+        for (key, flag) in [("width", "--fig-width"), ("height", "--fig-height")] {
+            match self.0.get(key) {
+                None | Some(Value::Null) => {}
+                Some(n @ Value::Number(_)) => push_flag(&mut v, flag, &n.to_string()),
+                Some(other) => bail!("`{key}` is a number of inches, not {other}"),
+            }
+        }
+        Ok(v)
+    }
+
     fn numbers(&self, keys: &[&str]) -> Result<Vec<String>> {
         let mut v = vec![];
         for k in keys {
@@ -1186,6 +1205,7 @@ fn qc(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
     let plots = a.flag("plots")?;
     if plots {
         argv.push("--plots".into());
+        argv.extend(a.size()?);
     }
     argv.push("--batch-process".into());
     let out = a.out_or(cx, (&named(&input, "qc"), ""), exists)?;
@@ -1205,6 +1225,10 @@ fn qc(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
     }
     Ok(content)
 }
+
+/// The tools that draw a figure, each taking its size as `width` and
+/// `height` (see [`Arguments::size`]).
+const SIZED: [&str; 5] = ["cluster_view", "pileup", "metagene", "pwm", "qc"];
 
 /// `cluster`'s arguments of the MCMC fits faba had before 0.19, refused as
 /// `faba cluster` refuses their flags, rather than dropped: none is in the
@@ -1303,7 +1327,7 @@ fn cluster_view(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
         push_flag(&mut argv, "--figure", &prefix);
         push_opt(&mut argv, "--plot", a.str("plot"));
         push_opt(&mut argv, "--look", a.str("look"));
-        argv.extend(a.numbers(&["width", "height"])?);
+        argv.extend(a.size()?);
         let what = format!("a figure of {data}");
         cx.run_making(command(&argv)?, &outputs, &what)?;
         return with_figure(json!({}), Some(&png));
@@ -1369,6 +1393,7 @@ fn pileup_argv(a: &Arguments) -> Result<(Vec<String>, bool)> {
             argv.push("--bam".into());
             argv.extend(bam);
         }
+        argv.extend(a.size()?);
     }
     Ok((argv, figure))
 }
@@ -1442,6 +1467,7 @@ fn figure_arg(
     }
     let (prefix, png) = figure_prefix(table, outputs)?;
     push_flag(argv, "--figure", &prefix);
+    argv.extend(a.size()?);
     Ok(Some(png))
 }
 
@@ -1734,6 +1760,38 @@ sites	m6A	10	2
             refused(json!({ "sweeps": null, "holdout": null })).is_ok(),
             "null: not given"
         );
+    }
+
+    /// Every figure tool takes `width` and `height` in inches, as the
+    /// command's `--fig-width` and `--fig-height`.
+    #[test]
+    fn every_figure_tool_takes_its_size_alike() {
+        for tool in tools()
+            .iter()
+            .filter(|t| super::SIZED.contains(&t.name.as_str()))
+        {
+            for key in ["width", "height"] {
+                assert!(
+                    tool.input_schema["properties"][key].is_object(),
+                    "{} {key}",
+                    tool.name
+                );
+            }
+        }
+        let a = Arguments(json!({ "width": 3.5, "height": 2 }));
+        assert_eq!(
+            a.size().unwrap(),
+            ["--fig-width", "3.5", "--fig-height", "2"]
+        );
+        let (argv, _) = pileup_argv(&Arguments(
+            json!({ "data": ["s.zarr"], "genes": ["G1"], "figure": true, "width": 6 }),
+        ))
+        .unwrap();
+        assert!(
+            argv.windows(2).any(|w| w == ["--fig-width", "6"]),
+            "{argv:?}"
+        );
+        assert!(Arguments(json!({ "width": "wide" })).size().is_err());
     }
 
     /// `figure` alone draws: the command gets `--svg`, which puts it in

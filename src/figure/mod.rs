@@ -10,7 +10,10 @@ pub const GUTTER: u16 = 6;
 
 pub mod gallery;
 pub mod logo;
+pub mod size;
 pub mod term;
+
+pub use size::SizeArgs;
 
 use data_beans::interactive::ui::{compact, help_line, input_line, Scale, DIM, HIGHLIGHT, PLAIN};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};

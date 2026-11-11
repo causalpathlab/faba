@@ -428,7 +428,16 @@ fn site_figures_draw_every_knob_without_a_view() {
     .into_iter()
     .collect();
     let f = SiteFilterArgs::default_values();
-    let figures = site_figures("in", &tables, &FxHashMap::default(), &f, None, &[]).unwrap();
+    let figures = site_figures(
+        "in",
+        &tables,
+        &FxHashMap::default(),
+        &f,
+        None,
+        &[],
+        &Default::default(),
+    )
+    .unwrap();
     let expected = threshold_counts(&tables, &FxHashMap::default(), &f).len();
     assert_eq!(figures.len(), expected);
     for fig in &figures {
@@ -437,4 +446,19 @@ fn site_figures_draw_every_knob_without_a_view() {
     }
     assert!(figures.iter().any(|f| f.stem.starts_with(M6A)));
     assert!(figures.iter().any(|f| f.stem.starts_with(ATOI)));
+    // At a size asked for: as wide as asked, or refused when the table and
+    // its plots would not fit.
+    let at = |w: f64| {
+        let size = crate::figure::SizeArgs {
+            fig_width: Some(w),
+            fig_height: None,
+        };
+        site_figures("in", &tables, &FxHashMap::default(), &f, None, &[], &size)
+    };
+    let wide = at(12.0).unwrap();
+    assert!(wide
+        .iter()
+        .all(|f| crate::figure::svg_size(&f.svg).0 == 864.0));
+    let e = at(4.0).err().expect("refused").to_string();
+    assert!(e.contains("at least 10.0 by"), "{e}");
 }

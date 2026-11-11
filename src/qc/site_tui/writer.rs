@@ -45,7 +45,9 @@ impl SitePicker<'_> {
     /// Draw the figures and start the writer, once the writing pop-up is up.
     pub(super) fn start_writing(&mut self) {
         if let Some(start) = self.writer.start.take() {
-            let figures = self.figures();
+            let figures = self
+                .figures(&Default::default())
+                .expect("figures of their own size");
             start(self.filter.clone(), figures);
         }
     }
@@ -53,8 +55,12 @@ impl SitePicker<'_> {
     /// The view's figure for every modality and every knob, under the
     /// applied thresholds and the scales chosen per knob. The modality on
     /// screen keeps its selected gene; the others show their top gene, the
-    /// gene filter aside.
-    pub(super) fn figures(&mut self) -> Vec<Figure> {
+    /// gene filter aside. Each laid out at `size` (see
+    /// [`crate::figure::SizeArgs`]); refused when one is too small.
+    pub(super) fn figures(
+        &mut self,
+        size: &crate::figure::SizeArgs,
+    ) -> anyhow::Result<Vec<Figure>> {
         let (modality, focus, at) = (self.modality, self.focus, self.list.at);
         let find = std::mem::take(&mut self.list.find);
         let mut out = Vec::new();
@@ -72,18 +78,33 @@ impl SitePicker<'_> {
                 self.focus = f;
                 self.rebuild_column();
                 let knob = self.criterion().flag().trim_start_matches("--site-");
+                let min = crate::figure::size::MIN;
+                let svg = size.draw(min, |s| self.figure_at(s));
+                let svg = match svg {
+                    Ok(svg) => svg,
+                    Err(e) => {
+                        self.restore((modality, focus, at), find);
+                        return Err(e);
+                    }
+                };
                 out.push(Figure {
                     stem: format!("{}_{knob}", self.view().table.modality),
-                    svg: self.figure(),
+                    svg,
                 });
             }
         }
+        self.restore((modality, focus, at), find);
+        Ok(out)
+    }
+
+    /// The modality, knob and gene the view had before
+    /// [`Self::figures`] stepped through them, put back.
+    fn restore(&mut self, (modality, focus, at): (usize, usize, usize), find: String) {
         self.modality = modality;
         self.list.find = find;
         self.refresh_genes(true);
         self.list.at = at;
         self.focus = focus;
         self.rebuild_column();
-        out
     }
 }

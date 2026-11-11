@@ -118,6 +118,13 @@ fn a_wide_window_scrolls_to_the_cursor() {
     screen(&mut v, 8, 4);
 }
 
+/// A size asked for is the logo's, whatever the view's shape.
+#[test]
+fn the_logo_is_laid_out_for_a_size_asked_for() {
+    let svg = super::figure("sites", &pwm(), 2, Some((504.0, 216.0)));
+    assert_eq!(crate::figure::svg_size(&svg), (504.0, 216.0));
+}
+
 #[test]
 fn saves_the_logo() {
     let mut v = PwmView::new("sites", &pwm(), 2);

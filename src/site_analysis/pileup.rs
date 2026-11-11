@@ -337,12 +337,10 @@ pub struct PileupArgs {
     #[arg(long = "no-pdf", default_value_t = false, help = "Skip PDF output")]
     no_pdf: bool,
 
-    #[arg(
-        long = "fig-width",
-        default_value_t = 8.0,
-        help = "Figure width in inches"
-    )]
-    fig_width: f32,
+    /// The figure's size on the page: 8 inches wide unless given, as tall
+    /// as its panels need unless given.
+    #[command(flatten)]
+    size: crate::figure::SizeArgs,
 
     #[arg(
         long = "dpi",

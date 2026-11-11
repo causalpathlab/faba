@@ -23,6 +23,10 @@ pub enum PwmSource {
 }
 
 #[derive(Args, Debug)]
+#[command(
+    mut_arg("fig_width", |a| a.requires("figure")),
+    mut_arg("fig_height", |a| a.requires("figure"))
+)]
 pub struct ScanPwmArgs {
     #[arg(
         value_delimiter = ',',
@@ -103,6 +107,10 @@ pub struct ScanPwmArgs {
                      view first shows it. Works with --batch-process: no terminal needed."
     )]
     figure: Option<Box<str>>,
+
+    /// The figure's size on the page (only with --figure).
+    #[command(flatten)]
+    size: crate::figure::SizeArgs,
 
     #[arg(
         long = "batch-process",
@@ -427,7 +435,11 @@ pub fn run_scan_pwm(args: &ScanPwmArgs) -> anyhow::Result<()> {
     }
     let title = output_dir::title(&site_files);
     if let Some(prefix) = &args.figure {
-        let paths = crate::figure::save_with_png(&tui::figure(&title, &pwm, args.window), prefix)?;
+        let min = crate::figure::size::MIN;
+        let drawn = args
+            .size
+            .draw(min, |s| Ok(tui::figure(&title, &pwm, args.window, s)))?;
+        let paths = crate::figure::save_with_png(&drawn, prefix)?;
         info!("wrote sequence logo to {}", paths.join(", "));
     }
     if !batch {

@@ -231,14 +231,21 @@ impl PwmView {
 
     /// The logo as a figure: letters stretched to their heights.
     fn figure(&self) -> String {
+        self.figure_at(None)
+    }
+
+    /// The logo laid out for `size` points; none: its shape on screen,
+    /// grown alike on both sides until its letters are 8 points wide at
+    /// least, else a page of readable letters.
+    fn figure_at(&self, size: Option<(f64, f64)>) -> String {
         let n = self.columns.len().max(1) as f64;
-        // The logo's shape on screen, grown alike on both sides until its
-        // letters are 8 points wide at least; else a page of readable letters.
         let margins = 76.0;
-        let (width, height) = match self.controls.page(self.drawn, (margins + 8.0 * n, 200.0)) {
-            Some(size) => size,
-            None => (margins + (560.0 / n).clamp(8.0, 40.0) * n, 330.0),
-        };
+        let (width, height) = size.unwrap_or_else(|| {
+            match self.controls.page(self.drawn, (margins + 8.0 * n, 200.0)) {
+                Some(size) => size,
+                None => (margins + (560.0 / n).clamp(8.0, 40.0) * n, 330.0),
+            }
+        });
         let mut c = Canvas::new(width, height);
         c.bold(16.0, 22.0, &self.title, 12.0, Anchor::Start, INK);
         self.draw_logo(&mut c, (0.0, 30.0, width, height - 30.0), None);
@@ -521,8 +528,10 @@ impl Screen for PwmView {
 
 /// Show the logo full screen until the user quits.
 /// The logo as the view first shows it, drawn without a terminal.
-pub fn figure(title: &str, pwm: &[DnaBaseCount], window: i64) -> String {
-    PwmView::new(title, pwm, window).figure()
+/// The sequence logo's figure, laid out for `size` points when given (see
+/// [`crate::figure::SizeArgs`]).
+pub fn figure(title: &str, pwm: &[DnaBaseCount], window: i64, size: Option<(f64, f64)>) -> String {
+    PwmView::new(title, pwm, window).figure_at(size)
 }
 
 pub fn show_pwm(title: &str, pwm: &[DnaBaseCount], window: i64) -> anyhow::Result<()> {

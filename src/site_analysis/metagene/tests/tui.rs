@@ -251,6 +251,14 @@ fn enter_stays_and_plus_is_finer() {
     assert!(v.done());
 }
 
+/// A size asked for is the figure's, whatever the view's shape.
+#[test]
+fn a_figure_is_laid_out_for_a_size_asked_for() {
+    let h = hist(true);
+    let svg = super::figure("sites", &h, Some((252.0, 144.0)));
+    assert_eq!(crate::figure::svg_size(&svg), (252.0, 144.0));
+}
+
 #[test]
 fn a_saved_figure_keeps_the_views_shape() {
     let h = hist(true);

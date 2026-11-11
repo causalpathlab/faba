@@ -238,11 +238,17 @@ impl<'a> MetageneView<'a> {
 
     /// The shown track as a figure, at the shown merge factor.
     fn figure(&self) -> String {
-        // The view's shape on screen, else a page of its own.
-        let (w, h) = self
-            .controls
-            .page(self.drawn, (360.0, 200.0))
-            .unwrap_or((680.0, 300.0));
+        self.figure_at(None)
+    }
+
+    /// The figure laid out for `size` points; none: the view's shape on
+    /// screen, else a page of its own.
+    fn figure_at(&self, size: Option<(f64, f64)>) -> String {
+        let (w, h) = size.unwrap_or_else(|| {
+            self.controls
+                .page(self.drawn, (360.0, 200.0))
+                .unwrap_or((680.0, 300.0))
+        });
         let mut c = Canvas::new(w, h);
         c.bold(16.0, 22.0, &self.title, 12.0, Anchor::Start, INK);
         let totals: Vec<String> = self
@@ -478,8 +484,10 @@ impl Screen for MetageneView<'_> {
 
 /// Show the profile full screen until the user quits.
 /// The profile as the view first shows it, drawn without a terminal.
-pub fn figure(title: &str, hist: &GeneFeatureHistogram) -> String {
-    MetageneView::new(title, hist).figure()
+/// The profile's figure, laid out for `size` points when given (see
+/// [`crate::figure::SizeArgs`]).
+pub fn figure(title: &str, hist: &GeneFeatureHistogram, size: Option<(f64, f64)>) -> String {
+    MetageneView::new(title, hist).figure_at(size)
 }
 
 pub fn show_metagene(title: &str, hist: &GeneFeatureHistogram) -> anyhow::Result<()> {

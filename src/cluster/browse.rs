@@ -38,6 +38,12 @@ pub use order::standardized;
 pub use view::ModulesView;
 
 #[derive(Args, Debug, Clone)]
+// The figure's size (0.19.0 named it --width and --height), only with
+// --figure.
+#[command(
+    mut_arg("fig_width", |a| a.visible_alias("width").requires("figure")),
+    mut_arg("fig_height", |a| a.visible_alias("height").requires("figure"))
+)]
 pub struct ModulesArgs {
     #[arg(
         num_args = 0..,
@@ -121,21 +127,8 @@ pub struct ModulesArgs {
     )]
     plot: figure::Plot,
 
-    #[arg(
-        long = "width",
-        value_name = "INCHES",
-        requires = "figure",
-        help = "The figure's width in inches (with --height: laid out for that size, its text kept readable)"
-    )]
-    width: Option<f64>,
-
-    #[arg(
-        long = "height",
-        value_name = "INCHES",
-        requires = "figure",
-        help = "The figure's height in inches"
-    )]
-    height: Option<f64>,
+    #[command(flatten)]
+    size: crate::figure::SizeArgs,
 
     #[arg(
         long = "look",
@@ -440,14 +433,10 @@ fn target(
 }
 
 /// The figure `args` ask for of `m` (its tables in `dir`) as `prefix`.pdf
-/// and `prefix`.png; the paths written, printed. Refused when it has none
-/// to draw, or a size is half given or not positive.
+/// and `prefix`.png, at the size asked for (see [`crate::figure::SizeArgs`]);
+/// the paths written, printed. Refused when it has none to draw, or a side
+/// is too small.
 fn write_figure(m: &Modules, args: &ModulesArgs, dir: &Path, prefix: &str) -> anyhow::Result<()> {
-    let size = match (args.width, args.height) {
-        (None, None) => None,
-        (Some(w), Some(h)) if w > 0.0 && h > 0.0 && w.is_finite() && h.is_finite() => Some((w, h)),
-        _ => anyhow::bail!("--width and --height go together, each a positive number of inches"),
-    };
     let fit = dir
         .file_name()
         .map_or(dir.display().to_string(), |n| n.to_string_lossy().into());
@@ -464,7 +453,9 @@ fn write_figure(m: &Modules, args: &ModulesArgs, dir: &Path, prefix: &str) -> an
             "{path} exists: name a new --figure"
         );
     }
-    let drawn = figure::draw(m, args.plot, args.look, &title, size).map_err(anyhow::Error::msg)?;
+    let drawn = args.size.draw(figure::MIN, |size| {
+        figure::draw(m, args.plot, args.look, &title, size).map_err(anyhow::Error::msg)
+    })?;
     for path in crate::figure::save_with_png(&drawn, prefix)? {
         println!("{path}");
     }

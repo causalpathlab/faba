@@ -137,7 +137,7 @@ fn figures_cover_every_modality_and_leave_the_view_as_it_was() {
     assert_eq!(p.gene_list().len(), 1);
     let (modality, focus, gene) = (p.modality, p.focus, p.gene());
 
-    let figures = p.figures();
+    let figures = p.figures(&Default::default()).unwrap();
     // The filter is put back for the view, and kept out of the figures:
     // every one, of either modality, has its gene panel.
     assert_eq!(p.list.find, "ne3");

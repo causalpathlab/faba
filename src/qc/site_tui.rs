@@ -626,13 +626,14 @@ pub fn site_figures(
     filter: &SiteFilterArgs,
     gff: Option<&str>,
     pinned: &[Box<str>],
+    size: &crate::figure::SizeArgs,
 ) -> anyhow::Result<Vec<Figure>> {
     let mut picker = picker(input_dir, tables, site_cells, filter, gff, pinned)?;
     picker.meta.wait();
     if let Meta::Unavailable(why) = &picker.meta {
         log::warn!("qc_plots without a metagene: {why}");
     }
-    Ok(picker.figures())
+    picker.figures(size)
 }
 
 /// What one site threshold does to one modality, for `faba qc --dry-run`.

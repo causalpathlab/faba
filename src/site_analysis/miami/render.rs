@@ -26,12 +26,35 @@ pub struct PanelData {
 pub struct FigOpts {
     pub out_prefix: Box<str>,
     pub width_in: f32,
+    /// The figure's height in inches, the panels' tracks sharing what the
+    /// title, margins, gene models and gaps leave; none: as tall as the
+    /// panels need.
+    pub height_in: Option<f32>,
     pub dpi: u32,
     pub palette: Palette,
     /// Title line (e.g. `GENE1  chr1:32,000,000-32,100,000`).
     pub title: Box<str>,
     /// Top-track signal label (e.g. `m6A`).
     pub top_label: Box<str>,
+}
+
+/// The least height of a panel's track, in inches.
+const TRACK_MIN: f32 = 1.0 / 3.0;
+
+/// Each of `n` panels' two tracks' height, in dots at `dpi`: 0.85 inches, or
+/// its share of `height_in` once `fixed` dots (title, margins, gene models,
+/// gaps) are taken; refused under [`TRACK_MIN`], saying the least height.
+fn track_height(height_in: Option<f32>, n: f32, fixed: f32, dpi: f32) -> anyhow::Result<f32> {
+    let Some(h_in) = height_in else {
+        return Ok((0.85 * dpi).round());
+    };
+    let track = (h_in * dpi - fixed) / (2.0 * n);
+    anyhow::ensure!(
+        track >= TRACK_MIN * dpi,
+        "--fig-height {h_in}: {n} panel(s) need at least {:.1} inches",
+        (fixed + 2.0 * n * TRACK_MIN * dpi) / dpi
+    );
+    Ok(track)
 }
 
 /// Build + render the faceted Miami figure. Returns the number of files
@@ -50,13 +73,16 @@ pub fn render_miami(
     let bottom = (0.5 * dpi).round();
     let plot_w = (w - left - right).max(1.0);
 
-    let top_h = (0.85 * dpi).round();
     let model_h = (0.30 * dpi).round();
-    let bottom_h = (0.85 * dpi).round();
-    let panel_h = top_h + model_h + bottom_h;
     let panel_gap = (0.35 * dpi).round();
     let n = panels.len().max(1) as f32;
-    let h = top + bottom + n * panel_h + (n - 1.0).max(0.0) * panel_gap;
+    // What is not the tracks: the title and margins, each panel's gene
+    // model, the gaps between panels.
+    let fixed = top + bottom + n * model_h + (n - 1.0).max(0.0) * panel_gap;
+    let track = track_height(opts.height_in, n, fixed, dpi)?;
+    let (top_h, bottom_h) = (track, track);
+    let panel_h = top_h + model_h + bottom_h;
+    let h = fixed + n * (top_h + bottom_h);
 
     let title_fs = 0.16 * dpi;
     let label_fs = 0.10 * dpi;

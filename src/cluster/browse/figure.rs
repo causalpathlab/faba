@@ -21,11 +21,7 @@ pub enum Plot {
     Batches,
 }
 
-/// Points per inch.
-const PT: f64 = 72.0;
-
-/// The smallest figure laid out, in inches: its labels need the room.
-const MIN: (f64, f64) = (2.0, 1.5);
+pub use crate::figure::size::MIN;
 
 /// A figure's text size in points: 9 at its natural size, less on a small
 /// page (to 5, the least that reads in print).
@@ -58,8 +54,9 @@ fn title_text(title: &str, f: f64, room: f64) -> String {
     }
 }
 
-/// The figure `plot` of `m` under `look`, titled `title`, `size` inches
-/// (width, height) when given; why there is none (no trace, one batch).
+/// The figure `plot` of `m` under `look`, titled `title`, laid out for
+/// `size` points (width, height; see [`crate::figure::SizeArgs`]) when
+/// given; why there is none (no trace, one batch).
 pub fn draw(
     m: &Modules,
     plot: Plot,
@@ -67,13 +64,6 @@ pub fn draw(
     title: &str,
     size: Option<(f64, f64)>,
 ) -> Result<String, String> {
-    if size.is_some_and(|(w, h)| w < MIN.0 || h < MIN.1) {
-        return Err(format!(
-            "a figure is at least {} by {} inches",
-            MIN.0, MIN.1
-        ));
-    }
-    let size = size.map(|(w, h)| (w * PT, h * PT));
     match plot {
         Plot::Modules => Ok(heatmap(m, look, title, size)),
         Plot::Trace => trace(m, title, size),
