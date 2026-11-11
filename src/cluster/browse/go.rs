@@ -449,7 +449,8 @@ pub fn terms(
 /// shared, in a universe of `big_n`: in both, the module's alone, the
 /// term's alone, neither.
 fn cells(k: usize, n: usize, big_k: usize, big_n: usize) -> [u64; 4] {
-    [k, n - k, big_k - k, big_n - big_k - n + k].map(|x| x as u64)
+    // `big_n - big_k - n + k` in an order that never goes below 0.
+    [k, n - k, big_k - k, big_n + k - big_k - n].map(|x| x as u64)
 }
 
 /// Benjamini-Hochberg q-values of `ln_p` (natural-log p-values), in their
