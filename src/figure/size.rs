@@ -49,6 +49,20 @@ pub fn fill(page: Page, own: impl FnOnce() -> (f64, f64)) -> (f64, f64) {
     }
 }
 
+/// Refused when a side of `page` asked for is less than `least` points
+/// (what the figure, `what`, needs for its labels); the sides not asked for
+/// are the figure's own, which it lays out to fit.
+pub fn at_least(page: Page, least: (f64, f64), what: &str) -> anyhow::Result<()> {
+    let short = |side: Option<f64>, least: f64| side.is_some_and(|v| v < least);
+    anyhow::ensure!(
+        !short(page.0, least.0) && !short(page.1, least.1),
+        "{what} is at least {:.1} by {:.1} inches: its labels need the room",
+        least.0 / PT,
+        least.1 / PT
+    );
+    Ok(())
+}
+
 impl SizeArgs {
     /// The sides given, in inches, each checked: a number, at least
     /// [`MIN`] inches.
@@ -74,6 +88,14 @@ impl SizeArgs {
     pub fn page(&self) -> anyhow::Result<Page> {
         let (w, h) = self.inches()?;
         Ok((w.map(|w| w * PT), h.map(|h| h * PT)))
+    }
+
+    /// [`SizeArgs::page`], refused when a side asked for is less than
+    /// `least` points (see [`at_least`]): checked before a command's work.
+    pub fn page_at_least(&self, least: (f64, f64), what: &str) -> anyhow::Result<Page> {
+        let page = self.page()?;
+        at_least(page, least, what)?;
+        Ok(page)
     }
 
     /// Of `w` and `h` inches, for a test.
@@ -108,5 +130,13 @@ mod tests {
         assert_eq!(fill((Some(252.0), None), || (500.0, 300.0)), (252.0, 300.0));
         let not_asked = || -> (f64, f64) { panic!("both sides given") };
         assert_eq!(fill((Some(1.0), Some(2.0)), not_asked), (1.0, 2.0));
+        // A figure's own floor: only a side asked for is held to it.
+        assert!(at_least((Some(300.0), None), (360.0, 200.0), "a profile").is_err());
+        assert!(at_least((None, Some(250.0)), (360.0, 200.0), "a profile").is_ok());
+        let e = SizeArgs::new(Some(4.0), None).page_at_least((360.0, 200.0), "a profile");
+        assert!(e
+            .unwrap_err()
+            .to_string()
+            .contains("at least 5.0 by 2.8 inches"));
     }
 }

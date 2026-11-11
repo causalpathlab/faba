@@ -964,6 +964,8 @@ pub fn run_metagene(args: &MetageneArgs) -> anyhow::Result<()> {
         return Ok(());
     };
     let batch = crate::tui::batch(args.batch_process, "metagene");
+    // The figure's page, refused before the sites are read.
+    let page = args.size.page_at_least(tui::LEAST, "a metagene profile")?;
     // In the view a spinner shows while the sites are placed.
     let what = format!("profiling {} site table(s)", site_files.len());
     let histogram = crate::tui::busy(!batch, "metagene", &what, || profile(args, &site_files))?;
@@ -981,7 +983,7 @@ pub fn run_metagene(args: &MetageneArgs) -> anyhow::Result<()> {
     }
     let title = output_dir::title(&site_files);
     if let Some(prefix) = &args.figure {
-        let drawn = tui::figure(&title, &histogram, args.size.page()?);
+        let drawn = tui::figure(&title, &histogram, page);
         let paths = crate::figure::save_with_png(&drawn, prefix)?;
         info!("wrote metagene figure to {}", paths.join(", "));
     }

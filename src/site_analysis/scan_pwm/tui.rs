@@ -236,11 +236,10 @@ impl PwmView {
     /// of readable letters.
     fn figure(&self, page: Page) -> String {
         let n = self.columns.len().max(1) as f64;
-        let margins = 76.0;
         let (width, height) = crate::figure::size::fill(page, || {
-            match self.controls.page(self.drawn, (margins + 8.0 * n, 200.0)) {
+            match self.controls.page(self.drawn, least(self.columns.len())) {
                 Some(size) => size,
-                None => (margins + (560.0 / n).clamp(8.0, 40.0) * n, 330.0),
+                None => (MARGINS + (560.0 / n).clamp(8.0, 40.0) * n, 330.0),
             }
         });
         let mut c = Canvas::new(width, height);
@@ -259,7 +258,7 @@ impl PwmView {
     ) {
         let n = self.columns.len().max(1);
         let (left, top, bottom) = (x0 + 56.0, y0 + 10.0, 50.0);
-        let cw = ((w - 76.0) / n as f64).max(1.0);
+        let cw = ((w - MARGINS) / n as f64).max(1.0);
         let ph = (h - 10.0 - bottom).max(1.0);
         let top_value = self.mode.top();
         for f in [0.0, 0.5, 1.0] {
@@ -523,8 +522,18 @@ impl Screen for PwmView {
     }
 }
 
+/// The logo's margins, across, in points.
+const MARGINS: f64 = 76.0;
+
+/// The least page a logo of `columns` positions is laid out on, in points:
+/// its letters 8 points wide at least.
+pub fn least(columns: usize) -> (f64, f64) {
+    (MARGINS + 8.0 * columns.max(1) as f64, 200.0)
+}
+
 /// The logo as the view first shows it, drawn without a terminal, laid out
-/// for `page` (see [`crate::figure::SizeArgs`]).
+/// for `page` (see [`crate::figure::SizeArgs`], checked against [`least`]
+/// by the caller).
 pub fn figure(title: &str, pwm: &[DnaBaseCount], window: i64, page: Page) -> String {
     PwmView::new(title, pwm, window).figure(page)
 }

@@ -251,6 +251,16 @@ fn enter_stays_and_plus_is_finer() {
     assert!(v.done());
 }
 
+/// A page under the profile's least is refused before anything is read.
+#[test]
+fn a_page_too_small_for_the_profile_is_refused() {
+    let size = crate::figure::SizeArgs::new(Some(4.0), None);
+    let e = size
+        .page_at_least(super::LEAST, "a metagene profile")
+        .unwrap_err();
+    assert!(e.to_string().contains("at least 5.0 by 2.8 inches"), "{e}");
+}
+
 /// A size asked for is the figure's, whatever the view's shape.
 #[test]
 fn a_figure_is_laid_out_for_a_size_asked_for() {

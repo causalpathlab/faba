@@ -322,10 +322,11 @@ fn tools() -> Vec<ToolSpec> {
     for s in specs.iter_mut() {
         // Every tool that draws a figure takes its size alike.
         if SIZED.contains(&s.name.as_str()) {
-            s.input_schema["properties"]["width"] = json!({ "type": "number", "exclusiveMinimum": 0,
+            let least = crate::figure::size::MIN;
+            s.input_schema["properties"]["width"] = json!({ "type": "number", "minimum": least.0,
                 "description": "The figure's width in inches, laid out for it, its text kept readable (e.g. 3.5 for a column, 7 for a page); alone or with `height`, the other the figure's own" });
-            s.input_schema["properties"]["height"] = json!({ "type": "number", "exclusiveMinimum": 0,
-                "description": "The figure's height in inches; alone or with `width`" });
+            s.input_schema["properties"]["height"] = json!({ "type": "number", "minimum": least.1,
+                "description": "The figure's height in inches; alone or with `width`. A figure may need more than the least for its labels (it says so)" });
         }
         for &(_, key, kind, about) in TYPED.iter().filter(|t| t.0.contains(&s.name.as_str())) {
             s.input_schema["properties"][key] = typed_schema(kind, about);
@@ -576,7 +577,13 @@ impl Handler for Faba {
     }
 
     fn call(&mut self, name: &str, args: Value, cx: &Call) -> Result<Vec<Content>> {
-        let a = Arguments(with_typed(name, args)?);
+        // `modules` is `cluster_view`'s older name: its typed arguments too.
+        let typed_as = if name == "modules" {
+            "cluster_view"
+        } else {
+            name
+        };
+        let a = Arguments(with_typed(typed_as, args)?);
         let v = match name {
             "docs" => return docs(&a, cx),
             "count" => count(&a, cx)?,
@@ -1228,7 +1235,8 @@ fn qc(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
 }
 
 /// The tools that draw a figure, each taking its size as `width` and
-/// `height` (see [`Arguments::size`]).
+/// `height` in inches, passed as `--fig-width` and `--fig-height` (see
+/// [`typed_flags`]).
 const SIZED: [&str; 5] = ["cluster_view", "pileup", "metagene", "pwm", "qc"];
 
 /// `cluster`'s arguments of the MCMC fits faba had before 0.19, refused as
@@ -1792,6 +1800,12 @@ sites	m6A	10	2
             "{argv:?}"
         );
         assert!(typed_flags("pwm", &Arguments(json!({ "width": "wide" }))).is_err());
+        // The schema states the least a figure takes.
+        let pwm = tools().into_iter().find(|t| t.name == "pwm").unwrap();
+        assert_eq!(
+            pwm.input_schema["properties"]["width"]["minimum"],
+            json!(2.0)
+        );
     }
 
     /// `figure` alone draws: the command gets `--svg`, which puts it in

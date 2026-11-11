@@ -11,6 +11,9 @@ pub struct Writer<'a> {
     pub output: &'a str,
     pub progress: &'a Progress,
     pub start: Option<StartWrite<'a>>,
+    /// The page the figures are laid out for (see
+    /// [`crate::figure::SizeArgs`]).
+    pub page: Page,
 }
 
 /// Starts the write with the applied thresholds and the view's figures.
@@ -32,6 +35,7 @@ impl Writer<'_> {
             output: "",
             progress: &NOTHING_TO_WRITE,
             start: None,
+            page: OWN,
         }
     }
 }
@@ -46,8 +50,11 @@ impl SitePicker<'_> {
     /// Draw the figures and start the writer, once the writing pop-up is up.
     pub(super) fn start_writing(&mut self) {
         if let Some(start) = self.writer.start.take() {
-            // At their own size, never less than they need: they draw.
-            let figures = self.figures(OWN).expect("figures of their own size");
+            // A page too small was refused before the view opened (see
+            // `faba qc`), and their own size always fits.
+            let figures = self
+                .figures(self.writer.page)
+                .expect("the page was checked");
             start(self.filter.clone(), figures);
         }
     }

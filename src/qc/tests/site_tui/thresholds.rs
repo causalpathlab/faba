@@ -317,7 +317,9 @@ fn a_saved_view_keeps_its_shape_on_screen() {
     let t = table(M6A, 600);
     let mut p = picker(&t, Some(cells(t.len())), SiteFilterArgs::default_values());
     let (cw, ch) = figure::CELL;
-    for (w, h) in [(160, 40), (100, 50)] {
+    // 120 x 26 rounds its grown height a hair under the least: its own size
+    // is drawn all the same, never refused.
+    for (w, h) in [(160, 40), (100, 50), (120, 26), (13, 26)] {
         let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
         term.draw(|f| p.render(f)).unwrap();
         let (fw, fh) = figure::svg_size(&p.figure(crate::figure::size::OWN).unwrap());

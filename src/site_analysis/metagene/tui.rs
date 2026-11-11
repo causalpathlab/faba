@@ -243,7 +243,7 @@ impl<'a> MetageneView<'a> {
     fn figure(&self, page: Page) -> String {
         let (w, h) = crate::figure::size::fill(page, || {
             self.controls
-                .page(self.drawn, (360.0, 200.0))
+                .page(self.drawn, LEAST)
                 .unwrap_or((680.0, 300.0))
         });
         let mut c = Canvas::new(w, h);
@@ -479,8 +479,13 @@ impl Screen for MetageneView<'_> {
     }
 }
 
+/// The least page a profile is laid out on, in points: its title, totals
+/// and axes need the room.
+pub const LEAST: (f64, f64) = (360.0, 200.0);
+
 /// The profile as the view first shows it, drawn without a terminal, laid
-/// out for `page` (see [`crate::figure::SizeArgs`]).
+/// out for `page` (see [`crate::figure::SizeArgs`], checked against
+/// [`LEAST`] by the caller).
 pub fn figure(title: &str, hist: &GeneFeatureHistogram, page: Page) -> String {
     MetageneView::new(title, hist).figure(page)
 }

@@ -35,25 +35,38 @@ fn font(page: Page) -> f64 {
     }
 }
 
-/// Square cells, `cols` by `rows`, beside `fixed` points across and down: as
-/// large as the sides asked for allow (`own` points without one); the
-/// cell's side, and the figure's size, a side not asked for fitting the
-/// cells.
+/// The least cell side a grid is drawn with, in points: its values need
+/// the room.
+const CELL_LEAST: f64 = 12.0;
+
+/// Square cells, `cols` by `rows`, beside `fixed` points across and down,
+/// `own` points each at the grid's own size: a side not asked for follows
+/// the grid's own proportions, and the cells are as large as the page
+/// allows. The cell's side and the figure's size; refused when the cells
+/// would be too small to read (under [`CELL_LEAST`]).
 fn cells(
     page: Page,
     own: f64,
     (fw, fh): (f64, f64),
     (cols, rows): (usize, usize),
-) -> (f64, (f64, f64)) {
-    let across = page.0.map(|w| (w - fw) / cols.max(1) as f64);
-    let down = page.1.map(|h| (h - fh) / rows.max(1) as f64);
-    let cell = match (across, down) {
-        (Some(a), Some(d)) => a.min(d),
-        (Some(c), None) | (None, Some(c)) => c,
-        (None, None) => own,
+) -> Result<(f64, (f64, f64)), String> {
+    let (cols, rows) = (cols.max(1) as f64, rows.max(1) as f64);
+    let (ow, oh) = (fw + own * cols, fh + own * rows);
+    let (w, h) = match page {
+        (None, None) => return Ok((own, (ow, oh))),
+        (Some(w), None) => (w, w * oh / ow),
+        (None, Some(h)) => (h * ow / oh, h),
+        (Some(w), Some(h)) => (w, h),
     };
-    let size = size::fill(page, || (fw + cell * cols as f64, fh + cell * rows as f64));
-    (cell, size)
+    let cell = ((w - fw) / cols).min((h - fh) / rows);
+    if cell < CELL_LEAST {
+        return Err(format!(
+            "the grid needs at least {:.1} by {:.1} inches for its labels and cells",
+            (fw + CELL_LEAST * cols) / size::PT,
+            (fh + CELL_LEAST * rows) / size::PT
+        ));
+    }
+    Ok((cell, (w, h)))
 }
 
 /// The width of `s` in `f`-point text, about.
@@ -92,7 +105,7 @@ pub fn draw(
     size: Page,
 ) -> Result<String, String> {
     match plot {
-        Plot::Modules => Ok(heatmap(m, look, title, size)),
+        Plot::Modules => heatmap(m, look, title, size),
         Plot::Trace => trace(m, title, size),
         Plot::Batches => batches(m, title, size),
     }
@@ -160,7 +173,7 @@ fn values(m: &Modules, look: Look) -> (Vec<usize>, Vec<Vec<Option<f64>>>) {
 /// The figure of `m` under `look`, titled `title`: a box per block with its
 /// value, the gene modules' names and sizes on the left, the cell modules'
 /// on top, and the colour scale on the right.
-fn heatmap(m: &Modules, look: Look, title: &str, size: Page) -> String {
+fn heatmap(m: &Modules, look: Look, title: &str, size: Page) -> Result<String, String> {
     let (rows, values) = values(m, look);
     let all: Vec<f64> = values.iter().flatten().flatten().copied().collect();
     let diverging = look != Look::Percent;
@@ -183,9 +196,9 @@ fn heatmap(m: &Modules, look: Look, title: &str, size: Page) -> String {
     let (head, scale, foot) = (4.0 * f, 6.0 * f, 3.0 * f);
     let (cols, n) = (m.columns.len(), rows.len());
     // Square boxes as large as the page allows (44 points without one).
-    let (cell, (w, h)) = cells(size, 44.0, (label + scale, head + foot), (cols, n));
+    let (cell, (w, h)) = cells(size, 44.0, (label + scale, head + foot), (cols, n))?;
     let font = (cell * 0.28).min(f);
-    svg(w, h, |c: &mut Canvas| {
+    Ok(svg(w, h, |c: &mut Canvas| {
         heading(c, title, f, w);
         for (j, &role) in m.columns.iter().enumerate() {
             let x = label + cell * (j as f64 + 0.5);
@@ -262,7 +275,7 @@ fn heatmap(m: &Modules, look: Look, title: &str, size: Page) -> String {
             );
         }
         c.text(label, h - f, what, f, Anchor::Start, MUTED);
-    })
+    }))
 }
 
 /// A plot's frame: its y range ticked at the ends and the middle on the
@@ -399,7 +412,7 @@ fn batches(m: &Modules, title: &str, size: Page) -> Result<String, String> {
     let (label, head) = (3.5 * f, 2.6 * f + longest(&mut d.batches.iter()) * 1.1 + f);
     let (right, foot) = (longest(&mut said.iter()) + 2.0 * f, 3.0 * f);
     let (cols, n) = (order.len(), m.columns.len());
-    let (cell, (w, h)) = cells(size, 40.0, (label + right, head + foot), (cols, n));
+    let (cell, (w, h)) = cells(size, 40.0, (label + right, head + foot), (cols, n))?;
     let font = (cell * 0.28).min(f);
     Ok(svg(w, h, |c: &mut Canvas| {
         heading(c, title, f, w);

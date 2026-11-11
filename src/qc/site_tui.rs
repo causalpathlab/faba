@@ -57,6 +57,7 @@ mod writer;
 
 use annotation::*;
 use column::*;
+pub(crate) use draw::QC_LEAST_W;
 use draw::{render_gff, render_leave, LEGEND};
 use genes::*;
 use keys::*;

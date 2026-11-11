@@ -23,10 +23,20 @@ fn the_modules_grid_is_drawn_under_each_look_and_for_a_size() {
         crate::figure::svg_size(&draw(&m, Plot::Modules, Look::Shift, "a fit", page).unwrap())
     };
     assert_eq!(at((Some(252.0), Some(216.0))), (252.0, 216.0));
-    // Square cells: a wider page alone makes a taller grid.
-    let (narrow, wide) = (at((Some(252.0), None)), at((Some(504.0), None)));
-    assert_eq!((narrow.0, wide.0), (252.0, 504.0));
-    assert!(wide.1 > narrow.1, "{narrow:?} {wide:?}");
+    // One side alone: the other in the grid's own proportions.
+    let own = crate::figure::svg_size(&shift);
+    let (w, h) = at((Some(2.0 * own.0), None));
+    assert!((w / h - own.0 / own.1).abs() < 1e-9, "{w}x{h} of {own:?}");
+    // Too small for its cells: refused, saying the least.
+    let e = draw(
+        &m,
+        Plot::Modules,
+        Look::Shift,
+        "a fit",
+        (Some(60.0), Some(50.0)),
+    )
+    .unwrap_err();
+    assert!(e.contains("needs at least"), "{e}");
 }
 
 /// `--fig-width` and `--fig-height` (0.19.0's `--width` and `--height`

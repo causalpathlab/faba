@@ -320,6 +320,10 @@ fn filter_fileset(
     out_dir: &str,
     gff: &mut Option<Box<str>>,
 ) -> anyhow::Result<Option<SiteFilterArgs>> {
+    // The figures' page, checked before anything is read: their table and
+    // plots need a width (their height is checked as each is drawn).
+    let least = (crate::qc::site_tui::QC_LEAST_W, 0.0);
+    let page = args.size.page_at_least(least, "a qc figure")?;
     let prep = prepare(args, input)?;
     let has_sites = prep.tables.values().any(|t| !t.is_empty());
     if args.batch_process || !has_sites {
@@ -337,7 +341,7 @@ fn filter_fileset(
                 &args.site,
                 gff.as_deref(),
                 pinned,
-                args.size.page()?,
+                page,
             )?
         } else {
             Vec::new()
@@ -365,6 +369,7 @@ fn filter_fileset(
             Writer {
                 output: out_dir,
                 progress: &progress,
+                page,
                 start: Some(Box::new(|site: SiteFilterArgs, figures: Vec<Figure>| {
                     let (prep, progress) = (&prep, &progress);
                     writer = Some(s.spawn(move || {

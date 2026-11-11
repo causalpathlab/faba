@@ -85,6 +85,10 @@ pub enum FigFormat {
 }
 
 #[derive(Args, Debug, Clone)]
+#[command(
+    mut_arg("fig_width", |a| a.help("The figure's width in inches (default 8)")),
+    mut_arg("fig_height", |a| a.help("The figure's height in inches, its panels' tracks sharing it (default: as tall as they need)"))
+)]
 pub struct PileupArgs {
     #[arg(
         num_args = 1..,
@@ -338,7 +342,7 @@ pub struct PileupArgs {
     no_pdf: bool,
 
     /// The figure's size on the page: 8 inches wide unless given, as tall
-    /// as its panels need unless given.
+    /// as its panels need unless given (the help says so).
     #[command(flatten)]
     size: crate::figure::SizeArgs,
 
@@ -1039,6 +1043,9 @@ impl PileupArgs {
 }
 
 pub fn run_pileup(args: &PileupArgs) -> anyhow::Result<()> {
+    // The figure's size, refused before anything is read (its tracks'
+    // floor, which depends on the panels, is checked as it is drawn).
+    args.size.inches()?;
     let mut base = args.clone();
     if base.data_files.is_empty() {
         let ask = crate::site_analysis::input_picker::ask_inputs(

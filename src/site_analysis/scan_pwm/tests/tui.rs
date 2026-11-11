@@ -118,6 +118,15 @@ fn a_wide_window_scrolls_to_the_cursor() {
     screen(&mut v, 8, 4);
 }
 
+/// A logo's least page grows with its positions: 8 points a letter.
+#[test]
+fn a_logos_least_page_grows_with_its_positions() {
+    assert_eq!(super::least(21), (76.0 + 168.0, 200.0));
+    let size = crate::figure::SizeArgs::new(Some(2.0), None);
+    assert!(size.page_at_least(super::least(201), "this logo").is_err());
+    assert!(size.page_at_least(super::least(5), "this logo").is_ok());
+}
+
 /// A size asked for is the logo's, whatever the view's shape.
 #[test]
 fn the_logo_is_laid_out_for_a_size_asked_for() {
