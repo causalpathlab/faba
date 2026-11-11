@@ -57,7 +57,7 @@ hdf5 = ["data-beans/hdf5"]
 data-beans = { version = "0.10.12", default-features = false, features = ["aux", "tui"] }
 # Detachable sessions for the views, the image protocol of the attached
 # terminal, and the runner of the child `faba run` follows.
-legume-tui = "0.3.3"
+legume-tui = "0.3.16"
 # `faba mcp`.
 legume-mcp = { version = "0.4", optional = true }
 ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
@@ -100,7 +100,7 @@ serde_json = "1.0"
 
 [dev-dependencies]
 # Drives the real binary through pseudo-terminals in the session tests.
-legume-tui = { version = "0.3.3", default-features = false, features = ["testing"] }
+legume-tui = { version = "0.3.16", default-features = false, features = ["testing"] }
 tempfile = "3.2"
 
 [target."cfg(unix)".dependencies.rustix]
