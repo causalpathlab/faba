@@ -52,8 +52,8 @@ cluster_view shows a cluster fit level by level, from its run record \
 ({m}_blockmodel.run.json) or the directory holding its tables: the modules, \
 then a gene module, a gene, the cell modules, the trace and verdict, the \
 settings.
-5. cluster fits cells by their own site reads (link, blocks or crp) and \
-writes its tables to `out`. In two rounds: first `modality` count, cell \
+5. cluster fits cells by their own site reads (a blockmodel of cell and \
+gene modules, by variational inference) and writes its tables to `out`. In two rounds: first `modality` count, cell \
 modules by gene counts (it writes count_blockmodel.run.json); then, with \
 `within` naming that record, m6a or atoi within each of its cell modules. \
 The second round writes {m}_within.run.json, which cluster_view opens: the \
@@ -67,8 +67,8 @@ output goes in today's results folder, named after the input and the tool. \
 Paths resolve against the server's working directory. Common flags have \
 their own arguments; further flags go in `options`, as `faba <command> \
 --help` lists them; `options` cannot name the output or open a view. Results \
-give the paths written and what the run recorded (`results`: a site fit's \
-R-hat or a count fit's ELBO verdict, its cluster sizes).";
+give the paths written and what the run recorded (`results`: a fit's ELBO \
+verdict, its cluster sizes).";
 
 fn schema(properties: Value, required: &[&str]) -> Value {
     json!({ "type": "object", "properties": properties, "required": required })
@@ -220,21 +220,18 @@ fn tools() -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "cluster",
-            "Cluster cells by their site reads (`faba cluster`). `data` is a faba directory or site matrices. `model` is link (the default), blocks or crp; blocks (cell and gene modules) is fitted by variational inference from a k-means start, as a count fit is (`chains` restarts, `svi_epochs`, `batch_size`, `epochs`, `tol`; not `sweeps` or `burn_in`), link and crp by MCMC. Tables go to `out`, a new directory, not back into `data`. With `modality` count, cluster cells by their gene counts instead (count matrices), fitted by variational inference from a k-means start: `chains` restarts (the best kept), `svi_epochs`, `batch_size`, `epochs` and `tol` apply, `sweeps` and `burn_in` do not; its verdict is whether the best restart's ELBO settled. With `within`, the run record of such a count fit (count_blockmodel.run.json), fit the sites within each of its cell modules, one fit a module (`model` blocks unless given), into `out`/within/{m}/{group}/, with `out`/{m}_within.run.json naming them all and {m}_within_cells.parquet giving each cell its nested label (C3.2); `data` may then be left out, and the matrices are those beside the count fit's inputs.",
+            "Cluster cells by their site reads (`faba cluster`). `data` is a faba directory or site matrices. The model is a blockmodel of cell modules and gene modules, a methylation shift per pair and each cell's own level, fitted by variational inference from k-means starts (`chains` restarts, the best by ELBO kept; `svi_epochs`, `batch_size`, `epochs`, `tol`). The MCMC fits of faba before 0.19 are gone: `model` link or crp, `sweeps`, `burn_in`, `shift`, `profile_strength` and `holdout` are refused. Tables go to `out`, a new directory, not back into `data`. With `modality` count, cluster cells by their gene counts instead (count matrices), fitted alike: its verdict is whether the best restart's ELBO settled. With `within`, the run record of such a count fit (count_blockmodel.run.json), fit the sites within each of its cell modules, one fit a module, into `out`/within/{m}/{group}/, with `out`/{m}_within.run.json naming them all and {m}_within_cells.parquet giving each cell its nested label (C3.2); `data` may then be left out, and the matrices are those beside the count fit's inputs.",
             schema(
                 json!({
                     "data": { "type": "array", "items": { "type": "string" }, "description": "A faba directory, or site (or, with `modality` count, count) matrices; required unless `within` is given" },
                     "modality": fit_modality(),
-                    "model": { "type": "string", "enum": ["link", "blocks", "crp"] },
                     "cell_roles": { "type": "integer", "minimum": 1 },
                     "gene_roles": { "type": "integer", "minimum": 1 },
                     "chains": { "type": "integer", "minimum": 1 },
-                    "sweeps": { "type": "integer", "minimum": 1, "description": "MCMC site fits only (not --model blocks)" },
-                    "burn_in": { "type": "integer", "minimum": 0, "description": "MCMC site fits only (not --model blocks)" },
-                    "svi_epochs": { "type": "integer", "minimum": 0, "description": "Fits by variational inference (count, model blocks): stochastic epochs before coordinate ascent" },
-                    "batch_size": { "type": "integer", "minimum": 1, "description": "Fits by variational inference: cells per minibatch" },
-                    "epochs": { "type": "integer", "minimum": 1, "description": "Fits by variational inference: epochs at most" },
-                    "tol": { "type": "number", "minimum": 0, "description": "Fits by variational inference: converged when an epoch moves the ELBO by less than this per count (per read for model blocks)" },
+                    "svi_epochs": { "type": "integer", "minimum": 0, "description": "Stochastic epochs before coordinate ascent" },
+                    "batch_size": { "type": "integer", "minimum": 1, "description": "Cells per minibatch" },
+                    "epochs": { "type": "integer", "minimum": 1, "description": "Epochs at most" },
+                    "tol": { "type": "number", "minimum": 0, "description": "Converged when an epoch moves the ELBO by less than this per count (per read for a site fit)" },
                     "fit": { "type": "string", "description": "Fit only matrices whose path matches this pattern (`*`, `?`); the rest are assigned after" },
                     "out": out(), "options": options(),
                 }),
@@ -352,8 +349,6 @@ enum Kind {
     /// The bare flag when true.
     Switch,
     Number,
-    /// A number, or `inf`.
-    Strength,
     /// The flag once per value.
     List,
     Choice(&'static [&'static str]),
@@ -410,27 +405,9 @@ const TYPED: &[(&[&str], &str, Kind, &str)] = &[
     ),
     (
         &["cluster"],
-        "shift",
-        Kind::Choice(&["on", "off"]),
-        "A methylation shift per block (default: off with link, on with blocks)",
-    ),
-    (
-        &["cluster"],
         "seed",
         Kind::Number,
-        "Random seed; chain i uses seed + i (default 1)",
-    ),
-    (
-        &["cluster"],
-        "profile_strength",
-        Kind::Strength,
-        "Pseudo-reads pulling a block's site fraction to its centre; `inf` fixes it there",
-    ),
-    (
-        &["cluster"],
-        "holdout",
-        Kind::Number,
-        "Share of (cell, site) entries held out and scored, to compare models (default 0)",
+        "Random seed; restart i uses seed + i (default 1)",
     ),
     (
         &["cluster"],
@@ -482,7 +459,6 @@ fn typed_schema(kind: Kind, about: &str) -> Value {
         Kind::Text | Kind::Path => json!({ "type": "string", "description": about }),
         Kind::Switch => json!({ "type": "boolean", "description": about }),
         Kind::Number => json!({ "type": "number", "description": about }),
-        Kind::Strength => json!({ "type": ["number", "string"], "description": about }),
         Kind::List => {
             json!({ "type": "array", "items": { "type": "string" }, "description": about })
         }
@@ -504,10 +480,7 @@ fn typed_flags(tool: &str, a: &Arguments) -> Result<Vec<String>> {
                     argv.push(flag);
                 }
             }
-            (Kind::Number | Kind::Strength, Value::Number(n)) => {
-                push_flag(&mut argv, &flag, &n.to_string())
-            }
-            (Kind::Strength, Value::String(s)) if s == "inf" => push_flag(&mut argv, &flag, s),
+            (Kind::Number, Value::Number(n)) => push_flag(&mut argv, &flag, &n.to_string()),
             (Kind::Text, Value::String(s)) => push_flag(&mut argv, &flag, s),
             (Kind::Path, Value::String(_)) => push_flag(&mut argv, &flag, &a.path(key)?),
             (Kind::Choice(of), Value::String(s)) if of.contains(&s.as_str()) => {
@@ -522,7 +495,6 @@ fn typed_flags(tool: &str, a: &Arguments) -> Result<Vec<String>> {
                 }
             }
             (Kind::Choice(of), v) => bail!("`{key}` is one of {}, not {v}", of.join(", ")),
-            (Kind::Strength, v) => bail!("`{key}` is a number or \"inf\", not {v}"),
             (kind, v) => bail!(
                 "`{key}` is a {}, not {v}",
                 typed_schema(kind, "")["type"].as_str().unwrap_or("value")
@@ -1234,6 +1206,16 @@ fn qc(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
     Ok(content)
 }
 
+/// `cluster`'s arguments of the MCMC fits faba had before 0.19.
+const REMOVED_KEYS: [&str; 6] = [
+    "model",
+    "sweeps",
+    "burn_in",
+    "shift",
+    "profile_strength",
+    "holdout",
+];
+
 fn cluster(a: &Arguments, cx: &Call) -> Result<Value> {
     let data = a.paths("data")?;
     // The second round reads the matrices beside the count fit's when none
@@ -1252,20 +1234,26 @@ fn cluster(a: &Arguments, cx: &Call) -> Result<Value> {
     let mut argv = vec!["cluster".into()];
     argv.extend(data.iter().cloned());
     push_opt(&mut argv, "--modality", a.str("modality"));
-    if let Some(model) = a.str("model") {
-        ensure!(
-            matches!(model, "link" | "blocks" | "crp"),
-            "`model` is link, blocks or crp, not {model}"
-        );
-        push_flag(&mut argv, "--model", model);
-    }
+    // The MCMC fits' arguments, refused rather than dropped (`model`
+    // blocks, the only model left, is taken as it is).
+    let removed: Vec<&str> = REMOVED_KEYS
+        .into_iter()
+        .filter(|&k| match k {
+            "model" => a.str(k).is_some_and(|m| m != "blocks"),
+            _ => a.0.get(k).is_some_and(|v| !v.is_null()),
+        })
+        .collect();
+    ensure!(
+        removed.is_empty(),
+        "`{}` {}",
+        removed.join("`, `"),
+        crate::cluster::REMOVED_SAID
+    );
     push_opt(&mut argv, "--fit", a.str("fit"));
     argv.extend(a.numbers(&[
         "cell_roles",
         "gene_roles",
         "chains",
-        "sweeps",
-        "burn_in",
         "svi_epochs",
         "batch_size",
         "epochs",
@@ -1530,27 +1518,18 @@ mod tests {
     #[test]
     fn typed_arguments_become_flags_ahead_of_options() {
         let args = json!({
-            "data": ["d"], "seed": 7, "shift": "on", "profile_strength": "inf",
-            "options": ["--sweeps", "10"],
+            "data": ["d"], "seed": 7, "within_min_cells": 20,
+            "options": ["--epochs", "10"],
         });
         let a = Arguments(with_typed("cluster", args).unwrap());
         let argv = a.options(&[]).unwrap();
         assert_eq!(
             argv,
-            [
-                "--shift",
-                "on",
-                "--seed",
-                "7",
-                "--profile-strength",
-                "inf",
-                "--sweeps",
-                "10"
-            ]
+            ["--seed", "7", "--within-min-cells", "20", "--epochs", "10"]
         );
         let flags = |tool, args| typed_flags(tool, &Arguments(args));
-        let e = flags("cluster", json!({ "shift": "sometimes" })).unwrap_err();
-        assert!(e.to_string().contains("one of on, off"), "{e}");
+        let e = flags("metagene", json!({ "isoforms": "sometimes" })).unwrap_err();
+        assert!(e.to_string().contains("one of weighted, all"), "{e}");
         assert!(flags("cluster", json!({ "seed": "7" })).is_err());
         assert!(flags("pileup", json!({ "cell_membership": "-m.tsv" })).is_err());
         assert_eq!(
@@ -1615,27 +1594,34 @@ sites	m6A	10	2
 
     /// Every blockmodel option, under any of its flags, passes through
     /// `options` to `faba cluster-view`, which refuses it as clap does,
-    /// saying to run `faba cluster` with it: a viewer never fits.
+    /// saying to run `faba cluster` with it (a viewer never fits), or, for
+    /// the MCMC fits' flags, that they are gone.
     #[test]
     fn cluster_view_refuses_every_option_that_would_fit() {
-        for option in [
+        let removed = [
             &["--model", "link"][..],
-            &["--cell-roles", "4"],
-            &["--communities", "4"],
             &["--prior-strength", "2"],
-            &["--gene-roles", "3"],
             &["--shift", "on"],
             &["--global", "on"],
             &["--profile-strength", "inf"],
-            &["--membership-alpha=2"],
             &["--community-gamma", "3"],
+            &["--sweeps", "50"],
+            &["--burn-in", "10"],
+        ];
+        for option in [
+            &["--cell-roles", "4"][..],
+            &["--communities", "4"],
+            &["--gene-roles", "3"],
+            &["--membership-alpha=2"],
             &["--gene-alpha", "1"],
             &["--shift-sd", "1"],
             &["--cell-sd", "1"],
             &["--chains", "2"],
-            &["--sweeps", "50"],
-            &["--burn-in", "10"],
-        ] {
+            &["--epochs", "5"],
+        ]
+        .into_iter()
+        .chain(removed)
+        {
             let a = Arguments(json!({ "options": option }));
             let passed = a.options(&[]).unwrap();
             let line = ["faba", "cluster-view", "out/", "--batch-process"];
@@ -1643,10 +1629,11 @@ sites	m6A	10	2
             let err = crate::matches(&mut crate::faba_command(), all)
                 .unwrap_err()
                 .to_string();
-            assert!(
-                err.contains("never fits") && err.contains("`faba cluster`"),
-                "{option:?}: {err}"
-            );
+            let said = match removed.contains(&option) {
+                true => err.contains("removed in faba 0.19"),
+                false => err.contains("never fits") && err.contains("`faba cluster`"),
+            };
+            assert!(said, "{option:?}: {err}");
         }
     }
 

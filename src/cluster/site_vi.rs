@@ -26,7 +26,7 @@
 
 use super::count::sum_parts;
 use super::count::vi::{Hooks, Options};
-use super::unified::Links;
+use super::links::Links;
 use rand::rngs::SmallRng;
 use rand::seq::SliceRandom;
 use rayon::prelude::*;

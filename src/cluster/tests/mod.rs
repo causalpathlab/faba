@@ -1,37 +1,11 @@
-use super::crp::{self, ln_beta, ln_pred, Chain, Model, Sample, Settings};
-use super::fit::{self, OUTSIDE};
 use super::read::{self, Cell, Reads, Site, SiteData, Weighted};
-use super::summary::{self, ari};
-use legume_numeric::mcmc::engine::{run_mcmc_parallel, McmcConfig};
+use super::{math, weights};
 use rand::rngs::SmallRng;
-use rand::{RngExt, SeedableRng};
-use rustc_hash::FxHashMap;
-use statrs::function::gamma::ln_gamma;
+use rand::RngExt;
 
 mod command;
-mod fast;
+mod planted;
 mod progress;
-mod unified;
-
-fn settings(gibbs: bool, split_merge: usize, fixed_alpha: Option<f64>) -> Settings {
-    Settings {
-        strength: 2.0,
-        split_merge,
-        restricted: 2,
-        start_clusters: 3,
-        gibbs,
-        fixed_alpha,
-    }
-}
-
-fn config(n_samples: usize, warmup: usize, seed: u64) -> McmcConfig {
-    McmcConfig {
-        n_samples,
-        warmup,
-        thin: 1,
-        seed,
-    }
-}
 
 fn site(p: i64) -> Site {
     Site {
@@ -47,20 +21,6 @@ fn cell(barcode: &str, fit: bool) -> Cell {
         batch: "B1".into(),
         fit,
     }
-}
-
-/// Cells over two sites, for the exact posteriors: the first ones mostly
-/// converted at site 0, the next ones mostly not.
-fn small_cells(n: usize) -> Reads {
-    let all = [
-        vec![(0, 3, 0), (1, 1, 1)],
-        vec![(0, 2, 1), (1, 0, 2)],
-        vec![(0, 0, 3), (1, 2, 0)],
-        vec![(0, 1, 2), (1, 1, 1)],
-        vec![(0, 2, 0), (1, 0, 1)],
-        vec![(0, 0, 2), (1, 2, 1)],
-    ];
-    Reads::from_cells(all[..n].to_vec())
 }
 
 /// Cells drawn from a fraction per site, a few reads at `cover` of the sites.
@@ -81,297 +41,6 @@ fn draw_cells(fracs: &[&[f64]], cover: f64, rng: &mut SmallRng) -> Reads {
             })
             .collect(),
     )
-}
-
-#[test]
-fn predictive_as_logs_matches_beta_functions() {
-    for &(x, y, m, u) in &[
-        (0.7, 2.3, 1, 0),
-        (3.0, 1.5, 2, 3),
-        (10.2, 4.4, 9, 8),
-        (0.4, 0.6, 20, 1),
-    ] {
-        let exact = ln_beta(x + m as f64, y + u as f64) - ln_beta(x, y);
-        assert!(
-            (ln_pred(x, y, m as f64, u as f64) - exact).abs() < 1e-9,
-            "{x} {y} {m} {u}"
-        );
-    }
-    // Weighted reads are not whole: the Beta-function path.
-    let exact = ln_beta(1.3 + 0.7, 2.0 + 1.4) - ln_beta(1.3, 2.0);
-    assert!((ln_pred(1.3, 2.0, 0.7, 1.4) - exact).abs() < 1e-12);
-}
-
-/// A number split into a mantissa in `[1, 2)` and a power of 2 is
-/// rebuilt from them exactly, subnormals and 0 included.
-#[test]
-fn binary_splits_rebuild_exactly() {
-    for x in [
-        1.0,
-        0.75,
-        3.0e-12,
-        1.7e300,
-        2.2e-308,
-        4.9e-320,
-        f64::MIN_POSITIVE,
-    ] {
-        let (m, e) = crp::binary_split(x);
-        assert!((1.0..2.0).contains(&m), "{x}: mantissa {m}");
-        // Rebuilt in two halves, so a subnormal's 2^e does not underflow.
-        let half = e as i32 / 2;
-        let rebuilt = m * 2f64.powi(half) * 2f64.powi(e as i32 - half);
-        assert_eq!(rebuilt, x, "{x}: {m} 2^{e}");
-    }
-    assert_eq!(crp::binary_split(0.0), (0.0, 0));
-}
-
-/// Every partition of `0..n`, as labels by first appearance.
-fn partitions(n: usize) -> Vec<Vec<u16>> {
-    let mut out = vec![vec![0u16]];
-    for _ in 1..n {
-        out = out
-            .into_iter()
-            .flat_map(|p| {
-                let k = *p.iter().max().unwrap() + 1;
-                (0..=k).map(move |l| {
-                    let mut q = p.clone();
-                    q.push(l);
-                    q
-                })
-            })
-            .collect();
-    }
-    out
-}
-
-/// The exact posterior over every partition of `reads`' cells, `alpha`
-/// fixed or, `None`, integrated out under its Gamma(1, 1) prior: the CRP
-/// times each cluster's Beta-binomial marginal at the model's prior.
-fn exact_posterior(reads: &Reads, strength: f64, alpha: Option<f64>) -> Vec<(Vec<u16>, f64)> {
-    let (n, sites) = (
-        reads.cells(),
-        *reads.site.iter().max().unwrap() as usize + 1,
-    );
-    let (mut on, mut tot) = (vec![0.0f64; sites], vec![0.0f64; sites]);
-    for i in 0..reads.site.len() {
-        on[reads.site[i] as usize] += reads.on[i] as f64;
-        tot[reads.site[i] as usize] += (reads.on[i] + reads.off[i]) as f64;
-    }
-    let p: Vec<f64> = (0..sites)
-        .map(|s| crp::pooled_fraction(on[s], tot[s]))
-        .collect();
-    let parts = partitions(n);
-    let logp: Vec<f64> = parts
-        .iter()
-        .map(|part| {
-            let k = *part.iter().max().unwrap() as usize + 1;
-            let mut v = 0.0;
-            for l in 0..k {
-                let members: Vec<usize> = (0..n).filter(|&c| part[c] as usize == l).collect();
-                v += ln_gamma(members.len() as f64);
-                let (mut m, mut u) = (vec![0u32; sites], vec![0u32; sites]);
-                for &c in &members {
-                    let (ss, cm, cu) = reads.of(c);
-                    for i in 0..ss.len() {
-                        m[ss[i] as usize] += cm[i];
-                        u[ss[i] as usize] += cu[i];
-                    }
-                }
-                for s in 0..sites {
-                    let (a, b) = (strength * p[s], strength * (1.0 - p[s]));
-                    v += ln_beta(a + m[s] as f64, b + u[s] as f64) - ln_beta(a, b);
-                }
-            }
-            // The CRP's alpha^K Gamma(alpha) / Gamma(alpha + n), at alpha or
-            // integrated against exp(-alpha) on a fine grid.
-            let crp = |al: f64| k as f64 * al.ln() + ln_gamma(al) - ln_gamma(al + n as f64);
-            v + match alpha {
-                Some(al) => crp(al),
-                None => {
-                    let h = 1e-3;
-                    let terms: Vec<f64> = (1..60_000)
-                        .map(|t| t as f64 * h)
-                        .map(|al| crp(al) - al)
-                        .collect();
-                    let mx = terms.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-                    mx + (terms.iter().map(|t| (t - mx).exp()).sum::<f64>() * h).ln()
-                }
-            }
-        })
-        .collect();
-    let mx = logp.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-    let z: f64 = logp.iter().map(|l| (l - mx).exp()).sum();
-    parts
-        .into_iter()
-        .zip(logp.iter().map(|l| (l - mx).exp() / z))
-        .collect()
-}
-
-/// Total variation between the chains' draw frequencies and `exact`.
-fn total_variation(chains: &[Chain], exact: &[(Vec<u16>, f64)]) -> f64 {
-    let total = chains.iter().map(|c| c.samples.len()).sum::<usize>() as f64;
-    let mut freq: FxHashMap<&[u16], f64> = FxHashMap::default();
-    for s in chains.iter().flat_map(|c| &c.samples) {
-        *freq.entry(&s.z).or_default() += 1.0 / total;
-    }
-    exact
-        .iter()
-        .map(|(p, e)| (freq.get(p.as_slice()).copied().unwrap_or(0.0) - e).abs())
-        .sum::<f64>()
-        / 2.0
-}
-
-/// Exact posterior of every partition of four cells, alpha fixed, against
-/// the sampler's draw frequencies: with split-merge alone and with both moves.
-#[test]
-fn sampler_matches_the_exact_posterior_on_four_cells() {
-    let reads = small_cells(4);
-    let weighted = Weighted::new(&reads, None);
-    let alpha = 0.8;
-    let exact = exact_posterior(&reads, 2.0, Some(alpha));
-    for (gibbs, sm) in [(false, 3), (true, 1)] {
-        let model = Model::new(&weighted, 2, settings(gibbs, sm, Some(alpha)));
-        let chains = run_mcmc_parallel(&model, &config(20_000, 200, 7), 2);
-        let tv = total_variation(&chains, &exact);
-        assert!(
-            tv < 0.02,
-            "gibbs {gibbs}: total variation {tv:.4} from the exact posterior"
-        );
-    }
-}
-
-/// Every move together, alpha resampled, against the exact posterior over
-/// all 203 partitions of six cells: the chain leaves the posterior invariant
-/// (detailed balance of each move) and reaches it.
-#[test]
-fn all_moves_with_alpha_resampled_match_the_exact_posterior() {
-    let reads = small_cells(6);
-    let weighted = Weighted::new(&reads, None);
-    let model = Model::new(&weighted, 2, settings(true, 2, None));
-    let chains = run_mcmc_parallel(&model, &config(40_000, 500, 21), 2);
-    let tv = total_variation(&chains, &exact_posterior(&reads, 2.0, None));
-    assert!(
-        tv < 0.03,
-        "total variation {tv:.4} from the exact posterior"
-    );
-}
-
-/// Planted clusters at the sparsity of real cells (a few reads at a few
-/// percent of the sites) are recovered, with their number.
-#[test]
-fn recovers_planted_clusters() {
-    let (cells, sites, k) = (300usize, 400usize, 3usize);
-    let mut rng = SmallRng::seed_from_u64(3);
-    let base: Vec<f64> = (0..sites).map(|_| rng.random_range(0.05..0.4)).collect();
-    // A third of the sites differ by cluster.
-    let frac: Vec<Vec<f64>> = (0..k)
-        .map(|_| {
-            base.iter()
-                .map(|&p| {
-                    if rng.random::<f64>() < 0.33 {
-                        rng.random_range(0.0..0.9)
-                    } else {
-                        p
-                    }
-                })
-                .collect()
-        })
-        .collect();
-    let truth: Vec<u16> = (0..cells).map(|c| (c % k) as u16).collect();
-    let fracs: Vec<&[f64]> = truth.iter().map(|&t| frac[t as usize].as_slice()).collect();
-    let reads = draw_cells(&fracs, 0.15, &mut rng);
-    let weighted = Weighted::new(&reads, None);
-    let model = Model::new(&weighted, sites, settings(true, 5, None));
-    let chains: Vec<Chain> = run_mcmc_parallel(&model, &config(60, 60, 11), 2);
-    // A side group of ten-odd cells is all but tied with folding it back
-    // (the posterior barely tells them apart), so count clusters of 20 up.
-    let (part, _) = fit::settle(
-        &reads,
-        &weighted,
-        &summary::partition(&chains),
-        20,
-        sites,
-        2.0,
-    );
-    let post = summary::posterior(&chains, 20);
-    let mode = post.k.iter().max_by(|a, b| a.1.total_cmp(&b.1)).unwrap().0;
-    assert_eq!(mode, k, "K posterior {:?}", post.k);
-    assert_eq!(part.k, k);
-    let score = ari(&part.z, &truth);
-    assert!(score > 0.95, "ARI {score:.3}");
-    // Draws park a sparse cell in a passing singleton now and then, which
-    // lowers its co-clustering; most cells stay put.
-    let mut conf = part.confidence.clone();
-    conf.sort_by(f64::total_cmp);
-    let median = conf[cells / 2];
-    assert!(median > 0.9, "median confidence {median:.3}");
-}
-
-/// The contingency-table summaries equal those from an explicit similarity matrix.
-#[test]
-fn summaries_match_an_explicit_similarity_matrix() {
-    let mut rng = SmallRng::seed_from_u64(5);
-    let n = 40;
-    let mut draw = || {
-        let k = rng.random_range(1..5u32);
-        let raw: Vec<u32> = (0..n).map(|_| rng.random_range(0..k)).collect();
-        let (z, k) = crp::compact(&raw);
-        Sample {
-            k,
-            z,
-            alpha: 1.0,
-            log_post: 0.0,
-            heldout: (0.0, 0.0),
-        }
-    };
-    let chains: Vec<Chain> = (0..2)
-        .map(|_| Chain {
-            samples: (0..15).map(|_| draw()).collect(),
-            splits: 0,
-            merges: 0,
-        })
-        .collect();
-    let draws: Vec<&Sample> = chains.iter().flat_map(|c| &c.samples).collect();
-    let t = draws.len() as f64;
-    let mut psm = vec![0.0f64; n * n];
-    for d in &draws {
-        for i in 0..n {
-            for j in 0..n {
-                if d.z[i] == d.z[j] {
-                    psm[i * n + j] += 1.0 / t;
-                }
-            }
-        }
-    }
-    let loss = |z: &[u16]| -> f64 {
-        (0..n * n)
-            .map(|ij| {
-                let same = f64::from(u8::from(z[ij / n] == z[ij % n]));
-                (same - psm[ij]).powi(2)
-            })
-            .sum()
-    };
-    let best = draws
-        .iter()
-        .map(|d| loss(&d.z))
-        .fold(f64::INFINITY, f64::min);
-    let part = summary::partition(&chains);
-    assert!(
-        (loss(&part.z) - best).abs() < 1e-9,
-        "not the least-squares draw"
-    );
-    for i in 0..n {
-        let own: Vec<usize> = (0..n).filter(|&j| part.z[j] == part.z[i]).collect();
-        let explicit = own.iter().map(|&j| psm[i * n + j]).sum::<f64>() / own.len() as f64;
-        assert!((part.confidence[i] - explicit).abs() < 1e-9, "cell {i}");
-    }
-}
-
-#[test]
-fn ari_is_one_for_relabelled_partitions_and_near_zero_for_unrelated() {
-    let a = [0u16, 0, 1, 1, 2, 2];
-    assert!((ari(&a, &[1, 1, 2, 2, 0, 0]) - 1.0).abs() < 1e-12);
-    assert!(ari(&a, &[0, 1, 2, 0, 1, 2]) < 0.1);
 }
 
 #[test]
@@ -433,58 +102,6 @@ fn a_sites_two_channels_merge_into_one_entry() {
     assert_eq!((sub.of(0).0.len(), sub.of(1)), (0, reads.of(0)));
 }
 
-/// Cells drawn alike in two batches, one batch shifted at every site: the
-/// shift alone makes two clusters; weighted out, one.
-#[test]
-fn batch_shifts_are_cancelled() {
-    let (cells, sites) = (240usize, 150usize);
-    let mut rng = SmallRng::seed_from_u64(9);
-    let base: Vec<f64> = (0..sites).map(|_| rng.random_range(0.1..0.5)).collect();
-    // Batch 1 reads more converted everywhere: logit + 1.5.
-    let shifted: Vec<f64> = base
-        .iter()
-        .map(|&p| 1.0 / (1.0 + (-((p / (1.0 - p)).ln() + 1.5)).exp()))
-        .collect();
-    let batch_of: Vec<u16> = (0..cells).map(|c| (c % 2) as u16).collect();
-    let fracs: Vec<&[f64]> = batch_of
-        .iter()
-        .map(|&b| {
-            if b == 1 {
-                shifted.as_slice()
-            } else {
-                base.as_slice()
-            }
-        })
-        .collect();
-    // Enough reads per batch and site (about 140) that the shrinkage of each
-    // batch's fraction toward the site's leaves little of the shift; thinly
-    // read sites keep part of it by design.
-    let reads = draw_cells(&fracs, 0.6, &mut rng);
-    let clusters = |weighted: &Weighted| {
-        let model = Model::new(weighted, sites, settings(true, 5, None));
-        let chains = run_mcmc_parallel(&model, &config(20, 20, 13), 2);
-        fit::settle(
-            &reads,
-            weighted,
-            &summary::partition(&chains),
-            10,
-            sites,
-            2.0,
-        )
-        .0
-    };
-    let raw = clusters(&Weighted::new(&reads, None));
-    let score = ari(&raw.z, &batch_of);
-    assert!(
-        raw.k >= 2 && score > 0.8,
-        "uncorrected: K {} ARI {score:.2}",
-        raw.k
-    );
-    let w = fit::batch_weights(&reads, &batch_of, 2, sites);
-    let fixed = clusters(&Weighted::new(&reads, Some((&w.on, &w.off))));
-    assert_eq!(fixed.k, 1, "corrected: K {}", fixed.k);
-}
-
 /// Weighted, each batch's reads at a site keep their total and take the
 /// site's pooled fraction (up to the shrinkage of thinly read batches).
 #[test]
@@ -500,9 +117,9 @@ fn batch_weights_keep_totals_and_match_the_pooled_fraction() {
             })
             .collect(),
     );
-    let w = fit::batch_weights(&reads, &batch_of, 2, 1);
+    let w = weights::batch_weights(&reads, &batch_of, 2, 1);
     let weighted = Weighted::new(&reads, Some((&w.on, &w.off)));
-    let p = crp::pooled_fraction(100.0, 200.0);
+    let p = math::pooled_fraction(100.0, 200.0);
     for b in 0..2u16 {
         let (mut won, mut wtot) = (0.0, 0.0);
         for c in (0..20).filter(|&c| batch_of[c] == b) {
@@ -528,76 +145,6 @@ fn batch_weights_keep_totals_and_match_the_pooled_fraction() {
     assert_eq!(w.capped_share, 0.0);
 }
 
-/// A cell with one cluster's pattern but a lower level everywhere goes to
-/// that cluster, not to the one whose sites are all lower.
-#[test]
-fn placement_reads_pattern_not_level() {
-    // Cluster 0: sites 0-1 high, 2-3 low. Cluster 1: everything lowish,
-    // flat. Each cluster: 20 cells, and one cell left out of both.
-    let profile = [[0.8, 0.8, 0.2, 0.2], [0.15, 0.15, 0.15, 0.15]];
-    let mut cells: Vec<Vec<(u32, u32, u32)>> = profile
-        .iter()
-        .flat_map(|prof| {
-            let cell: Vec<_> = prof
-                .iter()
-                .enumerate()
-                .map(|(s, &p)| {
-                    let m = (p * 20.0f64).round() as u32;
-                    (s as u32, m, 20 - m)
-                })
-                .collect();
-            std::iter::repeat_n(cell, 20)
-        })
-        .collect();
-    cells.push(vec![(0, 9, 11)]);
-    let reads = Reads::from_cells(cells);
-    let mut z: Vec<u16> = (0..40).map(|c| (c / 20) as u16).collect();
-    z.push(OUTSIDE);
-    let tiles = fit::Tiles::new(&reads, &Weighted::new(&reads, None), &z, 2, 4, 2.0);
-    // Cluster 0's pattern (high, high, low, low), shifted down to 0.4/0.4/0.05/0.05.
-    let p = tiles.place(
-        &[0, 1, 2, 3],
-        &[8.0, 8.0, 1.0, 1.0],
-        &[12.0, 12.0, 19.0, 19.0],
-        &[20, 20],
-    );
-    assert!(
-        p.cluster == 0 && p.probability > 0.9,
-        "{} {}",
-        p.cluster,
-        p.probability
-    );
-    // Its offset is the level it sits below the cluster.
-    assert!(p.offset < -0.5, "offset {}", p.offset);
-    // The cell left out of the tiles counts toward neither cluster.
-    assert_eq!((tiles.total(0, 0), tiles.total(0, 1)), (400, 400));
-}
-
-/// Folding small clusters into large ones can reorder the sizes: the
-/// result is numbered by size again, largest first.
-#[test]
-fn settled_clusters_are_numbered_by_size() {
-    // Clusters 0 (5 cells) and 1 (4 cells) are kept; cluster 2's 3 cells
-    // read like cluster 1 and join it, making it the largest.
-    let a = vec![(0u32, 10u32, 0u32), (1, 0, 10)];
-    let b = vec![(0u32, 0u32, 10u32), (1, 10, 0)];
-    let mut cells = vec![a; 5];
-    cells.extend(std::iter::repeat_n(b, 7));
-    let reads = Reads::from_cells(cells);
-    let weighted = Weighted::new(&reads, None);
-    let z: Vec<u16> = [0; 5].into_iter().chain([1; 4]).chain([2; 3]).collect();
-    let part = summary::Partition {
-        confidence: vec![1.0; z.len()],
-        k: 3,
-        z,
-    };
-    let (out, _) = fit::settle(&reads, &weighted, &part, 4, 2, 2.0);
-    assert_eq!(out.k, 2);
-    let first: Vec<u16> = out.z.iter().copied().take(5).collect();
-    assert!(first.iter().all(|&x| x == 1), "{:?}", out.z);
-    assert!(out.z[5..].iter().all(|&x| x == 0), "{:?}", out.z);
-}
-
 #[test]
 fn a_batch_name_in_two_folders_is_two_batches() {
     let input = |path: &str, batch: &str| read::Input {
@@ -616,201 +163,6 @@ fn a_batch_name_in_two_folders_is_two_batches() {
     assert_eq!(names, vec!["dirA/B1", "dirB/B1", "B2"]);
 }
 
-/// `line` parsed as `faba cluster` parses it.
-pub(in crate::cluster) fn parse_args(line: &[&str]) -> super::ClusterArgs {
-    use clap::{Args, FromArgMatches};
-    let cmd = super::ClusterArgs::augment_args(clap::Command::new("cluster"));
-    let m = cmd.try_get_matches_from(line).unwrap();
-    super::ClusterArgs::from_arg_matches(&m).unwrap()
-}
-
-/// Too few draws per chain to judge convergence, a profile with no
-/// strength, or gene roles or infinite strength without the shift, are
-/// refused before anything is read.
-#[test]
-fn settings_that_cannot_judge_or_fit_are_refused() {
-    let parse = parse_args;
-    let ok = parse(&["cluster", "x.zarr"]);
-    assert!(super::check(&ok).is_ok());
-    let few = parse(&[
-        "cluster",
-        "x.zarr",
-        "--sweeps",
-        "60",
-        "--burn-in",
-        "50",
-        "--thin",
-        "4",
-    ]);
-    assert!(super::check(&few).is_err());
-    for line in [
-        &["--prior-strength", "0"][..],
-        &["--profile-strength=-1"],
-        &["--model", "crp", "--profile-strength", "inf"],
-        &["--model", "link", "--gene-roles", "3"],
-        &["--model", "blocks", "--shift", "off"],
-        &["--profile-strength", "inf"],
-        &["--model", "blocks", "--shift", "off", "--gene-roles", "1"],
-    ] {
-        let words: Vec<&str> = ["cluster", "x.zarr"].iter().chain(line).copied().collect();
-        let bad = parse(&words);
-        assert!(super::check(&bad).is_err(), "{line:?} accepted");
-    }
-    let refused = super::check(&parse(&["cluster", "x.zarr", "--gene-roles", "3"]))
-        .unwrap_err()
-        .to_string();
-    assert!(refused.contains("--shift"), "{refused}");
-    let refused = super::check(&parse(&["cluster", "x.zarr", "--profile-strength", "inf"]))
-        .unwrap_err()
-        .to_string();
-    assert!(refused.contains("--shift on"), "{refused}");
-    for line in [
-        &["--profile-strength", "inf", "--shift", "on"][..],
-        &["--model", "link", "--gene-roles", "3", "--shift", "on"],
-        &[
-            "--model",
-            "blocks",
-            "--shift",
-            "off",
-            "--gene-roles",
-            "1",
-            "--profile-strength",
-            "5",
-        ],
-    ] {
-        let words: Vec<&str> = ["cluster", "x.zarr"].iter().chain(line).copied().collect();
-        assert!(super::check(&parse(&words)).is_ok(), "{line:?} refused");
-    }
-    for (flag, value) in [
-        ("--communities", "0"),
-        ("--cell-roles", "65535"),
-        ("--membership-alpha", "0"),
-        ("--community-gamma", "-1"),
-        ("--cell-sd", "0"),
-        ("--holdout", "1"),
-        ("--holdout", "-0.1"),
-    ] {
-        let arg = format!("{flag}={value}");
-        let bad = parse(&["cluster", "x.zarr", &arg]);
-        assert!(super::check(&bad).is_err(), "{flag} {value} accepted");
-    }
-}
-
-/// `--model link` and `--model blocks` are presets of the one blockmodel:
-/// link one gene role, no shift, finite strength, HDP weights; blocks gene
-/// roles, the shift, infinite strength (with each cell's own level, its
-/// prior sd `--cell-sd`), symmetric weights. Each switch given overrides
-/// its preset, and `--communities` and `--prior-strength` still name the
-/// cell roles and the strength.
-#[test]
-fn presets_and_switches_resolve_to_one_blockmodel() {
-    use super::unified::{Settings, Weights};
-    let resolve = |line: &[&str]| {
-        let words: Vec<&str> = ["cluster", "x.zarr"].iter().chain(line).copied().collect();
-        super::args::blockmodel(&parse_args(&words))
-    };
-    let link = Settings {
-        cell_roles: 8,
-        gene_roles: 1,
-        alpha: 0.5,
-        gene_alpha: 0.5,
-        weights: Weights::Hdp(1.0),
-        shift_sd: None,
-        strength: 5.0,
-        cell_sd: 1.0,
-    };
-    assert_eq!(resolve(&[]), link);
-    assert_eq!(resolve(&["--model", "link"]), link);
-    let blocks = Settings {
-        gene_roles: 8,
-        shift_sd: Some(1.0),
-        strength: f64::INFINITY,
-        ..link.clone()
-    };
-    assert_eq!(resolve(&["--model", "blocks"]), blocks);
-    assert_eq!(
-        resolve(&[
-            "--model",
-            "blocks",
-            "--global",
-            "hdp",
-            "--community-gamma",
-            "2",
-            "--shift",
-            "off",
-            "--gene-roles",
-            "1",
-            "--prior-strength",
-            "3",
-            "--communities",
-            "4",
-        ]),
-        Settings {
-            cell_roles: 4,
-            gene_roles: 1,
-            weights: Weights::Hdp(2.0),
-            shift_sd: None,
-            strength: 3.0,
-            ..blocks.clone()
-        }
-    );
-    assert_eq!(
-        resolve(&[
-            "--global",
-            "symmetric",
-            "--shift",
-            "on",
-            "--shift-sd",
-            "0.5",
-            "--gene-roles",
-            "3",
-            "--profile-strength",
-            "inf",
-            "--cell-sd",
-            "0.3",
-        ]),
-        Settings {
-            gene_roles: 3,
-            weights: Weights::Symmetric,
-            shift_sd: Some(0.5),
-            strength: f64::INFINITY,
-            cell_sd: 0.3,
-            ..link
-        }
-    );
-}
-
-/// The held-out split: fit and held reads partition the input entry by
-/// entry, the held share is near the fraction asked, and a seed gives the
-/// same split every time (another seed, another split).
-#[test]
-fn hold_out_partitions_the_entries_by_seed() {
-    let mut rng = SmallRng::seed_from_u64(133);
-    let fracs: Vec<Vec<f64>> = (0..200).map(|_| vec![0.4; 100]).collect();
-    let refs: Vec<&[f64]> = fracs.iter().map(Vec::as_slice).collect();
-    let reads = draw_cells(&refs, 0.5, &mut rng);
-    let (fit, held) = read::hold_out(&reads, 0.2, 9);
-    assert_eq!((fit.cells(), held.cells()), (reads.cells(), reads.cells()));
-    for c in 0..reads.cells() {
-        let mut both: Vec<(u32, u32, u32)> = [fit.of(c), held.of(c)]
-            .iter()
-            .flat_map(|(s, m, u)| (0..s.len()).map(|i| (s[i], m[i], u[i])).collect::<Vec<_>>())
-            .collect();
-        both.sort_unstable();
-        let (s, m, u) = reads.of(c);
-        let all: Vec<(u32, u32, u32)> = (0..s.len()).map(|i| (s[i], m[i], u[i])).collect();
-        assert_eq!(
-            both, all,
-            "cell {c}: fit and held do not partition its entries"
-        );
-    }
-    let share = held.site.len() as f64 / reads.site.len() as f64;
-    assert!((share - 0.2).abs() < 0.02, "held share {share:.3}");
-    let again = read::hold_out(&reads, 0.2, 9).1;
-    assert_eq!(again.site, held.site);
-    assert_ne!(read::hold_out(&reads, 0.2, 10).1.site, held.site);
-}
-
 #[test]
 fn site_stats_count_every_cells_reads_and_the_cells_with_any() {
     // Two cells: one with reads at sites 0 and 2, one at site 0 only, an
@@ -825,4 +177,150 @@ fn site_stats_count_every_cells_reads_and_the_cells_with_any() {
     assert_eq!(stats.on, vec![5, 0, 1]);
     assert_eq!(stats.off, vec![5, 0, 0]);
     assert_eq!(stats.cells, vec![2, 0, 1]);
+}
+
+/// `line` parsed as `faba cluster` parses it.
+pub(in crate::cluster) fn parse_args(line: &[&str]) -> super::ClusterArgs {
+    use clap::{Args, FromArgMatches};
+    let cmd = super::ClusterArgs::augment_args(clap::Command::new("cluster"));
+    let m = cmd.try_get_matches_from(line).unwrap();
+    super::ClusterArgs::from_arg_matches(&m).unwrap()
+}
+
+/// Settings that would make the fit meaningless are refused before
+/// anything is read: roles out of range, concentrations and sds not
+/// positive, no restart, no epoch.
+#[test]
+fn settings_that_cannot_fit_are_refused() {
+    assert!(super::check(&parse_args(&["cluster", "x.zarr"])).is_ok());
+    for (flag, value) in [
+        ("--communities", "0"),
+        ("--cell-roles", "65535"),
+        ("--gene-roles", "0"),
+        ("--membership-alpha", "0"),
+        ("--gene-alpha", "-1"),
+        ("--shift-sd", "0"),
+        ("--cell-sd", "0"),
+        ("--chains", "0"),
+        ("--epochs", "0"),
+        ("--tol", "-1"),
+    ] {
+        let arg = format!("{flag}={value}");
+        let bad = parse_args(&["cluster", "x.zarr", &arg]);
+        assert!(super::check(&bad).is_err(), "{flag} {value} accepted");
+    }
+}
+
+/// The MCMC fits' flags (faba before 0.19) are refused by name, each, with
+/// what to use instead; `--model blocks`, the model left, is taken.
+#[test]
+fn the_mcmc_flags_are_refused_by_name() {
+    for line in [
+        &["--model", "link"][..],
+        &["--model", "crp"],
+        &["--sweeps", "100"],
+        &["--burn-in", "10"],
+        &["--thin", "2"],
+        &["--holdout", "0.1"],
+        &["--profile-strength", "inf"],
+        &["--prior-strength", "5"],
+        &["--shift", "on"],
+        &["--global", "hdp"],
+        &["--community-gamma", "2"],
+        &["--split-merge", "3"],
+        &["--restricted-scans", "1"],
+        &["--start-clusters", "4"],
+        &["--min-cluster-cells", "4"],
+    ] {
+        let words: Vec<&str> = ["cluster", "x.zarr"].iter().chain(line).copied().collect();
+        let refused = super::check(&parse_args(&words)).unwrap_err().to_string();
+        let named = if line[0] == "--prior-strength" {
+            "--profile-strength"
+        } else {
+            line[0]
+        };
+        assert!(
+            refused.contains(named) && refused.contains("removed in faba 0.19"),
+            "{line:?}: {refused}"
+        );
+    }
+    let both = parse_args(&["cluster", "x.zarr", "--sweeps", "9", "--model", "crp"]);
+    let refused = super::check(&both).unwrap_err().to_string();
+    assert!(refused.starts_with("--model, --sweeps "), "{refused}");
+    let blocks = parse_args(&["cluster", "x.zarr", "--model", "blocks"]);
+    assert!(super::check(&blocks).is_ok());
+    let count = parse_args(&["cluster", "x/", "--modality", "count", "--sweeps", "9"]);
+    assert!(super::check(&count).is_err());
+}
+
+/// The site blockmodel `faba cluster` fits: cell roles and gene roles (8
+/// unless given), the shift and each cell's own level, symmetric weights;
+/// recorded as the blocks preset unless `--gene-roles` changes it.
+#[test]
+fn the_site_blockmodel_is_the_blocks_preset() {
+    use super::settings::{Settings, Weights};
+    let parse = |line: &[&str]| {
+        let words: Vec<&str> = ["cluster", "x.zarr"].iter().chain(line).copied().collect();
+        parse_args(&words)
+    };
+    let blocks = Settings {
+        cell_roles: 8,
+        gene_roles: 8,
+        alpha: 0.5,
+        gene_alpha: 0.5,
+        weights: Weights::Symmetric,
+        shift_sd: Some(1.0),
+        strength: f64::INFINITY,
+        cell_sd: 1.0,
+    };
+    assert_eq!(super::args::blockmodel(&parse(&[])), blocks);
+    let set = parse(&[
+        "--communities",
+        "4",
+        "--shift-sd",
+        "0.5",
+        "--cell-sd",
+        "0.3",
+    ]);
+    assert_eq!(
+        super::args::blockmodel(&set),
+        Settings {
+            cell_roles: 4,
+            shift_sd: Some(0.5),
+            cell_sd: 0.3,
+            ..blocks.clone()
+        }
+    );
+    let recorded = |line: &[&str]| super::args::recorded(&parse(line)).preset;
+    assert_eq!(recorded(&[]).as_deref(), Some("blocks"));
+    assert_eq!(recorded(&["--gene-roles", "8"]).as_deref(), Some("blocks"));
+    assert_eq!(recorded(&["--gene-roles", "4"]), None);
+}
+
+/// The record of a fit is read whether faba wrote it before 0.19 (a
+/// Gibbs-sampled link fit: drawn weights, finite strength, no shift) or
+/// after (the blocks preset by variational inference).
+#[test]
+fn old_and_new_records_of_the_model_read() {
+    use super::settings::{Recorded, Weights};
+    let old: Recorded = serde_json::from_str(
+        r#"{"preset":"link","settings":{"cell_roles":8,"gene_roles":1,"alpha":0.5,
+            "gene_alpha":0.5,"weights":{"hdp":1.0},"shift_sd":null,"strength":5.0,
+            "cell_sd":1.0}}"#,
+    )
+    .unwrap();
+    assert_eq!(old.settings.weights, Weights::Hdp(1.0));
+    assert_eq!((old.settings.shift_sd, old.settings.strength), (None, 5.0));
+    assert_eq!(old.label(), "link preset");
+    let new: Recorded = serde_json::from_str(
+        r#"{"preset":"blocks","settings":{"cell_roles":8,"gene_roles":8,"alpha":0.5,
+            "gene_alpha":0.5,"weights":"symmetric","shift_sd":1.0,"strength":"inf",
+            "cell_sd":1.0}}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        new,
+        super::args::recorded(&parse_args(&["cluster", "x.zarr"]))
+    );
+    assert_eq!(new.label(), "blocks preset");
 }

@@ -4,8 +4,8 @@
 
 use super::super::command::COUNT_MODALITY;
 use super::super::count::{self, vi, Counts};
+use super::super::math::main_labels;
 use super::super::read::{walk_matrix, Visit};
-use super::super::summary::main_labels;
 use super::super::{args, progress, read, write, Written};
 use super::vi::End;
 use crate::run_record::RunRecord;

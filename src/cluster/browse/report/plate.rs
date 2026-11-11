@@ -3,7 +3,7 @@
 //! [`crate::cluster::unified`]). The page styles the diagram's classes
 //! from the shell's theme tokens.
 
-use crate::cluster::unified::{strength, Recorded, Settings};
+use crate::cluster::settings::{strength, Recorded, Settings};
 use serde::Serialize;
 use std::fmt::Write;
 

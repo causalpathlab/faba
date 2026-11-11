@@ -1,195 +1,54 @@
-//! The wrapper around each chain: its bar is the chain's own whatever
-//! order the chains start in, a chain that starts after a cancel skips
-//! the model's start, and a traced chain notes its log joint.
+//! The progress a fit's restarts count on: each restart's steps and trace
+//! its own, the verdict once the fit ends, and a cancel or a stop asked
+//! for too late noted.
 
 use super::*;
-use rand::SeedableRng;
 
-/// A model that counts its starts, and draws nothing.
-#[derive(Default)]
-struct Starts(AtomicUsize);
-
-impl McmcModel for Starts {
-    type State = ();
-    type Sample = ();
-    type Result = ();
-
-    fn init(&self, _: &mut SmallRng) {
-        self.0.fetch_add(1, Ordering::SeqCst);
-    }
-
-    fn sweep(&self, _: &mut (), _: &mut SmallRng) {}
-
-    fn collect(&self, _: &()) {}
-
-    fn summarize(&self, _: Vec<()>) {}
+/// The fit's verdict, as it ends.
+fn verdict() -> advice::Verdict {
+    advice::Verdict::vi(true, false, (3, 10), 2, (0.0, "read"))
 }
 
-impl Traced for Starts {}
-
-/// A model whose log joint is its sweeps so far, and draws nothing.
-struct Steps;
-
-impl McmcModel for Steps {
-    type State = usize;
-    type Sample = ();
-    type Result = ();
-
-    fn init(&self, _: &mut SmallRng) -> usize {
-        0
-    }
-
-    fn sweep(&self, st: &mut usize, _: &mut SmallRng) {
-        *st += 1;
-    }
-
-    fn collect(&self, _: &usize) {}
-
-    fn summarize(&self, _: Vec<()>) {}
-}
-
-impl Traced for Steps {
-    fn log_joint_of(&self, st: &usize) -> Option<f64> {
-        Some(*st as f64)
-    }
-}
-
-/// The engine's random numbers for chain `i` of a run seeded `seed`.
-fn chain_rng(seed: u64, i: usize) -> SmallRng {
-    SmallRng::seed_from_u64(seed.wrapping_add(i as u64))
-}
-
-/// Chains started out of order each count on their own bar, as the
-/// summary numbers them; the random numbers are left as they were.
+/// Each restart counts on its own bar: a step reached is never undone by
+/// an earlier one, and the restarts' steps add up.
 #[test]
-fn each_chain_counts_on_its_own_bar() {
-    let p = Progress::new(3);
-    let model = Starts::default();
-    let watched = Watched {
-        model: &model,
-        progress: &p,
-        seed: u64::MAX,
-    };
-    for i in [2, 0, 1] {
-        let mut rng = chain_rng(u64::MAX, i);
-        let mut st = watched.init(&mut rng);
-        assert!(
-            rng == chain_rng(u64::MAX, i),
-            "chain {i}: the draws untouched"
-        );
-        for _ in 0..=i {
-            watched.sweep(&mut st, &mut rng);
-        }
-    }
-    assert_eq!((0..3).map(|i| p.done(i)).collect::<Vec<_>>(), [1, 2, 3]);
-}
-
-/// A chain that starts once the run is cancelled does not start its model.
-#[test]
-fn a_chain_started_after_a_cancel_skips_the_models_start() {
+fn each_restart_counts_on_its_own_bar() {
     let p = Progress::new(2);
-    let model = Starts::default();
-    let watched = Watched {
-        model: &model,
-        progress: &p,
-        seed: 0,
-    };
-    let mut first = watched.init(&mut chain_rng(0, 0));
-    p.cancel();
-    let mut second = watched.init(&mut chain_rng(0, 1));
-    assert_eq!(model.0.load(Ordering::SeqCst), 1);
-    for st in [&mut first, &mut second] {
-        watched.sweep(st, &mut chain_rng(0, 0));
-        assert!(watched.collect(st).is_none());
-    }
+    assert_eq!(p.running(0), None, "not started");
+    p.reach(0, 5);
+    p.reach(0, 3);
+    p.reach(1, 2);
+    assert_eq!((p.done(0), p.done(1), p.sum()), (5, 2, 7));
+    assert!(p.running(0).is_some());
 }
 
-/// A schedule too long to count panics as the engine's does, not wrapping.
+/// A traced restart notes its ELBO at each epoch, a point at the same step
+/// replacing the one before (an estimate made exact); an untraced one
+/// notes nothing.
 #[test]
-#[should_panic(expected = "overflows usize")]
-fn an_overflowing_schedule_panics_as_the_engines_does() {
-    sweeps(&McmcConfig {
-        n_samples: usize::MAX,
-        warmup: 0,
-        thin: 2,
-        seed: 0,
-    });
+fn a_traced_restart_notes_its_elbo_by_step() {
+    let p = Progress::traced(1);
+    p.note(0, 3, -2.0);
+    p.note(0, 4, -1.5);
+    p.note(0, 4, -1.25);
+    assert_eq!(p.trace(0), vec![(3, -2.0), (4, -1.25)]);
+    let quiet = Progress::new(1);
+    quiet.note(0, 3, -2.0);
+    assert!(quiet.trace(0).is_empty());
 }
 
-/// A traced chain notes its log joint every k-th sweep, k keeping the
-/// trace near [`TRACE_POINTS`] long (every sweep in a short run); the
-/// random numbers are left as they were, and an untraced chain notes none.
-/// `faba cluster`'s chains, on stderr, are traced too.
+/// The verdict is none until the fit ends, then the one it ended with;
+/// the schedule is the k-means start's steps then the epochs.
 #[test]
-fn a_traced_chain_notes_its_log_joint_every_kth_sweep() {
-    let at = |n: &[usize]| n.iter().map(|&n| (n, n as f64)).collect::<Vec<_>>();
-    for (p, total, want) in [
-        (Progress::traced(1), 5 * TRACE_POINTS, at(&[5, 10])),
-        (Progress::traced(1), 10, at(&(1..=12).collect::<Vec<_>>())),
-        (
-            Progress::on_stderr(1),
-            10,
-            at(&(1..=12).collect::<Vec<_>>()),
-        ),
-        (Progress::new(1), 10, Vec::new()),
-    ] {
-        let _ = p.schedule.set((total, 0));
-        let watched = Watched {
-            model: &Steps,
-            progress: &p,
-            seed: 0,
-        };
-        let mut rng = chain_rng(0, 0);
-        let mut st = watched.init(&mut rng);
-        for _ in 0..12 {
-            watched.sweep(&mut st, &mut rng);
-        }
-        assert!(
-            rng == {
-                let mut bare = chain_rng(0, 0);
-                let mut st = Steps.init(&mut bare);
-                (0..12).for_each(|_| Steps.sweep(&mut st, &mut bare));
-                bare
-            }
-        );
-        assert_eq!(p.trace(0), want, "{total} sweeps");
-    }
-}
-
-/// The verdict is the traces' and the R-hat's together, in the schedule
-/// the chains ran: a chain far below lags with the R-hat within bounds;
-/// none before the chains are summarised.
-#[test]
-fn the_verdict_holds_the_traces_against_the_r_hat() {
+fn the_verdict_comes_when_the_fit_ends() {
     let p = Progress::traced(2);
-    let _ = p.schedule.set((100, 20));
-    for (i, level) in [0.0, -50.0].into_iter().enumerate() {
-        let wobble = |n: usize| level + (n as f64 * 1.7).sin();
-        p.trace_of(i).extend((1..=100).map(|n| (n, wobble(n))));
-    }
-    assert_eq!(p.verdict(), None, "not summarised");
-    p.set_rhat(1.02);
-    let v = p.verdict().unwrap();
-    assert_eq!(v.status, advice::Status::Lags(vec![1]));
-    assert!(!v.converged());
-}
-
-/// Once the chains are pooled, what the pooling found unsettled is the
-/// verdict's too.
-#[test]
-fn the_verdict_holds_what_the_pooling_found() {
-    let p = Progress::traced(2);
-    let _ = p.schedule.set((100, 20));
-    for i in 0..2 {
-        p.trace_of(i)
-            .extend((1..=100).map(|n| (n, (n as f64 * 1.7 + i as f64).sin())));
-    }
-    p.set_rhat(1.02);
-    assert!(p.verdict().unwrap().converged());
-    p.pooled(vec!["cell role 1".into()]);
-    let v = p.verdict().unwrap();
-    assert!(!v.converged());
-    assert!(v.said().contains("cell role 1"), "{}", v.said());
+    assert_eq!((p.verdict(), p.schedule()), (None, None));
+    p.begin_vi(40, 30);
+    assert_eq!(p.schedule(), Some((40, 30)));
+    p.optimised(verdict()).unwrap();
+    // (Its R-hat is NaN, never equal: compared by what it says.)
+    assert_eq!(p.verdict().map(|v| v.said()), Some(verdict().said()));
+    assert_eq!(p.quantity(), ELBO);
 }
 
 /// A cancel or a stop asked for once the fit is writing is too late for
@@ -197,11 +56,11 @@ fn the_verdict_holds_what_the_pooling_found() {
 #[test]
 fn a_cancel_too_late_for_the_fit_is_noted() {
     let p = Progress::new(1);
-    p.summarised(1.0).unwrap();
+    p.optimised(verdict()).unwrap();
     assert!(!p.asked_late());
     assert!(!p.cancel() && p.asked_late() && !p.cancelled());
     let p = Progress::new(1);
-    p.summarised(1.0).unwrap();
+    p.optimised(verdict()).unwrap();
     p.stop_early();
     assert!(p.asked_late() && p.stopped_early().is_none());
     let p = Progress::new(1);

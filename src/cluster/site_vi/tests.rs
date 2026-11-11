@@ -3,9 +3,17 @@
 //! coordinate ascent never lowers, and the moves that leave it as it is.
 
 use super::*;
-use crate::cluster::crp::ln_sigmoid;
 use crate::cluster::read::{Reads, Weighted};
 use rand::SeedableRng;
+
+/// `ln sigmoid(x)`, stable at either end.
+fn ln_sigmoid(x: f64) -> f64 {
+    if x > 0.0 {
+        -(-x).exp().ln_1p()
+    } else {
+        x - x.exp().ln_1p()
+    }
+}
 
 /// Two kinds of 30 cells over 6 genes of 3 sites each: at the first three
 /// genes the first kind is mostly methylated and the second mostly not, at

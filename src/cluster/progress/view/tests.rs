@@ -1,17 +1,23 @@
-//! The fitting view drawn from a made-up progress: a bar per chain with
-//! its burn-in marked, the chains' log joint traced under them, the
-//! R-hat once in, `q` cancelling, Ctrl+C stopping the chains early.
+//! The fitting view drawn from a made-up progress: a bar per restart with
+//! its k-means start marked, the restarts' ELBO traced under them, the
+//! verdict once in, `q` cancelling, Ctrl+C stopping the restarts early.
 
 use super::*;
-use crate::cluster::progress::advice::lagging;
+use crate::cluster::progress::advice::Verdict;
 use crate::tui::screen_text as screen;
 use ratatui::crossterm::event::KeyModifiers;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::Duration;
 
-/// Three chains of 100 sweeps, 40 of them burn-in: one started 10 s ago
-/// at sweep 20, one 7 s ago at sweep 70, one still queued.
+/// The verdict of a fit that settled in 30 epochs of 60, its 3 restarts'
+/// ELBO per read within 0.001.
+fn settled() -> Verdict {
+    Verdict::vi(true, false, (30, 60), 3, (0.001, "read"))
+}
+
+/// Three restarts of 100 steps, 40 of them the k-means start: one started
+/// 10 s ago at step 20, one 7 s ago at step 70, one not yet.
 fn midway() -> Progress {
     let p = Progress::new(3);
     let ago = |s| Instant::now() - Duration::from_secs(s);
@@ -25,7 +31,7 @@ fn midway() -> Progress {
 
 fn fitting<'a>(p: &'a Progress, rx: &'a Receiver<anyhow::Result<u8>>) -> Fitting<'a, u8> {
     Fitting {
-        title: "fitting the blocks model",
+        title: "fitting the site blockmodel",
         progress: p,
         pending: Pending::new(rx),
         skip: false,
@@ -42,10 +48,10 @@ fn channel_u8() -> (Sender<anyhow::Result<u8>>, Receiver<anyhow::Result<u8>>) {
     channel()
 }
 
-/// The burn-in in one colour up to its mark, the sampling in another after
-/// it, the rest dim.
+/// The k-means start in one colour up to its mark, the epochs in another
+/// after it, the rest dim.
 #[test]
-fn a_chains_bar_marks_where_the_burn_in_ends() {
+fn a_restarts_bar_marks_where_its_start_ends() {
     let text = |spans: &[Span]| spans.iter().map(|s| s.content.as_ref()).collect::<String>();
     let early = chain_bar(20, 100, 40, 10);
     assert_eq!(text(&early), "██░░│░░░░░");
@@ -56,42 +62,38 @@ fn a_chains_bar_marks_where_the_burn_in_ends() {
         late.iter().map(|s| s.style).collect::<Vec<_>>(),
         [ACCENTED, DIM, HIGHLIGHT, DIM]
     );
-    assert_eq!(
-        text(&chain_bar(0, 100, 0, 5)),
-        "░░░░░",
-        "no burn-in, no mark"
-    );
+    assert_eq!(text(&chain_bar(0, 100, 0, 5)), "░░░░░", "no start, no mark");
     assert_eq!(text(&chain_bar(100, 100, 40, 5)), "██│██");
 }
 
-/// Each chain's bar, sweeps and phase, its time taken and left counted
-/// from when it started, a queued chain as waiting, and the key to cancel;
-/// at any terminal size.
+/// Each restart's bar, steps and phase, its time taken and left counted
+/// from when it started, one not started as waiting, and the key to
+/// cancel; at any terminal size.
 #[test]
-fn draws_a_bar_per_chain_with_its_burn_in() {
+fn draws_a_bar_per_restart_with_its_start() {
     let (_tx, rx) = channel_u8();
     let p = midway();
     let mut v = fitting(&p, &rx);
     let s = screen(&mut v, 110, 10);
     for want in [
-        "chain 0",
-        "chain 1",
-        "20/100 burn-in",
-        "70/100 sampling",
+        "restart 0",
+        "restart 1",
+        "20/100 k-means",
+        "70/100 epochs",
         "00:00:10 taken",
         "00:00:40 left",
         "00:00:07 taken",
         "00:00:03 left",
-        "chain 2",
+        "restart 2",
         "0/100 waiting",
-        "the burn-in ends at sweep 40",
+        "the k-means start ends at step 40",
         "q cancel",
         "Ctrl+C stop early",
     ] {
         assert!(s.contains(want), "{want:?} in\n{s}");
     }
-    // Inside the panel's borders, each chain's bar has its mark.
-    for line in s.lines().filter(|l| l.contains(" chain ")) {
+    // Inside the panel's borders, each restart's bar has its mark.
+    for line in s.lines().filter(|l| l.contains(" restart ")) {
         let inside = line.trim_end().trim_matches('│');
         assert!(inside.contains('│'), "{line}");
     }
@@ -100,10 +102,10 @@ fn draws_a_bar_per_chain_with_its_burn_in() {
     }
 }
 
-/// Before the chains start, it says it is reading; `q` then waits for the
+/// Before the restarts start, it says it is reading; `q` then waits for the
 /// input in hand, and says so.
 #[test]
-fn says_it_reads_before_the_chains_start() {
+fn says_it_reads_before_the_restarts_start() {
     let (_tx, rx) = channel_u8();
     let p = Progress::new(2);
     let mut v = fitting(&p, &rx);
@@ -134,23 +136,23 @@ fn q_cancels_until_the_fit_writes() {
     assert!(screen(&mut v, 100, 8).contains("too late to cancel"));
 }
 
-/// The R-hat shows once the chains are summarised; the view ends a moment
-/// after the result, or at once on a key or on an error.
+/// The verdict shows once the fit ends; the view ends after the result
+/// on a key, or at once on an error.
 #[test]
-fn shows_the_r_hat_then_ends() {
+fn shows_the_verdict_then_ends() {
     let (tx, rx) = channel_u8();
     let p = midway();
-    p.set_rhat(1.01);
+    p.optimised(settled()).unwrap();
     let mut v = fitting(&p, &rx);
     let s = screen(&mut v, 100, 12);
     assert!(
-        s.contains("chains agree (R-hat 1.01)") && s.contains("nothing to rerun"),
+        s.contains("ELBO settled in 30 epochs") && s.contains("nothing to rerun"),
         "{s}"
     );
     assert!(s.contains("writing the tables"), "{s}");
     tx.send(Ok(3)).unwrap();
     v.tick();
-    assert!(!v.done(), "the R-hat stays up a moment");
+    assert!(!v.done(), "the verdict stays up");
     v.handle_key(key('x'));
     assert!(v.done());
 
@@ -226,7 +228,7 @@ fn a_view_not_to_stay_leaves_once_the_fit_is_in() {
 fn the_verdict_stays_up_until_a_key() {
     let (tx, rx) = channel_u8();
     let p = midway();
-    p.set_rhat(1.01);
+    p.optimised(settled()).unwrap();
     let mut v = fitting(&p, &rx);
     tx.send(Ok(3)).unwrap();
     v.tick();
@@ -237,11 +239,11 @@ fn the_verdict_stays_up_until_a_key() {
     assert!(v.done(), "a key leaves");
 }
 
-/// Ctrl+C while the chains sample stops them early, and the footer says
-/// what they kept is written, which `q` after does not undo; before the
-/// chains, with nothing kept, it cancels.
+/// Ctrl+C while the restarts run stops them early, and the footer says
+/// what they reached is written, which `q` after does not undo; before the
+/// restarts, with nothing reached, it cancels.
 #[test]
-fn ctrl_c_stops_the_chains_early() {
+fn ctrl_c_stops_the_restarts_early() {
     let (_tx, rx) = channel_u8();
     let p = midway();
     let mut v = fitting(&p, &rx);
@@ -251,7 +253,7 @@ fn ctrl_c_stops_the_chains_early() {
     let s = screen(&mut v, 100, 8);
     assert!(s.contains("stopping early"), "{s}");
     assert!(!v.done(), "until the fit returns");
-    // `q` after it does not undo it: what they kept is written.
+    // `q` after it does not undo it: what they reached is written.
     v.handle_key(key('q'));
     assert!(!p.cancelled() && p.stopped_early().is_some());
     assert!(screen(&mut v, 100, 8).contains("stopping early already"));
@@ -277,8 +279,7 @@ fn a_stop_too_late_leaves_once_written() {
     ] {
         let (tx, rx) = channel_u8();
         let p = midway();
-        p.set_rhat(1.01);
-        p.commit().unwrap();
+        p.optimised(settled()).unwrap();
         let mut v = fitting(&p, &rx);
         stop(&mut v);
         assert!(!p.cancelled() && p.stopped_early().is_none());
@@ -308,16 +309,17 @@ fn a_stop_too_late_leaves_once_written() {
     assert_eq!(left.unwrap(), 7, "the tables written are the fit's");
 }
 
-/// A made-up trace: sweeps `from..=to`, the log joint `level` give or
-/// take a fixed wobble under 1.
+/// A made-up trace: steps `from..=to`, the ELBO `level` give or take a
+/// fixed wobble under 1.
 fn wobble(level: f64, from: usize, to: usize) -> Vec<(usize, f64)> {
     (from..=to)
         .map(|n| (n, level + ((n * 7919) % 13) as f64 / 13.0 - 0.5))
         .collect()
 }
 
-/// Three chains of 100 sweeps, 40 of them burn-in, all done: each climbs
-/// from far below early in its burn-in, then sits at `levels[i]`.
+/// Three restarts of 100 steps, 40 of them the k-means start, all done:
+/// each climbs from far below in its first epochs, then sits at
+/// `levels[i]`.
 fn finished(levels: [f64; 3]) -> Progress {
     let p = Progress::traced(3);
     let _ = p.schedule.set((100, 40));
@@ -325,8 +327,8 @@ fn finished(levels: [f64; 3]) -> Progress {
         let _ = p.started[i].set(Instant::now() - Duration::from_secs(5));
         p.done[i].0.store(100, Ordering::Relaxed);
         let mut t = p.traces[i].lock().unwrap();
-        t.extend((1..=40).map(|n| (n, level - 1000.0 * 0.5f64.powi(n as i32))));
-        t.extend(wobble(level, 41, 100));
+        t.extend((41..=50).map(|n| (n, level - 1000.0 * 0.5f64.powi(n as i32 - 40))));
+        t.extend(wobble(level, 51, 100));
     }
     p
 }
@@ -353,38 +355,10 @@ fn braille(buf: &ratatui::buffer::Buffer) -> Vec<(u16, u16, ratatui::style::Styl
         .collect()
 }
 
-/// Post-burn-in means far below the best chain's, against the chains'
-/// own spread, lag: one chain of three, the lower of two, or most of them
-/// stuck below one; burn-in points count for nothing; one chain, or a
-/// chain with too few points, says nothing.
+/// Under the bars, a line per restart in its label's colour, the k-means
+/// start's end a line down the plot.
 #[test]
-fn a_chain_lags_when_far_below_the_others() {
-    let low_burn_in = |level| {
-        let mut t = vec![(1, -1e6), (2, -1e5)];
-        t.extend(wobble(level, 3, 60));
-        t
-    };
-    let agree = [low_burn_in(0.0), low_burn_in(0.3), low_burn_in(-0.3)];
-    assert_eq!(lagging(&agree, 2), Some(Vec::new()));
-    let one_low = [low_burn_in(0.0), low_burn_in(-5.0), low_burn_in(0.2)];
-    assert_eq!(lagging(&one_low, 2), Some(vec![1]));
-    // A wobble's sd is under 0.3: 0.7 below is within three of them.
-    let near = [low_burn_in(0.0), low_burn_in(-0.5), low_burn_in(0.2)];
-    assert_eq!(lagging(&near, 2), Some(Vec::new()));
-    // Of two, the lower lags once three sds below, not six.
-    let two = [low_burn_in(0.0), low_burn_in(-1.5)];
-    assert_eq!(lagging(&two, 2), Some(vec![1]));
-    // Most stuck below one: they lag, not the one above.
-    let most = [low_burn_in(0.0), low_burn_in(-5.0), low_burn_in(-5.0)];
-    assert_eq!(lagging(&most, 2), Some(vec![1, 2]));
-    assert_eq!(lagging(&agree[..1], 2), None, "one chain");
-    assert_eq!(lagging(&agree, 59), None, "one point after the burn-in");
-}
-
-/// Under the bars, a line per chain in its label's colour, the burn-in's
-/// end a line down the plot; once done, whether a chain lags.
-#[test]
-fn traces_each_chain_under_the_bars() {
+fn traces_each_restart_under_the_bars() {
     let (_tx, rx) = channel_u8();
     let p = finished([0.0, 10.0, -10.0]);
     let mut v = fitting(&p, &rx);
@@ -392,25 +366,25 @@ fn traces_each_chain_under_the_bars() {
     let dots = braille(&buf);
     for i in 0..3 {
         let colour = chain_style(i).fg;
-        assert!(colour.is_some(), "chain {i} has a colour");
+        assert!(colour.is_some(), "restart {i} has a colour");
         assert!(
             dots.iter().any(|d| d.2.fg == colour),
-            "chain {i}'s trace drawn"
+            "restart {i}'s trace drawn"
         );
         // The bar's label is in the same colour.
         let label = (0..24).find_map(|y| {
             let row: String = (0..80).map(|x| buf[(x, y)].symbol()).collect();
-            row.find(&format!("chain {i}")).map(|x| (x as u16, y))
+            row.find(&format!("restart {i}")).map(|x| (x as u16, y))
         });
-        let (x, y) = label.expect("a bar per chain");
-        assert_eq!(buf[(x, y)].style().fg, colour, "chain {i}'s label");
+        let (x, y) = label.expect("a bar per restart");
+        assert_eq!(buf[(x, y)].style().fg, colour, "restart {i}'s label");
     }
     let mark: Vec<u16> = dots
         .iter()
         .filter(|d| d.2.fg == Some(trace::MARK))
         .map(|d| d.0)
         .collect();
-    assert!(mark.len() >= 3, "the burn-in's end drawn down the plot");
+    assert!(mark.len() >= 3, "the start's end drawn down the plot");
     assert!(
         mark.iter().all(|&x| x == mark[0]),
         "in one column: {mark:?}"
@@ -419,69 +393,43 @@ fn traces_each_chain_under_the_bars() {
         dots.iter().map(|d| d.0).min(),
         dots.iter().map(|d| d.0).max(),
     );
+    // The trace starts at the first epoch, right of the mark.
     assert!(
-        left < Some(mark[0]) && Some(mark[0]) < right,
+        left >= Some(mark[0]) && Some(mark[0]) < right,
         "inside the plot"
     );
     let s = screen(&mut v, 80, 24);
-    for want in [
-        "log joint",
-        "sweep",
-        "log joint after burn-in: chains 0, 2 lag",
-    ] {
+    for want in ["ELBO", "k-means iteration, then epoch"] {
         assert!(s.contains(want), "{want:?} in\n{s}");
     }
-
-    let p = finished([0.0, 0.3, -0.2]);
-    let mut v = fitting(&p, &rx);
-    let s = screen(&mut v, 80, 24);
-    assert!(s.contains("log joint after burn-in: no chain lags"), "{s}");
-    // While the chains run, no verdict yet.
-    p.done[2].0.store(99, Ordering::Relaxed);
-    assert!(!screen(&mut v, 80, 24).contains("after burn-in"));
+    assert!(
+        !s.contains("lag"),
+        "an ELBO's level says nothing of lagging"
+    );
 }
 
-/// Too few rows for a plot: the bars stay, the plot goes; the R-hat and
-/// the verdict keep their lines.
+/// Too few rows for a plot: the bars stay, the plot goes; the verdict
+/// keeps its line.
 #[test]
 fn a_small_terminal_keeps_the_bars_and_drops_the_plot() {
     let (_tx, rx) = channel_u8();
     let p = finished([0.0, 0.3, -0.2]);
-    p.set_rhat(1.01);
+    p.optimised(settled()).unwrap();
     let mut v = fitting(&p, &rx);
     for (w, h) in [(80, 12), (30, 24)] {
         let buf = drawn(&mut v, w, h);
         assert!(braille(&buf).is_empty(), "{w}x{h}: no plot");
         let s = screen(&mut v, w, h);
-        assert!(s.contains("chain 2"), "{w}x{h}\n{s}");
+        assert!(s.contains("restart 2"), "{w}x{h}\n{s}");
     }
     let s = screen(&mut v, 80, 14);
-    assert!(s.contains("chains agree (R-hat 1.01)"), "{s}");
+    assert!(s.contains("ELBO settled in 30 epochs"), "{s}");
     for (w, h) in [(10, 3), (20, 8), (200, 60)] {
         screen(&mut v, w, h);
     }
 }
 
-/// Once the R-hat is in, one line gives the verdict, the lag in it: the
-/// lag line before it goes, so nothing is said twice.
-#[test]
-fn once_the_r_hat_is_in_one_line_gives_the_verdict() {
-    let (_tx, rx) = channel_u8();
-    for (levels, rhat, said) in [
-        ([0.0, 0.3, -0.2], 1.3, "R-hat 1.30: chains disagree"),
-        ([0.0, 0.3, -0.2], 1.01, "chains agree (R-hat 1.01)"),
-        ([0.0, 10.0, -10.0], 1.01, "chains 0, 2 lag (R-hat 1.01)"),
-    ] {
-        let p = finished(levels);
-        p.set_rhat(rhat);
-        let mut v = fitting(&p, &rx);
-        let s = screen(&mut v, 80, 24);
-        assert!(s.contains(said), "{s}");
-        assert!(!s.contains("after burn-in"), "{s}");
-    }
-}
-
-/// Each of many chains has its own colour, on its label and its line.
+/// Each of many restarts has its own colour, on its label and its line.
 #[test]
 fn many_chains_each_have_their_own_colour() {
     let colours: Vec<_> = (0..16).map(|i| chain_style(i).fg).collect();

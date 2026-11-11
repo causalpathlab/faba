@@ -7,7 +7,7 @@
 use super::order::{diagonal, standardized};
 use crate::cluster::batches::{spread, Design, Spread};
 use crate::cluster::read::{Site, SiteStats};
-use crate::cluster::unified::Recorded;
+use crate::cluster::settings::Recorded;
 use crate::common::read_record_batch;
 use crate::site_analysis::miami::genemodel::GeneModel;
 use crate::site_analysis::pileup::query_symbol;
@@ -492,7 +492,7 @@ impl Modules {
 
     /// The range of gene role `g`'s shifts across the cell roles.
     pub fn shift_range(&self, g: usize) -> f64 {
-        crate::cluster::unified::shift_range(&self.shift, self.cell_roles, self.gene_roles, g)
+        crate::cluster::settings::shift_range(&self.shift, self.cell_roles, self.gene_roles, g)
     }
 
     /// Gene role `g`'s genes in its order, each a span of its members.

@@ -1,7 +1,7 @@
 //! `faba cluster`'s options: what they are, which settings are refused, and
 //! the input matrices and output directory they name.
 
-use super::{read, unified};
+use super::{read, settings};
 use clap::Args;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::path::PathBuf;
@@ -83,7 +83,7 @@ pub struct ClusterArgs {
         long = "batch-process",
         visible_alias = "batch-mode",
         default_value_t = false,
-        help = "Fit with a progress bar on stderr rather than the live view of the chains, even on a terminal"
+        help = "Fit with a progress bar on stderr rather than the live view of the restarts, even on a terminal"
     )]
     pub(super) batch_process: bool,
 
@@ -98,119 +98,49 @@ pub struct ClusterArgs {
     pub(super) min_site_cells: usize,
 
     #[arg(
-        long = "profile-strength",
-        visible_alias = "prior-strength",
-        value_name = "S|inf",
-        help = "Profile strength: pseudo-reads pulling a cluster's or block's site fraction toward its centre; `inf` fixes it there (default: 5, `inf` with --model blocks)",
-        long_help = "Profile strength S: pseudo-reads pulling a cluster's or block's site fraction\n\
-                     toward its centre, the site's pooled fraction (shifted by the block's\n\
-                     shift under --shift on). `inf` fixes a block's fraction at the centre, so\n\
-                     its reads are Binomial, and gives each cell its own level on top (prior sd\n\
-                     --cell-sd); it needs --shift on, or no role reaches the reads. A finite\n\
-                     strength integrates each block's fraction out, so no cell level can enter.\n\
-                     Default: 5, `inf` with --model blocks."
-    )]
-    pub(super) profile_strength: Option<Strength>,
-
-    #[arg(
-        long,
-        value_enum,
-        default_value_t = ModelKind::Link,
-        help = "link: each (cell, gene) link in a cell role (a community), cells with memberships; blocks: cell roles and gene roles (gene modules) with a methylation shift per pair; crp: each cell in one cluster",
-        long_help = "link and blocks are presets of one blockmodel over (cell, gene) links, each\n\
-                     link in a cell role and a gene role:\n\
-                     - link: --gene-roles 1 --shift off --profile-strength 5 --global hdp\n\
-                     - blocks: --gene-roles 8 --shift on --profile-strength inf --global hdp\n\
-                       (with each cell's own level, --cell-sd)\n\
-                     Each of those switches given overrides its preset.\n\
-                     crp: each cell in one cluster, the number of clusters learned."
-    )]
-    pub(super) model: ModelKind,
-
-    #[arg(
         long,
         visible_alias = "communities",
         default_value_t = 8,
-        help = "Cell roles (link communities), with --model link or blocks"
+        help = "Cell roles (cell modules)"
     )]
     pub(super) cell_roles: usize,
 
-    #[arg(
-        long,
-        help = "Gene roles (gene modules), with --model link or blocks; more than 1 needs --shift on (default: 1 with link, 8 with blocks)"
-    )]
+    #[arg(long, help = "Gene roles (gene modules) (default: 8)")]
     pub(super) gene_roles: Option<usize>,
 
     #[arg(
         long,
-        value_enum,
-        value_name = "on|off",
-        help = "A methylation shift per (cell role, gene role) block, on the logit scale (default: off with link, on with blocks)"
-    )]
-    pub(super) shift: Option<Switch>,
-
-    #[arg(
-        long,
-        value_enum,
-        help = "The cell roles' and gene roles' global weights: hdp, drawn with the labels so popular roles draw links and unneeded ones empty; symmetric, equal and fixed (default: hdp)"
-    )]
-    pub(super) global: Option<Global>,
-
-    #[arg(
-        long,
         default_value_t = 0.5,
-        help = "With --model link or blocks: concentration of each cell's membership (smaller: cells condense onto fewer roles)"
+        help = "Concentration of each cell's role weights (smaller: cells condense onto fewer roles)"
     )]
     pub(super) membership_alpha: f64,
 
     #[arg(
         long,
-        default_value_t = 1.0,
-        help = "With --global hdp: concentration of the cell roles' and gene roles' global weights"
-    )]
-    pub(super) community_gamma: f64,
-
-    #[arg(
-        long,
         default_value_t = 0.5,
-        help = "With --model link or blocks: concentration of each gene's role weights"
+        help = "Concentration of each gene's role weights"
     )]
     pub(super) gene_alpha: f64,
 
     #[arg(
         long,
         default_value_t = 1.0,
-        help = "With --shift on: prior sd of each (cell role, gene role) block's methylation shift, on the logit scale"
+        help = "A site fit: prior sd of each (cell role, gene role) block's methylation shift, on the logit scale"
     )]
     pub(super) shift_sd: f64,
 
     #[arg(
         long,
         default_value_t = 1.0,
-        help = "At --profile-strength inf (--model blocks): prior sd of each cell's own methylation level, on the logit scale"
+        help = "A site fit: prior sd of each cell's own methylation level, on the logit scale"
     )]
     pub(super) cell_sd: f64,
 
     #[arg(
         long,
-        default_value_t = 0.0,
-        help = "Share of (cell, site) entries held out of the fit and scored at every kept draw, to compare models; the written tables then hold only the fitted share of the reads"
-    )]
-    pub(super) holdout: f64,
-
-    #[arg(
-        long,
-        default_value_t = 10,
-        help = "Smallest cluster reported: smaller ones' cells go to their most probable larger cluster"
-    )]
-    pub(super) min_cluster_cells: usize,
-
-    #[arg(
-        long,
         default_value_t = 4,
-        help = "Independent chains, run in parallel; for a fit by variational inference \
-                (--modality count, --model blocks), restarts, each from k-means seeds of its own, \
-                the starts in parallel, then the fits one after another, the best kept"
+        help = "Restarts, each from k-means seeds of its own: the starts in parallel, then \
+                the fits one after another, the best by ELBO kept"
     )]
     pub(super) chains: usize,
 
@@ -218,7 +148,7 @@ pub struct ClusterArgs {
         long,
         value_name = "N",
         default_value_t = crate::cluster::count::vi::Options::default().svi_epochs,
-        help = "A fit by variational inference (--modality count, --model blocks): stochastic (minibatch) epochs before coordinate ascent"
+        help = "Stochastic (minibatch) epochs before coordinate ascent"
     )]
     pub(super) svi_epochs: usize,
 
@@ -226,7 +156,7 @@ pub struct ClusterArgs {
         long,
         value_name = "N",
         default_value_t = crate::cluster::count::vi::Options::default().batch_size,
-        help = "A fit by variational inference: cells per minibatch; every cell in one batch is plain coordinate ascent"
+        help = "Cells per minibatch; every cell in one batch is plain coordinate ascent"
     )]
     pub(super) batch_size: usize,
 
@@ -234,59 +164,21 @@ pub struct ClusterArgs {
         long,
         value_name = "N",
         default_value_t = crate::cluster::count::vi::Options::default().epochs,
-        help = "A fit by variational inference: epochs at most, stochastic and coordinate ascent together"
+        help = "Epochs at most, stochastic and coordinate ascent together"
     )]
     pub(super) epochs: usize,
 
     #[arg(
         long,
         default_value_t = crate::cluster::count::vi::Options::default().tol,
-        help = "A fit by variational inference (--modality count, --model blocks): converged when an epoch of coordinate ascent moves the ELBO by less than this per count (per read for --model blocks)"
+        help = "Converged when an epoch of coordinate ascent moves the ELBO by less than this per count (per read for a site fit)"
     )]
     pub(super) tol: f64,
 
     #[arg(
         long,
-        default_value_t = 150,
-        help = "Sweeps per chain, burn-in included"
-    )]
-    pub(super) sweeps: usize,
-
-    #[arg(
-        long,
-        default_value_t = 50,
-        help = "Sweeps discarded at the start of each chain"
-    )]
-    pub(super) burn_in: usize,
-
-    #[arg(
-        long,
-        default_value_t = 2,
-        help = "Keep every this-many-th sweep after the burn-in"
-    )]
-    pub(super) thin: usize,
-
-    #[arg(long, default_value_t = 10, help = "Split-merge proposals per sweep")]
-    pub(super) split_merge: usize,
-
-    #[arg(
-        long,
-        default_value_t = 2,
-        help = "Restricted Gibbs scans before each split-merge proposal"
-    )]
-    pub(super) restricted_scans: usize,
-
-    #[arg(
-        long,
-        default_value_t = 20,
-        help = "Chains start from k-means into a number of clusters drawn from 1 up to this"
-    )]
-    pub(super) start_clusters: usize,
-
-    #[arg(
-        long,
         default_value_t = 1,
-        help = "Random seed (chain i uses seed + i)"
+        help = "Random seed (restart i uses seed + i)"
     )]
     pub(super) seed: u64,
 
@@ -302,8 +194,8 @@ pub struct ClusterArgs {
                      the other, into `within/{modality}/{group}/` under the output directory\n\
                      (default: the count fit's), with `{modality}_within.run.json` naming them all and\n\
                      `{modality}_within_cells.parquet` giving each cell its nested label (`C3.2`).\n\
-                     The site matrices default to those beside the count fit's inputs; --model\n\
-                     defaults to blocks. Open the result with `faba cluster-view`."
+                     The site matrices default to those beside the count fit's inputs. Open the\n\
+                     result with `faba cluster-view`."
     )]
     pub(super) within: Option<Box<str>>,
 
@@ -316,131 +208,142 @@ pub struct ClusterArgs {
     )]
     pub(super) within_min_cells: usize,
 
+    /// The MCMC fits' flags (faba before 0.19), refused when given (see
+    /// [`refuse_removed`]); hidden, and never recorded.
+    #[command(flatten)]
+    #[serde(skip)]
+    pub(super) removed: Removed,
+
     /// The options given, for the command saved beside the run.
     #[arg(skip)]
     #[serde(skip)]
     pub(super) given: super::command::Given,
 }
 
-/// Which model `faba cluster` fits: the mixture, or one of the
-/// blockmodel's two presets.
-#[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ModelKind {
-    Crp,
-    Link,
-    Blocks,
+/// The flags of the MCMC fits faba had before 0.19 (`--model link`, `crp`,
+/// the sampler's draws, the held-out reads), kept only to be refused by
+/// name; `--model blocks`, the only model left, is taken as it is.
+#[derive(Args, Debug, Clone, Default)]
+pub struct Removed {
+    #[arg(long, hide = true)]
+    model: Option<String>,
+    #[arg(long, hide = true, alias = "prior-strength")]
+    profile_strength: Option<String>,
+    #[arg(long, hide = true)]
+    shift: Option<String>,
+    #[arg(long, hide = true)]
+    global: Option<String>,
+    #[arg(long, hide = true)]
+    community_gamma: Option<String>,
+    #[arg(long, hide = true)]
+    holdout: Option<String>,
+    #[arg(long, hide = true)]
+    min_cluster_cells: Option<String>,
+    #[arg(long, hide = true)]
+    sweeps: Option<String>,
+    #[arg(long, hide = true)]
+    burn_in: Option<String>,
+    #[arg(long, hide = true)]
+    thin: Option<String>,
+    #[arg(long, hide = true)]
+    split_merge: Option<String>,
+    #[arg(long, hide = true)]
+    restricted_scans: Option<String>,
+    #[arg(long, hide = true)]
+    start_clusters: Option<String>,
 }
 
-impl ModelKind {
-    /// Its name as `--model` takes it, the one spelling of it everywhere.
-    pub fn name(self) -> String {
-        use clap::ValueEnum;
-        self.to_possible_value()
-            .expect("no model is skipped")
-            .get_name()
-            .to_string()
+impl Removed {
+    /// Each removed flag given, by its name on the command line.
+    fn given(&self) -> Vec<&'static str> {
+        let model = self.model.as_deref().filter(|m| *m != "blocks");
+        [
+            ("--model", model),
+            ("--profile-strength", self.profile_strength.as_deref()),
+            ("--shift", self.shift.as_deref()),
+            ("--global", self.global.as_deref()),
+            ("--community-gamma", self.community_gamma.as_deref()),
+            ("--holdout", self.holdout.as_deref()),
+            ("--min-cluster-cells", self.min_cluster_cells.as_deref()),
+            ("--sweeps", self.sweeps.as_deref()),
+            ("--burn-in", self.burn_in.as_deref()),
+            ("--thin", self.thin.as_deref()),
+            ("--split-merge", self.split_merge.as_deref()),
+            ("--restricted-scans", self.restricted_scans.as_deref()),
+            ("--start-clusters", self.start_clusters.as_deref()),
+        ]
+        .into_iter()
+        .filter_map(|(flag, v)| v.map(|_| flag))
+        .collect()
     }
 }
 
-impl serde::Serialize for ModelKind {
-    /// By its name, so the saved command says it as `--model` takes it.
-    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str(&self.name())
-    }
+/// Whether `flag` (as `--name`) is one of the MCMC fits' flags faba no
+/// longer has.
+pub(crate) fn is_removed(flag: &str) -> bool {
+    REMOVED.contains(&flag)
 }
 
-/// The blockmodel's block shift, on or off.
-#[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "lowercase")]
-pub(super) enum Switch {
-    On,
-    Off,
+/// The removed flags' names on the command line.
+const REMOVED: [&str; 14] = [
+    "--model",
+    "--profile-strength",
+    "--prior-strength",
+    "--shift",
+    "--global",
+    "--community-gamma",
+    "--holdout",
+    "--min-cluster-cells",
+    "--sweeps",
+    "--burn-in",
+    "--thin",
+    "--split-merge",
+    "--restricted-scans",
+    "--start-clusters",
+];
+
+/// What a removed flag is told: every fit is by variational inference now.
+pub(crate) const REMOVED_SAID: &str = "was for the MCMC fits (--model link and crp, \
+    the sampler's sweeps and held-out reads), removed in faba 0.19: every fit is by \
+    variational inference now, the site blockmodel (the old --model blocks) or the count \
+    blockmodel (--modality count), set by --cell-roles, --gene-roles, --epochs, --tol \
+    and --chains (restarts)";
+
+/// The removed flags `args` give, refused before anything is read or
+/// written.
+pub(super) fn refuse_removed(args: &ClusterArgs) -> anyhow::Result<()> {
+    let given = args.removed.given();
+    anyhow::ensure!(given.is_empty(), "{} {REMOVED_SAID}", given.join(", "));
+    Ok(())
 }
 
-/// The blockmodel's global weights over the cell roles.
-#[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "lowercase")]
-pub(super) enum Global {
-    Hdp,
-    Symmetric,
-}
-
-/// A profile strength: a number, or `inf`, saved as written.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(super) struct Strength(pub(super) f64);
-
-impl std::str::FromStr for Strength {
-    type Err = std::num::ParseFloatError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        s.parse().map(Strength)
-    }
-}
-
-impl serde::Serialize for Strength {
-    /// A number, or `"inf"` (see [`unified::strength`]), so the saved
-    /// command says it.
-    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        unified::strength::serialize(&self.0, s)
-    }
-}
-
-/// The profile strength of the mixture and of the link preset.
-const DEFAULT_STRENGTH: f64 = 5.0;
-
-/// The mixture's profile strength.
-pub(super) fn crp_strength(args: &ClusterArgs) -> f64 {
-    args.profile_strength.map_or(DEFAULT_STRENGTH, |s| s.0)
-}
-
-/// The link preset's value, or with `blocks` the blocks preset's.
-fn pick<T>(blocks: bool, link: T, blocks_preset: T) -> T {
-    if blocks {
-        blocks_preset
-    } else {
-        link
-    }
-}
-
-/// The blockmodel `args` fit: their preset (`--model link` or `blocks`),
-/// each switch given overriding it.
-pub(super) fn blockmodel(args: &ClusterArgs) -> unified::Settings {
-    let blocks = args.model == ModelKind::Blocks;
-    let shift = args.shift.unwrap_or(pick(blocks, Switch::Off, Switch::On));
-    unified::Settings {
+/// The site blockmodel `args` fit: cell roles and gene roles, a shift per
+/// block and each cell's own level, the role weights' global weights
+/// uniform (as the variational fit keeps them).
+pub(super) fn blockmodel(args: &ClusterArgs) -> settings::Settings {
+    settings::Settings {
         cell_roles: args.cell_roles,
-        gene_roles: args.gene_roles.unwrap_or(pick(blocks, 1, 8)),
+        gene_roles: args.gene_roles.unwrap_or(GENE_ROLES),
         alpha: args.membership_alpha,
         gene_alpha: args.gene_alpha,
-        weights: match args.global.unwrap_or(Global::Hdp) {
-            Global::Hdp => unified::Weights::Hdp(args.community_gamma),
-            Global::Symmetric => unified::Weights::Symmetric,
-        },
-        shift_sd: (shift == Switch::On).then_some(args.shift_sd),
-        strength: args
-            .profile_strength
-            .map_or(pick(blocks, DEFAULT_STRENGTH, f64::INFINITY), |s| s.0),
+        weights: settings::Weights::Symmetric,
+        shift_sd: Some(args.shift_sd),
+        strength: f64::INFINITY,
         cell_sd: args.cell_sd,
     }
 }
 
-/// The preset `args` fit, when their switches leave it as it is: given
-/// or not, each the preset's.
-fn preset(args: &ClusterArgs) -> Option<ModelKind> {
-    let preset = ClusterArgs {
-        gene_roles: None,
-        shift: None,
-        global: None,
-        profile_strength: None,
-        ..args.clone()
-    };
-    (args.model != ModelKind::Crp && blockmodel(&preset) == blockmodel(args)).then_some(args.model)
-}
+/// Gene roles unless `--gene-roles` says.
+pub(super) const GENE_ROLES: usize = 8;
 
-/// The blockmodel `args` fit, as a run's record says it.
-pub(super) fn recorded(args: &ClusterArgs) -> unified::Recorded {
-    unified::Recorded {
-        preset: preset(args).map(ModelKind::name),
+/// The blockmodel `args` fit, as a run's record says it: the blocks preset
+/// (as faba before 0.19 named it) unless `--gene-roles` changes it.
+pub(super) fn recorded(args: &ClusterArgs) -> settings::Recorded {
+    settings::Recorded {
+        preset: args
+            .gene_roles
+            .is_none_or(|b| b == GENE_ROLES)
+            .then(|| "blocks".to_string()),
         settings: blockmodel(args),
     }
 }
@@ -535,73 +438,23 @@ pub(super) fn output_dir(output: Option<&str>, data_files: &[Box<str>]) -> PathB
     }
 }
 
-/// Whether `args` fit by variational inference: the count fit, and the
-/// site blockmodel at infinite strength (the blocks preset's).
-pub(super) fn is_vi(args: &ClusterArgs) -> bool {
-    args.is_count() || (args.model == ModelKind::Blocks && blockmodel(args).strength.is_infinite())
-}
-
 /// Settings that would make the fit meaningless, refused up front.
 pub(super) fn check(args: &ClusterArgs) -> anyhow::Result<()> {
+    refuse_removed(args)?;
     anyhow::ensure!(args.chains >= 1, "--chains must be at least 1");
     let positive = |x: f64| x > 0.0 && x.is_finite();
-    if is_vi(args) {
-        // A fit by variational inference: no draws to keep.
-        for flag in ["sweeps", "burn_in", "thin"] {
-            anyhow::ensure!(
-                !args.given(flag),
-                "--{} sets a sampler's draws; this fit is by variational inference \
-                 (--epochs, --batch-size, --tol)",
-                flag.replace('_', "-")
-            );
-        }
-        anyhow::ensure!(
-            args.holdout == 0.0,
-            "--holdout is not for a fit by variational inference"
-        );
-        // Its role weights' global weights are fixed: nothing to draw.
-        for flag in ["global", "community_gamma"] {
-            anyhow::ensure!(
-                !args.given(flag),
-                "--{} sets the global weights a sampler draws; this fit by variational \
-                 inference keeps them uniform",
-                flag.replace('_', "-")
-            );
-        }
-        anyhow::ensure!(
-            args.epochs >= 1 && args.batch_size >= 1,
-            "--epochs and --batch-size must be at least 1"
-        );
-        anyhow::ensure!(
-            args.tol >= 0.0 && args.tol.is_finite(),
-            "--tol must be 0 or more"
-        );
-    } else {
-        for flag in ["svi_epochs", "batch_size", "epochs", "tol"] {
-            anyhow::ensure!(
-                !args.given(flag),
-                "--{} applies to a fit by variational inference only (--modality count, --model blocks)",
-                flag.replace('_', "-")
-            );
-        }
-        // Split R-hat needs at least two draws in each half of every chain.
-        anyhow::ensure!(
-            args.sweeps.saturating_sub(args.burn_in) / args.thin.max(1) >= 4,
-            "--sweeps less --burn-in must leave at least 4 draws per chain (after --thin)"
-        );
-    }
     anyhow::ensure!(
-        (0.0..1.0).contains(&args.holdout),
-        "--holdout must be at least 0 and less than 1"
+        args.epochs >= 1 && args.batch_size >= 1,
+        "--epochs and --batch-size must be at least 1"
+    );
+    anyhow::ensure!(
+        args.tol >= 0.0 && args.tol.is_finite(),
+        "--tol must be 0 or more"
     );
     if args.within.is_some() {
         anyhow::ensure!(
             !args.is_count(),
             "--within fits sites within a count fit's cell modules: give --modality m6a or atoi, not count"
-        );
-        anyhow::ensure!(
-            args.model != ModelKind::Crp,
-            "--within fits the blockmodel (--model link or blocks), not --model crp"
         );
         anyhow::ensure!(
             args.within_min_cells >= 2,
@@ -614,41 +467,15 @@ pub(super) fn check(args: &ClusterArgs) -> anyhow::Result<()> {
             "--cell-roles and --gene-roles must be at least 1"
         );
         anyhow::ensure!(args.count_genes >= 1, "--count-genes must be at least 1");
-        // What only the site fits do, refused rather than ignored.
-        anyhow::ensure!(
-            args.holdout == 0.0,
-            "--holdout does not apply to --modality count"
-        );
-        anyhow::ensure!(
-            !args.given("model"),
-            "--model chooses a site fit's model; --modality count fits the count blockmodel"
-        );
-        anyhow::ensure!(
-            !args.given("community_gamma"),
-            "--community-gamma does not apply to --modality count (its role weights have a fixed shape)"
-        );
         return Ok(());
     }
-    if args.model == ModelKind::Crp {
-        anyhow::ensure!(
-            positive(crp_strength(args)),
-            "--profile-strength must be positive and finite with --model crp"
-        );
-        return Ok(());
-    }
-    let s = blockmodel(args);
-    anyhow::ensure!(s.strength > 0.0, "--profile-strength must be positive");
-    s.check()?;
+    blockmodel(args).check()?;
     anyhow::ensure!(positive(args.gene_alpha), "--gene-alpha must be positive");
     anyhow::ensure!(positive(args.shift_sd), "--shift-sd must be positive");
     anyhow::ensure!(positive(args.cell_sd), "--cell-sd must be positive");
     anyhow::ensure!(
         positive(args.membership_alpha),
         "--membership-alpha must be positive"
-    );
-    anyhow::ensure!(
-        positive(args.community_gamma),
-        "--community-gamma must be positive"
     );
     Ok(())
 }

@@ -1,15 +1,15 @@
-//! The chains' log joint under their bars (and, saved, in `faba cluster-view`'
-//! trace pane): a line per chain in its label's colour, the burn-in's end
-//! marked; once done, whether a chain lags the best.
+//! The restarts' ELBO under their bars (and, saved, in `faba cluster-view`'s
+//! trace pane, which draws the MCMC chains' log joint of older records
+//! alike): a line per restart in its label's colour, the end of its
+//! k-means start (or the chains' burn-in) marked.
 
-use crate::cluster::progress::advice::{lagging, lags};
 use crate::cluster::progress::ELBO;
 use crate::site_analysis::miami::palette::{color, Palette};
-use data_beans::interactive::ui::{DIM, HIGHLIGHT};
+use data_beans::interactive::ui::DIM;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::symbols::Marker;
-use ratatui::text::{Line, Span};
+use ratatui::text::Span;
 use ratatui::widgets::{Axis, Chart, Dataset, GraphType};
 use ratatui::Frame;
 
@@ -26,20 +26,6 @@ pub(super) const MARK: Color = Color::DarkGray;
 pub(in crate::cluster) fn chain_style(i: usize) -> Style {
     let (r, g, b) = color(&Palette::Category20, i);
     Style::new().fg(Color::Rgb(r, g, b))
-}
-
-/// The line under the plot once every chain is done: whether a chain lags
-/// after the burn-in, and which; none when there is nothing to say.
-pub(super) fn verdict(traces: &[Vec<(usize, f64)>], warmup: usize) -> Option<Line<'static>> {
-    let lag = lagging(traces, warmup)?;
-    let (said, style) = match lag.is_empty() {
-        true => ("no chain lags".to_string(), DIM),
-        false => (lags(&lag), HIGHLIGHT),
-    };
-    Some(Line::from(vec![
-        Span::styled(" log joint after burn-in: ", DIM),
-        Span::styled(said, style),
-    ]))
 }
 
 /// The chains' `traces` in `area`, over sweeps `0..=total`: a line per

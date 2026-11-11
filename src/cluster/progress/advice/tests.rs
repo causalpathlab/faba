@@ -110,16 +110,6 @@ fn without_a_trace_the_r_hat_alone_decides() {
     );
 }
 
-/// The chains the tables leave out of the pool are the verdict's lagging
-/// ones, whether the R-hat is within its bound or not; none otherwise.
-#[test]
-fn the_lagging_chains_are_those_the_pool_leaves_out() {
-    assert_eq!(verdict(&[0.0, 0.2, -30.0], 1.04).lagging(), [2]);
-    assert_eq!(verdict(&[0.0, -30.0], 1.31).lagging(), [1]);
-    assert!(verdict(&[0.0, 0.2], 1.02).lagging().is_empty());
-    assert!(verdict(&[0.0, -30.0], f64::NAN).lagging().is_empty());
-}
-
 /// Chains that agree on their traces, with quantities the pooling found
 /// short of convergence, have not converged: those named, more sweeps
 /// advised.
