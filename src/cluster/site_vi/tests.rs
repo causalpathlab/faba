@@ -3,9 +3,17 @@
 //! coordinate ascent never lowers, and the moves that leave it as it is.
 
 use super::*;
-use crate::cluster::crp::ln_sigmoid;
 use crate::cluster::read::{Reads, Weighted};
 use rand::SeedableRng;
+
+/// `ln sigmoid(x)`, stable at either end.
+fn ln_sigmoid(x: f64) -> f64 {
+    if x > 0.0 {
+        -(-x).exp().ln_1p()
+    } else {
+        x - x.exp().ln_1p()
+    }
+}
 
 /// Two kinds of 30 cells over 6 genes of 3 sites each: at the first three
 /// genes the first kind is mostly methylated and the second mostly not, at
@@ -41,21 +49,12 @@ fn prior() -> Prior {
     }
 }
 
-/// The baselines: each site's pooled fraction's logit.
+/// The baselines, as the site fit takes them: each site's pooled
+/// fraction's logit.
 fn baselines(links: &Links, sites: usize) -> Vec<f64> {
-    let (mut on, mut all) = (vec![0.0; sites], vec![0.0; sites]);
-    for l in 0..links.len() {
-        let (s, m, u) = links.of(l);
-        for i in 0..s.len() {
-            on[s[i] as usize] += m[i];
-            all[s[i] as usize] += m[i] + u[i];
-        }
-    }
-    (0..sites)
-        .map(|s| {
-            let p = (on[s] + 0.5) / (all[s] + 1.0);
-            (p / (1.0 - p)).ln()
-        })
+    use crate::cluster::math::{logit, pooled_fractions};
+    (pooled_fractions(&links.site, &links.on, &links.off, sites).into_iter())
+        .map(logit)
         .collect()
 }
 
@@ -138,7 +137,7 @@ fn coordinate_ascent_never_lowers_the_elbo() {
         ..Options::default()
     };
     let (trace, f, _) = fitted(&options);
-    assert_eq!((f.svi_epochs, f.epochs), (0, 30));
+    assert_eq!((f.ran.svi_epochs, f.ran.epochs), (0, 30));
     for w in trace.windows(2) {
         let (a, b) = (w[0].1, w[1].1);
         assert!(
@@ -162,7 +161,7 @@ fn the_fit_converges_and_tells_the_kinds_apart() {
         ..Options::default()
     };
     let (_, f, per) = fitted(&options);
-    assert!(f.converged, "not converged in {} epochs", f.epochs);
+    assert!(f.ran.converged, "not converged in {} epochs", f.ran.epochs);
     assert!(per.is_finite() && per < 0.0);
     let main = |c: usize| {
         let t = &f.locals.t[c * 2..c * 2 + 2];

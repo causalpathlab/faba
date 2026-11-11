@@ -334,7 +334,6 @@ fn settings_within_cannot_fit_with_are_refused() {
     assert!(check(&["--model", "blocks"]).is_ok());
     for (words, says) in [
         (&["--modality", "count"][..], "not count"),
-        (&["--model", "crp"], "not --model crp"),
         (&["--within-min-cells", "1"], "at least 2"),
     ] {
         let err = check(words).unwrap_err();

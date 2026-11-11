@@ -1,6 +1,5 @@
 //! The clustering's tables.
 
-use super::fit::{Placement, Tiles};
 use super::read::{Cell, Site, SiteStats};
 use arrow::array::{
     ArrayRef, BooleanArray, Float32Array, Float64Array, Int32Array, Int64Array, StringArray,
@@ -30,59 +29,6 @@ fn write(columns: Vec<(&str, ArrayRef)>, path: &Path) -> anyhow::Result<()> {
         .set_max_row_group_row_count(Some(ROW_GROUP))
         .build();
     crate::editing::io::write_record_batch_with(&batch, path, props)
-}
-
-/// One row per input cell: where it was placed, none when the filters
-/// dropped it.
-pub struct CellRow<'a> {
-    pub cell: &'a Cell,
-    pub placed: Option<&'a Placement>,
-}
-
-/// Every input cell: barcode, batch, whether it was fitted and kept, and its
-/// cluster (1..), confidence and level offset.
-pub fn cells(rows: &[CellRow], path: &Path) -> anyhow::Result<()> {
-    let opt = |f: fn(&Placement) -> f64| -> ArrayRef {
-        Arc::new(Float32Array::from(
-            rows.iter()
-                .map(|r| r.placed.map(|p| f(p) as f32))
-                .collect::<Vec<_>>(),
-        ))
-    };
-    let strings = |f: fn(&Cell) -> &str| -> ArrayRef {
-        Arc::new(StringArray::from(
-            rows.iter().map(|r| f(r.cell)).collect::<Vec<_>>(),
-        ))
-    };
-    write(
-        vec![
-            ("barcode", strings(|c| &c.barcode)),
-            ("batch", strings(|c| &c.batch)),
-            (
-                "fitted",
-                Arc::new(BooleanArray::from(
-                    rows.iter().map(|r| r.cell.fit).collect::<Vec<_>>(),
-                )),
-            ),
-            (
-                "kept",
-                Arc::new(BooleanArray::from(
-                    rows.iter().map(|r| r.placed.is_some()).collect::<Vec<_>>(),
-                )),
-            ),
-            (
-                "cluster",
-                Arc::new(Int32Array::from(
-                    rows.iter()
-                        .map(|r| r.placed.map(|p| p.cluster as i32 + 1))
-                        .collect::<Vec<_>>(),
-                )),
-            ),
-            ("confidence", opt(|p| p.probability)),
-            ("offset", opt(|p| p.offset)),
-        ],
-        path,
-    )
 }
 
 /// Site indices by gene, chromosome and position.
@@ -128,39 +74,6 @@ fn site_columns(
             )),
         ),
     ]
-}
-
-/// One row per site and cluster with reads, sorted by gene and position:
-/// the fitted cells' converted and total reads, and the posterior mean and
-/// standard deviation of the converted fraction.
-pub fn sites(sites: &[Site], tiles: &Tiles, path: &Path) -> anyhow::Result<()> {
-    let order = site_order(sites);
-    let (mut site, mut cluster) = (vec![], vec![]);
-    let (mut on, mut total, mut mean, mut sd) = (vec![], vec![], vec![], vec![]);
-    for s in order {
-        for k in 0..tiles.k {
-            let n = tiles.total(s, k);
-            if n == 0 {
-                continue;
-            }
-            let (mu, sigma) = tiles.posterior(s, k);
-            site.push(s);
-            cluster.push(k as i32 + 1);
-            on.push(tiles.on(s, k) as u64);
-            total.push(n as u64);
-            mean.push(mu as f32);
-            sd.push(sigma as f32);
-        }
-    }
-    let mut columns = Vec::from(site_columns(sites, site.into_iter()));
-    columns.extend([
-        ("cluster", Arc::new(Int32Array::from(cluster)) as ArrayRef),
-        ("converted", Arc::new(UInt64Array::from(on))),
-        ("total", Arc::new(UInt64Array::from(total))),
-        ("mean", Arc::new(Float32Array::from(mean))),
-        ("sd", Arc::new(Float32Array::from(sd))),
-    ]);
-    write(columns, path)
 }
 
 /// One row per input cell under the blockmodel: its weights over the cell
@@ -285,7 +198,7 @@ fn memberships(
     k: usize,
     path: &Path,
 ) -> anyhow::Result<()> {
-    let main = |m: &[f32]| super::summary::main_labels(m, k)[0] as usize;
+    let main = |m: &[f32]| super::math::main_labels(m, k)[0] as usize;
     let mut columns: Vec<(String, ArrayRef)> = labels
         .iter()
         .map(|(n, v)| {

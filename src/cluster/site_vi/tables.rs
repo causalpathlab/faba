@@ -7,7 +7,7 @@ use super::{dirichlet_term, Cell, Data, Fit, Fitted, Scratch, Xi, LOCAL_ITERS};
 
 /// Cells whose links' `phi` the tables pass holds at once.
 const CHUNK: usize = 512;
-use crate::cluster::unified::Means;
+use crate::cluster::means::Means;
 use rayon::prelude::*;
 
 impl Fit<'_> {
@@ -85,8 +85,6 @@ impl Fit<'_> {
         Means {
             cell: shares(&cell_block, cells, aa, |b, bb| b / bb),
             gene: shares(&gene_block, self.data.genes, bb, |b, bb| b % bb),
-            beta: vec![1.0 / aa as f64; aa],
-            gene_beta: vec![1.0 / bb as f64; bb],
             shift: g.d.clone(),
             shift_sd: g.v.iter().map(|v| v.sqrt()).collect(),
             level: l.e.clone(),

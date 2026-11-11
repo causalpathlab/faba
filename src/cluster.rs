@@ -1,13 +1,12 @@
 //! `faba cluster`: cells clustered by their own site reads.
 //!
-//! A blockmodel over (cell, gene) links (see [`unified`]), its link and
-//! blocks presets, or a Chinese-restaurant-process mixture over cells (see
-//! [`crp`]), run as several chains and summarised without a cells x cells
-//! matrix (see [`summary`]). Cells from inputs outside `--fit` are assigned
-//! to the fitted roles or clusters afterwards, as a control.
+//! A blockmodel over (cell, gene) links of site reads (see [`site_vi`]), or
+//! over a count matrix's cells and genes (see [`count`]), each fitted by
+//! variational inference from several k-means starts, the best by ELBO
+//! kept. Cells from inputs outside `--fit` are placed against the fit
+//! afterwards, as a control.
 
 use crate::run_record::RunRecord;
-use legume_numeric::mcmc::engine::McmcConfig;
 use log::{info, warn};
 use std::borrow::Cow;
 use std::io::IsTerminal;
@@ -18,28 +17,27 @@ pub(crate) mod batches;
 mod browse;
 mod command;
 mod count;
-mod crp;
-mod embed;
-mod fast;
-mod fit;
+mod links;
+mod math;
+mod means;
 mod progress;
 mod read;
 /// Each model's fit, from the read and filtered input to its tables.
 mod site_vi;
 mod run {
-    pub(super) mod blockmodel;
     pub(super) mod count;
-    pub(super) mod crp;
     pub(super) mod sites;
     pub(super) mod vi;
 }
-mod summary;
-mod unified;
+mod settings;
+mod vi;
+mod weights;
 mod within;
 mod write;
 
+pub use args::ClusterArgs;
 use args::{check, inputs, output_dir, with_inputs};
-pub use args::{ClusterArgs, ModelKind};
+pub(crate) use args::{refused, REMOVED_SAID};
 #[cfg(feature = "mcp")]
 pub(crate) use browse::opens;
 pub use browse::{fitting_hint, run_modules, ModulesArgs};
@@ -48,95 +46,49 @@ use command::command;
 #[cfg(test)]
 mod tests;
 
-/// The run record of `model`'s fit of modality `m`: the mixture's
-/// `{m}_cluster.run.json`, the blockmodel's `{m}_blockmodel.run.json`, each
-/// its own so that neither replaces the other's (the command saved beside
-/// each, `.cmd.sh` for `.run.json`).
-fn record_name(m: &str, model: ModelKind) -> String {
-    match model {
-        ModelKind::Crp => format!("{m}_cluster.run.json"),
-        ModelKind::Link | ModelKind::Blocks => format!("{m}_blockmodel.run.json"),
-    }
+/// The run record of a site fit of modality `m`, `{m}_blockmodel.run.json`
+/// (the command saved beside it, `.cmd.sh` for `.run.json`).
+fn record_name(m: &str) -> String {
+    format!("{m}_blockmodel.run.json")
 }
 
-/// Split R-hat above this, 1.05, counts as not converged.
-const RHAT_OK: f64 = 1.05;
+/// Where faba before 0.19 kept the record of a mixture fit (`--model crp`),
+/// and before that of every site fit: `{m}_cluster.run.json`.
+fn older_record_name(m: &str) -> String {
+    format!("{m}_cluster.run.json")
+}
 
 /// Bytes the fit (not the reading) will hold at its peak, roughly: the
 /// reads (raw, a copy of the fitted ones when some are left out, and
-/// weighted), then the model's own per-chain state. `links`: the
-/// blockmodel's (cell, gene) links (unused by the mixture).
+/// weighted); the links' copy of the reads and each link's gene; per
+/// restart each cell's role weights and level, each gene's role weights and
+/// the blocks'; the best restart's kept beside the one running; and the
+/// tables: each cell's and gene's links and each site's reads per block,
+/// with the statistics' fixed parts over the genes.
 fn memory_estimate(
     entries: usize,
     copied: bool,
     (sites, cells, links): (usize, usize, usize),
-    kept: usize,
     args: &ClusterArgs,
 ) -> usize {
     let reads = entries * (12 + 16 + if copied { 12 } else { 0 });
-    if args::is_vi(args) {
-        // The blockmodel by variational inference: the links' copy of the
-        // reads and each link's gene; per restart each cell's role weights
-        // and level, each gene's role weights and the blocks'; the best
-        // restart's kept beside the one running; and the tables: each cell's
-        // and gene's links and each site's reads per block, with the
-        // statistics' fixed parts over the genes.
-        let s = args::blockmodel(args);
-        let k = s.cell_roles * s.gene_roles;
-        let genes = sites.min(links);
-        let restart = cells * (s.cell_roles + 2) * 8 + genes * s.gene_roles * 8;
-        // The start's profiles (each link's residual and its f32 row entry)
-        // shared by the restarts' starts; the statistics' 64 fixed parts.
-        return reads
-            + entries * 20
-            + links * (8 + 4)
-            + links * (8 + 4)
-            + 2 * restart
-            + (cells + genes) * k * 8
-            + sites * k * 16
-            + 64 * (genes * s.gene_roles + 2 * k + 1) * 8;
-    }
-    let (shared, chain) = match args.model {
-        // The picture chains start from; per chain two f64 per site for
-        // each live cluster (a guess of 32), split-merge scratch, labels
-        // and kept draws.
-        ModelKind::Crp => (
-            sites * 32 * 4 + cells * 32 * 4,
-            sites * 16 * 32 + sites * 33 + cells * 4 + kept * cells * 2,
-        ),
-        // The links: their own copy of the weighted reads, each link's
-        // cell, entries and gene, its unconverted reads and their baselines
-        // summed, and the genes' links; the sites' baselines with their
-        // exponentials and whether each is a Gamma site. Per chain: role
-        // counts (u32) and their sums (f64) for cells and genes (at most
-        // one gene per site), two labels per link, at finite strength
-        // reads, profile, its `ln B`, the `ln Gamma` cache and holders per
-        // site and block (with the shifts' list of each block's sites), at
-        // infinite strength the shifts' list of each block's links; and the
-        // tally's links per cell and gene and reads per site in each block.
-        ModelKind::Link | ModelKind::Blocks => {
-            let s = args::blockmodel(args);
-            let k = s.cell_roles * s.gene_roles;
-            let blocks = sites * k;
-            let per_block = if s.strength.is_finite() {
-                blocks * (16 + 16 + 8 + 24 + 4 + 8)
-            } else {
-                links * 8
-            };
-            (
-                entries * 20 + links * (12 + 16 + 12) + sites * (8 + 8 + 1),
-                (cells * s.cell_roles + sites * s.gene_roles) * 12
-                    + links * 4
-                    + per_block
-                    + (cells + sites) * k * 8
-                    + blocks * 16,
-            )
-        }
-    };
-    reads + shared + args.chains * chain
+    let s = args::blockmodel(args);
+    let k = s.cell_roles * s.gene_roles;
+    let genes = sites.min(links);
+    let restart = cells * (s.cell_roles + 2) * 8 + genes * s.gene_roles * 8;
+    // The start's profiles (each link's residual and its f32 row entry)
+    // shared by the restarts' starts; the statistics' 64 fixed parts.
+    reads
+        + entries * 20
+        + links * (8 + 4)
+        + links * (8 + 4)
+        + 2 * restart
+        + (cells + genes) * k * 8
+        + sites * k * 16
+        + 64 * (genes * s.gene_roles + 2 * k + 1) * 8
 }
 
-/// Whether the chains are drawn in the live view as they run: on a
+/// Whether the restarts are drawn in the live view as they run: on a
 /// terminal, unless --batch-process says a bar.
 fn live(args: &ClusterArgs) -> bool {
     !args.batch_process
@@ -146,7 +98,7 @@ fn live(args: &ClusterArgs) -> bool {
 
 /// `work` run counting on a progress of its own, which comes back with its
 /// result: on a terminal in the live view under `title` (see
-/// [`progress::view`]), where `q` cancels and Ctrl+C stops the chains
+/// [`progress::view`]), where `q` cancels and Ctrl+C stops the restarts
 /// early, the view staying up after a fit until a key when `stay`; else
 /// with a bar on stderr.
 fn watched<T: Send>(
@@ -178,11 +130,14 @@ fn unless_cancelled(args: &ClusterArgs, error: anyhow::Error) -> anyhow::Result<
 }
 
 /// Cluster as `args` say; the modality fitted, none when no inputs were
-/// chosen. On a terminal the chains are drawn in a view as they run, else
-/// on a bar on stderr (see [`watched`]). A blockmodel fit ends with its
-/// chains' traces, R-hat and advice on stderr (see [`progress::spark`]).
+/// chosen. On a terminal the restarts are drawn in a view as they run, else
+/// on a bar on stderr (see [`watched`]). A fit ends with its restarts'
+/// ELBO traces and advice on stderr (see [`progress::spark`]). Flags of the
+/// MCMC fits faba no longer has are refused before anything is read or
+/// written (see [`args::refuse_removed`]).
 /// With `--within`, one fit per cell module of a count fit (see [`within`]).
 pub fn run_cluster(args: &ClusterArgs) -> anyhow::Result<Option<String>> {
+    args::refuse_removed(args)?;
     if args.within.is_some() {
         return within::run(args);
     }
@@ -206,9 +161,9 @@ pub fn run_cluster(args: &ClusterArgs) -> anyhow::Result<Option<String>> {
         ..args.clone()
     };
     let model = if args.is_count() {
-        "count blockmodel".to_string()
+        "count blockmodel"
     } else {
-        format!("{} model", args.model.name())
+        "site blockmodel"
     };
     let dir = output_dir(args.output.as_deref(), &args.data_files);
     let title = format!("fitting the {model} in {}", dir.display());
@@ -222,8 +177,8 @@ pub fn run_cluster(args: &ClusterArgs) -> anyhow::Result<Option<String>> {
     }
 }
 
-/// [`run_cluster`] of `args`, their inputs named, the chains counting their
-/// sweeps on `progress`; the modality fitted. Cancelled, it writes nothing,
+/// [`run_cluster`] of `args`, their inputs named, the restarts counting
+/// their steps on `progress`; the modality fitted. Cancelled, it writes nothing,
 /// not even its record.
 fn run_cluster_watched(
     args: &ClusterArgs,
@@ -280,26 +235,6 @@ fn save_command(args: &ClusterArgs, dir: &Path, record: &str) {
     }
 }
 
-/// The chains' schedule for `args`: `--burn-in` sweeps, then the
-/// `(sweeps - burn-in) / thin` kept draws every `thin`-th sweep, the
-/// engine stopping on the last of them. A `thin` that does not divide the
-/// sweeps after the burn-in leaves the remainder unrun; the progress shows
-/// the sweeps run ([`progress::sweeps`]), not `--sweeps`.
-fn mcmc_config(args: &ClusterArgs) -> McmcConfig {
-    McmcConfig {
-        n_samples: kept_draws(args).max(1),
-        warmup: args.burn_in,
-        thin: args.thin,
-        seed: args.seed,
-    }
-}
-
-/// The draws `args` keep: `(sweeps - burn-in) / thin`, a `thin` of 0 read
-/// as 1; none when the sweeps end with the burn-in.
-fn kept_draws(args: &ClusterArgs) -> usize {
-    (args.sweeps - args.burn_in) / args.thin.max(1)
-}
-
 /// What a fit wrote: the modality fitted (lowercased, as its tables are
 /// named) and its run record's file name.
 struct Written {
@@ -307,7 +242,7 @@ struct Written {
     record: String,
 }
 
-/// Fit, summarise and write, the sweeps counted on `progress`; what was
+/// Fit and write, the restarts' steps counted on `progress`; what was
 /// written.
 fn cluster(
     args: &ClusterArgs,
@@ -362,24 +297,11 @@ fn site_fit(
     } else {
         Cow::Borrowed(&data.reads)
     };
-    // Entries held out of the fit, the same for either model.
-    let (fit_reads, held): (Cow<read::Reads>, Option<read::Reads>) = if args.holdout > 0.0 {
-        let (fit, held) = read::hold_out(&fit_reads, args.holdout, args.seed);
-        (Cow::Owned(fit), Some(held))
-    } else {
-        (fit_reads, None)
-    };
-    let links = match args.model {
-        ModelKind::Crp => 0,
-        ModelKind::Link | ModelKind::Blocks => {
-            unified::Links::count(&fit_reads, &run::blockmodel::number_genes(&data.sites).0)
-        }
-    };
+    let links = links::Links::count(&fit_reads, &run::sites::number_genes(&data.sites).0);
     let memory = memory_estimate(
         fit_reads.site.len(),
         matches!(fit_reads, Cow::Owned(_)),
         (data.sites.len(), fitted.len(), links),
-        kept_draws(args),
         args,
     );
     info!("about {} MB at the peak of the fit", memory >> 20);
@@ -388,7 +310,6 @@ fn site_fit(
     let (weighted, batch_stats) = weigh_batches(args, &data, &fitted, &fit_reads);
     progress.check()?;
 
-    let config = mcmc_config(args);
     record.set_result(
         "cells",
         &serde_json::json!({
@@ -408,19 +329,12 @@ fn site_fit(
         data: &data,
         fitted: &fitted,
         weighted: &weighted,
-        held: held.as_ref(),
         all_cells: &all_cells,
         kept: &kept,
         controls: &controls,
         progress,
     };
-    match args.model {
-        ModelKind::Crp => run::crp::crp_fit(args, &config, dir, record, fit, &fit_reads),
-        ModelKind::Blocks if args::is_vi(args) => run::sites::blocks_fit(args, dir, record, fit),
-        ModelKind::Link | ModelKind::Blocks => {
-            run::blockmodel::blockmodel_fit(args, &config, dir, record, fit)
-        }
-    }
+    run::sites::blocks_fit(args, dir, record, fit)
 }
 
 /// Batches taken out of the fitted reads by importance weights, when there
@@ -450,7 +364,7 @@ fn weigh_batches<'r>(
                     .unwrap() as u16
             })
             .collect();
-        let w = fit::batch_weights(fit_reads, &batch_of, batches.len(), data.sites.len());
+        let w = weights::batch_weights(fit_reads, &batch_of, batches.len(), data.sites.len());
         info!(
             "importance weights take out {} batches: effective share of reads {:?}, {:.2}% capped",
             batches.len(),
@@ -475,18 +389,17 @@ fn weigh_batches<'r>(
     }
 }
 
-/// What each model needs from the read and filtered input: the kept
+/// What the site fit needs from the read and filtered input: the kept
 /// cells' data, those fitted and those left out of the fit (the controls,
-/// both in order), the fitted reads as weighted and held out, every input
+/// both in order), the fitted reads as weighted, every input
 /// cell, and each kept cell's index among them.
 struct FitData<'a> {
     data: &'a read::SiteData,
     fitted: &'a [usize],
     weighted: &'a read::Weighted<'a>,
-    held: Option<&'a read::Reads>,
     all_cells: &'a [read::Cell],
     kept: &'a [usize],
     controls: &'a [usize],
-    /// Where the chains count their sweeps.
+    /// Where the restarts count their steps.
     progress: &'a progress::Progress,
 }

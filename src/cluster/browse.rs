@@ -204,9 +204,9 @@ impl ModulesArgs {
 
 /// What `faba cluster-view` says when it is given an option it does not
 /// have (`viewing`: the command line named it): `error` with one more tip
-/// when that option is one of `faba cluster`'s (the model's, the sampler's,
-/// the reads' filters), as the viewer opens fits as they are and never
-/// fits; any other error as it is.
+/// when that option is one of `faba cluster`'s (the model's, the reads'
+/// filters), as the viewer opens fits as they are and never fits, or was
+/// one of the MCMC fits' (removed in 0.19); any other error as it is.
 pub fn fitting_hint(mut error: clap::Error, viewing: bool) -> clap::Error {
     use clap::error::{ContextKind, ContextValue, ErrorKind};
     let Some(ContextValue::String(given)) = error.get(ContextKind::InvalidArg) else {
@@ -234,7 +234,11 @@ pub fn fitting_hint(mut error: clap::Error, viewing: bool) -> clap::Error {
         Some(ContextValue::StyledStrs(tips)) => tips.clone(),
         _ => Vec::new(),
     };
-    tips.push(FITTING_HINT.into());
+    tips.push(if super::args::is_removed(flag) {
+        format!("`{flag}` {}", super::args::REMOVED_SAID).into()
+    } else {
+        FITTING_HINT.into()
+    });
     error.insert(ContextKind::Suggested, ContextValue::StyledStrs(tips));
     error
 }
@@ -314,8 +318,8 @@ fn read_fit_record(path: &Path) -> anyhow::Result<Option<FitRecord>> {
     let blockmodel = !results["model"].is_null() || !results["blockmodel"].is_null();
     anyhow::ensure!(
         blockmodel || results["posterior"].is_null(),
-        "{} is the record of a `faba cluster --model crp` fit, which has no modules: \
-         name a blockmodel fit's (--model link or blocks)",
+        "{} is the record of a `faba cluster --model crp` fit (faba before 0.19), which \
+         has no modules: name a blockmodel fit's, or fit again with `faba cluster`",
         path.display()
     );
     anyhow::ensure!(blockmodel, "{} records no blockmodel fit", path.display());

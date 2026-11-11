@@ -36,20 +36,17 @@ struct Fitting<'a, T> {
 }
 
 impl<T> Fitting<'_, T> {
-    /// One chain's line: its bar, `│` where the burn-in ends (burn-in
-    /// filled in one colour, sampling in another), its sweeps and phase,
-    /// then its time taken and left since it started (a chain queued for a
-    /// thread waits), in `width` cells.
+    /// One restart's line: its bar, `│` where its k-means start ends (the
+    /// start filled in one colour, the epochs in another), its steps and
+    /// phase, then its time taken and left since it started, in `width`
+    /// cells.
     fn chain_line(&self, i: usize, (total, warmup): (usize, usize), width: u16) -> Line<'static> {
         let done = self.progress.done(i).min(total);
         let running = self.progress.running(i);
-        let vi = self.progress.is_vi();
         let phase = match running {
             None => "waiting ",
-            Some(_) if done < warmup && vi => "k-means ",
-            Some(_) if done < warmup => "burn-in ",
-            Some(_) if vi => "epochs  ",
-            Some(_) => "sampling",
+            Some(_) if done < warmup => "k-means ",
+            Some(_) => "epochs  ",
         };
         let unknown = Cow::Borrowed("--:--:--");
         let taken = running.map_or(unknown.clone(), |t| clock(t).into());
@@ -60,11 +57,8 @@ impl<T> Fitting<'_, T> {
             _ => unknown,
         };
         let tail = format!(" {done}/{total} {phase}  {taken} taken  {left} left");
-        // Numbered from 0 by its seed's offset, as the run record's best chain.
-        let head = match self.progress.is_vi() {
-            true => format!(" restart {i:<3}"),
-            false => format!(" chain {i:<3}"),
-        };
+        // Numbered from 0 by its seed's offset, as the run record's best.
+        let head = format!(" restart {i:<3}");
         let w = usize::from(width)
             .saturating_sub(head.len() + tail.len() + 1)
             .max(4);
@@ -74,22 +68,11 @@ impl<T> Fitting<'_, T> {
         Line::from(spans)
     }
 
-    /// The lines under the plot: once every chain is done, whether one
-    /// lags; once they are summarised, in its place the verdict on the
-    /// R-hat and the traces, its advice, and what the fit is doing.
-    fn after(
-        &self,
-        (total, warmup): (usize, usize),
-        traces: &[Vec<(usize, f64)>],
-    ) -> Vec<Line<'static>> {
+    /// The lines under the plot: once the fit ends, its verdict, its
+    /// advice, and what the fit is doing.
+    fn after(&self) -> Vec<Line<'static>> {
         let Some(verdict) = self.progress.verdict() else {
-            let done = (0..self.progress.chains()).all(|i| self.progress.done(i) >= total);
-            // An ELBO's level says nothing of lagging: its verdict comes.
-            return (done && !self.progress.is_vi())
-                .then(|| trace::verdict(traces, warmup))
-                .flatten()
-                .into_iter()
-                .collect();
+            return Vec::new();
         };
         let style = if verdict.converged() { DIM } else { HIGHLIGHT };
         let mut lines = vec![
@@ -115,15 +98,9 @@ impl<T> Fitting<'_, T> {
         let mut bars: Vec<Line> = (0..self.progress.chains())
             .map(|i| self.chain_line(i, schedule, area.width))
             .collect();
-        bars.push(Line::from(Span::styled(
-            match self.progress.is_vi() {
-                true => super::vi_caption(schedule.1),
-                false => format!(" │ the burn-in ends at sweep {}", schedule.1),
-            },
-            DIM,
-        )));
+        bars.push(Line::from(Span::styled(super::vi_caption(schedule.1), DIM)));
         let traces = self.progress.traces();
-        let after = self.after(schedule, &traces);
+        let after = self.after();
         let rows = |n: usize| u16::try_from(n).unwrap_or(u16::MAX);
         let top = rows(bars.len()).min(area.height);
         let bottom = rows(after.len()).min(area.height - top);
@@ -134,32 +111,33 @@ impl<T> Fitting<'_, T> {
         ])
         .areas(area);
         frame.render_widget(Paragraph::new(bars), bars_at);
-        trace::draw(frame, plot_at, &traces, schedule, self.progress.quantity());
+        trace::draw(frame, plot_at, &traces, schedule, super::ELBO);
         frame.render_widget(Paragraph::new(after), after_at);
     }
 
     /// Stop the fit, nothing written, or, too late for that, leave as
-    /// soon as it is written; once the chains were stopped early, what
-    /// they kept is still written. Before the chains, it stops once the
-    /// step in hand (an input read, the filters) ends.
+    /// soon as it is written; once the restarts were stopped early, what
+    /// they reached is still written. Before the restarts, it stops once
+    /// the step in hand (an input read, the filters) ends.
     fn cancel(&mut self) {
         let sampling = self.progress.schedule().is_some();
         self.status = Some(if self.progress.stopped_early().is_some() {
-            // A stop early is not undone: what the chains kept is written.
-            "stopping early already: what the chains kept is written"
+            // A stop early is not undone: what the restarts reached is
+            // written.
+            "stopping early already: what the restarts reached is written"
         } else if !self.progress.cancel() {
             self.skip = true;
             "too late to cancel: leaving once the tables are written"
         } else if sampling {
-            "cancelling: the chains stop and nothing is written"
+            "cancelling: the restarts stop and nothing is written"
         } else {
             "cancelling once the step in hand ends: nothing is written"
         });
     }
 
-    /// Stop the chains early, what they kept written (see
+    /// Stop the restarts early, what they reached written (see
     /// [`Progress::stop_early`]), as an interrupt does on the command line;
-    /// before the chains, with nothing kept, cancel. Once the fit writes,
+    /// before the restarts, with nothing reached, cancel. Once the fit writes,
     /// too late for that, leave as soon as it is written.
     fn stop_early(&mut self) {
         if self.progress.schedule().is_none() {
@@ -167,9 +145,9 @@ impl<T> Fitting<'_, T> {
         }
         self.progress.stop_early();
         self.status = Some(if self.progress.stopped_early().is_some() {
-            "stopping early: the chains stop and what they kept is written"
+            "stopping early: the restarts stop and what they reached is written"
         } else if self.progress.cancelled() {
-            "cancelling: the chains stop and nothing is written"
+            "cancelling: the restarts stop and nothing is written"
         } else {
             self.skip = true;
             "too late to stop: leaving once the tables are written"
@@ -177,9 +155,9 @@ impl<T> Fitting<'_, T> {
     }
 }
 
-/// A `width`-cell bar for `done` of `total` sweeps, `│` at the end of the
-/// `warmup` burn-in sweeps, the burn-in filled in one colour and the
-/// sampling in another, the rest dim.
+/// A `width`-cell bar for `done` of `total` steps, `│` at the end of the
+/// `warmup` steps of the k-means start, the start filled in one colour and
+/// the epochs in another, the rest dim.
 fn chain_bar(done: usize, total: usize, warmup: usize, width: usize) -> Vec<Span<'static>> {
     let cells = |n: usize| crate::tui::filled(n as u64, total as u64, width).min(width);
     let (mark, full) = (cells(warmup), cells(done));
@@ -219,10 +197,8 @@ impl<T> Screen for Fitting<'_, T> {
         );
         let schedule = self.progress.schedule();
         let block = panel(
-            if self.progress.is_vi() {
+            if schedule.is_some() {
                 " fitting "
-            } else if schedule.is_some() {
-                " sampling "
             } else {
                 " reading "
             }

@@ -137,7 +137,7 @@ fn the_report_draws_the_trace_with_its_verdict() {
     assert_eq!(t["said"], "R-hat 1.31: chains disagree");
     assert_eq!(
         t["advice"],
-        "run longer (--sweeps 400) and check the traces"
+        super::super::super::progress::advice::advice_again()
     );
 }
 

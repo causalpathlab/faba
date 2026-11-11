@@ -63,6 +63,15 @@ pub enum Pane {
     Genes,
 }
 
+/// A pane over the whole body, in place of the grids: the fit's trace, the
+/// cell modules' spread over the batches, the gene modules' GO terms.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum Full {
+    Trace,
+    Batches,
+    Go,
+}
+
 /// The panes in Tab's order, each a level finer than the last.
 const PANES: [Pane; 3] = [Pane::Modules, Pane::Sites, Pane::Genes];
 
@@ -177,18 +186,15 @@ pub struct ModulesView<'a> {
     /// for (see [`ModulesView::site_label_w`]).
     pub(super) site_labels: Kept<usize, Vec<usize>>,
     hits: Hits<Spot>,
-    /// The fit's trace is open, full pane.
-    tracing: bool,
-    /// The cell modules' spread over the batches is open, full pane, its
-    /// rows from this one.
-    batching: bool,
+    /// The full pane open, if one is (see [`Full`]).
+    full: Option<Full>,
+    /// The batches pane's rows from this one.
     batch_from: usize,
-    /// What GO is asked (none: not for this view), its terms while they
-    /// are read and once they are, and whether the pane is open.
+    /// What GO is asked (none: not for this view), and its terms while
+    /// they are read and once they are.
     go_ask: Option<super::go::Ask>,
     go: Option<go::Pending>,
     go_table: Option<Result<super::go::Table, String>>,
-    going: bool,
     done: bool,
 }
 
@@ -229,13 +235,11 @@ impl<'a> ModulesView<'a> {
             module_stretch: Kept::default(),
             site_labels: Kept::default(),
             hits: Hits::default(),
-            tracing: false,
-            batching: false,
+            full: None,
             batch_from: 0,
             go_ask: None,
             go: None,
             go_table: None,
-            going: false,
             done: false,
         };
         view.relist();
@@ -419,7 +423,7 @@ impl Screen for ModulesView<'_> {
         if let Some(badge) = self.badge() {
             extra.push_str(&format!(" · {badge}"));
         }
-        if self.tracing || self.batching || self.going {
+        if let Some(full) = self.full {
             let [head, body, foot] = Layout::vertical([
                 Constraint::Length(1),
                 Constraint::Fill(1),
@@ -427,10 +431,10 @@ impl Screen for ModulesView<'_> {
             ])
             .areas(area);
             frame.render_widget(header("cluster-view", &self.title, &extra), head);
-            return match (self.tracing, self.batching) {
-                (true, _) => self.draw_trace(frame, body, foot),
-                (_, true) => self.draw_batches(frame, body, foot),
-                _ => self.draw_go(frame, body, foot),
+            return match full {
+                Full::Trace => self.draw_trace(frame, body, foot),
+                Full::Batches => self.draw_batches(frame, body, foot),
+                Full::Go => self.draw_go(frame, body, foot),
             };
         }
         self.fit_columns(area.width);

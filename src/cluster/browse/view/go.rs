@@ -25,7 +25,7 @@ impl ModulesView<'_> {
             self.status = Some("no GO for this view".into());
             return;
         };
-        self.going = true;
+        self.full = Some(super::Full::Go);
         // Read once; a read that failed is tried again (its files fetched
         // since, say).
         if self.go.is_some() || matches!(self.go_table, Some(Ok(_))) {
@@ -50,7 +50,7 @@ impl ModulesView<'_> {
     /// focus there), `q` quits.
     pub(super) fn go_key(&mut self, key: KeyEvent) {
         let by = match key.code {
-            KeyCode::Char('a') | KeyCode::Esc => return self.going = false,
+            KeyCode::Char('a') | KeyCode::Esc => return self.full = None,
             KeyCode::Char('q') => return self.done = true,
             KeyCode::Down | KeyCode::Char('j') => 1,
             KeyCode::Up | KeyCode::Char('k') => -1,

@@ -1,9 +1,9 @@
 //! The report's Model section: the blockmodel the tables come from, its
 //! settings and its plate diagram, drawn as the run set its switches (see
-//! [`crate::cluster::unified`]). The page styles the diagram's classes
+//! [`crate::cluster::settings`]; an older MCMC fit's switches too). The page styles the diagram's classes
 //! from the shell's theme tokens.
 
-use crate::cluster::unified::{strength, Recorded, Settings};
+use crate::cluster::settings::{strength, Recorded, Settings};
 use serde::Serialize;
 use std::fmt::Write;
 
@@ -350,7 +350,8 @@ fn notes(s: &Settings) -> String {
     } else {
         format!("σ({}", lowered("μ", "s", ")"))
     };
-    // Infinite strength comes with the shift (see `unified::Model::new`).
+    // Infinite strength came with the shift (the MCMC fits' rule; the
+    // variational fit has both always).
     let said = if finite {
         format!("Each block's reads at a site: Beta-binomial, S pseudo-reads around {centre}.")
     } else {

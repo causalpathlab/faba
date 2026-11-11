@@ -4,8 +4,8 @@
 
 use super::super::command::COUNT_MODALITY;
 use super::super::count::{self, vi, Counts};
+use super::super::math::main_labels;
 use super::super::read::{walk_matrix, Visit};
-use super::super::summary::main_labels;
 use super::super::{args, progress, read, write, Written};
 use super::vi::End;
 use crate::run_record::RunRecord;
@@ -217,8 +217,7 @@ pub(in crate::cluster) fn count_fit(
     progress.check()?;
     // Each restart's steps: its k-means start's iterations, then its epochs.
     let warmup = vi::KMEANS_ITERS;
-    progress.begin_vi(warmup + options.epochs, warmup);
-    let (best, ends) = progress::barred(progress, || {
+    let best = super::vi::best(progress, (warmup, options.epochs), || {
         // The profiles serve the starts alone: moved into theirs, dropped
         // with it once they are made.
         let profiles = vi::Profiles::new(&counts);
@@ -232,34 +231,19 @@ pub(in crate::cluster) fn count_fit(
             |f| End {
                 elbo: f.elbo,
                 per_unit: f.elbo_per_count(counts),
-                epochs: f.epochs,
-                svi_epochs: f.svi_epochs,
-                converged: f.converged,
+                ran: f.ran,
             },
         )
     })?;
-    if progress.cancelled() {
-        return Err(progress::Cancelled.into());
-    }
-    // Stopped before any restart finished an epoch: nothing to write, as
-    // a cancel.
-    let Some((best, fitted)) = best else {
-        log::warn!("stopped before any restart finished an epoch: nothing to write");
-        return Err(progress::Cancelled.into());
-    };
-    let ended = ends[best].expect("the best restart ended");
-    let stopped = progress.stopped_early().is_some();
-    let means = vi::summarize(&fitted);
+    let means = vi::summarize(&best.fit);
     // The verdict, and the commit to writing: nothing is written before.
     super::vi::conclude(
         progress,
         record,
-        ("count", "count"),
-        &ends,
-        (best, ended),
+        "count",
+        &best,
         (warmup, options.epochs, options.tol),
-        stopped,
-        serde_json::json!({"empty_roles": super::vi::empty_roles(&means.units, bb)}),
+        super::vi::empty_roles(&means.units, bb),
     )?;
     std::fs::create_dir_all(dir)?;
     let path = |name: &str| dir.join(format!("count_{name}.parquet"));

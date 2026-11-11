@@ -42,8 +42,16 @@ fn private() -> Private {
     Private::new(EXE).patience(Duration::from_secs(30))
 }
 
+/// The terminal these tests run in, as a test's: not tmux, whatever the one
+/// running the tests is (the harness clears `TMUX`, not `TERM_PROGRAM`,
+/// which tmux sets and which says tmux as well).
+const NOT_TMUX: (&str, &str) = ("TERM_PROGRAM", "");
+
 fn term(dir: &Private, args: &[&str], env: &[(&str, &str)]) -> Term {
-    dir.term_sized(args, env, SIZE)
+    let env: Vec<(&str, &str)> = std::iter::once(NOT_TMUX)
+        .chain(env.iter().copied())
+        .collect();
+    dir.term_sized(args, &env, SIZE)
 }
 
 /// A terminal that speaks kitty's image protocol, its cells 10 x 20
@@ -52,7 +60,7 @@ fn kitty_term(dir: &Private, args: &[&str]) -> Term {
     let setup = Setup::new()
         .size(SIZE)
         .replies(Replies::plain().kitty().cell(10, 20));
-    dir.term_with(args, &[("FABA_TUI_IMAGES", "1")], setup)
+    dir.term_with(args, &[NOT_TMUX, ("FABA_TUI_IMAGES", "1")], setup)
 }
 
 /// A site table (`chr`, `m6a_pos`, `strand`) and a one-chromosome genome

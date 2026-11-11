@@ -1,4 +1,7 @@
-//! The blockmodel's settings, and what a run's record says of them.
+//! The site blockmodel's settings, and what a run's record says of them.
+//! Old records (the Gibbs-sampled fits of faba before 0.19) keep their
+//! drawn weights, finite strength or missing shift: the fields stay so
+//! they still read.
 
 /// The global weights over the cell roles, and likewise over the gene
 /// roles.
@@ -49,27 +52,13 @@ pub struct Settings {
 }
 
 impl Settings {
-    /// Refuses settings that make the fit meaningless: roles out of range
-    /// (labels are `u16`), or gene roles, or infinite strength, without the
-    /// shift, which leave the roles no way to the reads.
+    /// Refuses roles out of range (labels are `u16`).
     pub fn check(&self) -> anyhow::Result<()> {
         let roles = 1..u16::MAX as usize;
         anyhow::ensure!(
             roles.contains(&self.cell_roles) && roles.contains(&self.gene_roles),
             "cell roles and gene roles (--cell-roles, --gene-roles) must be between 1 and {}",
             u16::MAX - 1
-        );
-        anyhow::ensure!(
-            self.gene_roles == 1 || self.shift_sd.is_some(),
-            "{} gene roles need the block shift (--shift on): a site belongs to one \
-             gene, so without it a gene's role never reaches its reads",
-            self.gene_roles
-        );
-        anyhow::ensure!(
-            self.strength.is_finite() || self.shift_sd.is_some(),
-            "infinite profile strength needs the block shift (--shift on): without \
-             it every block's reads are Binomial at the site's pooled fraction, so \
-             no role reaches them"
         );
         Ok(())
     }
@@ -121,4 +110,11 @@ pub mod strength {
             Written::Text(t) => t.parse().map_err(serde::de::Error::custom),
         }
     }
+}
+
+/// The range of gene role `b`'s shifts across the cell roles, from block
+/// shifts `shift` (`cell_roles x gene_roles`, row-major).
+pub fn shift_range(shift: &[f64], cell_roles: usize, gene_roles: usize, b: usize) -> f64 {
+    let s = (0..cell_roles).map(|a| shift[a * gene_roles + b]);
+    s.clone().fold(f64::MIN, f64::max) - s.fold(f64::MAX, f64::min)
 }

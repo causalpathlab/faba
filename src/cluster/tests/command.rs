@@ -1,6 +1,6 @@
 //! The command `faba cluster` saves beside a run.
 
-use crate::cluster::{command, ClusterArgs, ModelKind};
+use crate::cluster::{command, ClusterArgs};
 
 /// `words` parsed as `faba cluster` parses them, what was given recorded.
 fn parse_cluster(words: &[&str]) -> ClusterArgs {
@@ -26,10 +26,10 @@ fn parse_saved(argv: &[String]) -> ClusterArgs {
 fn an_option_set_in_code_is_in_the_saved_command() {
     let mut args = parse_cluster(&["faba", "/x.zarr", "--cell-roles", "4"]);
     args.cell_roles = 9;
-    args.model = ModelKind::Crp;
+    args.epochs = 7;
     let argv = command(&args);
     assert_eq!(after(&argv, "--cell-roles"), "9");
-    assert_eq!(after(&argv, "--model"), "crp");
+    assert_eq!(after(&argv, "--epochs"), "7");
     assert_eq!(
         serde_json::to_value(parse_saved(&argv)).unwrap(),
         serde_json::to_value(&args).unwrap()
@@ -47,15 +47,11 @@ fn the_saved_command_runs_the_same_fit_again() {
     let args = parse_cluster(&[
         "faba",
         "rel/a_m6a_site.zarr",
-        "--model",
-        "blocks",
         "--cell-roles",
         "6",
         "--fit",
         "*_wt_*",
         "--no-batch-correction",
-        "--holdout",
-        "0.1",
         "--shift-sd=-0.5",
         "--cell-sd",
         "0.4",
@@ -122,10 +118,10 @@ fn the_saved_command_keeps_a_default_given() {
         "/x.zarr",
         "--chains",
         "4",
-        "--model=link",
+        "--gene-roles=8",
     ]));
     assert_eq!(after(&argv, "--chains"), "4");
-    assert_eq!(after(&argv, "--model"), "link");
+    assert_eq!(after(&argv, "--gene-roles"), "8");
 }
 
 /// A path with a space is made absolute and stays one word in the script.
@@ -148,34 +144,10 @@ fn the_saved_command_quotes_a_path_with_a_space() {
     assert!(text.contains("'/x y/a.zarr'"), "{text}");
 }
 
-/// The blockmodel's switches, an infinite profile strength among them, are
-/// saved as given and parsed back the same; the strength's old name is the
-/// same option.
+/// `--model blocks`, the one model left, runs as it is but is not saved:
+/// the saved command carries none of the MCMC fits' flags.
 #[test]
-fn the_saved_command_keeps_the_blockmodel_switches() {
-    let args = parse_cluster(&[
-        "faba",
-        "/x.zarr",
-        "--model",
-        "link",
-        "--profile-strength",
-        "inf",
-        "--global",
-        "symmetric",
-        "--shift",
-        "on",
-        "--gene-roles",
-        "2",
-    ]);
-    let argv = command(&args);
-    assert_eq!(after(&argv, "--profile-strength"), "inf");
-    assert_eq!(after(&argv, "--global"), "symmetric");
-    assert_eq!(after(&argv, "--shift"), "on");
-    assert_eq!(after(&argv, "--gene-roles"), "2");
-    assert_eq!(
-        serde_json::to_value(parse_saved(&argv)).unwrap(),
-        serde_json::to_value(&args).unwrap()
-    );
-    let old = parse_cluster(&["faba", "/x.zarr", "--prior-strength", "3"]);
-    assert_eq!(after(&command(&old), "--profile-strength"), "3.0");
+fn the_saved_command_carries_no_removed_flag() {
+    let argv = command(&parse_cluster(&["faba", "/x.zarr", "--model", "blocks"]));
+    assert_eq!(argv, vec!["cluster".to_string(), "/x.zarr".to_string()]);
 }

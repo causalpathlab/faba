@@ -23,10 +23,43 @@ fn recorded(dir: &Path, words: &[&str]) {
     tables(dir);
     let args = cluster(words);
     let mut record = RunRecord::start("cluster", &dir.to_string_lossy())
-        .file_name(&record_name("m6a", args.model))
+        .file_name(&record_name("m6a"))
         .options(&args);
     record.set_result("model", &args::recorded(&args));
     record.finish(&Ok(()));
+}
+
+/// The settings of the link preset as faba before 0.19 recorded them
+/// (Gibbs-sampled: drawn weights, finite strength, no shift), with
+/// `preset` and `with` over them.
+fn old_link(preset: Value, with: Value) -> Value {
+    let mut settings = serde_json::json!({
+        "cell_roles": 8, "gene_roles": 1, "alpha": 0.5, "gene_alpha": 0.5,
+        "weights": {"hdp": 1.0}, "shift_sd": null, "strength": 5.0, "cell_sd": 1.0,
+    });
+    if let (Some(s), Value::Object(with)) = (settings.as_object_mut(), with) {
+        s.extend(with);
+    }
+    serde_json::json!({"preset": preset, "settings": settings})
+}
+
+/// The fixture's tables in `dir`, beside an older record (faba before
+/// 0.19) named `name` whose model is `model`.
+fn old_recorded(dir: &Path, name: &str, model: Value) {
+    tables(dir);
+    let record = serde_json::json!({
+        "job": "cluster", "status": "ok",
+        "options": {"model": "link", "sweeps": 150, "chains": 4},
+        "results": {"model": model},
+    });
+    std::fs::write(dir.join(name), record.to_string()).unwrap();
+}
+
+/// The model section of the tables beside an older record of `model`.
+fn old_run(model: Value) -> Value {
+    let tmp = tempfile::tempdir().unwrap();
+    old_recorded(tmp.path(), "m6a_blockmodel.run.json", model);
+    section(tmp.path())
 }
 
 /// The page's model section for the tables in `dir`.
@@ -50,12 +83,12 @@ fn drawn(svg: &str, node: &str) -> Option<bool> {
     Some(svg[i + at.len()..].starts_with(" data-fixed"))
 }
 
-/// The blocks preset: its shift drawn, `psi` drawn, `beta` drawn, no `p`,
-/// and each cell's own level `nu_c` in the cells plate with its prior sd,
-/// an edge to the reads.
+/// The blocks preset, as the variational fit records it: its shift drawn,
+/// `psi` drawn, `beta` fixed (symmetric), no `p`, and each cell's own
+/// level `nu_c` in the cells plate with its prior sd, an edge to the reads.
 #[test]
 fn the_blocks_preset_is_drawn_as_set() {
-    let s = run(&["--model", "blocks", "--cell-roles", "6", "--cell-sd", "0.7"]);
+    let s = run(&["--cell-roles", "6", "--cell-sd", "0.7"]);
     assert_eq!(s["preset"], "blocks");
     assert_eq!(
         [&s["cellRoles"], &s["geneRoles"], &s["strength"]],
@@ -66,7 +99,7 @@ fn the_blocks_preset_is_drawn_as_set() {
         (Some(0.5), Some(0.5))
     );
     assert_eq!(s["shiftSd"], 1.0);
-    assert_eq!(s["gamma"], 1.0, "the global weights drawn");
+    assert!(s["gamma"].is_null(), "the global weights fixed");
     assert_eq!(s["cellSd"], 0.7, "the levels' prior sd");
     let svg = s["svg"].as_str().unwrap();
     assert_eq!(drawn(svg, "nu"), Some(false), "each cell's level");
@@ -81,9 +114,8 @@ fn the_blocks_preset_is_drawn_as_set() {
     assert_eq!(drawn(svg, "delta"), Some(false));
     assert_eq!(drawn(svg, "sigma-delta"), Some(false));
     assert_eq!(drawn(svg, "psi"), Some(false), "B = 8");
-    assert_eq!(drawn(svg, "beta"), Some(false), "drawn (HDP)");
-    assert_eq!(drawn(svg, "gamma"), Some(false));
-    assert!(svg.contains("β, β′ drawn"), "both sides' weights drawn");
+    assert_eq!(drawn(svg, "beta"), Some(true), "fixed (symmetric)");
+    assert!(!svg.contains("β, β′ drawn"), "neither side's weights drawn");
     assert_eq!(drawn(svg, "p"), None, "S = inf: no p");
     assert_eq!(drawn(svg, "strength"), None);
     assert_eq!(
@@ -97,13 +129,23 @@ fn the_blocks_preset_is_drawn_as_set() {
         "the run's roles"
     );
     assert!(!svg.contains("http"), "nothing loaded");
+    // An older Gibbs-sampled blocks record: both sides' weights drawn.
+    let hdp = serde_json::json!({"weights": {"hdp": 1.0}, "gene_roles": 8,
+        "shift_sd": 1.0, "strength": "inf"});
+    let s = old_run(old_link("blocks".into(), hdp));
+    assert_eq!(s["gamma"], 1.0, "the global weights drawn");
+    let svg = s["svg"].as_str().unwrap();
+    assert_eq!(drawn(svg, "beta"), Some(false), "drawn (HDP)");
+    assert_eq!(drawn(svg, "gamma"), Some(false));
+    assert!(svg.contains("β, β′ drawn"), "both sides' weights drawn");
 }
 
-/// The link preset: no shift, one gene role greyed, `beta` drawn, `p`
-/// integrated out, and no cell level (none at finite strength).
+/// The link preset of an older record: no shift, one gene role greyed,
+/// `beta` drawn, `p` integrated out, and no cell level (none at finite
+/// strength).
 #[test]
 fn the_link_preset_is_drawn_as_set() {
-    let s = run(&["--model", "link"]);
+    let s = old_run(old_link("link".into(), Value::Null));
     assert_eq!(s["preset"], "link");
     assert_eq!(
         [
@@ -150,10 +192,14 @@ fn the_link_preset_is_drawn_as_set() {
 /// the profile strength, in the diagram and the settings line beside it.
 #[test]
 fn the_strength_and_the_cell_roles_have_their_own_letters() {
-    for words in [&["--model", "link"][..], &["--model", "blocks"]] {
-        let svg = run(words)["svg"].as_str().unwrap().to_string();
+    for s in [old_run(old_link("link".into(), Value::Null)), run(&[])] {
+        let svg = s["svg"].as_str().unwrap().to_string();
         assert!(!svg.contains("A = 5") && !svg.contains("A = ∞"), "{svg}");
-        assert!(svg.contains("S = "), "{words:?}: the strength named S");
+        assert!(
+            svg.contains("S = "),
+            "{}: the strength named S",
+            s["preset"]
+        );
     }
     let page = report::FRAGMENT;
     assert!(page.contains(r#"["strength S", "#), "the settings line");
@@ -164,32 +210,22 @@ fn the_strength_and_the_cell_roles_have_their_own_letters() {
     assert!(!page.contains(r#"["strength A", "#), "the settings line");
 }
 
-/// A switch given over its preset's: the run is no preset, and drawn as set.
+/// Gene roles other than the preset's: the run is no preset, and drawn as
+/// set; an older record's custom settings (the link preset with the shift
+/// and gene roles) alike.
 #[test]
 fn a_switch_over_the_preset_leaves_no_preset() {
-    let s = run(&["--model", "link", "--shift", "on", "--gene-roles", "3"]);
+    let s = run(&["--gene-roles", "3"]);
+    assert!(s["preset"].is_null());
+    assert!(s["svg"].as_str().unwrap().contains("1…3"));
+    assert_eq!(run(&["--gene-roles", "8"])["preset"], "blocks");
+    let custom = serde_json::json!({"shift_sd": 1.0, "gene_roles": 3});
+    let s = old_run(old_link(Value::Null, custom));
     assert!(s["preset"].is_null());
     let svg = s["svg"].as_str().unwrap();
     assert_eq!(drawn(svg, "delta-p"), Some(false));
     assert_eq!(drawn(svg, "psi"), Some(false));
     assert_eq!(drawn(svg, "nu"), None, "finite strength: no level");
-    // Infinite strength over the link preset brings the cells' levels.
-    let s = run(&[
-        "--model",
-        "link",
-        "--shift",
-        "on",
-        "--profile-strength",
-        "inf",
-    ]);
-    assert!(s["preset"].is_null());
-    assert_eq!(s["cellSd"], 1.0);
-    assert_eq!(drawn(s["svg"].as_str().unwrap(), "nu-y"), Some(false));
-    // A switch given as its preset sets it: still the preset.
-    assert_eq!(
-        run(&["--model", "blocks", "--shift", "on"])["preset"],
-        "blocks"
-    );
 }
 
 /// Without the run's settings the section is left out, saying why.
@@ -252,22 +288,22 @@ fn a_count_fit_draws_no_plate_and_claims_no_preset() {
     );
 }
 
-/// The record `faba cluster --model crp` leaves in `dir`: its options, no
-/// model.
+/// The record `faba cluster --model crp` (before 0.19) left in `dir`: its
+/// options and posterior, no model.
 fn crp_record(dir: &Path) {
-    let args = cluster(&["--model", "crp"]);
-    RunRecord::start("cluster", &dir.to_string_lossy())
-        .file_name(&record_name("m6a", args.model))
-        .options(&args)
-        .finish(&Ok(()));
+    let record = serde_json::json!({
+        "job": "cluster", "status": "ok", "options": {"model": "crp"},
+        "results": {"posterior": {}, "cluster_sizes": []},
+    });
+    std::fs::write(dir.join("m6a_cluster.run.json"), record.to_string()).unwrap();
 }
 
-/// A `--model crp` run beside the block tables writes its own record, so
+/// A `--model crp` run beside the block tables wrote its own record, so
 /// the section still draws the blockmodel's.
 #[test]
 fn a_later_crp_run_leaves_the_model_section() {
     let tmp = tempfile::tempdir().unwrap();
-    recorded(tmp.path(), &["--model", "blocks"]);
+    recorded(tmp.path(), &[]);
     crp_record(tmp.path());
     let s = section(tmp.path());
     assert_eq!(s["preset"], "blocks", "{s}");
@@ -279,12 +315,8 @@ fn a_later_crp_run_leaves_the_model_section() {
 #[test]
 fn an_older_shared_record_is_still_read() {
     let tmp = tempfile::tempdir().unwrap();
-    recorded(tmp.path(), &["--model", "link"]);
-    std::fs::rename(
-        tmp.path().join("m6a_blockmodel.run.json"),
-        tmp.path().join("m6a_cluster.run.json"),
-    )
-    .unwrap();
+    let link = old_link("link".into(), Value::Null);
+    old_recorded(tmp.path(), "m6a_cluster.run.json", link);
     assert_eq!(section(tmp.path())["preset"], "link");
 }
 
@@ -307,16 +339,18 @@ fn modules(dir: &Path, words: &[&str]) -> ModulesArgs {
 }
 
 /// What `faba cluster-view` says of `words`, which it does not take: an
-/// option of `faba cluster` (the model's, the sampler's, the reads'
-/// filters) refused saying to run `faba cluster` with it, with or without
-/// tables to open.
+/// option of `faba cluster` (the model's, the reads' filters) refused
+/// saying to run `faba cluster` with it, or one of the MCMC fits' saying
+/// it is gone, with or without tables to open.
 fn refused(dir: &Path, words: &[&str]) {
     let err = parsed(dir, words).unwrap_err();
+    let flag = words[0].split('=').next().unwrap();
+    let fitting = err.contains("never fits")
+        && err.contains("`faba cluster`")
+        && err.contains("faba cluster --modality count");
+    let removed = crate::cluster::args::is_removed(flag) && err.contains("removed in faba 0.19");
     assert!(
-        err.contains("never fits")
-            && err.contains("`faba cluster`")
-            && err.contains("faba cluster --modality count")
-            && err.contains(words[0].split('=').next().unwrap()),
+        (fitting || removed) && err.contains(flag),
         "{words:?}: {err}"
     );
 }
@@ -398,17 +432,21 @@ fn cluster_view_never_fits() {
         )
     );
     refusals.iter().for_each(|w| refused(dir, w));
-    recorded(dir, &["--model", "blocks"]);
-    recorded(dir, &["--model", "link"]);
+    recorded(dir, &[]);
     view(&[]).unwrap();
     refusals.iter().for_each(|w| refused(dir, w));
     let head = title(dir, &Modules::load(dir, "m6a", None).unwrap());
+    assert!(head.ends_with("m6a · blocks preset"), "{head}");
+    // An older record's preset is named as it was.
+    old_recorded(
+        dir,
+        "m6a_blockmodel.run.json",
+        old_link("link".into(), Value::Null),
+    );
+    let head = title(dir, &Modules::load(dir, "m6a", None).unwrap());
     assert!(head.ends_with("m6a · link preset"), "{head}");
     // Custom settings recorded are named so in the header.
-    recorded(
-        dir,
-        &["--model", "link", "--shift", "on", "--gene-roles", "2"],
-    );
+    recorded(dir, &["--gene-roles", "2"]);
     let head = title(dir, &Modules::load(dir, "m6a", None).unwrap());
     assert!(head.ends_with("custom settings"), "{head}");
 }
@@ -447,14 +485,14 @@ fn a_run_record_names_the_fit_to_open() {
     let path = |name: &str| -> Box<str> { dir.join(name).to_string_lossy().into() };
     let fit = |p: &str| fit_record(&[p.into()]);
     // An older record: the modality in its name.
-    recorded(dir, &["--model", "blocks"]);
-    let record = path(&record_name("m6a", crate::cluster::ModelKind::Blocks));
+    recorded(dir, &[]);
+    let record = path(&record_name("m6a"));
     let got = fit(&record).unwrap().unwrap();
     assert_eq!((got.dir.as_path(), got.modality.as_str()), (dir, "m6a"));
     // The record's own `tables` say the modality, whatever its name.
     let mut json: Value =
         serde_json::from_str(&std::fs::read_to_string(&*record).unwrap()).unwrap();
-    json["results"]["tables"] = crate::cluster::run::blockmodel::tables_entry("m6a");
+    json["results"]["tables"] = crate::cluster::run::sites::tables_entry("m6a");
     std::fs::write(dir.join("renamed.run.json"), json.to_string()).unwrap();
     assert_eq!(
         fit(&path("renamed.run.json")).unwrap().unwrap().modality,

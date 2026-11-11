@@ -1,20 +1,21 @@
 //! The model the tables come from, as `faba cluster`'s blockmodel recorded
 //! it beside them (`{m}_blockmodel.run.json`, see [`crate::run_record`]).
 
-use crate::cluster::unified::Recorded;
-use crate::cluster::{record_name, ModelKind};
+use crate::cluster::settings::Recorded;
+use crate::cluster::{older_record_name, record_name};
 use std::path::Path;
 
 /// The run record of the run that wrote `modality`'s tables in `dir`, its
 /// file name and contents, or in one line why there is none. Older runs
 /// recorded the blockmodel in `{m}_cluster.run.json`, which a later crp
-/// run replaces: read when there is no blockmodel record, saying so.
+/// run (faba before 0.19) replaced: read when there is no blockmodel
+/// record, saying so.
 pub(in crate::cluster::browse) fn record(
     dir: &Path,
     modality: &str,
 ) -> Result<(String, serde_json::Value), String> {
-    let own = record_name(modality, ModelKind::Blocks);
-    let older = record_name(modality, ModelKind::Crp);
+    let own = record_name(modality);
+    let older = older_record_name(modality);
     let name = if dir.join(&own).is_file() {
         own
     } else if dir.join(&older).is_file() {

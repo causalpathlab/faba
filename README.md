@@ -164,8 +164,8 @@ faba <COMMAND> [OPTIONS]
 | **QC — choose and apply thresholds after profiling** ||
 | `qc`                      | Pick thresholds in a full-screen view, then filter a faba output directory into a new fileset |
 | **Clustering: cells by their own sites** ||
-| `cluster`                 | Cluster cells by their site reads: link communities over (cell, gene) links with cell memberships (default), cell and gene modules with a methylation shift per pair (`--model blocks`), or a Chinese-restaurant-process mixture. `--modality count` fits cell modules by gene counts instead; `--within` its run record then fits the sites within each of those cell modules |
-| `cluster-view` (`modules`, `blocks`) | View a `cluster` fit (`--model link` or `blocks`) from its run record `{m}_blockmodel.run.json`, or from its input directory (it never fits: run `cluster` first): its gene modules against its cell modules, each module's sites, the genes you pin side by side, and a gene's full pileup, one track per cell module; `--html` writes it as one self-contained page to share. A `--within` record (`{m}_within.run.json`) opens as the list of its fits, the count fit first; `--group C3` opens the one within a cell module |
+| `cluster`                 | Cluster cells by their site reads: cell and gene modules with a methylation shift per pair, fitted by variational inference. `--modality count` fits cell modules by gene counts instead; `--within` its run record then fits the sites within each of those cell modules |
+| `cluster-view` (`modules`, `blocks`) | View a `cluster` fit from its run record `{m}_blockmodel.run.json`, or from its input directory (it never fits: run `cluster` first): its gene modules against its cell modules, each module's sites, the genes you pin side by side, and a gene's full pileup, one track per cell module; `--html` writes it as one self-contained page to share. A `--within` record (`{m}_within.run.json`) opens as the list of its fits, the count fit first; `--group C3` opens the one within a cell module |
 | **Inspection & reference** ||
 | `pwm`                     | Build a position weight matrix around genomic sites |
 | `pileup` (`inspect`)      | ASCII pileup, or a faceted Miami plot, for one gene |
@@ -213,11 +213,11 @@ Producers write every candidate and apply no p-value cutoff. qc is where cells, 
 2. count, atoi, dartseq, apa, depth and snp each write one modality. run writes the pipeline (SNP, then count, A-to-I, m6A, APA) into one directory. dartseq needs control BAMs; without them, run skips m6A.
 3. qc filters a directory into a new one, with the site thresholds given. It does not edit the input. With `dry_run` it writes nothing and returns what the cell QC keeps and what each threshold removes: try thresholds that way first.
 4. pileup, metagene and pwm read a directory's sites. metagene and pwm return their table and its figure as an image. pileup returns a binned table for a gene or region (and, with `figure`, a Miami SVG, as an image too). cluster_view shows a cluster fit level by level, from its run record ({m}_blockmodel.run.json) or the directory holding its tables: the modules, then a gene module, a gene, the cell modules, the trace and verdict, the settings.
-5. cluster fits cells by their own site reads (link, blocks or crp) and writes its tables to `out`. In two rounds: first `modality` count, cell modules by gene counts (it writes count_blockmodel.run.json); then, with `within` naming that record, m6a or atoi within each of its cell modules. The second round writes {m}_within.run.json, which cluster_view opens: the list of its fits, and with `group` the fit within one cell module.
+5. cluster fits cells by their own site reads (a blockmodel of cell and gene modules, by variational inference) and writes its tables to `out`. In two rounds: first `modality` count, cell modules by gene counts (it writes count_blockmodel.run.json); then, with `within` naming that record, m6a or atoi within each of its cell modules. The second round writes {m}_within.run.json, which cluster_view opens: the list of its fits, and with `group` the fit within one cell module.
 
 The producers (count, depth, atoi, dartseq, apa, snp, run, qc, cluster) take `background`: on large BAMs set it, and the call returns a job id at once.
 
-Every write goes to `out`, which must not exist. Leave `out` out and the output goes in today's results folder, named after the input and the tool. Paths resolve against the server's working directory. Common flags have their own arguments; further flags go in `options`, as `faba <command> --help` lists them; `options` cannot name the output or open a view. Results give the paths written and what the run recorded (`results`: a site fit's R-hat or a count fit's ELBO verdict, its cluster sizes).
+Every write goes to `out`, which must not exist. Leave `out` out and the output goes in today's results folder, named after the input and the tool. Paths resolve against the server's working directory. Common flags have their own arguments; further flags go in `options`, as `faba <command> --help` lists them; `options` cannot name the output or open a view. Results give the paths written and what the run recorded (`results`: a fit's ELBO verdict, its cluster sizes).
 ```
 
 legume-mcp adds where the records are, the `notebook` tool (open with a plan: the question, the data, how the result will be checked) and the background jobs below.
@@ -242,21 +242,20 @@ Every write goes to an `out` that must not exist yet: no tool replaces a directo
 
 ## Clustering on real data
 
-`faba cluster --model blocks` (cell and gene modules of the site reads) fits by variational
-inference, as the count fit does: each restart (`--chains`, 4) starts from k-means++ on the
-cells' residuals over their genes, runs `--svi-epochs` minibatch epochs, then coordinate ascent
-until an epoch moves the ELBO by less than `--tol` per read, and the best restart by ELBO is kept.
-A read's likelihood is bounded by Pólya-Gamma (Jaakkola and Jordan), one bound per read and block,
-so each link (a cell's reads at one gene) weighs every block at a few sums; the shifts and the
-cells' levels trade a constant through their priors after every global step. On the paper data
-(11,919 cells, 2.35M links) a restart takes about two minutes. `--model link` and `--model crp`
-still fit by MCMC: such a fit is only worth reading once its chains agree, so run several
-(`--chains`) and give them enough sweeps (`--sweeps`, `--burn-in`); `--holdout` is for those fits
-alone.
+`faba cluster` (cell and gene modules of the site reads) fits by variational inference, as the
+count fit does: each restart (`--chains`, 4) starts from k-means++ on the cells' residuals over
+their genes, runs `--svi-epochs` minibatch epochs, then coordinate ascent until an epoch moves the
+ELBO by less than `--tol` per read, and the best restart by ELBO is kept. A read's likelihood is
+bounded by Pólya-Gamma (Jaakkola and Jordan), one bound per read and block, so each link (a cell's
+reads at one gene) weighs every block at a few sums; the shifts and the cells' levels trade a
+constant through their priors after every global step. On the paper data (11,919 cells, 2.35M
+links) a restart takes about two minutes. The MCMC fits faba had before 0.19 (`--model link` and
+`crp`, the sampler's `--sweeps` and `--burn-in`, `--holdout`) are gone, and their flags are
+refused by name; their records still open in `cluster-view`.
 
 ```sh
 # Cell and gene modules from a faba output directory, watching the restarts as they run
-faba cluster out/ --model blocks
+faba cluster out/
 # Open the fit, as it is
 faba cluster-view out/m6a_blockmodel.run.json
 ```
@@ -285,7 +284,7 @@ restart's ELBO by epoch, and the verdict says whether the best one settled.
 The second round reads the site matrices beside the count fit's inputs, unless some are named,
 and matches cells by batch and barcode. Each cell goes to its main count module (`C1`, `C2`, …). A
 group with fewer than `--within-min-cells` (50) cells to fit is skipped. Each group's fit is an
-ordinary one (`--model blocks` unless another is named) under `within/{m}/{group}/`, with its
+ordinary one under `within/{m}/{group}/`, with its
 own run record and verdict; `{m}_within.run.json` lists them, and `{m}_within_cells.parquet`
 gives each cell its group and its site module there. `cluster-view --html fit.html` writes the
 count fit's page and `fit.{group}.html` beside it for each fitted group, linked to each other.
@@ -320,32 +319,19 @@ takes `go`.
 faba cluster-view out/m6a_blockmodel.run.json --go
 ```
 
-**Watching the chains.** On a terminal `faba cluster` draws each chain's log joint live while it
-fits (`q` cancels, Ctrl+C stops the chains early and writes what they kept). When it is done it
-prints the same traces as one sparkline per chain on one scale, then a
-verdict and one line of advice naming the flags to run again with. Once the tables are open, the
-browser's header carries an `R-hat ... ok` or `check` badge, and `t` opens the trace view;
-`--html` pages carry the trace chart too. Each chain's trace is kept in `{m}_trace.parquet`.
+**Watching the restarts.** On a terminal `faba cluster` draws each restart's ELBO live while it
+fits (`q` cancels, Ctrl+C stops the restarts early and writes what they reached). When it is done
+it prints the same traces as one sparkline per restart on one scale, then a verdict and one line
+of advice naming the flags to run again with. Once the tables are open, the browser's header
+carries an `ELBO ... ok` or `check` badge, and `t` opens the trace view; `--html` pages carry the
+trace chart too. Each restart's trace is kept in `{m}_trace.parquet`.
 
-**Judging convergence.** The verdict reads two things: the split R-hat of the log joint across
-the chains, which should be at most 1.05, and each chain's level after the burn-in, where a
-chain well below the best one lags even when the R-hat looks fine. Over the chains the tables
-pool, the block shifts and each cell role's mean membership (of the roles some cell or gene
-takes as its main one) need an R-hat within the same bound and at least 100 effective draws
-summed over the chains. What falls short is listed as not converged, and the fit then is not,
-whatever its traces say; so too when a chain is left out because its roles do not match.
-
-**Pooling.** The chains label their roles in their own order, so each is aligned to the best
-chain's roles before anything is combined. The tables pool the chains that agree: a chain that
-lags on its trace or whose roles in use do not match the best chain's is left out, and if the
-rest still disagree together the tables are the best chain's alone. `{m}_blockmodel.run.json` records which chains were pooled, which were left out and why,
-the R-hat and effective draws, and whether the fit converged.
-
-**When it has not converged.** Do not read the modules yet. Follow the advice: run longer
-(`--sweeps`, often double), add `--chains`, and check the traces again. A chain stuck below the
-others points to a mode the sampler has not left; more sweeps or more chains show whether it is
-one. Chains that keep disagreeing at length often mean more roles than the data support: try
-fewer `--cell-roles` or `--gene-roles`.
+**Judging convergence.** A fit has converged when the best restart's ELBO settled within `--tol`
+per unit (count or read) before `--epochs` ran out; the verdict also gives the spread of the
+restarts' ELBO per unit, how far apart their optima are. `{m}_blockmodel.run.json` keeps each
+restart's ELBO and epochs, the best, and whether it settled, under `results.fit`. When it has not
+settled, run again with more `--epochs`; restarts far apart point to more roles than the data
+support: try fewer `--cell-roles` or `--gene-roles`, or more `--chains`.
 
 ## Methods
 

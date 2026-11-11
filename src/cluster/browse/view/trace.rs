@@ -17,7 +17,7 @@ impl ModulesView<'_> {
     /// `t`: open the trace, or say on the footer why there is none.
     pub(super) fn open_trace(&mut self) {
         match &self.m.fit.trace {
-            Ok(_) => self.tracing = true,
+            Ok(_) => self.full = Some(super::Full::Trace),
             Err(why) => self.status = Some(why.clone()),
         }
     }
@@ -25,7 +25,7 @@ impl ModulesView<'_> {
     /// A key while the trace is open: `t` or Esc closes it, `q` quits.
     pub(super) fn trace_key(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Char('t') | KeyCode::Esc => self.tracing = false,
+            KeyCode::Char('t') | KeyCode::Esc => self.full = None,
             KeyCode::Char('q') => self.done = true,
             _ => {}
         }
@@ -52,9 +52,16 @@ impl ModulesView<'_> {
         };
         let inner = block.inner(area);
         frame.render_widget(block, area);
+        // A fit by variational inference has restarts; an MCMC fit (faba
+        // before 0.19) chains.
+        let each = if t.quantity == ELBO {
+            "restart"
+        } else {
+            "chain"
+        };
         let mut names = vec![Span::raw(" ")];
         names.extend(
-            (0..t.chains.len()).map(|i| Span::styled(format!("chain {i}  "), chain_style(i))),
+            (0..t.chains.len()).map(|i| Span::styled(format!("{each} {i}  "), chain_style(i))),
         );
         let style = if verdict.converged() { DIM } else { HIGHLIGHT };
         let under = vec![

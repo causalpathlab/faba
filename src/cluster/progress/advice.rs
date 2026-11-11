@@ -2,6 +2,18 @@
 //! looked at: whether it has converged, and one line of advice naming the
 //! flags to run it again with.
 
+/// Split R-hat above this, 1.05, counted as not converged (the MCMC fits
+/// of faba before 0.19, whose records the browser still reads).
+const RHAT_OK: f64 = 1.05;
+
+/// The advice on an MCMC fit (faba before 0.19) short of convergence: fit
+/// again by variational inference, not run longer, as the sampler is gone.
+pub(in crate::cluster) fn advice_again() -> String {
+    "an MCMC fit of faba before 0.19: fit again with `faba cluster` (variational \
+     inference) rather than read it"
+        .to_string()
+}
+
 /// How far below the best chain a chain's mean log joint lags, in median
 /// within-chain sds.
 const FAR: f64 = 3.0;
@@ -45,7 +57,7 @@ pub fn lagging(traces: &[Vec<(usize, f64)>], warmup: usize) -> Option<Vec<usize>
 /// What the chains say together.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Status {
-    /// The R-hat is within [`crate::cluster::RHAT_OK`] and no chain lags.
+    /// The R-hat is within [`RHAT_OK`] and no chain lags.
     Agree,
     /// One chain, its R-hat (its halves') within bounds: nothing to hold it
     /// against.
@@ -53,7 +65,7 @@ pub enum Status {
     /// The R-hat is within bounds, but these chains' log joint lags the
     /// best's.
     Lags(Vec<usize>),
-    /// The R-hat is past [`crate::cluster::RHAT_OK`]; these chains lag too.
+    /// The R-hat is past [`RHAT_OK`]; these chains lag too.
     Disagree(Vec<usize>),
     /// No R-hat to go by: too few draws.
     Unknown,
@@ -85,14 +97,14 @@ impl Verdict {
     /// The verdict on chains traced as `traces` (each empty for a fit that
     /// kept no trace: the R-hat alone), `warmup` sweeps of burn-in out of
     /// `sweeps`, split R-hat `rhat` (not finite when there were too few
-    /// draws). Split R-hat above [`crate::cluster::RHAT_OK`] counts as not
+    /// draws). Split R-hat above [`RHAT_OK`] counts as not
     /// converged, one chain's halves' too, as does a chain whose log joint
     /// lags (see [`lagging`]) with the R-hat within it.
     pub fn of(traces: &[Vec<(usize, f64)>], warmup: usize, sweeps: usize, rhat: f64) -> Self {
         let lag = lagging(traces, warmup).unwrap_or_default();
         let status = if !rhat.is_finite() {
             Status::Unknown
-        } else if rhat > crate::cluster::RHAT_OK {
+        } else if rhat > RHAT_OK {
             Status::Disagree(lag)
         } else if !lag.is_empty() {
             Status::Lags(lag)
@@ -137,8 +149,8 @@ impl Verdict {
     }
 
     /// The verdict, `unsettled` held against the fit too: what pooling
-    /// the chains found short of convergence (see
-    /// [`crate::cluster::unified::Pooling`]), each named in a few words.
+    /// the chains of an MCMC fit (faba before 0.19) found short of
+    /// convergence, as its record names each in a few words.
     pub fn with_unsettled(self, unsettled: Vec<String>) -> Self {
         Self { unsettled, ..self }
     }
@@ -146,15 +158,6 @@ impl Verdict {
     /// Whether the fit can be read as it is.
     pub fn converged(&self) -> bool {
         self.converged_on_traces() && self.unsettled.is_empty()
-    }
-
-    /// The chains whose log joint lags the best's (see [`lagging`]): the
-    /// tables leave them out of the pool. None when the R-hat is not known.
-    pub fn lagging(&self) -> &[usize] {
-        match &self.status {
-            Status::Lags(lag) | Status::Disagree(lag) => lag,
-            _ => &[],
-        }
     }
 
     /// The status in a few words, the R-hat in them; then what else is
@@ -206,24 +209,16 @@ impl Verdict {
 
     /// One line on what to do, naming the flags.
     pub fn advice(&self) -> String {
-        let more = 2 * self.sweeps.max(1);
         if !self.unsettled.is_empty() && self.converged_on_traces() {
-            return format!("run again with --sweeps {more} or more --chains");
+            return advice_again();
         }
         match self.status {
             Status::Agree => "nothing to rerun: the fit can be read as it is".to_string(),
             Status::OneChain => {
-                "nothing to hold it against: run again with --chains 4 to see whether others agree"
+                "one chain, nothing to hold it against: fit again with `faba cluster` to compare restarts"
                     .to_string()
             }
-            Status::Lags(_) => format!("run again with --sweeps {more} or more --chains"),
-            Status::Disagree(_) if self.chains == 1 => {
-                format!("run longer (--sweeps {more}) with --chains 4 and check the trace")
-            }
-            Status::Disagree(_) => format!("run longer (--sweeps {more}) and check the traces"),
-            Status::Unknown => {
-                format!("too few draws to compare the chains: run longer (--sweeps {more})")
-            }
+            Status::Lags(_) | Status::Disagree(_) | Status::Unknown => advice_again(),
             Status::Optimised {
                 converged: true, ..
             } => "nothing to rerun: the fit can be read as it is (the best restart's tables)"

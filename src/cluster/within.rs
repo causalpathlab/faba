@@ -15,7 +15,7 @@
 //! modules.
 
 use super::command::COUNT_MODALITY;
-use super::{args, progress, read, write, ClusterArgs, ModelKind};
+use super::{args, progress, read, write, ClusterArgs};
 use crate::common::{column, read_record_batch};
 use crate::run_record::RunRecord;
 use anyhow::Context;
@@ -103,12 +103,13 @@ pub(in crate::cluster) struct GroupFit {
     /// Its fit's run record, in that directory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub record: Option<String>,
-    /// Its chains' split R-hat.
+    /// Its chains' split R-hat: an MCMC fit's (faba before 0.19), as an
+    /// older within record keeps it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rhat: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub converged: Option<bool>,
-    /// Its chains were stopped early: its tables are from fewer draws.
+    /// It was stopped early: its tables are from fewer epochs.
     #[serde(default)]
     pub stopped_early: bool,
 }
@@ -355,10 +356,6 @@ impl CountCells {
 pub(super) fn run(args: &ClusterArgs) -> anyhow::Result<Option<String>> {
     let named = args.within.as_deref().expect("--within");
     let mut args = args.clone();
-    // Gene modules against cell modules are what the nested view shows.
-    if !args.given("model") {
-        args.model = ModelKind::Blocks;
-    }
     args::check(&args)?;
     let count = CountCells::read(named)?;
     if args.data_files.is_empty() {
@@ -446,8 +443,7 @@ pub(super) fn run(args: &ClusterArgs) -> anyhow::Result<Option<String>> {
             "within_record": crate::run_record::absolute(&dir.join(&name).to_string_lossy()),
         });
         let title = format!(
-            "fitting the {} model within {} ({} of {} groups, {} cells) in {}",
-            args.model.name(),
+            "fitting the site blockmodel within {} ({} of {} groups, {} cells) in {}",
             group.name(),
             fits.len() + 1,
             grouped.groups.len(),
@@ -475,7 +471,6 @@ pub(super) fn run(args: &ClusterArgs) -> anyhow::Result<Option<String>> {
                 }
                 fit.dir = Some(rel);
                 fit.record = Some(written.record);
-                fit.rhat = progress.rhat();
                 fit.converged = progress.verdict().map(|v| v.converged());
                 fit.stopped_early = progress.stopped_early().is_some();
             }
