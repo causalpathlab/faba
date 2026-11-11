@@ -256,7 +256,7 @@ fn tools() -> Vec<ToolSpec> {
                     "gmt": { "type": "string", "description": "Gene sets to test for `go` instead of GO, a GMT file" },
                     "go_min_weight": { "type": "number", "minimum": 0, "maximum": 1, "description": "A gene counts in its main gene module for `go` at this weight or more (default 0.5)" },
                     "batch_groups": { "type": "string", "description": "Which condition each batch is a replicate of, as rep1_mut=mut,rep2_mut=mut; the rest are read off their names" },
-                    "trace": { "type": "boolean", "description": "Print each chain's trace, the verdict and its advice" },
+                    "trace": { "type": "boolean", "description": "Print each restart's trace, the verdict and its advice" },
                     "settings": { "type": "boolean", "description": "Print the settings the fit ran with" },
                     "gtf": { "type": "string", "description": "Gene annotation for the models drawn in the HTML page" },
                     "html": { "type": "string", "description": "Write the page here; must not exist" },
@@ -1211,6 +1211,7 @@ fn qc(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
 /// schema (`model` blocks, the model left, is taken).
 fn refuse_removed(a: &Arguments) -> Result<()> {
     let mut removed: Vec<&str> = (a.0.as_object().into_iter().flatten())
+        .filter(|(_, v)| !v.is_null())
         .filter(|(k, v)| {
             let value = v.as_str().map_or_else(|| v.to_string(), str::to_string);
             crate::cluster::refused(&format!("--{}", k.replace('_', "-")), &value)
@@ -1228,6 +1229,8 @@ fn refuse_removed(a: &Arguments) -> Result<()> {
 }
 
 fn cluster(a: &Arguments, cx: &Call) -> Result<Value> {
+    // Before anything is resolved (`out` may make today's folder).
+    refuse_removed(a)?;
     let data = a.paths("data")?;
     // The second round reads the matrices beside the count fit's when none
     // are named; `--within` itself is among the typed options.
@@ -1245,7 +1248,6 @@ fn cluster(a: &Arguments, cx: &Call) -> Result<Value> {
     let mut argv = vec!["cluster".into()];
     argv.extend(data.iter().cloned());
     push_opt(&mut argv, "--modality", a.str("modality"));
-    refuse_removed(a)?;
     push_opt(&mut argv, "--fit", a.str("fit"));
     argv.extend(a.numbers(&[
         "cell_roles",
@@ -1727,7 +1729,11 @@ sites	m6A	10	2
         assert!(err.starts_with("`model`, `sweeps`, `thin` "), "{err}");
         assert!(err.contains("removed in faba 0.19"), "{err}");
         assert!(refused(json!({ "data": ["d"], "model": "blocks", "epochs": 5 })).is_ok());
-        assert!(refused(json!({ "profile_strength": "inf" })).is_err());
+        assert!(refused(json!({ "profile_strength": 5 })).is_err());
+        assert!(
+            refused(json!({ "sweeps": null, "holdout": null })).is_ok(),
+            "null: not given"
+        );
     }
 
     /// `figure` alone draws: the command gets `--svg`, which puts it in

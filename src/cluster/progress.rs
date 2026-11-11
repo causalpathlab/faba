@@ -111,7 +111,7 @@ impl Progress {
         self.optimised.get().cloned()
     }
 
-    /// [`Progress::traced`], for the command line's own run: the
+    /// [`Progress::new`], for the command line's own run: the
     /// process's interrupt flag stops its restarts early.
     pub fn interruptible(chains: usize) -> Self {
         Self {

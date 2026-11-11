@@ -237,7 +237,19 @@ macro_rules! removed {
         }
 
         impl Removed {
-            /// Each removed flag given, by its name on the command line.
+            /// Each removed flag given, whatever its value.
+            fn given_any(&self) -> Vec<&'static str> {
+                let mut given = Vec::new();
+                $(
+                    if self.$field.is_some() {
+                        given.push(concat!("--", $flag));
+                    }
+                )*
+                given
+            }
+
+            /// Each removed flag given that is refused (see [`refused`]),
+            /// by its name on the command line.
             fn given(&self) -> Vec<&'static str> {
                 let mut given = Vec::new();
                 $(
@@ -277,10 +289,19 @@ pub(crate) fn is_removed(flag: &str) -> bool {
     REMOVED.contains(&flag)
 }
 
-/// Whether `flag` given `value` is refused: a removed flag, but for
-/// `--model blocks`, the model left.
+/// The removed flags' values that ask for the model left (the blocks
+/// preset as 0.18 spelled it out), taken as they are.
+const KEPT: [(&str, &str); 4] = [
+    ("--model", "blocks"),
+    ("--shift", "on"),
+    ("--profile-strength", "inf"),
+    ("--prior-strength", "inf"),
+];
+
+/// Whether `flag` given `value` is refused: a removed flag, but for the
+/// values that ask for the model left (see [`KEPT`]).
 pub(crate) fn refused(flag: &str, value: &str) -> bool {
-    is_removed(flag) && !(flag == "--model" && value == "blocks")
+    is_removed(flag) && !KEPT.contains(&(flag, value))
 }
 
 /// What a removed flag is told: every fit is by variational inference now.
@@ -447,6 +468,11 @@ pub(super) fn check(args: &ClusterArgs) -> anyhow::Result<()> {
             "--cell-roles and --gene-roles must be at least 1"
         );
         anyhow::ensure!(args.count_genes >= 1, "--count-genes must be at least 1");
+        anyhow::ensure!(
+            args.removed.given_any().is_empty(),
+            "{} chose a site fit's model; --modality count fits the count blockmodel",
+            args.removed.given_any().join(", ")
+        );
         return Ok(());
     }
     blockmodel(args).check()?;

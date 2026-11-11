@@ -42,7 +42,7 @@ pub struct Shown {
     #[arg(
         long = "trace",
         conflicts_with = "html",
-        help = "Print each chain's trace, the verdict and what to do about it"
+        help = "Print each restart's ELBO trace (an older MCMC fit's chains), the verdict and what to do about it"
     )]
     pub trace: bool,
 

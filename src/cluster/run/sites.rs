@@ -42,7 +42,7 @@ pub(in crate::cluster) fn blocks_fit(
         gene_roles: s.gene_roles,
         alpha: s.alpha,
         gene_alpha: s.gene_alpha,
-        shift_sd: args.shift_sd,
+        shift_sd: s.shift_sd.expect("the site blockmodel has the shift"),
         cell_sd: s.cell_sd,
     };
     let options = super::vi::options(args);

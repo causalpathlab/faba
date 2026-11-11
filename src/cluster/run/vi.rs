@@ -199,6 +199,8 @@ pub(in crate::cluster) fn conclude<F>(
         log::warn!(
             "stopped early: the tables are from the epochs run so far ({epochs:?} by restart)"
         );
+        // As 0.18 recorded it, for whoever reads it there.
+        record.set_result("stopped_early", &serde_json::json!({"epochs": epochs}));
     }
     let verdict = advice::Verdict::vi(
         kept.ran.converged,

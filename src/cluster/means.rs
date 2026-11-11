@@ -4,8 +4,7 @@ use super::count::column_totals;
 use super::math::{logit, pooled_fraction};
 
 /// The fit's means: each cell's and gene's role weights (row-major), each
-/// block's shift with its sd, each cell's level (empty at finite strength, where there is
-/// none), and each gene's, cell's and site's links or reads in each block
+/// block's shift with its sd, each cell's level, and each gene's, cell's and site's links or reads in each block
 /// (`K` blocks per row; the sites' only when asked for).
 pub struct Means {
     pub cell: Vec<f32>,

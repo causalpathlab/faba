@@ -222,9 +222,9 @@ fn the_mcmc_flags_are_refused_by_name() {
         &["--burn-in", "10"],
         &["--thin", "2"],
         &["--holdout", "0.1"],
-        &["--profile-strength", "inf"],
+        &["--profile-strength", "5"],
         &["--prior-strength", "5"],
-        &["--shift", "on"],
+        &["--shift", "off"],
         &["--global", "hdp"],
         &["--community-gamma", "2"],
         &["--split-merge", "3"],
@@ -249,8 +249,16 @@ fn the_mcmc_flags_are_refused_by_name() {
     let both = parse_args(&["cluster", "x.zarr", "--sweeps", "9", "--model", "crp"]);
     let refused = super::args::refuse_removed(&both).unwrap_err().to_string();
     assert!(refused.starts_with("--model, --sweeps "), "{refused}");
-    let blocks = parse_args(&["cluster", "x.zarr", "--model", "blocks"]);
+    // The blocks preset as 0.18 spelled it out asks for the model left.
+    let line = ["cluster", "x.zarr", "--model", "blocks", "--shift", "on"];
+    let blocks = parse_args(&[&line[..], &["--profile-strength", "inf"]].concat());
     assert!(super::args::refuse_removed(&blocks).is_ok());
+    let count = parse_args(&["cluster", "x/", "--modality", "count", "--model", "blocks"]);
+    let refused = super::check(&count).unwrap_err().to_string();
+    assert!(
+        refused.contains("--model chose a site fit's model"),
+        "{refused}"
+    );
     let count = parse_args(&["cluster", "x/", "--modality", "count", "--sweeps", "9"]);
     assert!(super::args::refuse_removed(&count).is_err());
 }
