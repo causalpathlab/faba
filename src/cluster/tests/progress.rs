@@ -70,7 +70,7 @@ fn a_site_fit_saves_its_trace() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().join("out");
     std::fs::create_dir_all(&dir).unwrap();
-    let p = Progress::traced(2);
+    let p = Progress::new(2);
     let mut record = crate::run_record::RunRecord::start("cluster", &dir.to_string_lossy());
     let written = fit_recorded(&p, &dir, &mut record).unwrap();
     record = record.file_name(&written.record);

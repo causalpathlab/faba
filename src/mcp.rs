@@ -1206,15 +1206,26 @@ fn qc(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
     Ok(content)
 }
 
-/// `cluster`'s arguments of the MCMC fits faba had before 0.19.
-const REMOVED_KEYS: [&str; 6] = [
-    "model",
-    "sweeps",
-    "burn_in",
-    "shift",
-    "profile_strength",
-    "holdout",
-];
+/// `cluster`'s arguments of the MCMC fits faba had before 0.19, refused as
+/// `faba cluster` refuses their flags, rather than dropped: none is in the
+/// schema (`model` blocks, the model left, is taken).
+fn refuse_removed(a: &Arguments) -> Result<()> {
+    let mut removed: Vec<&str> = (a.0.as_object().into_iter().flatten())
+        .filter(|(k, v)| {
+            let value = v.as_str().map_or_else(|| v.to_string(), str::to_string);
+            crate::cluster::refused(&format!("--{}", k.replace('_', "-")), &value)
+        })
+        .map(|(k, _)| k.as_str())
+        .collect();
+    removed.sort_unstable();
+    ensure!(
+        removed.is_empty(),
+        "`{}` {}",
+        removed.join("`, `"),
+        crate::cluster::REMOVED_SAID
+    );
+    Ok(())
+}
 
 fn cluster(a: &Arguments, cx: &Call) -> Result<Value> {
     let data = a.paths("data")?;
@@ -1234,21 +1245,7 @@ fn cluster(a: &Arguments, cx: &Call) -> Result<Value> {
     let mut argv = vec!["cluster".into()];
     argv.extend(data.iter().cloned());
     push_opt(&mut argv, "--modality", a.str("modality"));
-    // The MCMC fits' arguments, refused rather than dropped (`model`
-    // blocks, the only model left, is taken as it is).
-    let removed: Vec<&str> = REMOVED_KEYS
-        .into_iter()
-        .filter(|&k| match k {
-            "model" => a.str(k).is_some_and(|m| m != "blocks"),
-            _ => a.0.get(k).is_some_and(|v| !v.is_null()),
-        })
-        .collect();
-    ensure!(
-        removed.is_empty(),
-        "`{}` {}",
-        removed.join("`, `"),
-        crate::cluster::REMOVED_SAID
-    );
+    refuse_removed(a)?;
     push_opt(&mut argv, "--fit", a.str("fit"));
     argv.extend(a.numbers(&[
         "cell_roles",
@@ -1718,6 +1715,19 @@ sites	m6A	10	2
         assert!(tools().iter().any(|t| {
             t.name == "cluster" && t.input_schema["properties"]["within"].is_object()
         }));
+    }
+
+    /// The MCMC fits' arguments are refused by name, `model` blocks taken;
+    /// the fit's own are not touched.
+    #[test]
+    fn cluster_refuses_the_mcmc_arguments() {
+        let refused = |args| super::refuse_removed(&Arguments(args)).map_err(|e| e.to_string());
+        let err = refused(json!({ "data": ["d"], "sweeps": 100, "model": "link", "thin": 2 }))
+            .unwrap_err();
+        assert!(err.starts_with("`model`, `sweeps`, `thin` "), "{err}");
+        assert!(err.contains("removed in faba 0.19"), "{err}");
+        assert!(refused(json!({ "data": ["d"], "model": "blocks", "epochs": 5 })).is_ok());
+        assert!(refused(json!({ "profile_strength": "inf" })).is_err());
     }
 
     /// `figure` alone draws: the command gets `--svg`, which puts it in

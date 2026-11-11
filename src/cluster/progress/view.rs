@@ -111,7 +111,7 @@ impl<T> Fitting<'_, T> {
         ])
         .areas(area);
         frame.render_widget(Paragraph::new(bars), bars_at);
-        trace::draw(frame, plot_at, &traces, schedule, self.progress.quantity());
+        trace::draw(frame, plot_at, &traces, schedule, super::ELBO);
         frame.render_widget(Paragraph::new(after), after_at);
     }
 

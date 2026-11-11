@@ -553,9 +553,7 @@ pub struct Fitted {
     stats: Stats,
     /// The final ELBO, exact.
     pub elbo: f64,
-    pub svi_epochs: usize,
-    pub epochs: usize,
-    pub converged: bool,
+    pub ran: vi::Ran,
 }
 
 impl Fitted {
@@ -593,9 +591,7 @@ pub fn fit(
         n,
         stats,
         elbo,
-        svi_epochs: ran.svi_epochs,
-        epochs: ran.epochs,
-        converged: ran.converged,
+        ran,
     })
 }
 

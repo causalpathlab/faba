@@ -342,7 +342,7 @@ impl Modules {
             .transpose()?;
         if stats.is_none() && !count {
             log::warn!(
-                "no {}: rerun `faba cluster --model blocks` for each site's counts",
+                "no {}: rerun `faba cluster` for each site's counts",
                 path("site_stats").display()
             );
         }

@@ -1,7 +1,7 @@
 //! What the site blockmodel's tables are written from: its means.
 
 use super::count::column_totals;
-use super::math::logit;
+use super::math::{logit, pooled_fraction};
 
 /// The fit's means: each cell's and gene's role weights (row-major), each
 /// block's shift with its sd, each cell's level (empty at finite strength, where there is
@@ -72,8 +72,7 @@ impl Means {
                 if on + off <= 0.0 {
                     return f64::NAN;
                 }
-                let p = (on + 0.5) / (on + off + 1.0);
-                logit(p) - mu[at / self.blocks()]
+                logit(pooled_fraction(on, on + off)) - mu[at / self.blocks()]
             })
             .collect()
     }

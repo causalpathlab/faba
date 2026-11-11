@@ -220,62 +220,55 @@ pub struct ClusterArgs {
     pub(super) given: super::command::Given,
 }
 
-/// The flags of the MCMC fits faba had before 0.19 (`--model link`, `crp`,
-/// the sampler's draws, the held-out reads), kept only to be refused by
-/// name; `--model blocks`, the only model left, is taken as it is.
-#[derive(Args, Debug, Clone, Default)]
-pub struct Removed {
-    #[arg(long, hide = true)]
-    model: Option<String>,
-    #[arg(long, hide = true, alias = "prior-strength")]
-    profile_strength: Option<String>,
-    #[arg(long, hide = true)]
-    shift: Option<String>,
-    #[arg(long, hide = true)]
-    global: Option<String>,
-    #[arg(long, hide = true)]
-    community_gamma: Option<String>,
-    #[arg(long, hide = true)]
-    holdout: Option<String>,
-    #[arg(long, hide = true)]
-    min_cluster_cells: Option<String>,
-    #[arg(long, hide = true)]
-    sweeps: Option<String>,
-    #[arg(long, hide = true)]
-    burn_in: Option<String>,
-    #[arg(long, hide = true)]
-    thin: Option<String>,
-    #[arg(long, hide = true)]
-    split_merge: Option<String>,
-    #[arg(long, hide = true)]
-    restricted_scans: Option<String>,
-    #[arg(long, hide = true)]
-    start_clusters: Option<String>,
+/// The removed flags (see [`Removed`]), each once: its field, its name on
+/// the command line, and the old name it also answered to.
+macro_rules! removed {
+    ($($field:ident = $flag:literal $(| $alias:literal)?),* $(,)?) => {
+        /// The flags of the MCMC fits faba had before 0.19 (`--model link`,
+        /// `crp`, the sampler's draws, the held-out reads), kept only to be
+        /// refused by name; `--model blocks`, the only model left, is taken
+        /// as it is.
+        #[derive(Args, Debug, Clone, Default)]
+        pub struct Removed {
+            $(
+                #[arg(long = $flag, hide = true $(, alias = $alias)?)]
+                $field: Option<String>,
+            )*
+        }
+
+        impl Removed {
+            /// Each removed flag given, by its name on the command line.
+            fn given(&self) -> Vec<&'static str> {
+                let mut given = Vec::new();
+                $(
+                    let flag = concat!("--", $flag);
+                    if self.$field.as_deref().is_some_and(|v| refused(flag, v)) {
+                        given.push(flag);
+                    }
+                )*
+                given
+            }
+        }
+
+        /// The removed flags' names on the command line, old names too.
+        const REMOVED: &[&str] = &[$(concat!("--", $flag) $(, concat!("--", $alias))?),*];
+    };
 }
 
-impl Removed {
-    /// Each removed flag given, by its name on the command line.
-    fn given(&self) -> Vec<&'static str> {
-        let model = self.model.as_deref().filter(|m| *m != "blocks");
-        [
-            ("--model", model),
-            ("--profile-strength", self.profile_strength.as_deref()),
-            ("--shift", self.shift.as_deref()),
-            ("--global", self.global.as_deref()),
-            ("--community-gamma", self.community_gamma.as_deref()),
-            ("--holdout", self.holdout.as_deref()),
-            ("--min-cluster-cells", self.min_cluster_cells.as_deref()),
-            ("--sweeps", self.sweeps.as_deref()),
-            ("--burn-in", self.burn_in.as_deref()),
-            ("--thin", self.thin.as_deref()),
-            ("--split-merge", self.split_merge.as_deref()),
-            ("--restricted-scans", self.restricted_scans.as_deref()),
-            ("--start-clusters", self.start_clusters.as_deref()),
-        ]
-        .into_iter()
-        .filter_map(|(flag, v)| v.map(|_| flag))
-        .collect()
-    }
+removed! {
+    model = "model",
+    profile_strength = "profile-strength" | "prior-strength",
+    shift = "shift",
+    global = "global",
+    community_gamma = "community-gamma",
+    holdout = "holdout",
+    min_cluster_cells = "min-cluster-cells",
+    sweeps = "sweeps",
+    burn_in = "burn-in",
+    thin = "thin",
+    split_merge = "split-merge",
+    restricted_scans = "restricted-scans",
+    start_clusters = "start-clusters",
 }
 
 /// Whether `flag` (as `--name`) is one of the MCMC fits' flags faba no
@@ -284,23 +277,11 @@ pub(crate) fn is_removed(flag: &str) -> bool {
     REMOVED.contains(&flag)
 }
 
-/// The removed flags' names on the command line.
-const REMOVED: [&str; 14] = [
-    "--model",
-    "--profile-strength",
-    "--prior-strength",
-    "--shift",
-    "--global",
-    "--community-gamma",
-    "--holdout",
-    "--min-cluster-cells",
-    "--sweeps",
-    "--burn-in",
-    "--thin",
-    "--split-merge",
-    "--restricted-scans",
-    "--start-clusters",
-];
+/// Whether `flag` given `value` is refused: a removed flag, but for
+/// `--model blocks`, the model left.
+pub(crate) fn refused(flag: &str, value: &str) -> bool {
+    is_removed(flag) && !(flag == "--model" && value == "blocks")
+}
 
 /// What a removed flag is told: every fit is by variational inference now.
 pub(crate) const REMOVED_SAID: &str = "was for the MCMC fits (--model link and crp, \
@@ -310,7 +291,7 @@ pub(crate) const REMOVED_SAID: &str = "was for the MCMC fits (--model link and c
     and --chains (restarts)";
 
 /// The removed flags `args` give, refused before anything is read or
-/// written.
+/// written: at the start of `faba cluster`, `--within` included.
 pub(super) fn refuse_removed(args: &ClusterArgs) -> anyhow::Result<()> {
     let given = args.removed.given();
     anyhow::ensure!(given.is_empty(), "{} {REMOVED_SAID}", given.join(", "));
@@ -440,7 +421,6 @@ pub(super) fn output_dir(output: Option<&str>, data_files: &[Box<str>]) -> PathB
 
 /// Settings that would make the fit meaningless, refused up front.
 pub(super) fn check(args: &ClusterArgs) -> anyhow::Result<()> {
-    refuse_removed(args)?;
     anyhow::ensure!(args.chains >= 1, "--chains must be at least 1");
     let positive = |x: f64| x > 0.0 && x.is_finite();
     anyhow::ensure!(

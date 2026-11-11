@@ -233,7 +233,9 @@ fn the_mcmc_flags_are_refused_by_name() {
         &["--min-cluster-cells", "4"],
     ] {
         let words: Vec<&str> = ["cluster", "x.zarr"].iter().chain(line).copied().collect();
-        let refused = super::check(&parse_args(&words)).unwrap_err().to_string();
+        let refused = super::args::refuse_removed(&parse_args(&words))
+            .unwrap_err()
+            .to_string();
         let named = if line[0] == "--prior-strength" {
             "--profile-strength"
         } else {
@@ -245,12 +247,12 @@ fn the_mcmc_flags_are_refused_by_name() {
         );
     }
     let both = parse_args(&["cluster", "x.zarr", "--sweeps", "9", "--model", "crp"]);
-    let refused = super::check(&both).unwrap_err().to_string();
+    let refused = super::args::refuse_removed(&both).unwrap_err().to_string();
     assert!(refused.starts_with("--model, --sweeps "), "{refused}");
     let blocks = parse_args(&["cluster", "x.zarr", "--model", "blocks"]);
-    assert!(super::check(&blocks).is_ok());
+    assert!(super::args::refuse_removed(&blocks).is_ok());
     let count = parse_args(&["cluster", "x/", "--modality", "count", "--sweeps", "9"]);
-    assert!(super::check(&count).is_err());
+    assert!(super::args::refuse_removed(&count).is_err());
 }
 
 /// The site blockmodel `faba cluster` fits: cell roles and gene roles (8

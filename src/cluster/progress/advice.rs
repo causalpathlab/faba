@@ -149,8 +149,8 @@ impl Verdict {
     }
 
     /// The verdict, `unsettled` held against the fit too: what pooling
-    /// the chains found short of convergence (see
-    /// [`crate::cluster::unified::Pooling`]), each named in a few words.
+    /// the chains of an MCMC fit (faba before 0.19) found short of
+    /// convergence, as its record names each in a few words.
     pub fn with_unsettled(self, unsettled: Vec<String>) -> Self {
         Self { unsettled, ..self }
     }

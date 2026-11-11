@@ -103,13 +103,16 @@ impl Fit {
                     vi["stopped_early"].as_bool().unwrap_or(false),
                     (number("epochs"), number("asked")),
                     ran,
-                    match (vi["unit"].as_str(), vi["spread_per_count"].as_f64()) {
-                        (Some("count"), _) => {
-                            (vi["spread_per_unit"].as_f64().unwrap_or(0.0), "count")
-                        }
-                        (Some(_), _) => (vi["spread_per_unit"].as_f64().unwrap_or(0.0), "read"),
-                        (None, Some(x)) => (x, "count"),
-                        (None, None) => (vi["spread_per_read"].as_f64().unwrap_or(0.0), "read"),
+                    match vi["unit"].as_str() {
+                        Some(u) => (
+                            vi["spread_per_unit"].as_f64().unwrap_or(0.0),
+                            if u == "count" { "count" } else { "read" },
+                        ),
+                        // 0.18: the unit in the field's name.
+                        None => match vi["spread_per_count"].as_f64() {
+                            Some(x) => (x, "count"),
+                            None => (vi["spread_per_read"].as_f64().unwrap_or(0.0), "read"),
+                        },
                     },
                 )
             });

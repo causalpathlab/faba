@@ -526,9 +526,7 @@ pub struct Fitted {
     pub globals: Globals,
     pub locals: Locals,
     pub elbo: f64,
-    pub svi_epochs: usize,
-    pub epochs: usize,
-    pub converged: bool,
+    pub ran: vi::Ran,
 }
 
 impl Fitted {
@@ -573,9 +571,7 @@ pub fn fit(
         globals: steps.globals,
         locals: steps.locals,
         elbo,
-        svi_epochs: ran.svi_epochs,
-        epochs: ran.epochs,
-        converged: ran.converged,
+        ran,
     })
 }
 

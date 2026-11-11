@@ -321,7 +321,7 @@ fn wobble(level: f64, from: usize, to: usize) -> Vec<(usize, f64)> {
 /// each climbs from far below in its first epochs, then sits at
 /// `levels[i]`.
 fn finished(levels: [f64; 3]) -> Progress {
-    let p = Progress::traced(3);
+    let p = Progress::new(3);
     let _ = p.schedule.set((100, 40));
     for (i, level) in levels.into_iter().enumerate() {
         let _ = p.started[i].set(Instant::now() - Duration::from_secs(5));

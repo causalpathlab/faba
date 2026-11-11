@@ -54,10 +54,8 @@ pub struct Progress {
     late: AtomicBool,
     /// Draw the restarts' steps on a bar on stderr while they run.
     bar: bool,
-    /// Each restart's ELBO so far, by step, when traced.
+    /// Each restart's ELBO so far, by step.
     traces: Vec<Mutex<Vec<(usize, f64)>>>,
-    /// Note each restart's ELBO at each epoch.
-    tracing: bool,
     /// The process's interrupt flag (the first Ctrl+C or SIGTERM sets it,
     /// see `legume_numeric::matrix::stop`), when this run is the command
     /// line's: set, the restarts stop early and what they reached is
@@ -88,17 +86,8 @@ impl Progress {
             late: AtomicBool::new(false),
             bar: false,
             traces: (0..chains).map(|_| Mutex::default()).collect(),
-            tracing: false,
             interrupt: None,
             optimised: OnceLock::new(),
-        }
-    }
-
-    /// [`Progress::new`], each restart's ELBO traced at each epoch.
-    pub fn traced(chains: usize) -> Self {
-        Self {
-            tracing: true,
-            ..Self::new(chains)
         }
     }
 
@@ -127,7 +116,7 @@ impl Progress {
     pub fn interruptible(chains: usize) -> Self {
         Self {
             interrupt: Some(legume_numeric::matrix::stop::stop_flag()),
-            ..Self::traced(chains)
+            ..Self::new(chains)
         }
     }
 
@@ -262,26 +251,19 @@ impl Progress {
         let _ = self.schedule.set((total, warmup));
     }
 
-    /// What the trace holds, as a record names it: the ELBO.
-    pub fn quantity(&self) -> &'static str {
-        ELBO
-    }
-
     /// Restart `i` at step `n` at least, started now if it was not.
     pub fn reach(&self, i: usize, n: usize) {
         let _ = self.started[i].get_or_init(Instant::now);
         self.done[i].0.fetch_max(n, Ordering::Relaxed);
     }
 
-    /// A point of restart `i`'s trace, when traced: in place of its last
-    /// when that is at the same step (an estimate made exact).
+    /// A point of restart `i`'s trace: in place of its last when that is
+    /// at the same step (an estimate made exact).
     pub fn note(&self, i: usize, at: usize, value: f64) {
-        if self.tracing {
-            let mut trace = self.trace_of(i);
-            match trace.last_mut() {
-                Some(last) if last.0 == at => last.1 = value,
-                _ => trace.push((at, value)),
-            }
+        let mut trace = self.trace_of(i);
+        match trace.last_mut() {
+            Some(last) if last.0 == at => last.1 = value,
+            _ => trace.push((at, value)),
         }
     }
 

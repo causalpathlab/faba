@@ -22,33 +22,28 @@ fn each_restart_counts_on_its_own_bar() {
     assert!(p.running(0).is_some());
 }
 
-/// A traced restart notes its ELBO at each epoch, a point at the same step
-/// replacing the one before (an estimate made exact); an untraced one
-/// notes nothing.
+/// A restart notes its ELBO at each epoch, a point at the same step
+/// replacing the one before (an estimate made exact).
 #[test]
-fn a_traced_restart_notes_its_elbo_by_step() {
-    let p = Progress::traced(1);
+fn a_restart_notes_its_elbo_by_step() {
+    let p = Progress::new(1);
     p.note(0, 3, -2.0);
     p.note(0, 4, -1.5);
     p.note(0, 4, -1.25);
     assert_eq!(p.trace(0), vec![(3, -2.0), (4, -1.25)]);
-    let quiet = Progress::new(1);
-    quiet.note(0, 3, -2.0);
-    assert!(quiet.trace(0).is_empty());
 }
 
 /// The verdict is none until the fit ends, then the one it ended with;
 /// the schedule is the k-means start's steps then the epochs.
 #[test]
 fn the_verdict_comes_when_the_fit_ends() {
-    let p = Progress::traced(2);
+    let p = Progress::new(2);
     assert_eq!((p.verdict(), p.schedule()), (None, None));
     p.begin_vi(40, 30);
     assert_eq!(p.schedule(), Some((40, 30)));
     p.optimised(verdict()).unwrap();
     // (Its R-hat is NaN, never equal: compared by what it says.)
     assert_eq!(p.verdict().map(|v| v.said()), Some(verdict().said()));
-    assert_eq!(p.quantity(), ELBO);
 }
 
 /// A cancel or a stop asked for once the fit is writing is too late for

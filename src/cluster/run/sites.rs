@@ -6,7 +6,6 @@
 use super::super::links::Links;
 use super::super::math::{logit, pooled_fractions};
 use super::super::means::Means;
-use super::super::settings::Weights;
 use super::super::site_vi::{self, Data, Fit, Prior};
 use super::super::{args, read, record_name, write, FitData, Written};
 use super::vi::End;
@@ -35,9 +34,7 @@ pub(in crate::cluster) fn blocks_fit(
         links.len(),
         names.len()
     );
-    // The role weights' global weights are fixed (uniform) in this fit.
-    let mut recorded = args::recorded(args);
-    recorded.settings.weights = Weights::Symmetric;
+    let recorded = args::recorded(args);
     record.set_result("model", &recorded);
     let s = &recorded.settings;
     let prior = Prior {
@@ -45,7 +42,7 @@ pub(in crate::cluster) fn blocks_fit(
         gene_roles: s.gene_roles,
         alpha: s.alpha,
         gene_alpha: s.gene_alpha,
-        shift_sd: s.shift_sd.expect("the blocks preset has the shift"),
+        shift_sd: args.shift_sd,
         cell_sd: s.cell_sd,
     };
     let options = super::vi::options(args);
@@ -61,8 +58,7 @@ pub(in crate::cluster) fn blocks_fit(
     };
     progress.check()?;
     let warmup = KMEANS_ITERS;
-    progress.begin_vi(warmup + options.epochs, warmup);
-    let (best, ends) = super::super::progress::barred(progress, || {
+    let best = super::vi::best(progress, (warmup, options.epochs), || {
         // The profiles serve the starts alone: moved into theirs, dropped
         // with it once they are made.
         let profiles = site_vi::Profiles::new(&model);
@@ -76,40 +72,26 @@ pub(in crate::cluster) fn blocks_fit(
             |f| End {
                 elbo: f.elbo,
                 per_unit: f.elbo_per_read(&vi_data),
-                epochs: f.epochs,
-                svi_epochs: f.svi_epochs,
-                converged: f.converged,
+                ran: f.ran,
             },
         )
     })?;
-    if progress.cancelled() {
-        return Err(super::super::progress::Cancelled.into());
-    }
-    let Some((best, fitted)) = best else {
-        log::warn!("stopped before any restart finished an epoch: nothing to write");
-        return Err(super::super::progress::Cancelled.into());
-    };
-    let kept = ends[best].expect("the best restart ended");
-    // As the run stood when the fits ended: a stop during the tables'
-    // passes after does not make the fit one stopped early.
-    let stopped = progress.stopped_early().is_some();
-    let means = model.means(&fitted);
+    let fitted = &best.fit;
+    let means = model.means(fitted);
     // Cells kept but not fitted, each a local step against the globals.
     let control_reads = data.reads.subset(fit.controls);
     let control_weighted = read::Weighted::new(&control_reads, None);
     let control_links = Links::new(&control_weighted, &gene_of);
     let control_data = Data::new(&control_links, &gene_of, names.len(), vi_data.mu.clone());
-    let (placed, levels) = model.place(&control_data, &fitted);
+    let (placed, levels) = model.place(&control_data, fitted);
     let (a, b) = (prior.cell_roles, prior.gene_roles);
     let rows = fit.rows(a, (&means.cell, &means.level), (&placed, &levels));
     super::vi::conclude(
         progress,
         record,
         "read",
-        &ends,
-        (best, kept),
+        &best,
         (warmup, options.epochs, options.tol),
-        stopped,
         super::vi::empty_roles(&means.block_links(), b),
     )?;
     std::fs::create_dir_all(dir)?;

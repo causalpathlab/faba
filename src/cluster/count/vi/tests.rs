@@ -79,8 +79,8 @@ fn coordinate_ascent_never_lowers_the_elbo() {
         ..Options::default()
     };
     let (trace, f) = fitted(&counts, &options);
-    assert_eq!(f.svi_epochs, 0);
-    assert_eq!(f.epochs, 40);
+    assert_eq!(f.ran.svi_epochs, 0);
+    assert_eq!(f.ran.epochs, 40);
     assert!(trace.len() >= 40, "{trace:?}");
     for w in trace.windows(2) {
         let (a, b) = (w[0].1, w[1].1);
@@ -107,8 +107,8 @@ fn stochastic_epochs_then_coordinate_ascent_converge() {
         ..Options::default()
     };
     let (trace, f) = fitted(&counts, &options);
-    assert_eq!(f.svi_epochs, 5);
-    assert!(f.converged, "not converged in {} epochs", f.epochs);
+    assert_eq!(f.ran.svi_epochs, 5);
+    assert!(f.ran.converged, "not converged in {} epochs", f.ran.epochs);
     assert!(trace.iter().all(|p| p.1.is_finite()));
     let cavi = fitted(
         &counts,

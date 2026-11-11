@@ -74,11 +74,7 @@ pub(super) fn planted_site_data(
         })
         .collect();
     let cells = (0..cells)
-        .map(|c| read::Cell {
-            barcode: format!("B{c}").into(),
-            batch: "b".into(),
-            fit: c < fitted,
-        })
+        .map(|c| super::cell(&format!("B{c}"), c < fitted))
         .collect();
     let fit_reads = reads.subset(&(0..fitted).collect::<Vec<_>>());
     let data = read::SiteData {
