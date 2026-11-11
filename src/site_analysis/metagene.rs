@@ -981,10 +981,7 @@ pub fn run_metagene(args: &MetageneArgs) -> anyhow::Result<()> {
     }
     let title = output_dir::title(&site_files);
     if let Some(prefix) = &args.figure {
-        let min = crate::figure::size::MIN;
-        let drawn = args
-            .size
-            .draw(min, |s| Ok(tui::figure(&title, &histogram, s)))?;
+        let drawn = tui::figure(&title, &histogram, args.size.page()?);
         let paths = crate::figure::save_with_png(&drawn, prefix)?;
         info!("wrote metagene figure to {}", paths.join(", "));
     }

@@ -308,7 +308,7 @@ fn saves_the_view_as_pdf_and_png() {
     assert!(dir.path().join("view1.pdf").exists());
     assert!(!dir.path().join("view1.png").exists(), "PDF only");
     assert!(!p.done(), "saving does not leave the view");
-    let svg = p.figure();
+    let svg = p.figure(crate::figure::size::OWN).unwrap();
     assert!(svg.contains("kept") && svg.contains(figure::ACCENT));
 }
 
@@ -320,7 +320,7 @@ fn a_saved_view_keeps_its_shape_on_screen() {
     for (w, h) in [(160, 40), (100, 50)] {
         let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
         term.draw(|f| p.render(f)).unwrap();
-        let (fw, fh) = figure::svg_size(&p.figure());
+        let (fw, fh) = figure::svg_size(&p.figure(crate::figure::size::OWN).unwrap());
         let on_screen = w as f64 * cw / (h as f64 * ch);
         assert!((fw / fh - on_screen).abs() < 1e-6, "{w}x{h}: {fw}x{fh}");
         assert!(fw >= 720.0, "never narrower than its table and plots: {fw}");
@@ -435,7 +435,7 @@ fn site_figures_draw_every_knob_without_a_view() {
         &f,
         None,
         &[],
-        &Default::default(),
+        crate::figure::size::OWN,
     )
     .unwrap();
     let expected = threshold_counts(&tables, &FxHashMap::default(), &f).len();
@@ -449,11 +449,8 @@ fn site_figures_draw_every_knob_without_a_view() {
     // At a size asked for: as wide as asked, or refused when the table and
     // its plots would not fit.
     let at = |w: f64| {
-        let size = crate::figure::SizeArgs {
-            fig_width: Some(w),
-            fig_height: None,
-        };
-        site_figures("in", &tables, &FxHashMap::default(), &f, None, &[], &size)
+        let page = (Some(w * crate::figure::size::PT), None);
+        site_figures("in", &tables, &FxHashMap::default(), &f, None, &[], page)
     };
     let wide = at(12.0).unwrap();
     assert!(wide

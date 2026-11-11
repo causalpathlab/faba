@@ -1,6 +1,7 @@
 //! Drawing: the threshold table, the three plots, and the saved figure.
 
 use super::*;
+use crate::figure::size::Page;
 use crate::site_analysis::miami::genemodel::draw_gene_model;
 use crate::tui::marker;
 
@@ -452,13 +453,10 @@ impl<'a> SitePicker<'a> {
 
     /// The current view as a figure: the threshold table beside the
     /// focused column's histogram, the view's shape on screen.
-    pub(super) fn figure(&self) -> String {
-        self.figure_at(None).expect("a figure of its own size")
-    }
-
-    /// [`Self::figure`] laid out for `size` points when given; refused when
-    /// that is smaller than the table and its plots need.
-    pub(super) fn figure_at(&self, size: Option<(f64, f64)>) -> anyhow::Result<String> {
+    /// Laid out for `page`, a side not asked for the view's shape on screen
+    /// (never less than the table and its plots need); refused when a side
+    /// asked for is less than that.
+    pub(super) fn figure(&self, page: Page) -> anyhow::Result<String> {
         let c = self.criterion();
         let view = self.view();
         let n = view.table.len();
@@ -475,21 +473,19 @@ impl<'a> SitePicker<'a> {
             least: &least,
         };
         let least = (720.0, panels.height());
+        // The plots on the right take the room a larger page adds, the
+        // table on the left keeps its own.
+        let (width, height) = crate::figure::size::fill(page, || {
+            self.controls.page(self.drawn, least).unwrap_or(least)
+        });
         let pt = crate::figure::size::PT;
-        if let Some((w, h)) = size {
-            anyhow::ensure!(
-                w >= least.0 && h >= least.1,
-                "{}'s figure is at least {:.1} by {:.1} inches: its table and plots need the room",
-                view.table.modality,
-                least.0 / pt,
-                least.1 / pt
-            );
-        }
-        // The size asked for, else the view's shape on screen; the plots on
-        // the right take the room it adds, the table on the left keeps its
-        // own.
-        let (width, height) =
-            size.unwrap_or_else(|| self.controls.page(self.drawn, least).unwrap_or(least));
+        anyhow::ensure!(
+            width >= least.0 && height >= least.1,
+            "{}'s figure is at least {:.1} by {:.1} inches: its table and plots need the room",
+            view.table.modality,
+            least.0 / pt,
+            least.1 / pt
+        );
         let plots_w = width - 330.0;
         let heights = panels.heights(height);
         let (hist_h, box_h) = (heights[0], heights.get(1).copied().unwrap_or(0.0));

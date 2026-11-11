@@ -8,6 +8,7 @@
 
 use super::order::standardized;
 use super::Modules;
+use crate::figure::size::{self, Page};
 use crate::figure::{esc, svg, Anchor, Canvas, FAINT, INK, MUTED};
 
 /// Which figure.
@@ -21,12 +22,38 @@ pub enum Plot {
     Batches,
 }
 
-pub use crate::figure::size::MIN;
+/// A figure's text size in points: 9 at its own size, less on a small
+/// page (to 5, the least that reads in print), by the sides asked for.
+fn font(page: Page) -> f64 {
+    let side = [page.0, page.1]
+        .into_iter()
+        .flatten()
+        .fold(f64::INFINITY, f64::min);
+    match side.is_finite() {
+        true => (side / 40.0).clamp(5.0, 9.0),
+        false => 9.0,
+    }
+}
 
-/// A figure's text size in points: 9 at its natural size, less on a small
-/// page (to 5, the least that reads in print).
-fn font(size: Option<(f64, f64)>) -> f64 {
-    size.map_or(9.0, |(w, h)| (w.min(h) / 40.0).clamp(5.0, 9.0))
+/// Square cells, `cols` by `rows`, beside `fixed` points across and down: as
+/// large as the sides asked for allow (`own` points without one); the
+/// cell's side, and the figure's size, a side not asked for fitting the
+/// cells.
+fn cells(
+    page: Page,
+    own: f64,
+    (fw, fh): (f64, f64),
+    (cols, rows): (usize, usize),
+) -> (f64, (f64, f64)) {
+    let across = page.0.map(|w| (w - fw) / cols.max(1) as f64);
+    let down = page.1.map(|h| (h - fh) / rows.max(1) as f64);
+    let cell = match (across, down) {
+        (Some(a), Some(d)) => a.min(d),
+        (Some(c), None) | (None, Some(c)) => c,
+        (None, None) => own,
+    };
+    let size = size::fill(page, || (fw + cell * cols as f64, fh + cell * rows as f64));
+    (cell, size)
 }
 
 /// The width of `s` in `f`-point text, about.
@@ -55,14 +82,14 @@ fn title_text(title: &str, f: f64, room: f64) -> String {
 }
 
 /// The figure `plot` of `m` under `look`, titled `title`, laid out for
-/// `size` points (width, height; see [`crate::figure::SizeArgs`]) when
-/// given; why there is none (no trace, one batch).
+/// the page `size` (see [`crate::figure::SizeArgs`]); why there is none
+/// (no trace, one batch).
 pub fn draw(
     m: &Modules,
     plot: Plot,
     look: Look,
     title: &str,
-    size: Option<(f64, f64)>,
+    size: Page,
 ) -> Result<String, String> {
     match plot {
         Plot::Modules => Ok(heatmap(m, look, title, size)),
@@ -133,7 +160,7 @@ fn values(m: &Modules, look: Look) -> (Vec<usize>, Vec<Vec<Option<f64>>>) {
 /// The figure of `m` under `look`, titled `title`: a box per block with its
 /// value, the gene modules' names and sizes on the left, the cell modules'
 /// on top, and the colour scale on the right.
-fn heatmap(m: &Modules, look: Look, title: &str, size: Option<(f64, f64)>) -> String {
+fn heatmap(m: &Modules, look: Look, title: &str, size: Page) -> String {
     let (rows, values) = values(m, look);
     let all: Vec<f64> = values.iter().flatten().flatten().copied().collect();
     let diverging = look != Look::Percent;
@@ -155,14 +182,8 @@ fn heatmap(m: &Modules, look: Look, title: &str, size: Option<(f64, f64)>) -> St
     let label = names.iter().map(|n| width(n, f)).fold(0.0, f64::max) + f;
     let (head, scale, foot) = (4.0 * f, 6.0 * f, 3.0 * f);
     let (cols, n) = (m.columns.len(), rows.len());
-    // Square boxes as large as the size allows (44 points without one).
-    let cell = size.map_or(44.0, |(w, h)| {
-        ((w - label - scale) / cols as f64).min((h - head - foot) / n.max(1) as f64)
-    });
-    let (w, h) = size.unwrap_or((
-        label + cell * cols as f64 + scale,
-        head + cell * n as f64 + foot,
-    ));
+    // Square boxes as large as the page allows (44 points without one).
+    let (cell, (w, h)) = cells(size, 44.0, (label + scale, head + foot), (cols, n));
     let font = (cell * 0.28).min(f);
     svg(w, h, |c: &mut Canvas| {
         heading(c, title, f, w);
@@ -298,7 +319,7 @@ const TICK: f64 = 4.5;
 
 /// The trace: each restart's or chain's line over its steps, the start
 /// (k-means) or burn-in's end marked, in a colour of its own.
-fn trace(m: &Modules, title: &str, size: Option<(f64, f64)>) -> Result<String, String> {
+fn trace(m: &Modules, title: &str, size: Page) -> Result<String, String> {
     let t = m.fit.trace.as_ref().map_err(Clone::clone)?;
     let points: Vec<(f64, f64)> = t
         .chains
@@ -317,7 +338,7 @@ fn trace(m: &Modules, title: &str, size: Option<(f64, f64)>) -> Result<String, S
         .iter()
         .fold((f64::MAX, f64::MIN), |a, p| (a.0.min(p.1), a.1.max(p.1)));
     let f = font(size);
-    let (w, h) = size.unwrap_or((480.0, 300.0));
+    let (w, h) = size::fill(size, || (480.0, 300.0));
     let (left, top, right, bottom) = (
         TICK * f + 2.5 * f,
         3.0 * f,
@@ -360,7 +381,7 @@ fn trace(m: &Modules, title: &str, size: Option<(f64, f64)>) -> Result<String, S
 
 /// The cell modules against the batches, by condition: each module's share
 /// in each batch (its cells by batch size), its evenness and label.
-fn batches(m: &Modules, title: &str, size: Option<(f64, f64)>) -> Result<String, String> {
+fn batches(m: &Modules, title: &str, size: Page) -> Result<String, String> {
     let b = m.batches.as_ref().ok_or("the cells are of one batch")?;
     let d = &b.design;
     let order = d.order();
@@ -378,13 +399,7 @@ fn batches(m: &Modules, title: &str, size: Option<(f64, f64)>) -> Result<String,
     let (label, head) = (3.5 * f, 2.6 * f + longest(&mut d.batches.iter()) * 1.1 + f);
     let (right, foot) = (longest(&mut said.iter()) + 2.0 * f, 3.0 * f);
     let (cols, n) = (order.len(), m.columns.len());
-    let cell = size.map_or(40.0, |(w, h)| {
-        ((w - label - right) / cols as f64).min((h - head - foot) / n.max(1) as f64)
-    });
-    let (w, h) = size.unwrap_or((
-        label + cell * cols as f64 + right,
-        head + cell * n as f64 + foot,
-    ));
+    let (cell, (w, h)) = cells(size, 40.0, (label + right, head + foot), (cols, n));
     let font = (cell * 0.28).min(f);
     Ok(svg(w, h, |c: &mut Canvas| {
         heading(c, title, f, w);

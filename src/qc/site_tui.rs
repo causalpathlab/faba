@@ -9,6 +9,7 @@
 //! what the focused threshold decides among sites that would otherwise be
 //! kept.
 
+use crate::figure::size::OWN;
 use data_beans::interactive::ui::{
     header, help_line, input_line, panel, Binned, Binning, HistPlot, Scale, Screen, ACCENTED, DIM,
     HIGHLIGHT, PLAIN,
@@ -530,7 +531,11 @@ impl Screen for SitePicker<'_> {
             match self.controls.key(key) {
                 Key::Pass => {}
                 Key::Used => return,
-                Key::Save(prefix) => return self.controls.save(&self.figure(), &prefix),
+                Key::Save(prefix) => {
+                    return self
+                        .controls
+                        .save(&self.figure(OWN).expect("its own size fits"), &prefix)
+                }
             }
         }
         self.plot.invalidate();
@@ -626,14 +631,14 @@ pub fn site_figures(
     filter: &SiteFilterArgs,
     gff: Option<&str>,
     pinned: &[Box<str>],
-    size: &crate::figure::SizeArgs,
+    page: crate::figure::Page,
 ) -> anyhow::Result<Vec<Figure>> {
     let mut picker = picker(input_dir, tables, site_cells, filter, gff, pinned)?;
     picker.meta.wait();
     if let Meta::Unavailable(why) = &picker.meta {
         log::warn!("qc_plots without a metagene: {why}");
     }
-    picker.figures(size)
+    picker.figures(page)
 }
 
 /// What one site threshold does to one modality, for `faba qc --dry-run`.

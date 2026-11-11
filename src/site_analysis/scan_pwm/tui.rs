@@ -5,6 +5,7 @@
 //! site itself (position 0) is marked in the accent colour. A cursor reads
 //! out a position's counts.
 
+use crate::figure::size::{Page, OWN};
 use data_beans::interactive::ui::{header, help_line, panel, Screen, DIM, HIGHLIGHT, PLAIN};
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
@@ -229,18 +230,14 @@ impl PwmView {
         Line::from(spans)
     }
 
-    /// The logo as a figure: letters stretched to their heights.
-    fn figure(&self) -> String {
-        self.figure_at(None)
-    }
-
-    /// The logo laid out for `size` points; none: its shape on screen,
-    /// grown alike on both sides until its letters are 8 points wide at
-    /// least, else a page of readable letters.
-    fn figure_at(&self, size: Option<(f64, f64)>) -> String {
+    /// The logo as a figure, letters stretched to their heights, laid out
+    /// for `page`: a side not asked for its shape on screen, grown alike on
+    /// both sides until its letters are 8 points wide at least, else a page
+    /// of readable letters.
+    fn figure(&self, page: Page) -> String {
         let n = self.columns.len().max(1) as f64;
         let margins = 76.0;
-        let (width, height) = size.unwrap_or_else(|| {
+        let (width, height) = crate::figure::size::fill(page, || {
             match self.controls.page(self.drawn, (margins + 8.0 * n, 200.0)) {
                 Some(size) => size,
                 None => (margins + (560.0 / n).clamp(8.0, 40.0) * n, 330.0),
@@ -449,7 +446,7 @@ impl Screen for PwmView {
         match self.controls.key(key) {
             Key::Pass => self.plot.invalidate(),
             Key::Used => return,
-            Key::Save(prefix) => return self.controls.save(&self.figure(), &prefix),
+            Key::Save(prefix) => return self.controls.save(&self.figure(OWN), &prefix),
         }
         match key.code {
             KeyCode::Left | KeyCode::Char('h') => self.move_cursor(-1),
@@ -526,14 +523,13 @@ impl Screen for PwmView {
     }
 }
 
-/// Show the logo full screen until the user quits.
-/// The logo as the view first shows it, drawn without a terminal.
-/// The sequence logo's figure, laid out for `size` points when given (see
-/// [`crate::figure::SizeArgs`]).
-pub fn figure(title: &str, pwm: &[DnaBaseCount], window: i64, size: Option<(f64, f64)>) -> String {
-    PwmView::new(title, pwm, window).figure_at(size)
+/// The logo as the view first shows it, drawn without a terminal, laid out
+/// for `page` (see [`crate::figure::SizeArgs`]).
+pub fn figure(title: &str, pwm: &[DnaBaseCount], window: i64, page: Page) -> String {
+    PwmView::new(title, pwm, window).figure(page)
 }
 
+/// Show the logo full screen until the user quits.
 pub fn show_pwm(title: &str, pwm: &[DnaBaseCount], window: i64) -> anyhow::Result<()> {
     let mut view = PwmView::new(title, pwm, window);
     view.controls = Controls::new("pwm_logo").detect();

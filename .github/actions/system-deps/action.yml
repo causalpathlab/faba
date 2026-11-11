@@ -1,11 +1,13 @@
 name: System dependencies
 description: >
   Install the C libraries this crate links against. Kept in one place so
-  every job agrees on the list. Sets SYSTEM_DEPS, a fingerprint of the
-  versions installed, for the build caches' keys: build scripts (bindgen,
+  every job agrees on the list. Sets CARGO_SYSTEM_DEPS, a fingerprint of the
+  libraries' upstream versions, which Swatinem/rust-cache hashes into every
+  job's cache key (it takes in CARGO_* variables): build scripts (bindgen,
   hdf5-metno-sys) read these libraries' headers once and are not rerun when
   only the runner's libraries change, so a cache built against others would
-  link against the wrong ones.
+  link against the wrong ones. A packaging revision alone (a security fix)
+  keeps the cache.
 
 inputs:
   hdf5:
@@ -52,9 +54,10 @@ runs:
     - shell: bash
       run: |
         set -euo pipefail
-        # The installed versions of every package above, hashed: a cache key
-        # part that changes when the runner's libraries do.
-        fingerprint=$(xargs dpkg-query -W -f='${Package}=${Version}\n' \
+        # The upstream version of every package above, hashed: it changes
+        # when a library does (HDF5 1.10 to 1.14), not with a packaging
+        # revision.
+        fingerprint=$(xargs dpkg-query -W -f='${Package}=${source:Upstream-Version}\n' \
           < "$RUNNER_TEMP/system-deps.txt" | sort | sha256sum | cut -c1-16)
-        echo "SYSTEM_DEPS=$fingerprint" >> "$GITHUB_ENV"
+        echo "CARGO_SYSTEM_DEPS=$fingerprint" >> "$GITHUB_ENV"
         echo "system libraries: $fingerprint"

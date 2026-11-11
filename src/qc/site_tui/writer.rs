@@ -2,6 +2,7 @@
 //! figures saved with it.
 
 use super::*;
+use crate::figure::size::{Page, OWN};
 
 /// Writes the fileset once the thresholds are confirmed: `start` spawns the
 /// writer with them, and `progress` is how far it has got.
@@ -45,29 +46,40 @@ impl SitePicker<'_> {
     /// Draw the figures and start the writer, once the writing pop-up is up.
     pub(super) fn start_writing(&mut self) {
         if let Some(start) = self.writer.start.take() {
-            let figures = self
-                .figures(&Default::default())
-                .expect("figures of their own size");
+            // At their own size, never less than they need: they draw.
+            let figures = self.figures(OWN).expect("figures of their own size");
             start(self.filter.clone(), figures);
         }
     }
 
     /// The view's figure for every modality and every knob, under the
-    /// applied thresholds and the scales chosen per knob. The modality on
-    /// screen keeps its selected gene; the others show their top gene, the
-    /// gene filter aside. Each laid out at `size` (see
-    /// [`crate::figure::SizeArgs`]); refused when one is too small.
-    pub(super) fn figures(
-        &mut self,
-        size: &crate::figure::SizeArgs,
-    ) -> anyhow::Result<Vec<Figure>> {
+    /// applied thresholds and the scales chosen per knob, each laid out for
+    /// `page` (see [`crate::figure::SizeArgs`]); refused when one is too
+    /// small. The modality on screen keeps its selected gene; the others
+    /// show their top gene, the gene filter aside. The view is left as it
+    /// was.
+    pub(super) fn figures(&mut self, page: Page) -> anyhow::Result<Vec<Figure>> {
         let (modality, focus, at) = (self.modality, self.focus, self.list.at);
         let find = std::mem::take(&mut self.list.find);
+        let out = self.each_figure(page, (modality, at), &find);
+        self.restore((modality, focus, at), find);
+        out
+    }
+
+    /// [`Self::figures`]' drawings, the view stepped through each modality
+    /// and knob (`modality` the one on screen, its gene at `at`, found by
+    /// `find`).
+    fn each_figure(
+        &mut self,
+        page: Page,
+        (modality, at): (usize, usize),
+        find: &str,
+    ) -> anyhow::Result<Vec<Figure>> {
         let mut out = Vec::new();
         for m in 0..self.views.len() {
             self.modality = m;
             if m == modality {
-                self.list.find.clone_from(&find);
+                find.clone_into(&mut self.list.find);
             }
             self.refresh_genes(true);
             self.list.find.clear();
@@ -78,22 +90,12 @@ impl SitePicker<'_> {
                 self.focus = f;
                 self.rebuild_column();
                 let knob = self.criterion().flag().trim_start_matches("--site-");
-                let min = crate::figure::size::MIN;
-                let svg = size.draw(min, |s| self.figure_at(s));
-                let svg = match svg {
-                    Ok(svg) => svg,
-                    Err(e) => {
-                        self.restore((modality, focus, at), find);
-                        return Err(e);
-                    }
-                };
                 out.push(Figure {
                     stem: format!("{}_{knob}", self.view().table.modality),
-                    svg,
+                    svg: self.figure(page)?,
                 });
             }
         }
-        self.restore((modality, focus, at), find);
         Ok(out)
     }
 

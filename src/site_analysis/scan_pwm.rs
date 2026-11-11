@@ -435,10 +435,7 @@ pub fn run_scan_pwm(args: &ScanPwmArgs) -> anyhow::Result<()> {
     }
     let title = output_dir::title(&site_files);
     if let Some(prefix) = &args.figure {
-        let min = crate::figure::size::MIN;
-        let drawn = args
-            .size
-            .draw(min, |s| Ok(tui::figure(&title, &pwm, args.window, s)))?;
+        let drawn = tui::figure(&title, &pwm, args.window, args.size.page()?);
         let paths = crate::figure::save_with_png(&drawn, prefix)?;
         info!("wrote sequence logo to {}", paths.join(", "));
     }

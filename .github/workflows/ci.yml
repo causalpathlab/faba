@@ -53,7 +53,7 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          key: clippy${{ matrix.features }}-${{ env.SYSTEM_DEPS }}
+          key: clippy${{ matrix.features }}
       # --all-targets so test and bench code is linted too.
       - run: cargo clippy --all-targets ${{ matrix.features }} -- -D warnings
 
@@ -65,9 +65,6 @@ jobs:
       - uses: ./.github/actions/system-deps
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-        with:
-          # Built against the runner's libraries (see system-deps).
-          key: ${{ env.SYSTEM_DEPS }}
       - run: cargo test
 
   # Optional HDF5 feature: a plain build never touches `#[cfg(feature =
@@ -84,9 +81,6 @@ jobs:
           hdf5: 'true'
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-        with:
-          # Built against the runner's libraries (see system-deps).
-          key: ${{ env.SYSTEM_DEPS }}
       - run: cargo test --features hdf5
 
   # `rust-version` is the highest `rust-version` among resolved dependencies
@@ -103,7 +97,4 @@ jobs:
       - uses: ./.github/actions/system-deps
       - uses: dtolnay/rust-toolchain@1.91
       - uses: Swatinem/rust-cache@v2
-        with:
-          # Built against the runner's libraries (see system-deps).
-          key: ${{ env.SYSTEM_DEPS }}
       - run: cargo check

@@ -453,9 +453,8 @@ fn write_figure(m: &Modules, args: &ModulesArgs, dir: &Path, prefix: &str) -> an
             "{path} exists: name a new --figure"
         );
     }
-    let drawn = args.size.draw(figure::MIN, |size| {
-        figure::draw(m, args.plot, args.look, &title, size).map_err(anyhow::Error::msg)
-    })?;
+    let page = args.size.page()?;
+    let drawn = figure::draw(m, args.plot, args.look, &title, page).map_err(anyhow::Error::msg)?;
     for path in crate::figure::save_with_png(&drawn, prefix)? {
         println!("{path}");
     }

@@ -474,6 +474,11 @@ fn typed_schema(kind: Kind, about: &str) -> Value {
 /// `tool`'s typed arguments given in `a`, as flags.
 fn typed_flags(tool: &str, a: &Arguments) -> Result<Vec<String>> {
     let mut argv = Vec::new();
+    // A figure's size in inches, where the schema offers it (see `SIZED`).
+    if SIZED.contains(&tool) {
+        let flags = [("width", "--fig-width"), ("height", "--fig-height")];
+        argv.extend(a.numbers_as(flags.map(|(k, f)| (k, f.to_string())))?);
+    }
     for &(_, key, kind, _) in TYPED.iter().filter(|t| t.0.contains(&tool)) {
         let Some(v) = a.0.get(key).filter(|v| !v.is_null()) else {
             continue;
@@ -655,28 +660,25 @@ impl Arguments {
 
     /// The numbers given among `keys`, as `--key-name value`. A value that
     /// starts like a flag is `--key-name=-1`, so clap keeps the number.
-    /// The figure's size, `width` and `height` in inches, as the command's
-    /// `--fig-width` and `--fig-height` (see [`crate::figure::SizeArgs`]).
-    fn size(&self) -> Result<Vec<String>> {
-        let mut v = Vec::new();
-        for (key, flag) in [("width", "--fig-width"), ("height", "--fig-height")] {
-            match self.0.get(key) {
-                None | Some(Value::Null) => {}
-                Some(n @ Value::Number(_)) => push_flag(&mut v, flag, &n.to_string()),
-                Some(other) => bail!("`{key}` is a number of inches, not {other}"),
-            }
-        }
-        Ok(v)
+    fn numbers(&self, keys: &[&str]) -> Result<Vec<String>> {
+        self.numbers_as(
+            keys.iter()
+                .map(|k| (*k, format!("--{}", k.replace('_', "-")))),
+        )
     }
 
-    fn numbers(&self, keys: &[&str]) -> Result<Vec<String>> {
+    /// [`Arguments::numbers`] of `(key, flag)` pairs, each under its flag.
+    fn numbers_as<'k>(
+        &self,
+        keys: impl IntoIterator<Item = (&'k str, String)>,
+    ) -> Result<Vec<String>> {
         let mut v = vec![];
-        for k in keys {
-            match self.0.get(*k) {
+        for (k, flag) in keys {
+            match self.0.get(k) {
                 None | Some(Value::Null) => {}
                 Some(n @ Value::Number(_)) => {
                     v.extend(crate::script::emit(
-                        &format!("--{}", k.replace('_', "-")),
+                        &flag,
                         crate::script::Many::One,
                         vec![n.to_string()],
                     ));
@@ -1205,7 +1207,6 @@ fn qc(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
     let plots = a.flag("plots")?;
     if plots {
         argv.push("--plots".into());
-        argv.extend(a.size()?);
     }
     argv.push("--batch-process".into());
     let out = a.out_or(cx, (&named(&input, "qc"), ""), exists)?;
@@ -1327,7 +1328,6 @@ fn cluster_view(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
         push_flag(&mut argv, "--figure", &prefix);
         push_opt(&mut argv, "--plot", a.str("plot"));
         push_opt(&mut argv, "--look", a.str("look"));
-        argv.extend(a.size()?);
         let what = format!("a figure of {data}");
         cx.run_making(command(&argv)?, &outputs, &what)?;
         return with_figure(json!({}), Some(&png));
@@ -1393,7 +1393,6 @@ fn pileup_argv(a: &Arguments) -> Result<(Vec<String>, bool)> {
             argv.push("--bam".into());
             argv.extend(bam);
         }
-        argv.extend(a.size()?);
     }
     Ok((argv, figure))
 }
@@ -1467,7 +1466,6 @@ fn figure_arg(
     }
     let (prefix, png) = figure_prefix(table, outputs)?;
     push_flag(argv, "--figure", &prefix);
-    argv.extend(a.size()?);
     Ok(Some(png))
 }
 
@@ -1778,20 +1776,22 @@ sites	m6A	10	2
                 );
             }
         }
-        let a = Arguments(json!({ "width": 3.5, "height": 2 }));
-        assert_eq!(
-            a.size().unwrap(),
-            ["--fig-width", "3.5", "--fig-height", "2"]
-        );
-        let (argv, _) = pileup_argv(&Arguments(
-            json!({ "data": ["s.zarr"], "genes": ["G1"], "figure": true, "width": 6 }),
-        ))
-        .unwrap();
+        // The schema and the flags from one list: each tool's argv has them.
+        for tool in super::SIZED {
+            let a = Arguments(json!({ "width": 3.5, "height": 2 }));
+            assert_eq!(
+                typed_flags(tool, &a).unwrap(),
+                ["--fig-width", "3.5", "--fig-height", "2"],
+                "{tool}"
+            );
+        }
+        let args = json!({ "data": ["s.zarr"], "genes": ["G1"], "figure": true, "width": 6 });
+        let (argv, _) = pileup_argv(&Arguments(with_typed("pileup", args).unwrap())).unwrap();
         assert!(
             argv.windows(2).any(|w| w == ["--fig-width", "6"]),
             "{argv:?}"
         );
-        assert!(Arguments(json!({ "width": "wide" })).size().is_err());
+        assert!(typed_flags("pwm", &Arguments(json!({ "width": "wide" }))).is_err());
     }
 
     /// `figure` alone draws: the command gets `--svg`, which puts it in

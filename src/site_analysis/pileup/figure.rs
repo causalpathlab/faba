@@ -167,7 +167,7 @@ pub(super) fn run_miami_figure(args: &PileupArgs, selector: &Selector) -> anyhow
     )
     .into();
 
-    let (width_in, height_in) = args.size.inches(crate::figure::size::MIN)?;
+    let (width_in, height_in) = args.size.inches()?;
     let opts = FigOpts {
         out_prefix,
         width_in: width_in.unwrap_or(8.0) as f32,

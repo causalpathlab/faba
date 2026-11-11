@@ -337,7 +337,7 @@ fn filter_fileset(
                 &args.site,
                 gff.as_deref(),
                 pinned,
-                &args.size,
+                args.size.page()?,
             )?
         } else {
             Vec::new()

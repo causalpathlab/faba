@@ -121,14 +121,14 @@ fn a_wide_window_scrolls_to_the_cursor() {
 /// A size asked for is the logo's, whatever the view's shape.
 #[test]
 fn the_logo_is_laid_out_for_a_size_asked_for() {
-    let svg = super::figure("sites", &pwm(), 2, Some((504.0, 216.0)));
+    let svg = super::figure("sites", &pwm(), 2, (Some(504.0), Some(216.0)));
     assert_eq!(crate::figure::svg_size(&svg), (504.0, 216.0));
 }
 
 #[test]
 fn saves_the_logo() {
     let mut v = PwmView::new("sites", &pwm(), 2);
-    let svg = v.figure();
+    let svg = v.figure(OWN);
     assert!(svg.contains(">A<") && svg.contains(crate::figure::ACCENT));
     let dir = tempfile::tempdir().unwrap();
     let prefix = dir.path().join("logo1");
@@ -200,7 +200,7 @@ fn a_saved_logo_keeps_the_views_shape() {
     for (w, h) in [(120, 30), (120, 40), (40, 30)] {
         screen(&mut v, w, h);
         assert!(v.drawn.width < w, "{w}x{h}: {:?}", v.drawn);
-        let (fw, fh) = size(&v.figure());
+        let (fw, fh) = size(&v.figure(OWN));
         let on_screen = v.drawn.width as f64 * cw / (v.drawn.height as f64 * ch);
         assert!((fw / fh - on_screen).abs() < 1e-6, "{w}x{h}: {fw}x{fh}");
     }
@@ -212,6 +212,6 @@ fn a_long_motif_keeps_readable_letters() {
     let wide: Vec<DnaBaseCount> = (0..41).map(|_| count(5, 1, 1, 1)).collect();
     let mut v = PwmView::new("x", &wide, 20);
     screen(&mut v, 60, 20);
-    let (w, _) = crate::figure::svg_size(&v.figure());
+    let (w, _) = crate::figure::svg_size(&v.figure(OWN));
     assert!(w >= 76.0 + 8.0 * 41.0, "{w}");
 }
