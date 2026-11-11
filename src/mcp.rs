@@ -263,8 +263,6 @@ fn tools() -> Vec<ToolSpec> {
                     "figure": { "type": "string", "description": "Write a figure as {figure}.pdf and {figure}.png (neither may exist) and return it as an image" },
                     "plot": { "type": "string", "enum": ["modules", "trace", "batches"], "description": "Which figure: the modules grid (gene modules against cell modules; default), the fit's trace, or the cell modules against the batches" },
                     "look": { "type": "string", "enum": ["shift", "percent", "z"], "description": "What colours the modules grid's blocks: the fitted shift (a count fit's log rate; default), the methylated % (UMIs per cell), or that standardized across the cell modules" },
-                    "width": { "type": "number", "exclusiveMinimum": 0, "description": "The figure's width in inches, with `height`: laid out for that size, its text kept readable (e.g. 3.5 for a column, 7 for a page)" },
-                    "height": { "type": "number", "exclusiveMinimum": 0, "description": "The figure's height in inches, with `width`" },
                     "options": options(),
                 }),
                 &["data"],
@@ -322,6 +320,14 @@ fn tools() -> Vec<ToolSpec> {
         ),
     ];
     for s in specs.iter_mut() {
+        // Every tool that draws a figure takes its size alike.
+        if SIZED.contains(&s.name.as_str()) {
+            let least = crate::figure::size::MIN;
+            s.input_schema["properties"]["width"] = json!({ "type": "number", "minimum": least.0,
+                "description": "The figure's width in inches, laid out for it, its text kept readable (e.g. 3.5 for a column, 7 for a page); alone or with `height`, the other the figure's own" });
+            s.input_schema["properties"]["height"] = json!({ "type": "number", "minimum": least.1,
+                "description": "The figure's height in inches; alone or with `width`. A figure may need more than the least for its labels (it says so)" });
+        }
         for &(_, key, kind, about) in TYPED.iter().filter(|t| t.0.contains(&s.name.as_str())) {
             s.input_schema["properties"][key] = typed_schema(kind, about);
         }
@@ -469,6 +475,11 @@ fn typed_schema(kind: Kind, about: &str) -> Value {
 /// `tool`'s typed arguments given in `a`, as flags.
 fn typed_flags(tool: &str, a: &Arguments) -> Result<Vec<String>> {
     let mut argv = Vec::new();
+    // A figure's size in inches, where the schema offers it (see `SIZED`).
+    if SIZED.contains(&tool) {
+        let flags = [("width", "--fig-width"), ("height", "--fig-height")];
+        argv.extend(a.numbers_as(flags.map(|(k, f)| (k, f.to_string())))?);
+    }
     for &(_, key, kind, _) in TYPED.iter().filter(|t| t.0.contains(&tool)) {
         let Some(v) = a.0.get(key).filter(|v| !v.is_null()) else {
             continue;
@@ -566,7 +577,13 @@ impl Handler for Faba {
     }
 
     fn call(&mut self, name: &str, args: Value, cx: &Call) -> Result<Vec<Content>> {
-        let a = Arguments(with_typed(name, args)?);
+        // `modules` is `cluster_view`'s older name: its typed arguments too.
+        let typed_as = if name == "modules" {
+            "cluster_view"
+        } else {
+            name
+        };
+        let a = Arguments(with_typed(typed_as, args)?);
         let v = match name {
             "docs" => return docs(&a, cx),
             "count" => count(&a, cx)?,
@@ -651,13 +668,24 @@ impl Arguments {
     /// The numbers given among `keys`, as `--key-name value`. A value that
     /// starts like a flag is `--key-name=-1`, so clap keeps the number.
     fn numbers(&self, keys: &[&str]) -> Result<Vec<String>> {
+        self.numbers_as(
+            keys.iter()
+                .map(|k| (*k, format!("--{}", k.replace('_', "-")))),
+        )
+    }
+
+    /// [`Arguments::numbers`] of `(key, flag)` pairs, each under its flag.
+    fn numbers_as<'k>(
+        &self,
+        keys: impl IntoIterator<Item = (&'k str, String)>,
+    ) -> Result<Vec<String>> {
         let mut v = vec![];
-        for k in keys {
-            match self.0.get(*k) {
+        for (k, flag) in keys {
+            match self.0.get(k) {
                 None | Some(Value::Null) => {}
                 Some(n @ Value::Number(_)) => {
                     v.extend(crate::script::emit(
-                        &format!("--{}", k.replace('_', "-")),
+                        &flag,
                         crate::script::Many::One,
                         vec![n.to_string()],
                     ));
@@ -1206,6 +1234,11 @@ fn qc(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
     Ok(content)
 }
 
+/// The tools that draw a figure, each taking its size as `width` and
+/// `height` in inches, passed as `--fig-width` and `--fig-height` (see
+/// [`typed_flags`]).
+const SIZED: [&str; 5] = ["cluster_view", "pileup", "metagene", "pwm", "qc"];
+
 /// `cluster`'s arguments of the MCMC fits faba had before 0.19, refused as
 /// `faba cluster` refuses their flags, rather than dropped: none is in the
 /// schema (`model` blocks, the model left, is taken).
@@ -1303,7 +1336,6 @@ fn cluster_view(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
         push_flag(&mut argv, "--figure", &prefix);
         push_opt(&mut argv, "--plot", a.str("plot"));
         push_opt(&mut argv, "--look", a.str("look"));
-        argv.extend(a.numbers(&["width", "height"])?);
         let what = format!("a figure of {data}");
         cx.run_making(command(&argv)?, &outputs, &what)?;
         return with_figure(json!({}), Some(&png));
@@ -1733,6 +1765,46 @@ sites	m6A	10	2
         assert!(
             refused(json!({ "sweeps": null, "holdout": null })).is_ok(),
             "null: not given"
+        );
+    }
+
+    /// Every figure tool takes `width` and `height` in inches, as the
+    /// command's `--fig-width` and `--fig-height`.
+    #[test]
+    fn every_figure_tool_takes_its_size_alike() {
+        for tool in tools()
+            .iter()
+            .filter(|t| super::SIZED.contains(&t.name.as_str()))
+        {
+            for key in ["width", "height"] {
+                assert!(
+                    tool.input_schema["properties"][key].is_object(),
+                    "{} {key}",
+                    tool.name
+                );
+            }
+        }
+        // The schema and the flags from one list: each tool's argv has them.
+        for tool in super::SIZED {
+            let a = Arguments(json!({ "width": 3.5, "height": 2 }));
+            assert_eq!(
+                typed_flags(tool, &a).unwrap(),
+                ["--fig-width", "3.5", "--fig-height", "2"],
+                "{tool}"
+            );
+        }
+        let args = json!({ "data": ["s.zarr"], "genes": ["G1"], "figure": true, "width": 6 });
+        let (argv, _) = pileup_argv(&Arguments(with_typed("pileup", args).unwrap())).unwrap();
+        assert!(
+            argv.windows(2).any(|w| w == ["--fig-width", "6"]),
+            "{argv:?}"
+        );
+        assert!(typed_flags("pwm", &Arguments(json!({ "width": "wide" }))).is_err());
+        // The schema states the least a figure takes.
+        let pwm = tools().into_iter().find(|t| t.name == "pwm").unwrap();
+        assert_eq!(
+            pwm.input_schema["properties"]["width"]["minimum"],
+            json!(2.0)
         );
     }
 

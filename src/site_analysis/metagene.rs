@@ -31,6 +31,10 @@ pub enum IsoformPolicy {
 }
 
 #[derive(Args, Debug)]
+#[command(
+    mut_arg("fig_width", |a| a.requires("figure")),
+    mut_arg("fig_height", |a| a.requires("figure"))
+)]
 pub struct MetageneArgs {
     #[arg(
         num_args = 1..,
@@ -152,6 +156,10 @@ pub struct MetageneArgs {
                      view first shows it. Works with --batch-process: no terminal needed."
     )]
     figure: Option<Box<str>>,
+
+    /// The figure's size on the page (only with --figure).
+    #[command(flatten)]
+    size: crate::figure::SizeArgs,
 
     #[arg(long = "print", help = "Print ASCII histogram to stderr")]
     print_histogram: bool,
@@ -956,6 +964,8 @@ pub fn run_metagene(args: &MetageneArgs) -> anyhow::Result<()> {
         return Ok(());
     };
     let batch = crate::tui::batch(args.batch_process, "metagene");
+    // The figure's page, refused before the sites are read.
+    let page = args.size.page_at_least(tui::LEAST, "a metagene profile")?;
     // In the view a spinner shows while the sites are placed.
     let what = format!("profiling {} site table(s)", site_files.len());
     let histogram = crate::tui::busy(!batch, "metagene", &what, || profile(args, &site_files))?;
@@ -973,7 +983,8 @@ pub fn run_metagene(args: &MetageneArgs) -> anyhow::Result<()> {
     }
     let title = output_dir::title(&site_files);
     if let Some(prefix) = &args.figure {
-        let paths = crate::figure::save_with_png(&tui::figure(&title, &histogram), prefix)?;
+        let drawn = tui::figure(&title, &histogram, page);
+        let paths = crate::figure::save_with_png(&drawn, prefix)?;
         info!("wrote metagene figure to {}", paths.join(", "));
     }
     if !batch {

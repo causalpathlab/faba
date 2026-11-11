@@ -174,7 +174,10 @@ fn the_gene_panel_draws_its_model_once_the_annotation_arrives() {
     assert!(text.contains("[ ] move  / find"));
     assert!(text.contains("█ kept read coverage   c: converted reads"));
     assert!(text.contains("▬"));
-    assert!(p.figure().contains("chr1:900-3100 (+)"));
+    assert!(p
+        .figure(crate::figure::size::OWN)
+        .unwrap()
+        .contains("chr1:900-3100 (+)"));
 }
 
 #[test]

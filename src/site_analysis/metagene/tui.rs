@@ -9,6 +9,7 @@
 //! unconverted reads, both, and the sites), each region in its colour, as
 //! `faba qc` draws its metagene.
 
+use crate::figure::size::{Page, OWN};
 use data_beans::interactive::ui::{header, help_line, panel, Scale, Screen, DIM, HIGHLIGHT};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -236,13 +237,15 @@ impl<'a> MetageneView<'a> {
         self.shown_merge = m;
     }
 
-    /// The shown track as a figure, at the shown merge factor.
-    fn figure(&self) -> String {
-        // The view's shape on screen, else a page of its own.
-        let (w, h) = self
-            .controls
-            .page(self.drawn, (360.0, 200.0))
-            .unwrap_or((680.0, 300.0));
+    /// The shown track as a figure, at the shown merge factor, laid out
+    /// for `page`: a side not asked for the view's shape on screen, else a
+    /// page of its own.
+    fn figure(&self, page: Page) -> String {
+        let (w, h) = crate::figure::size::fill(page, || {
+            self.controls
+                .page(self.drawn, LEAST)
+                .unwrap_or((680.0, 300.0))
+        });
         let mut c = Canvas::new(w, h);
         c.bold(16.0, 22.0, &self.title, 12.0, Anchor::Start, INK);
         let totals: Vec<String> = self
@@ -374,7 +377,7 @@ impl Screen for MetageneView<'_> {
         match self.controls.key(key) {
             Key::Pass => self.plot.invalidate(),
             Key::Used => return,
-            Key::Save(prefix) => return self.controls.save(&self.figure(), &prefix),
+            Key::Save(prefix) => return self.controls.save(&self.figure(OWN), &prefix),
         }
         match key.code {
             KeyCode::Left | KeyCode::Char('h') => self.move_cursor(-1),
@@ -476,12 +479,18 @@ impl Screen for MetageneView<'_> {
     }
 }
 
-/// Show the profile full screen until the user quits.
-/// The profile as the view first shows it, drawn without a terminal.
-pub fn figure(title: &str, hist: &GeneFeatureHistogram) -> String {
-    MetageneView::new(title, hist).figure()
+/// The least page a profile is laid out on, in points: its title, totals
+/// and axes need the room.
+pub const LEAST: (f64, f64) = (360.0, 200.0);
+
+/// The profile as the view first shows it, drawn without a terminal, laid
+/// out for `page` (see [`crate::figure::SizeArgs`], checked against
+/// [`LEAST`] by the caller).
+pub fn figure(title: &str, hist: &GeneFeatureHistogram, page: Page) -> String {
+    MetageneView::new(title, hist).figure(page)
 }
 
+/// Show the profile full screen until the user quits.
 pub fn show_metagene(title: &str, hist: &GeneFeatureHistogram) -> anyhow::Result<()> {
     let mut view = MetageneView::new(title, hist);
     view.controls = Controls::new("metagene").detect();

@@ -23,6 +23,10 @@ pub enum PwmSource {
 }
 
 #[derive(Args, Debug)]
+#[command(
+    mut_arg("fig_width", |a| a.requires("figure")),
+    mut_arg("fig_height", |a| a.requires("figure"))
+)]
 pub struct ScanPwmArgs {
     #[arg(
         value_delimiter = ',',
@@ -103,6 +107,10 @@ pub struct ScanPwmArgs {
                      view first shows it. Works with --batch-process: no terminal needed."
     )]
     figure: Option<Box<str>>,
+
+    /// The figure's size on the page (only with --figure).
+    #[command(flatten)]
+    size: crate::figure::SizeArgs,
 
     #[arg(
         long = "batch-process",
@@ -373,6 +381,9 @@ pub fn run_scan_pwm(args: &ScanPwmArgs) -> anyhow::Result<()> {
     let Some((site_files, bam_files)) = args.inputs()? else {
         return Ok(());
     };
+    // The logo's page, refused before the reads: 2 window + 1 positions.
+    let columns = (2 * args.window.max(0) + 1) as usize;
+    let page = args.size.page_at_least(tui::least(columns), "this logo")?;
     if !bam_files.is_empty() && matches!(args.source, PwmSource::Reference) {
         log::warn!(
             "{} read only with --source reads; the reference gives the bases",
@@ -427,7 +438,8 @@ pub fn run_scan_pwm(args: &ScanPwmArgs) -> anyhow::Result<()> {
     }
     let title = output_dir::title(&site_files);
     if let Some(prefix) = &args.figure {
-        let paths = crate::figure::save_with_png(&tui::figure(&title, &pwm, args.window), prefix)?;
+        let drawn = tui::figure(&title, &pwm, args.window, page);
+        let paths = crate::figure::save_with_png(&drawn, prefix)?;
         info!("wrote sequence logo to {}", paths.join(", "));
     }
     if !batch {

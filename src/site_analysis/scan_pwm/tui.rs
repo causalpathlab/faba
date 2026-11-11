@@ -5,6 +5,7 @@
 //! site itself (position 0) is marked in the accent colour. A cursor reads
 //! out a position's counts.
 
+use crate::figure::size::{Page, OWN};
 use data_beans::interactive::ui::{header, help_line, panel, Screen, DIM, HIGHLIGHT, PLAIN};
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
@@ -229,16 +230,18 @@ impl PwmView {
         Line::from(spans)
     }
 
-    /// The logo as a figure: letters stretched to their heights.
-    fn figure(&self) -> String {
+    /// The logo as a figure, letters stretched to their heights, laid out
+    /// for `page`: a side not asked for its shape on screen, grown alike on
+    /// both sides until its letters are 8 points wide at least, else a page
+    /// of readable letters.
+    fn figure(&self, page: Page) -> String {
         let n = self.columns.len().max(1) as f64;
-        // The logo's shape on screen, grown alike on both sides until its
-        // letters are 8 points wide at least; else a page of readable letters.
-        let margins = 76.0;
-        let (width, height) = match self.controls.page(self.drawn, (margins + 8.0 * n, 200.0)) {
-            Some(size) => size,
-            None => (margins + (560.0 / n).clamp(8.0, 40.0) * n, 330.0),
-        };
+        let (width, height) = crate::figure::size::fill(page, || {
+            match self.controls.page(self.drawn, least(self.columns.len())) {
+                Some(size) => size,
+                None => (MARGINS + (560.0 / n).clamp(8.0, 40.0) * n, 330.0),
+            }
+        });
         let mut c = Canvas::new(width, height);
         c.bold(16.0, 22.0, &self.title, 12.0, Anchor::Start, INK);
         self.draw_logo(&mut c, (0.0, 30.0, width, height - 30.0), None);
@@ -255,7 +258,7 @@ impl PwmView {
     ) {
         let n = self.columns.len().max(1);
         let (left, top, bottom) = (x0 + 56.0, y0 + 10.0, 50.0);
-        let cw = ((w - 76.0) / n as f64).max(1.0);
+        let cw = ((w - MARGINS) / n as f64).max(1.0);
         let ph = (h - 10.0 - bottom).max(1.0);
         let top_value = self.mode.top();
         for f in [0.0, 0.5, 1.0] {
@@ -442,7 +445,7 @@ impl Screen for PwmView {
         match self.controls.key(key) {
             Key::Pass => self.plot.invalidate(),
             Key::Used => return,
-            Key::Save(prefix) => return self.controls.save(&self.figure(), &prefix),
+            Key::Save(prefix) => return self.controls.save(&self.figure(OWN), &prefix),
         }
         match key.code {
             KeyCode::Left | KeyCode::Char('h') => self.move_cursor(-1),
@@ -519,12 +522,23 @@ impl Screen for PwmView {
     }
 }
 
-/// Show the logo full screen until the user quits.
-/// The logo as the view first shows it, drawn without a terminal.
-pub fn figure(title: &str, pwm: &[DnaBaseCount], window: i64) -> String {
-    PwmView::new(title, pwm, window).figure()
+/// The logo's margins, across, in points.
+const MARGINS: f64 = 76.0;
+
+/// The least page a logo of `columns` positions is laid out on, in points:
+/// its letters 8 points wide at least.
+pub fn least(columns: usize) -> (f64, f64) {
+    (MARGINS + 8.0 * columns.max(1) as f64, 200.0)
 }
 
+/// The logo as the view first shows it, drawn without a terminal, laid out
+/// for `page` (see [`crate::figure::SizeArgs`], checked against [`least`]
+/// by the caller).
+pub fn figure(title: &str, pwm: &[DnaBaseCount], window: i64, page: Page) -> String {
+    PwmView::new(title, pwm, window).figure(page)
+}
+
+/// Show the logo full screen until the user quits.
 pub fn show_pwm(title: &str, pwm: &[DnaBaseCount], window: i64) -> anyhow::Result<()> {
     let mut view = PwmView::new(title, pwm, window);
     view.controls = Controls::new("pwm_logo").detect();

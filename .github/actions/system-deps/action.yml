@@ -1,7 +1,13 @@
 name: System dependencies
 description: >
   Install the C libraries this crate links against. Kept in one place so
-  every job agrees on the list.
+  every job agrees on the list. Sets CARGO_SYSTEM_DEPS, a fingerprint of the
+  libraries' upstream versions, which Swatinem/rust-cache hashes into every
+  job's cache key (it takes in CARGO_* variables): build scripts (bindgen,
+  hdf5-metno-sys) read these libraries' headers once and are not rerun when
+  only the runner's libraries change, so a cache built against others would
+  link against the wrong ones. A packaging revision alone (a security fix)
+  keeps the cache.
 
 inputs:
   hdf5:
@@ -25,18 +31,33 @@ runs:
         #                    libraries htslib itself links (z, bz2, lzma) and
         #                    curl/ssl for remote CRAM/BAM.
         #   libz-sys         data-beans links zlib directly.
-        sudo apt-get install -y --no-install-recommends \
-          build-essential pkg-config cmake \
-          clang libclang-dev \
-          libopenblas-dev \
-          zlib1g-dev libbz2-dev liblzma-dev \
+        packages=(
+          build-essential pkg-config cmake
+          clang libclang-dev
+          libopenblas-dev
+          zlib1g-dev libbz2-dev liblzma-dev
           libcurl4-openssl-dev libssl-dev
+        )
+        sudo apt-get install -y --no-install-recommends "${packages[@]}"
+        printf '%s\n' "${packages[@]}" > "$RUNNER_TEMP/system-deps.txt"
 
     - shell: bash
       if: inputs.hdf5 == 'true'
       run: |
         set -euo pipefail
         sudo apt-get install -y --no-install-recommends libhdf5-dev
+        echo libhdf5-dev >> "$RUNNER_TEMP/system-deps.txt"
         # Debian splits HDF5 across prefixes, so HDF5_DIR can't be set to one
         # directory. hdf5-metno-sys finds it via pkg-config instead.
         pkg-config --exists hdf5-serial || pkg-config --exists hdf5
+
+    - shell: bash
+      run: |
+        set -euo pipefail
+        # The upstream version of every package above, hashed: it changes
+        # when a library does (HDF5 1.10 to 1.14), not with a packaging
+        # revision.
+        fingerprint=$(xargs dpkg-query -W -f='${Package}=${source:Upstream-Version}\n' \
+          < "$RUNNER_TEMP/system-deps.txt" | sort | sha256sum | cut -c1-16)
+        echo "CARGO_SYSTEM_DEPS=$fingerprint" >> "$GITHUB_ENV"
+        echo "system libraries: $fingerprint"

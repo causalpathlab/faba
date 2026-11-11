@@ -308,7 +308,7 @@ fn saves_the_view_as_pdf_and_png() {
     assert!(dir.path().join("view1.pdf").exists());
     assert!(!dir.path().join("view1.png").exists(), "PDF only");
     assert!(!p.done(), "saving does not leave the view");
-    let svg = p.figure();
+    let svg = p.figure(crate::figure::size::OWN).unwrap();
     assert!(svg.contains("kept") && svg.contains(figure::ACCENT));
 }
 
@@ -317,10 +317,12 @@ fn a_saved_view_keeps_its_shape_on_screen() {
     let t = table(M6A, 600);
     let mut p = picker(&t, Some(cells(t.len())), SiteFilterArgs::default_values());
     let (cw, ch) = figure::CELL;
-    for (w, h) in [(160, 40), (100, 50)] {
+    // 120 x 26 rounds its grown height a hair under the least: its own size
+    // is drawn all the same, never refused.
+    for (w, h) in [(160, 40), (100, 50), (120, 26), (13, 26)] {
         let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
         term.draw(|f| p.render(f)).unwrap();
-        let (fw, fh) = figure::svg_size(&p.figure());
+        let (fw, fh) = figure::svg_size(&p.figure(crate::figure::size::OWN).unwrap());
         let on_screen = w as f64 * cw / (h as f64 * ch);
         assert!((fw / fh - on_screen).abs() < 1e-6, "{w}x{h}: {fw}x{fh}");
         assert!(fw >= 720.0, "never narrower than its table and plots: {fw}");
@@ -428,7 +430,16 @@ fn site_figures_draw_every_knob_without_a_view() {
     .into_iter()
     .collect();
     let f = SiteFilterArgs::default_values();
-    let figures = site_figures("in", &tables, &FxHashMap::default(), &f, None, &[]).unwrap();
+    let figures = site_figures(
+        "in",
+        &tables,
+        &FxHashMap::default(),
+        &f,
+        None,
+        &[],
+        crate::figure::size::OWN,
+    )
+    .unwrap();
     let expected = threshold_counts(&tables, &FxHashMap::default(), &f).len();
     assert_eq!(figures.len(), expected);
     for fig in &figures {
@@ -437,4 +448,16 @@ fn site_figures_draw_every_knob_without_a_view() {
     }
     assert!(figures.iter().any(|f| f.stem.starts_with(M6A)));
     assert!(figures.iter().any(|f| f.stem.starts_with(ATOI)));
+    // At a size asked for: as wide as asked, or refused when the table and
+    // its plots would not fit.
+    let at = |w: f64| {
+        let page = (Some(w * crate::figure::size::PT), None);
+        site_figures("in", &tables, &FxHashMap::default(), &f, None, &[], page)
+    };
+    let wide = at(12.0).unwrap();
+    assert!(wide
+        .iter()
+        .all(|f| crate::figure::svg_size(&f.svg).0 == 864.0));
+    let e = at(4.0).err().expect("refused").to_string();
+    assert!(e.contains("at least 10.0 by"), "{e}");
 }

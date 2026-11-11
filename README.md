@@ -333,6 +333,22 @@ restart's ELBO and epochs, the best, and whether it settled, under `results.fit`
 settled, run again with more `--epochs`; restarts far apart point to more roles than the data
 support: try fewer `--cell-roles` or `--gene-roles`, or more `--chains`.
 
+## Figures for a paper
+
+Every figure faba writes takes its size on the page in inches: `--fig-width` and `--fig-height`,
+either or both (the other is then the figure's own). It is laid out for that size, its text set in
+points as it prints, rather than scaled. This holds for `cluster-view --figure` (where 0.19.0's
+`--width` and `--height` still work), `metagene --figure`, `pwm --figure`, `qc --plots`, and
+`pileup`'s Miami plot (8 inches wide unless given; its tracks share the height given). Over MCP,
+each of these tools takes `width` and `height`. A size too small for a figure's labels is
+refused, saying the least it needs.
+
+```bash
+# A column-wide modules grid and a page-wide logo
+faba cluster-view out/m6a_blockmodel.run.json --figure grid --fig-width 3.5 --fig-height 3
+faba pwm out/ -f genome.fa --batch-process --figure logo --fig-width 7
+```
+
 ## Methods
 
 The method write-ups are **compiled into the binary** — `include_str!`, not files read at

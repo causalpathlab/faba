@@ -133,7 +133,7 @@ fn saves_the_profile() {
     let h = hist(true);
     let mut v = MetageneView::new("sites", &h);
     screen(&mut v, 60, 16);
-    let svg = v.figure();
+    let svg = v.figure(OWN);
     for name in ["5&apos;UTR", "CDS", "3&apos;UTR"] {
         assert!(svg.contains(name), "{name}");
     }
@@ -251,6 +251,24 @@ fn enter_stays_and_plus_is_finer() {
     assert!(v.done());
 }
 
+/// A page under the profile's least is refused before anything is read.
+#[test]
+fn a_page_too_small_for_the_profile_is_refused() {
+    let size = crate::figure::SizeArgs::new(Some(4.0), None);
+    let e = size
+        .page_at_least(super::LEAST, "a metagene profile")
+        .unwrap_err();
+    assert!(e.to_string().contains("at least 5.0 by 2.8 inches"), "{e}");
+}
+
+/// A size asked for is the figure's, whatever the view's shape.
+#[test]
+fn a_figure_is_laid_out_for_a_size_asked_for() {
+    let h = hist(true);
+    let svg = super::figure("sites", &h, (Some(252.0), Some(144.0)));
+    assert_eq!(crate::figure::svg_size(&svg), (252.0, 144.0));
+}
+
 #[test]
 fn a_saved_figure_keeps_the_views_shape() {
     let h = hist(true);
@@ -258,10 +276,10 @@ fn a_saved_figure_keeps_the_views_shape() {
     let size = crate::figure::svg_size;
     screen(&mut v, 150, 40);
     let (cw, ch) = crate::figure::CELL;
-    assert_eq!(size(&v.figure()), (150.0 * cw, 40.0 * ch));
+    assert_eq!(size(&v.figure(OWN)), (150.0 * cw, 40.0 * ch));
     screen(&mut v, 90, 50);
     assert_eq!(
-        size(&v.figure()),
+        size(&v.figure(OWN)),
         (90.0 * cw, 50.0 * ch),
         "a taller view, a taller page"
     );

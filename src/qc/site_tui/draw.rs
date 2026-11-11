@@ -1,8 +1,13 @@
 //! Drawing: the threshold table, the three plots, and the saved figure.
 
 use super::*;
+use crate::figure::size::Page;
 use crate::site_analysis::miami::genemodel::draw_gene_model;
 use crate::tui::marker;
+
+/// The width a qc figure needs at least, in points: its table and its
+/// plots (the height depends on the plots shown).
+pub(crate) const QC_LEAST_W: f64 = 720.0;
 
 /// Each coding region's name at its middle bin, where a short UTR's label
 /// does not run into the next one.
@@ -451,8 +456,11 @@ impl<'a> SitePicker<'a> {
     }
 
     /// The current view as a figure: the threshold table beside the
-    /// focused column's histogram.
-    pub(super) fn figure(&self) -> String {
+    /// focused column's histogram, the view's shape on screen.
+    /// Laid out for `page`, a side not asked for the view's shape on screen
+    /// (never less than the table and its plots need, see [`QC_LEAST_W`]);
+    /// refused when a side asked for is less than that, never at `OWN`.
+    pub(super) fn figure(&self, page: Page) -> anyhow::Result<String> {
         let c = self.criterion();
         let view = self.view();
         let n = view.table.len();
@@ -468,10 +476,15 @@ impl<'a> SitePicker<'a> {
             fixed: 60.0 + 10.0 * boxes as f64,
             least: &least,
         };
-        let least = (720.0, panels.height());
-        // The view's shape on screen; the plots on the right take the
-        // room it adds, the table on the left keeps its own.
-        let (width, height) = self.controls.page(self.drawn, least).unwrap_or(least);
+        let least = (QC_LEAST_W, panels.height());
+        // The plots on the right take the room a larger page adds, the
+        // table on the left keeps its own.
+        let (width, height) = crate::figure::size::fill(page, || {
+            self.controls.page(self.drawn, least).unwrap_or(least)
+        });
+        // Only a side asked for can be short: its own size fits by making.
+        let what = format!("{}'s figure", view.table.modality);
+        crate::figure::size::at_least(page, least, &what)?;
         let plots_w = width - 330.0;
         let heights = panels.heights(height);
         let (hist_h, box_h) = (heights[0], heights.get(1).copied().unwrap_or(0.0));
@@ -534,7 +547,7 @@ impl<'a> SitePicker<'a> {
             let title = format!("{} {}", view.table.modality, self.meta_title());
             self.draw_meta(&mut canvas, m, (320.0, below, plots_w, box_h), title);
         }
-        canvas.finish()
+        Ok(canvas.finish())
     }
 
     /// The focused column's histogram in the box `(x, y, w, h)`, as the

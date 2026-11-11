@@ -56,6 +56,7 @@ fn confirming_writes_in_the_view_and_shows_progress() {
     let start = SiteFilterArgs::default_values();
     let mut p = picker(&t, None, start.clone());
     p.writer = Writer {
+        page: crate::figure::size::OWN,
         output: "out_qc",
         progress: &progress,
         start: Some(Box::new(|f, figures| {
@@ -137,7 +138,7 @@ fn figures_cover_every_modality_and_leave_the_view_as_it_was() {
     assert_eq!(p.gene_list().len(), 1);
     let (modality, focus, gene) = (p.modality, p.focus, p.gene());
 
-    let figures = p.figures();
+    let figures = p.figures(crate::figure::size::OWN).unwrap();
     // The filter is put back for the view, and kept out of the figures:
     // every one, of either modality, has its gene panel.
     assert_eq!(p.list.find, "ne3");
@@ -298,6 +299,7 @@ fn a_kill_lets_a_write_under_way_finish() {
     let start = SiteFilterArgs::default_values();
     let mut p = picker(&t, None, start);
     p.writer = Writer {
+        page: crate::figure::size::OWN,
         output: "out_qc",
         progress: &progress,
         start: Some(Box::new(|_, _| {})),

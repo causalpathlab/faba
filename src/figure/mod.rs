@@ -10,7 +10,10 @@ pub const GUTTER: u16 = 6;
 
 pub mod gallery;
 pub mod logo;
+pub mod size;
 pub mod term;
+
+pub use size::{Page, SizeArgs};
 
 use data_beans::interactive::ui::{compact, help_line, input_line, Scale, DIM, HIGHLIGHT, PLAIN};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
@@ -229,7 +232,8 @@ pub fn page(area: Rect, min: (f64, f64), (cw, ch): (f64, f64)) -> Option<(f64, f
     (area.width > 0 && area.height > 0).then(|| {
         let (w, h) = (f64::from(area.width) * cw, f64::from(area.height) * ch);
         let grow = (min.0 / w).max(min.1 / h).max(1.0);
-        (w * grow, h * grow)
+        // `w * (min / w)` can round a hair under `min`: never below it.
+        ((w * grow).max(min.0), (h * grow).max(min.1))
     })
 }
 

@@ -90,6 +90,10 @@ pub struct SiteFilterArgs {
 }
 
 #[derive(Args, Debug, serde::Serialize)]
+#[command(
+    mut_arg("fig_width", |a| a.requires("plots")),
+    mut_arg("fig_height", |a| a.requires("plots"))
+)]
 pub struct QcArgs {
     #[arg(
         help = "A faba output directory (from `faba run` or the standalone producers); asked for in a pop-up when left out"
@@ -199,6 +203,10 @@ pub struct QcArgs {
                      at the --site-* values given, with the metagene when an annotation is found."
     )]
     pub plots: bool,
+
+    /// The figures' size on the page (only with --plots).
+    #[command(flatten)]
+    pub size: crate::figure::SizeArgs,
 
     #[arg(
         long = "dry-run",
