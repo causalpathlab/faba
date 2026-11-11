@@ -101,7 +101,12 @@ fn a_site_fit_saves_its_trace() {
         json["results"]["trace"],
         serde_json::json!({"sweeps": KMEANS_ITERS + 8, "burn_in": KMEANS_ITERS, "quantity": "ELBO"})
     );
-    assert!(json["results"]["blocks"]["vi"]["restarts"].is_array());
+    let fit = &json["results"]["fit"];
+    assert_eq!(
+        (&fit["method"], &fit["unit"]),
+        (&"vi".into(), &"read".into())
+    );
+    assert_eq!(fit["restarts"].as_array().map(Vec::len), Some(2));
     assert_eq!(
         json["results"]["converged"].as_bool(),
         p.verdict().map(|v| v.converged()),

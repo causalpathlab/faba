@@ -105,12 +105,12 @@ pub(in crate::cluster) fn blocks_fit(
     super::vi::conclude(
         progress,
         record,
-        ("blocks", "read"),
+        "read",
         &ends,
         (best, kept),
         (warmup, options.epochs, options.tol),
         stopped,
-        serde_json::json!({"empty_roles": super::vi::empty_roles(&means.block_links(), b)}),
+        super::vi::empty_roles(&means.block_links(), b),
     )?;
     std::fs::create_dir_all(dir)?;
     let m = data.modality.to_ascii_lowercase();

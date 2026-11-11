@@ -52,9 +52,16 @@ impl ModulesView<'_> {
         };
         let inner = block.inner(area);
         frame.render_widget(block, area);
+        // A fit by variational inference has restarts; an MCMC fit (faba
+        // before 0.19) chains.
+        let each = if t.quantity == ELBO {
+            "restart"
+        } else {
+            "chain"
+        };
         let mut names = vec![Span::raw(" ")];
         names.extend(
-            (0..t.chains.len()).map(|i| Span::styled(format!("chain {i}  "), chain_style(i))),
+            (0..t.chains.len()).map(|i| Span::styled(format!("{each} {i}  "), chain_style(i))),
         );
         let style = if verdict.converged() { DIM } else { HIGHLIGHT };
         let under = vec![

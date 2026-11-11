@@ -141,19 +141,19 @@ pub(in crate::cluster) fn empty_roles(units: &[f64], bb: usize) -> serde_json::V
 /// `kept`) out of `asked` epochs at most, `stopped` early or not (as the
 /// run stood when the fits ended), noted on `progress`: the run then
 /// commits to writing (refused as cancelled when it was). What the record
-/// keeps of them, under `results.{key}.vi`, with `extra` beside it, and the
-/// trace's schedule. The ELBO per `unit` (count or read) compares the
-/// restarts.
+/// keeps of them, under `results.fit` (with `empty_roles`, see
+/// [`empty_roles`]), and the trace's schedule. The ELBO per `unit` (count
+/// or read) compares the restarts.
 #[allow(clippy::too_many_arguments)]
 pub(in crate::cluster) fn conclude(
     progress: &progress::Progress,
     record: &mut RunRecord,
-    (key, unit): (&'static str, &'static str),
+    unit: &'static str,
     ends: &[Option<End>],
     (best, kept): (usize, End),
     (warmup, asked, tol): (usize, usize, f64),
     stopped: bool,
-    extra: serde_json::Value,
+    empty_roles: serde_json::Value,
 ) -> anyhow::Result<()> {
     let per: Vec<f64> = ends.iter().flatten().map(|e| e.per_unit).collect();
     let spread = per.iter().copied().fold(f64::NEG_INFINITY, f64::max)
@@ -163,7 +163,6 @@ pub(in crate::cluster) fn conclude(
         log::warn!(
             "stopped early: the tables are from the epochs run so far ({epochs:?} by restart)"
         );
-        record.set_result("stopped_early", &serde_json::json!({"epochs": epochs}));
     }
     progress.optimised(advice::Verdict::vi(
         kept.converged,
@@ -173,7 +172,7 @@ pub(in crate::cluster) fn conclude(
         (spread, unit),
     ))?;
     log::info!(
-        "{key}: each restart's ELBO per {unit} {:?}; tables from restart {best} ({} epochs: {})",
+        "each restart's ELBO per {unit} {:?}; tables from restart {best} ({} epochs: {})",
         per.iter()
             .map(|x| (x * 1e4).round() / 1e4)
             .collect::<Vec<_>>(),
@@ -188,32 +187,36 @@ pub(in crate::cluster) fn conclude(
             "quantity": progress.quantity(),
         }),
     );
-    let mut out = serde_json::json!({
-        "vi": {
-            "restarts": (ends.iter().enumerate()).map(|(i, e)| match e {
-                Some(e) => serde_json::json!({
-                    "restart": i,
-                    "elbo": e.elbo,
-                    format!("elbo_per_{unit}"): e.per_unit,
-                    "epochs": e.epochs,
-                    "svi_epochs": e.svi_epochs,
-                    "converged": e.converged,
-                }),
-                None => serde_json::json!({"restart": i, "ran": false}),
-            }).collect::<Vec<_>>(),
+    // (A restart that never ran says so: readers count those with an ELBO.)
+    let restarts: Vec<serde_json::Value> = (ends.iter().enumerate())
+        .map(|(i, e)| match e {
+            Some(e) => serde_json::json!({
+                "restart": i,
+                "elbo": e.elbo,
+                "elbo_per_unit": e.per_unit,
+                "epochs": e.epochs,
+                "svi_epochs": e.svi_epochs,
+                "converged": e.converged,
+            }),
+            None => serde_json::json!({"restart": i, "ran": false}),
+        })
+        .collect();
+    record.set_result(
+        "fit",
+        &serde_json::json!({
+            "method": "vi",
+            "unit": unit,
+            "restarts": restarts,
             "best": best,
             "converged": kept.converged,
             "stopped_early": stopped,
             "epochs": kept.epochs,
             "asked": asked,
-            format!("spread_per_{unit}"): spread,
+            "spread_per_unit": spread,
             "tol": tol,
-        },
-    });
-    if let (Some(out), serde_json::Value::Object(extra)) = (out.as_object_mut(), extra) {
-        out.extend(extra);
-    }
-    record.set_result(key, &out);
+            "empty_roles": empty_roles,
+        }),
+    );
     record.set_result(
         "converged",
         &progress.verdict().expect("optimised").converged(),

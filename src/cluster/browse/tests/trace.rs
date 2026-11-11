@@ -203,3 +203,63 @@ fn what_the_pooling_found_unsettled_is_checked() {
     let s = screen(&mut v, 120, 30);
     assert!(s.contains("shift (0, 1)"), "{s}");
 }
+
+/// A fit by variational inference's record: its verdict under `fit` with
+/// its unit, or as faba 0.18 kept it, under `count` or `blocks` with the
+/// unit in the field's name; its trace the restarts' ELBO.
+fn vi_fitted(dir: &Path, results: serde_json::Value) {
+    tables(dir);
+    let mut record = serde_json::json!({
+        "job": "cluster", "status": "ok", "options": {"chains": 2},
+        "results": {"trace": {"sweeps": 60, "burn_in": 20, "quantity": "ELBO"}},
+    });
+    if let (Some(r), serde_json::Value::Object(more)) = (record["results"].as_object_mut(), results)
+    {
+        r.extend(more);
+    }
+    write::trace(&chains([-2.0, -2.1]), &dir.join("m6a_trace.parquet")).unwrap();
+    std::fs::write(dir.join(record_name("m6a")), record.to_string()).unwrap();
+}
+
+/// The verdict of a fit by variational inference reads from its record in
+/// either shape, the badge and the pane saying the ELBO, the restarts named
+/// as such.
+#[test]
+fn a_vi_fit_reads_its_verdict_in_either_shape() {
+    let restarts = serde_json::json!([{"restart": 0, "elbo": -9.0}, {"restart": 1, "ran": false}]);
+    let verdict = |unit: Option<&str>| {
+        let mut v = serde_json::json!({"restarts": restarts, "best": 0, "converged": true,
+            "stopped_early": false, "epochs": 12, "asked": 40, "tol": 1e-5});
+        match unit {
+            Some(u) => {
+                v["unit"] = u.into();
+                v["spread_per_unit"] = 0.0.into();
+            }
+            None => v["spread_per_read"] = 0.0.into(),
+        }
+        v
+    };
+    for results in [
+        serde_json::json!({"fit": verdict(Some("read"))}),
+        serde_json::json!({"blocks": {"vi": verdict(None)}}),
+        serde_json::json!({"count": {"vi": verdict(Some("count"))}}),
+    ] {
+        let tmp = tempfile::tempdir().unwrap();
+        vi_fitted(tmp.path(), results.clone());
+        let m = Modules::load(tmp.path(), "m6a", None).unwrap();
+        let v = m.fit.verdict().unwrap_or_else(|| panic!("{results}"));
+        assert!(
+            v.converged() && v.said().contains("ELBO settled in 12 epochs"),
+            "{results}"
+        );
+        let mut view = ModulesView::new("test", &m);
+        assert!(screen(&mut view, 120, 30)
+            .lines()
+            .next()
+            .unwrap()
+            .contains("ELBO ok"));
+        press(&mut view, KeyCode::Char('t'));
+        let s = screen(&mut view, 120, 30);
+        assert!(s.contains("restart 0") && !s.contains("chain 0"), "{s}");
+    }
+}

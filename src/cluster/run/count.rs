@@ -254,12 +254,12 @@ pub(in crate::cluster) fn count_fit(
     super::vi::conclude(
         progress,
         record,
-        ("count", "count"),
+        "count",
         &ends,
         (best, ended),
         (warmup, options.epochs, options.tol),
         stopped,
-        serde_json::json!({"empty_roles": super::vi::empty_roles(&means.units, bb)}),
+        super::vi::empty_roles(&means.units, bb),
     )?;
     std::fs::create_dir_all(dir)?;
     let path = |name: &str| dir.join(format!("count_{name}.parquet"));

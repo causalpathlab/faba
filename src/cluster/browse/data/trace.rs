@@ -87,8 +87,11 @@ impl Fit {
                     .collect()
             })
             .unwrap_or_default();
-        // A fit by variational inference: its own verdict, no R-hat.
-        let vi = at("/results/count/vi")
+        // A fit by variational inference: its own verdict, no R-hat; under
+        // `fit` with its unit, or (0.18) under the fit's kind, `count` or
+        // `blocks`, the unit in the field's name.
+        let vi = at("/results/fit")
+            .or_else(|| at("/results/count/vi"))
             .or_else(|| at("/results/blocks/vi"))
             .map(|vi| {
                 let ran = (vi["restarts"].as_array().into_iter().flatten())
@@ -100,9 +103,13 @@ impl Fit {
                     vi["stopped_early"].as_bool().unwrap_or(false),
                     (number("epochs"), number("asked")),
                     ran,
-                    match vi["spread_per_count"].as_f64() {
-                        Some(x) => (x, "count"),
-                        None => (vi["spread_per_read"].as_f64().unwrap_or(0.0), "read"),
+                    match (vi["unit"].as_str(), vi["spread_per_count"].as_f64()) {
+                        (Some("count"), _) => {
+                            (vi["spread_per_unit"].as_f64().unwrap_or(0.0), "count")
+                        }
+                        (Some(_), _) => (vi["spread_per_unit"].as_f64().unwrap_or(0.0), "read"),
+                        (None, Some(x)) => (x, "count"),
+                        (None, None) => (vi["spread_per_read"].as_f64().unwrap_or(0.0), "read"),
                     },
                 )
             });
