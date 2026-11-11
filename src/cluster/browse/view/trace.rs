@@ -17,7 +17,7 @@ impl ModulesView<'_> {
     /// `t`: open the trace, or say on the footer why there is none.
     pub(super) fn open_trace(&mut self) {
         match &self.m.fit.trace {
-            Ok(_) => self.tracing = true,
+            Ok(_) => self.full = Some(super::Full::Trace),
             Err(why) => self.status = Some(why.clone()),
         }
     }
@@ -25,7 +25,7 @@ impl ModulesView<'_> {
     /// A key while the trace is open: `t` or Esc closes it, `q` quits.
     pub(super) fn trace_key(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Char('t') | KeyCode::Esc => self.tracing = false,
+            KeyCode::Char('t') | KeyCode::Esc => self.full = None,
             KeyCode::Char('q') => self.done = true,
             _ => {}
         }

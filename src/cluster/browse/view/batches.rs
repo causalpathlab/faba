@@ -63,7 +63,7 @@ impl ModulesView<'_> {
     /// `b`: open the batches pane, or say on the footer why there is none.
     pub(super) fn open_batches(&mut self) {
         match &self.m.batches {
-            Some(_) => self.batching = true,
+            Some(_) => self.full = Some(super::Full::Batches),
             None => self.status = Some(ONE_BATCH.into()),
         }
     }
@@ -73,7 +73,7 @@ impl ModulesView<'_> {
     pub(super) fn batches_key(&mut self, key: KeyEvent) {
         self.status = None;
         match key.code {
-            KeyCode::Char('b') | KeyCode::Esc => self.batching = false,
+            KeyCode::Char('b') | KeyCode::Esc => self.full = None,
             KeyCode::Char('B') => self.next_filter(),
             KeyCode::Down | KeyCode::Char('j') => {
                 self.batch_from = (self.batch_from + 1).min(self.m.cell_roles.saturating_sub(1))

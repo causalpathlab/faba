@@ -1,7 +1,7 @@
 //! Keys and the mouse: presses, drags and the wheel over what the last
 //! frame drew, and every key the panes take.
 
-use super::{Look, ModulesView, Pane, Sort, Spot, PANES};
+use super::{Full, Look, ModulesView, Pane, Sort, Spot, PANES};
 use crate::site_analysis::pileup::query_symbol;
 use ratatui::crossterm::event::{
     KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
@@ -125,7 +125,7 @@ impl ModulesView<'_> {
 
     /// A mouse event, for `Screen::mouse`: whether it did anything.
     pub(super) fn on_mouse(&mut self, event: MouseEvent) -> bool {
-        if self.find.is_some() || self.tracing || self.batching || self.going {
+        if self.find.is_some() || self.full.is_some() {
             return false;
         }
         let spot = self.hits.at(event.column, event.row);
@@ -159,14 +159,11 @@ impl ModulesView<'_> {
         if self.find.is_some() {
             return self.find_key(key);
         }
-        if self.tracing {
-            return self.trace_key(key);
-        }
-        if self.batching {
-            return self.batches_key(key);
-        }
-        if self.going {
-            return self.go_key(key);
+        match self.full {
+            Some(Full::Trace) => return self.trace_key(key),
+            Some(Full::Batches) => return self.batches_key(key),
+            Some(Full::Go) => return self.go_key(key),
+            None => {}
         }
         // The grid in focus, a place in `looks`.
         let grid = (self.pane != Pane::Genes).then(|| self.pane.index());
