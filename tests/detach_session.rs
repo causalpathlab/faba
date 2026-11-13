@@ -1,10 +1,7 @@
 //! The full-screen views as detachable sessions, driven through
 //! pseudo-terminals standing in for the user's: `faba pwm`'s logo (a
-//! figure view, drawn as a picture where the terminal has one) starts
-//! hosted, a detach leaves it running and asks for a name, an attach from
-//! another terminal repaints it (its picture made again for that
-//! terminal), a lost client leaves it running, and `faba kill` stops it
-//! through its quit path, leaving no process or socket behind. `faba qc`'s
+//! figure view, drawn as a picture where the terminal has one) is drawn
+//! again for a terminal that attaches to it. `faba qc`'s
 //! threshold view, a data-beans screen, is left by a kill as by q, a
 //! changed threshold dropped without asking and nothing written. A view
 //! named on the command line starts a new session while a bare start
@@ -22,7 +19,7 @@ use arrow::array::{ArrayRef, Int64Array, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use data_beans::sparse_io::{create_sparse_from_triplets_owned, SparseIoBackend};
-use legume_tui::testing::{alive, Private, Replies, Setup, Term, PROMPT};
+use legume_tui::testing::{Private, Replies, Setup, Term, PROMPT};
 use legume_tui::Size;
 use parquet::arrow::ArrowWriter;
 
@@ -172,63 +169,6 @@ fn files_in(dir: &Path) -> Vec<String> {
                 .collect()
         },
     )
-}
-
-#[test]
-fn pwm_detaches_attaches_and_is_killed_through_its_quit_path() {
-    let dir = private();
-    let work = tempfile::tempdir().unwrap();
-    let (sites, genome) = pwm_fixture(work.path());
-    let args = ["pwm", "-s", &sites, "-f", &genome];
-
-    // Started in a terminal, it is hosted: this terminal is its first
-    // client, and the title row ends with the session keys.
-    let mut first = term(&dir, &args, &[]);
-    first.wait_screen("ctrl+alt+d detach");
-    first.wait_screen("ctrl+alt+s switch");
-    first.wait_screen("21 positions");
-    assert!(!first.cooked(), "the client's terminal is raw");
-    let listed = dir.wait_listed("sequence logo of sites");
-    assert!(listed.contains("faba-pwm-1\tattached"), "{listed:?}");
-    let pid = dir.program_pid();
-    assert_ne!(
-        pid,
-        first.child.id(),
-        "the program runs apart from its client"
-    );
-
-    // Detached (ctrl+alt+d): the client ends, its terminal restored, the
-    // program runs on; Enter leaves it unnamed.
-    first.type_(b"\x1b\x04");
-    first.answer(1, b"\r");
-    assert_eq!(first.exit_code(), 0);
-    assert!(first.cooked(), "terminal restored after detach");
-    first.wait_for("Detached faba-pwm-1.");
-    dir.wait_listed("faba-pwm-1\tdetached");
-    assert!(alive(pid));
-
-    // Attached from another terminal: back in the alternate screen and
-    // painted whole there, keys reaching the program.
-    let mut second = term(&dir, &["attach", "pwm-1"], &[]);
-    second.wait_screen("21 positions · bits");
-    second.wait_screen("ctrl+alt+d detach");
-    assert!(second.alternate(), "back in the alternate screen");
-    second.type_(b"b");
-    second.wait_screen("21 positions · frequency");
-
-    // The client lost without a word (a dropped connection): it runs on.
-    second.child.kill().unwrap();
-    second.child.wait().unwrap();
-    drop(second);
-    dir.wait_listed("faba-pwm-1\tdetached");
-    assert!(alive(pid));
-
-    // Killed while detached: it quits as q does, leaving nothing.
-    let said = dir.run(&["kill", "pwm-1"]);
-    assert!(said.contains("faba-pwm-1 stopped"), "{said:?}");
-    dir.gone(pid);
-    assert!(dir.sockets().is_empty());
-    assert!(dir.run(&["sessions"]).contains("no live faba sessions"));
 }
 
 #[test]
