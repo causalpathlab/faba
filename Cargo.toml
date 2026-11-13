@@ -1,6 +1,6 @@
 [package]
 name = "faba"
-version = "0.19.1"
+version = "0.19.3"
 edition = "2021"
 rust-version = "1.91"
 license = "MIT"
@@ -54,7 +54,7 @@ mcp = ["dep:legume-mcp"]
 hdf5 = ["data-beans/hdf5"]
 
 [dependencies]
-data-beans = { version = "0.10.12", default-features = false, features = ["aux", "tui"] }
+data-beans = { version = "0.11", default-features = false, features = ["aux", "tui"] }
 # Detachable sessions for the views, the image protocol of the attached
 # terminal, and the runner of the child `faba run` follows.
 legume-tui = "0.3.16"
