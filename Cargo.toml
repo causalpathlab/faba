@@ -91,7 +91,10 @@ parquet = "59"
 
 rustc-hash = "2.1"
 dashmap = { version = "6.1.0", features = ["rayon"] }
-rust-htslib = "1.0"
+# Local BAM and CRAM only: no curl (htslib reading over HTTP, S3 or GCS),
+# which would build OpenSSL from source and needs Perl modules many
+# cluster nodes lack.
+rust-htslib = { version = "1.0", default-features = false, features = ["bzip2", "lzma"] }
 arrow = "59"
 
 serde = { version = "1.0", features = ["derive"] }
