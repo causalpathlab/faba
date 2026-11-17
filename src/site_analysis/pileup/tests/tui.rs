@@ -500,7 +500,7 @@ fn read_tracks_share_one_scale() {
     );
     // Both read panels label the same top in the figure.
     let svg = v.figure();
-    let top = data_beans::interactive::ui::compact(tallest_b);
+    let top = crate::tui::ui::compact(tallest_b);
     assert!(svg.matches(&format!(">{top}<")).count() >= 2, "{top}");
 }
 

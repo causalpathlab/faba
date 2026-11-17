@@ -4,7 +4,7 @@
 use super::{Look, ModulesView, Pane, Spot};
 use crate::site_analysis::pileup::query_symbol;
 use crate::tui::hidden_marks;
-use data_beans::interactive::ui::{compact, help_line, panel, DIM, HIGHLIGHT};
+use crate::tui::ui::{compact, help_line, panel, DIM, HIGHLIGHT};
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::Frame;

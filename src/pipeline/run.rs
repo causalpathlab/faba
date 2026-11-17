@@ -203,7 +203,7 @@ pub fn run_or_view(
         return run_pipeline(args);
     }
     anyhow::ensure!(
-        data_beans::interactive::tui_available(),
+        legume_tui::view::terminal_available(),
         "`faba run` sets up the run in a full-screen view, which needs stdin and stdout \
          on a terminal; pass --batch-process with the BAMs, -g, -f and -o to run without it"
     );

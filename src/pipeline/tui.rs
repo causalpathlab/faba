@@ -14,15 +14,16 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use data_beans::interactive::ui::Screen;
+use crate::tui::ui::Screen;
 use ratatui::crossterm::event::KeyEvent;
 use ratatui::Frame;
 
 use crate::figure::LineInput;
 use crate::pipeline::args::PipelineArgs;
+use crate::tui::browser::Browser;
 use crate::tui::View;
 use form::Form;
-use inputs::{Browser, FileRow, Inputs, Picked, Role};
+use inputs::{FileRow, Inputs, Picked, Role};
 use legume_tui::child::{Failed, Progress, Said, Stopper};
 use steps::Steps;
 
@@ -546,12 +547,6 @@ impl View for App {
         true
     }
 
-    /// `faba kill`: leave without asking, a setup not started dropped; a
-    /// run under way is stopped as the view ends (see [`run_view`]).
-    fn quit(&mut self) {
-        self.quit = true;
-    }
-
     fn stray_enter(&mut self) {
         // The preview says what the apply key does there too.
         if self.preview || !self.popped() {
@@ -561,6 +556,12 @@ impl View for App {
 }
 
 impl Screen for App {
+    /// `faba kill`: leave without asking, a setup not started dropped; a
+    /// run under way is stopped as the view ends (see [`run_view`]).
+    fn quit(&mut self) {
+        self.quit = true;
+    }
+
     /// For `faba sessions` and the session picker.
     fn status(&self) -> Option<String> {
         let job = self.job.as_ref()?;
@@ -616,9 +617,17 @@ impl Screen for App {
 
     fn tick(&mut self) -> bool {
         let listed = self.catalogue.as_mut().is_some_and(fetch::Catalogue::poll);
+        // Either browser's folder, as it is listed.
+        let bams = crate::tui::browser::tick(&mut self.inputs.bams);
+        let picking = self
+            .picking
+            .as_mut()
+            .is_some_and(|(_, b)| crate::tui::browser::tick(b));
         let fetched = self.poll_fetch();
         let told = self.tell_end();
         listed
+            || bams
+            || picking
             || fetched
             || told
             || match &self.job {

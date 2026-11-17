@@ -3,8 +3,8 @@
 //! names alone, filtered as you type (`/` starts over). A typed
 //! `chr:start-end` or `chr:pos` opens that locus.
 
+use crate::tui::ui::{header, input_line, panel, Screen, DIM, HIGHLIGHT, PLAIN};
 use data_beans::hdf5_io::resolve_backend_file;
-use data_beans::interactive::ui::{header, input_line, panel, Screen, DIM, HIGHLIGHT, PLAIN};
 use data_beans::sparse_io::open_sparse_matrix;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout};

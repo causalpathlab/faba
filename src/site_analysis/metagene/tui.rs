@@ -10,7 +10,7 @@
 //! `faba qc` draws its metagene.
 
 use crate::figure::size::{Page, OWN};
-use data_beans::interactive::ui::{header, help_line, panel, Scale, Screen, DIM, HIGHLIGHT};
+use crate::tui::ui::{header, help_line, panel, Scale, Screen, DIM, HIGHLIGHT};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};

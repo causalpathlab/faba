@@ -15,7 +15,7 @@ pub mod term;
 
 pub use size::{Page, SizeArgs};
 
-use data_beans::interactive::ui::{compact, help_line, input_line, Scale, DIM, HIGHLIGHT, PLAIN};
+use crate::tui::ui::{compact, help_line, input_line, Scale, DIM, HIGHLIGHT, PLAIN};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};

@@ -5,7 +5,7 @@ use super::{ModulesView, Pane};
 use crate::cluster::browse::Modules;
 use crate::figure::{Edit, LineInput};
 use crate::site_analysis::pileup::query_symbol;
-use data_beans::interactive::ui::{DIM, HIGHLIGHT};
+use crate::tui::ui::{DIM, HIGHLIGHT};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::text::{Line, Span};
 

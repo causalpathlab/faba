@@ -187,18 +187,18 @@ fn g_browses_for_an_annotation_and_reads_the_one_picked() {
     let Mode::Gff(b) = &p.mode else {
         panic!("no browser")
     };
-    assert_eq!(b.cwd, root);
+    assert_eq!(b.dir, root);
     let _ = b;
     term.draw(|f| p.render(f)).unwrap();
     let Mode::Gff(b) = &mut p.mode else {
         unreachable!()
     };
-    assert!(b.list.select("ref"));
+    assert!(b.select("ref"));
     press(&mut p, KeyCode::Enter);
     let Mode::Gff(b) = &p.mode else {
         panic!("left the browser")
     };
-    let names: Vec<&str> = b.list.shown().map(|e| e.name.as_str()).collect();
+    let names: Vec<&str> = b.shown().iter().map(|e| e.name()).collect();
     assert_eq!(names, ["..", "genes.gtf.gz"]);
 
     // Picking the file reads it, and the view reports it for the record.
@@ -287,7 +287,7 @@ fn a_kill_leaves_changed_thresholds_without_asking() {
     assert!(matches!(asked.mode, Mode::Leave(_)) && !asked.done());
     // ... a kill does not: the change is dropped and nothing written.
     let mut killed = changed();
-    View::quit(&mut killed);
+    Screen::quit(&mut killed);
     assert!(killed.done());
     assert!(matches!(killed.decision, Some(Picked::Cancelled)));
 }
@@ -309,7 +309,7 @@ fn a_kill_lets_a_write_under_way_finish() {
     assert!(p.tick() && matches!(p.mode, Mode::Writing));
     // The kill waits for the write: the view is done once it is, with
     // the thresholds it wrote.
-    View::quit(&mut p);
+    Screen::quit(&mut p);
     assert!(matches!(p.mode, Mode::Writing) && !p.done());
     progress.finish();
     p.tick();

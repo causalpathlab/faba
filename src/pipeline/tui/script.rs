@@ -9,7 +9,10 @@ pub const SCRIPT: &str = "faba_run.cmd.sh";
 /// The whole-run record: its presence means the run already finished.
 pub const GUARD: &str = "pipeline_summary.json";
 
-const RUN: Script = crate::script::faba(SCRIPT, "faba run", Some(GUARD), true, 2);
+const RUN: Script = crate::script::faba(SCRIPT, "faba run")
+    .guard(GUARD)
+    .cd(true)
+    .head(2);
 
 /// The program and `run --batch-process` on the first line, each BAM on its
 /// own line, then one flag and all its values per line.

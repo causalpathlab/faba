@@ -10,7 +10,7 @@ use super::inputs::{InputsFocus, Row};
 use super::steps::Step;
 use super::{script, App, Hit, Page, Target};
 use crate::figure::{Edit, LineInput};
-use crate::tui::browser::Nav;
+use crate::tui::browser::Outcome;
 use crate::tui::{apply_key, enter_hint, is_apply, moved, output_problem, typed_path, wheel_key};
 
 /// Longest text a line input takes.
@@ -73,14 +73,14 @@ impl App {
         // are no commands. Enter on a BAM picks nothing; Space does.
         if self.page == Page::Inputs && self.inputs.focus == InputsFocus::Bams {
             match self.inputs.bams.key(key) {
-                Nav::Moved => return,
-                Nav::Picked(_) => return self.enter_hint(),
+                Outcome::Moved => return,
+                Outcome::Chosen(_) => return self.enter_hint(),
                 // Esc with nothing typed: on to the rows, where letters act.
-                Nav::Ignored if key.code == KeyCode::Esc => {
+                Outcome::Cancelled => {
                     self.inputs.focus = InputsFocus::Rows;
                     return;
                 }
-                Nav::Ignored => {}
+                Outcome::Ignored => {}
             }
         }
         match key.code {
@@ -145,8 +145,16 @@ impl App {
             Hit::Tab(p) if clicked && self.pages().contains(&p) => self.page = p,
             Hit::Bams(i) => {
                 self.inputs.focus = InputsFocus::Bams;
-                if let Some(i) = i.filter(|_| clicked) {
-                    self.inputs.bams.list.at = i;
+                let clicked_name = i.filter(|_| clicked).and_then(|i| {
+                    self.inputs
+                        .bams
+                        .shown()
+                        .get(i)
+                        .map(|e| e.name().to_string())
+                });
+                if let Some(name) = clicked_name {
+                    // Through `select`, so a listing still coming keeps it.
+                    self.inputs.bams.select(&name);
                 }
             }
             Hit::Rows(i) => {
@@ -269,13 +277,12 @@ impl App {
         };
         let row = *row;
         match browser.key(key) {
-            Nav::Moved => {}
-            Nav::Picked(file) => {
-                self.inputs.set(row, Some(&file));
+            Outcome::Moved | Outcome::Ignored => {}
+            Outcome::Chosen(file) => {
+                self.inputs.set(row, Some(&file.file()));
                 self.picking = None;
             }
-            Nav::Ignored if key.code == KeyCode::Esc => self.picking = None,
-            Nav::Ignored => {}
+            Outcome::Cancelled => self.picking = None,
         }
     }
 
@@ -329,7 +336,7 @@ impl App {
             KeyCode::Enter | KeyCode::Right => {
                 if let Some(pick) = c.enter() {
                     self.catalogue = None;
-                    let base = crate::tui::home().unwrap_or_else(|| self.inputs.bams.cwd.clone());
+                    let base = crate::tui::home().unwrap_or_else(|| self.inputs.bams.dir.clone());
                     let dir = base.join("faba_refs").join(pick.dir_name());
                     self.ref_pick = Some(pick);
                     self.edit(Target::RefDir, &dir.to_string_lossy());
@@ -413,7 +420,7 @@ impl App {
                     .get(&self.inputs)
                     .and_then(|p| p.parent())
                     .filter(|p| p.is_dir())
-                    .map_or_else(|| self.inputs.bams.cwd.clone(), |p| p.to_path_buf());
+                    .map_or_else(|| self.inputs.bams.dir.clone(), |p| p.to_path_buf());
                 self.picking = Some((f, f.browser(start)));
             }
             Row::Output => self.edit(Target::Output, &self.inputs.output()),

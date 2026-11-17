@@ -37,7 +37,7 @@ use super::site_tui::{
 use super::sites::{
     accumulate_site_cells, read_site_table, site_matrix_rows, write_site_tables, SiteTable,
 };
-use data_beans::interactive::tui_available;
+use legume_tui::view::terminal_available;
 
 struct SummaryRow {
     file: Box<str>,
@@ -228,7 +228,7 @@ pub fn run_qc(args: &QcArgs) -> anyhow::Result<()> {
         return dry_run(args);
     }
     anyhow::ensure!(
-        args.batch_process || tui_available(),
+        args.batch_process || terminal_available(),
         "`faba qc` picks the site thresholds in a full-screen view, which needs stdin and \
          stdout on a terminal; pass --batch-process to cut with the --site-* values as given"
     );

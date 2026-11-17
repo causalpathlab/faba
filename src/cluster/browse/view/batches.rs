@@ -6,7 +6,7 @@
 use super::grid::gray_cell;
 use super::{ModulesView, Sort};
 use crate::cluster::batches::{Label, CONDITION, EVEN, FEWEST};
-use data_beans::interactive::ui::{help_line, panel, DIM, HIGHLIGHT};
+use crate::tui::ui::{help_line, panel, DIM, HIGHLIGHT};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Rect;
 use ratatui::layout::{Constraint, Layout};

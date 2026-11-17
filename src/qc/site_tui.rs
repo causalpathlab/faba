@@ -10,7 +10,7 @@
 //! kept.
 
 use crate::figure::size::OWN;
-use data_beans::interactive::ui::{
+use crate::tui::ui::{
     header, help_line, input_line, panel, Binned, Binning, HistPlot, Scale, Screen, ACCENTED, DIM,
     HIGHLIGHT, PLAIN,
 };
@@ -39,7 +39,7 @@ use super::args::SiteFilterArgs;
 use super::layout::{file_name, SITE_MODALITIES};
 use super::progress::Progress;
 use super::sites::{genomic_sites, Criterion, GeneSites, RawColumns, SiteTable};
-use crate::tui::browser::{is_annotation, Browser, Nav};
+use crate::tui::browser::{self, is_annotation, Browser, Outcome};
 use crate::tui::{
     apply_key, button_popup, enter_hint, first_visible, is_apply, popup, popup_frame, run_view,
     tab_bar, wheel_key, Hits, View, APPLY_KEYS,
@@ -200,7 +200,7 @@ enum Mode {
     /// Writing the fileset; keys wait until it is done.
     Writing,
     /// Browsing for an annotation to read.
-    Gff(Browser),
+    Gff(Box<Browser>),
     /// Asking before leaving without writing changed thresholds; the key
     /// that asked ([`leave_key`]) leaves as the [`Picked`] says.
     Leave(Picked),
@@ -445,7 +445,9 @@ impl View for SitePicker<'_> {
     fn takes_chord(&self, key: &KeyEvent) -> bool {
         is_report(key) && self.browsing()
     }
+}
 
+impl Screen for SitePicker<'_> {
     /// `faba kill`: leave without asking, changed thresholds dropped and
     /// nothing written; a write under way finishes first, the view done
     /// once it is.
@@ -454,9 +456,7 @@ impl View for SitePicker<'_> {
             self.decide(Picked::Cancelled);
         }
     }
-}
 
-impl Screen for SitePicker<'_> {
     /// For `faba sessions` and the session picker.
     fn status(&self) -> Option<String> {
         Some(match self.mode {
@@ -511,13 +511,17 @@ impl Screen for SitePicker<'_> {
             let done = progress.done();
             return std::mem::replace(&mut self.drawn_steps, done) != done;
         }
+        let listed = match &mut self.mode {
+            Mode::Gff(b) => crate::tui::browser::tick(b),
+            _ => false,
+        };
         let arrived = self.meta.poll();
         if arrived {
             self.refresh_meta();
         }
         // Said once browsing again: the other footers would hide it.
         let written = self.browsing() && self.end_report();
-        arrived || written
+        listed || arrived || written
     }
 
     fn handle_key(&mut self, key: KeyEvent) {

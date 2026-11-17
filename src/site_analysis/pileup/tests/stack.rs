@@ -1,6 +1,6 @@
 use super::*;
 use crate::site_analysis::pileup::tui::Track;
-use data_beans::interactive::ui::Scale;
+use crate::tui::ui::Scale;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::KeyModifiers;
 use ratatui::Terminal;

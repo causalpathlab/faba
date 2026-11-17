@@ -7,7 +7,7 @@ use super::{ModulesView, Spot};
 use crate::cluster::browse::{standardized, Count, Modules};
 use crate::site_analysis::pileup::{channel_names, query_symbol};
 use crate::tui::hidden_marks;
-use data_beans::interactive::ui::{compact, DIM, HIGHLIGHT, PLAIN};
+use crate::tui::ui::{compact, DIM, HIGHLIGHT, PLAIN};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};

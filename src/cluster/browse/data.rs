@@ -540,7 +540,7 @@ impl Modules {
         let n = if n < 999.95 {
             format!("{n:.1}")
         } else {
-            data_beans::interactive::ui::compact(n)
+            crate::tui::ui::compact(n)
         };
         match self.approximate.sizes {
             true => format!("≈{n}"),

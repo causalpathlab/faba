@@ -1,15 +1,55 @@
-//! The file browser every view's pop-ups and panes share: one folder's
-//! subfolders, then the files it keeps, with a cursor, narrowed to what has
-//! been typed, and typed paths walked: legume-tui's
-//! [`legume_tui::browse::Browser`], noting folders as well as files, with
-//! the files marked kept here.
+//! The file browser every view's pop-ups and panes share: legume-tui's
+//! [`legume_tui::browse::Browser`] for a [`Simple`] want (one folder's
+//! subfolders, then the files it keeps, narrowed to what has been typed,
+//! typed paths walked, listed on a worker thread), with what faba adds:
+//! which names are annotations or genomes, the listing's wait, and the
+//! rows drawn with what the listing says under them.
 
-use std::ops::{Deref, DerefMut};
-use std::path::{Path, PathBuf};
+use std::borrow::Cow;
+use std::path::Path;
+use std::time::Duration;
 
-use ratatui::text::Line;
+use ratatui::text::{Line, Span};
 
-pub use legume_tui::browse::{normalize, Entry, Nav};
+pub use legume_tui::browse::{normalize, Entry, Header, Outcome, Simple, NOTHING_MATCHES};
+
+/// faba's browser: files kept by name, each with what a noter says of it.
+pub type Browser = legume_tui::browse::Browser<Simple>;
+
+/// How long opening a folder waits for its listing before showing it is
+/// still listing: legume-tui's wait, or, in faba's tests, long enough for
+/// any listing to finish, so no test races the worker thread.
+#[cfg(not(test))]
+const GRACE: Duration = legume_tui::browse::LIST_GRACE;
+#[cfg(test)]
+const GRACE: Duration = Duration::from_secs(60);
+
+/// A browser at `dir` for `want`, listed (within [`GRACE`]), the cursor on
+/// `select` when that is listed.
+pub fn open(dir: impl AsRef<Path>, want: Simple, select: Option<&str>) -> Browser {
+    Browser::open_within(dir, want, select, GRACE)
+}
+
+/// A [`Simple`] want titled `title` for `what`, keeping the files `keep`
+/// takes by name, each with what `note` says of it (told whether it speaks
+/// of a folder).
+pub fn want(
+    title: &'static str,
+    what: &'static str,
+    keep: impl Fn(&str) -> bool + Send + Sync + 'static,
+    note: impl FnMut(&Path, bool) -> Option<Cow<'static, str>> + Send + 'static,
+) -> Simple {
+    Simple::new(Header::new(title, what), keep, note)
+}
+
+/// [`want`] with nothing said of the files.
+pub fn plain(
+    title: &'static str,
+    what: &'static str,
+    keep: impl Fn(&str) -> bool + Send + Sync + 'static,
+) -> Simple {
+    Simple::keeping(Header::new(title, what), keep)
+}
 
 /// Whether `name` is an annotation: a GTF or GFF, gzipped or not, any case.
 pub fn is_annotation(name: &str) -> bool {
@@ -29,86 +69,43 @@ pub fn is_fasta(name: &str) -> bool {
         .any(|ext| name.ends_with(ext))
 }
 
-/// The browser's state, independent of the terminal so it can be tested:
-/// legume-tui's (its folder, listing, keys), and the files marked.
-pub struct Browser {
-    shared: legume_tui::browse::Browser,
-    /// The files marked, in the order marked, from any folder; `None` when
-    /// this browser does not mark.
-    pub marked: Option<Vec<PathBuf>>,
+/// Take what the folder's listing found; whether to redraw: something
+/// came, or it is still listing (its spinner and seconds turn).
+pub fn tick(b: &mut Browser) -> bool {
+    b.poll() || b.listing().is_some()
 }
 
-impl Browser {
-    /// A browser at `cwd` that has not listed it yet: files `keep` accepts
-    /// by name (folders are always listed), each file with what `note` says
-    /// of it (a BAM with its index).
-    pub fn new(
-        cwd: PathBuf,
-        keep: impl Fn(&str) -> bool + 'static,
-        note: impl FnMut(&Path) -> Option<String> + 'static,
-    ) -> Self {
-        Self {
-            shared: legume_tui::browse::Browser::new(cwd, keep, note),
-            marked: None,
-        }
-    }
-
-    /// Noting folders as well as files (see
-    /// [`legume_tui::browse::Browser::noting_folders`]).
-    pub fn noting_folders(mut self) -> Self {
-        self.shared = self.shared.noting_folders();
-        self
-    }
-
-    /// Marking files, with none marked yet.
-    pub fn marking(mut self) -> Self {
-        self.marked = Some(Vec::new());
-        self
-    }
-
-    /// Mark `file`, or unmark it if it was; nothing when not marking.
-    pub fn toggle_mark(&mut self, file: PathBuf) {
-        let Some(marked) = &mut self.marked else {
-            return;
-        };
-        match marked.iter().position(|m| *m == file) {
-            Some(i) => {
-                marked.remove(i);
-            }
-            None => marked.push(file),
-        }
-    }
-
-    /// Listed at its folder.
-    pub fn opened(mut self) -> Self {
-        self.shared = self.shared.opened();
-        self
-    }
-
-    /// `rows` lines of the listing around the cursor, `width` wide, each
-    /// entry's note after it; an empty listing says `empty`. With marking
-    /// on, each file has a `[x]`/`[ ]` box.
-    pub fn lines(&self, rows: usize, width: usize, empty: &str) -> Vec<Line<'static>> {
-        let mark_width = if self.marked.is_some() { 3 } else { 0 };
-        let mark = |e: &Entry| {
-            let on = self.marked.as_ref()?.contains(&e.path);
-            Some(if on { "[x]" } else { "[ ]" }.to_string())
-        };
-        self.shared
-            .lines(rows, width, &super::LOOK, mark_width, mark, empty)
-    }
+/// Where a pop-up's title says the browser is: its folder, `~` for home,
+/// then what was typed.
+pub fn place(b: &Browser) -> String {
+    format!("{} {}", super::tilde(&b.dir), b.tag())
 }
 
-impl Deref for Browser {
-    type Target = legume_tui::browse::Browser;
-
-    fn deref(&self) -> &Self::Target {
-        &self.shared
+/// What the listing says under its rows, if anything: that the folder is
+/// still being listed, that nothing matches what was typed, or `empty`
+/// when it holds nothing but `..`.
+pub fn note(b: &Browser, empty: Option<&str>) -> Option<Cow<'static, str>> {
+    if b.listing().is_some() {
+        return b.status();
     }
+    if b.shown().iter().any(|e| !matches!(e, Entry::Up)) {
+        return None;
+    }
+    if !b.filter.is_empty() {
+        return Some(Cow::Borrowed(NOTHING_MATCHES));
+    }
+    empty.map(|e| Cow::Owned(e.to_string()))
 }
 
-impl DerefMut for Browser {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.shared
+/// `rows` lines of the listing around the cursor, `width` wide, in faba's
+/// look ([`super::LOOK`]); the last is what [`note`] says, when it says
+/// anything.
+pub fn lines(b: &Browser, rows: usize, width: usize, empty: &str) -> Vec<Line<'static>> {
+    let note = note(b, Some(empty));
+    let room = rows.saturating_sub(usize::from(note.is_some())).max(1);
+    let mut out = b.rows(room, width, &super::LOOK);
+    if let Some(n) = note {
+        out.push(Line::from(Span::styled(format!("  {n}"), super::LOOK.hint)));
     }
+    out
 }

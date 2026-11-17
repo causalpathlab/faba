@@ -212,6 +212,7 @@ impl PileupView<'_> {
                 let marks = self.tracks[i].sites_in(lo, hi).into_iter();
                 let shown = &bins.shown[i];
                 HistPlot {
+                    look: crate::tui::LOOK,
                     bins: Binning::with_width(Scale::Linear, 1.0),
                     kmin: 0,
                     counts: &shown.values,
@@ -246,6 +247,7 @@ impl PileupView<'_> {
                 };
                 let measure = contrast.measure;
                 MirrorPlot {
+                    look: crate::tui::LOOK,
                     up: side(&up, ACCENTED),
                     down: side(&down, PLAIN),
                     y_scale: Scale::Linear,
@@ -267,6 +269,7 @@ impl PileupView<'_> {
                     }
                 };
                 MirrorPlot {
+                    look: crate::tui::LOOK,
                     up: side(a),
                     down: side(b),
                     y_scale: self.y_scale,

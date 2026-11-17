@@ -3,9 +3,7 @@
 
 use std::path::Path;
 
-use data_beans::interactive::ui::{
-    header, help_line, input_line, panel, ACCENTED, DIM, HIGHLIGHT, PLAIN,
-};
+use crate::tui::ui::{header, help_line, input_line, panel, ACCENTED, DIM, HIGHLIGHT, PLAIN};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
@@ -16,6 +14,7 @@ use super::form::{self, Kind};
 use super::inputs::{InputsFocus, OutState, Role, Row};
 use super::steps::Step;
 use super::{script, App, Hit, Page, Target};
+use crate::tui::browser::Entry;
 use crate::tui::{
     button_popup, clock, first_visible, marker, popup_frame, tab_bar, tilde, window, APPLY_KEYS,
 };
@@ -45,7 +44,7 @@ pub(super) fn draw(app: &App, frame: &mut Frame) {
             let (fg, bg) = (app.inputs.fg().len(), app.inputs.bg().len());
             (
                 format!("faba run · {} BAMs: {fg} fg, {bg} bg", fg + bg),
-                tilde(&app.inputs.bams.cwd),
+                tilde(&app.inputs.bams.dir),
             )
         }
     };
@@ -147,18 +146,26 @@ fn draw_inputs(app: &App, frame: &mut Frame, body: Rect) {
     let bams = &inputs.bams;
     let focus = inputs.focus;
 
-    let title = format!(" BAMs · {} {}", tilde(&bams.cwd), bams.list.find.tag());
+    let title = format!(" BAMs · {}", crate::tui::browser::place(bams));
     let inner = framed(frame, left, title, focus == InputsFocus::Bams);
     app.hits.add(left, Hit::Bams(None));
-    let (at, len) = (bams.list.at, bams.list.len());
-    let first = first_visible(at, len, inner.height as usize);
-    app.hits.rows(inner, first, len, |i| Hit::Bams(Some(i)));
+    // Under the rows, that the folder is still being listed, or that
+    // nothing matches what was typed.
+    let note = crate::tui::browser::note(bams, None);
+    let rows = (inner.height as usize)
+        .saturating_sub(usize::from(note.is_some()))
+        .max(1);
+    let shown = bams.shown();
+    let (at, len) = (bams.row, shown.len());
+    let first = first_visible(at, len, rows);
+    let mut entries = inner;
+    entries.height = entries.height.min(rows as u16);
+    app.hits.rows(entries, first, len, |i| Hit::Bams(Some(i)));
     let batches: std::collections::HashMap<_, _> = inputs.batch_names().into_iter().collect();
-    let name_w = bams
-        .list
-        .shown()
-        .filter(|e| !e.dir)
-        .map(|e| e.name.chars().count())
+    let name_w = shown
+        .iter()
+        .filter(|e| e.is_file())
+        .map(|e| e.name().chars().count())
         .max()
         .unwrap_or(0)
         .max(16);
@@ -168,24 +175,30 @@ fn draw_inputs(app: &App, frame: &mut Frame, body: Rect) {
         .max()
         .unwrap_or(0)
         .max(10);
-    let lines: Vec<Line> = bams
-        .list
-        .shown()
+    let mut lines: Vec<Line> = shown
+        .iter()
         .enumerate()
+        .skip(first)
+        .take(rows)
         .map(|(i, e)| {
-            let mark = marker(i == bams.list.at && focus == InputsFocus::Bams);
-            if e.dir {
-                return Line::from(vec![mark, Span::raw(format!("{}/", e.name))]);
-            }
-            let tag = match inputs.role_of(&e.path) {
+            let mark = marker(i == at && focus == InputsFocus::Bams);
+            let indexed = match e {
+                Entry::File(_, note) => note.as_deref() == Some(super::inputs::INDEXED),
+                Entry::Up | Entry::Dir(..) => {
+                    return Line::from(vec![mark, Span::raw(format!("{}/", e.name()))]);
+                }
+                Entry::Other(name) => return Line::from(vec![mark, Span::raw(name.clone())]),
+            };
+            let path = bams.dir.join(e.name());
+            let tag = match inputs.role_of(&path) {
                 Some(Role::Fg) => Span::styled("[fg] ", HIGHLIGHT),
                 Some(Role::Bg) => Span::styled("[bg] ", HIGHLIGHT),
                 None => Span::styled("[  ] ", DIM),
             };
             let batch = batches
-                .get(&e.path)
+                .get(&path)
                 .map_or_else(String::new, |b| format!("batch {b}"));
-            let index = if e.note.as_deref() == Some(super::inputs::INDEXED) {
+            let index = if indexed {
                 Span::styled("indexed", DIM)
             } else {
                 Span::styled("no index", ACCENTED)
@@ -193,18 +206,15 @@ fn draw_inputs(app: &App, frame: &mut Frame, body: Rect) {
             Line::from(vec![
                 mark,
                 tag,
-                Span::raw(format!("{:<name_w$}  ", e.name)),
+                Span::raw(format!("{:<name_w$}  ", e.name())),
                 Span::styled(format!("{batch:<w$}  ", w = batch_w + 6), DIM),
                 index,
             ])
         })
         .collect();
-    let rows = inner.height as usize;
-    let lines = if lines.is_empty() {
-        vec![Line::styled(bams.list.empty_note(""), DIM)]
-    } else {
-        window(lines, bams.list.at, rows)
-    };
+    if let Some(n) = note {
+        lines.push(Line::styled(format!("  {n}"), DIM));
+    }
     frame.render_widget(Paragraph::new(lines), inner);
 
     let inner = framed(frame, right, " inputs ".into(), focus == InputsFocus::Rows);
@@ -475,11 +485,15 @@ fn draw_picking(app: &App, frame: &mut Frame, body: Rect) {
         return;
     };
     let label = row.label();
-    let h = u16::try_from(b.list.len() + 2).unwrap_or(u16::MAX).max(4);
+    // The entries, a line for what is said under them, and the border.
+    let h = u16::try_from(b.shown().len() + 3)
+        .unwrap_or(u16::MAX)
+        .max(4);
     let h = h.min(body.height.saturating_sub(2).max(3));
-    let title = format!(" {label} · {} {}", tilde(&b.cwd), b.list.find.tag());
+    let title = format!(" {label} · {}", crate::tui::browser::place(b));
     let inner = popup_frame(frame, body, 64, h, title);
-    let lines = b.lines(
+    let lines = crate::tui::browser::lines(
+        b,
         inner.height as usize,
         inner.width as usize,
         "nothing to pick here",
@@ -605,7 +619,7 @@ pub(super) fn footer_line(app: &App) -> Line<'static> {
         };
     }
     if let Some((_, b)) = &app.picking {
-        let esc = if b.list.find.text.is_empty() {
+        let esc = if b.filter.is_empty() {
             "back"
         } else {
             "clear find"
@@ -642,7 +656,7 @@ pub(super) fn footer_line(app: &App) -> Line<'static> {
             ("Enter/→", "open"),
             ("←", "up"),
         ];
-        keys.push(if app.inputs.bams.list.find.text.is_empty() {
+        keys.push(if app.inputs.bams.filter.is_empty() {
             ("Esc", "rows, where q quits")
         } else {
             ("Esc", "clear find")

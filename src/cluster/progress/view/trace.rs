@@ -5,7 +5,7 @@
 
 use crate::cluster::progress::ELBO;
 use crate::site_analysis::miami::palette::{color, Palette};
-use data_beans::interactive::ui::DIM;
+use crate::tui::ui::DIM;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::symbols::Marker;

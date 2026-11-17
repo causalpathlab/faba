@@ -3,7 +3,10 @@
 
 use std::path::{Path, PathBuf};
 
-pub use crate::tui::browser::{is_annotation, is_fasta, normalize, Browser};
+use std::borrow::Cow;
+
+use crate::tui::browser;
+use crate::tui::browser::{is_annotation, is_fasta, normalize, Browser};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Role {
@@ -55,7 +58,8 @@ impl FileRow {
                     .any(|x| n.ends_with(x))
             },
         };
-        Browser::new(start, keep, |_| None).opened()
+        let want = browser::plain(self.label(), self.label(), keep);
+        browser::open(start, want, None)
     }
 
     /// Whether `d` downloads this row's file (see [`super::fetch`]).
@@ -147,12 +151,16 @@ pub struct Inputs {
 impl Inputs {
     pub fn new(cwd: PathBuf) -> Self {
         Inputs {
-            bams: Browser::new(
+            bams: browser::open(
                 cwd,
-                |n| n.ends_with(".bam"),
-                |p| has_index(p).then(|| INDEXED.to_string()),
-            )
-            .opened(),
+                browser::want(
+                    "BAMs",
+                    "BAM",
+                    |n| n.ends_with(".bam"),
+                    |p, is_dir| (!is_dir && has_index(p)).then_some(Cow::Borrowed(INDEXED)),
+                ),
+                None,
+            ),
             picked: Vec::new(),
             gff: None,
             genome: None,
@@ -164,8 +172,8 @@ impl Inputs {
     }
 
     fn highlighted_bam(&self) -> Option<PathBuf> {
-        let e = self.bams.highlighted()?;
-        (!e.dir).then(|| e.path.clone())
+        self.bams.current().filter(|e| e.is_file())?;
+        self.bams.current_path()
     }
 
     /// Set a file row, normalized as picks are.
@@ -263,7 +271,7 @@ impl Inputs {
             .picked
             .first()
             .and_then(|p| p.path.parent())
-            .unwrap_or(&self.bams.cwd);
+            .unwrap_or(&self.bams.dir);
         crate::tui::next_free(base, "faba_out")
             .to_string_lossy()
             .into_owned()
