@@ -6,7 +6,7 @@ use super::{genes_to_draw, SharedModels};
 use crate::figure::term::PlotImage;
 use crate::figure::{status_line, Controls, Edit, Key, LineInput};
 use crate::site_analysis::miami::genemodel::GeneModel;
-use data_beans::interactive::ui::{
+use crate::tui::ui::{
     compact, header, help_line, input_line, panel, Binning, HistPlot, MirrorPlot, MirrorSide,
     Scale, Screen, ACCENTED, DIM, HIGHLIGHT, PLAIN,
 };

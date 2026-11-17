@@ -18,8 +18,8 @@
 use super::Modules;
 use crate::site_analysis::miami::genemodel::GeneModel;
 use crate::site_analysis::pileup::SharedModels;
+use crate::tui::ui::{header, Screen};
 use crate::tui::Hits;
-use data_beans::interactive::ui::{header, Screen};
 use ratatui::crossterm::event::{KeyEvent, MouseEvent};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::widgets::Paragraph;

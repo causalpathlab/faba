@@ -2,7 +2,7 @@
 //! the gene list: one takes the keys (Tab moves on), how the bars are drawn
 //! applies to all of them, and `s` saves them all as one figure.
 
-use data_beans::interactive::ui::{help_line, Screen};
+use crate::tui::ui::{help_line, Screen};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::Line;

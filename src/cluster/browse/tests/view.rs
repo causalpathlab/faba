@@ -3,7 +3,7 @@
 use super::{cell_of, heads, loaded, mouse, press, screen, typed, wide};
 use crate::cluster::browse::view::{Look, Pane, Pin, Ramp, Sort};
 use crate::cluster::browse::{Modules, ModulesView};
-use data_beans::interactive::ui::Screen;
+use crate::tui::ui::Screen;
 use ratatui::crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 
 #[test]

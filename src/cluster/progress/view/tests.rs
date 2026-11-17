@@ -7,7 +7,7 @@ use crate::cluster::progress::advice::Verdict;
 use crate::tui::screen_text as screen;
 use ratatui::crossterm::event::KeyModifiers;
 use std::sync::atomic::Ordering;
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::Sender;
 use std::time::Duration;
 
 /// The verdict of a fit that settled in 30 epochs of 60, its 3 restarts'
@@ -29,11 +29,11 @@ fn midway() -> Progress {
     p
 }
 
-fn fitting<'a>(p: &'a Progress, rx: &'a Receiver<anyhow::Result<u8>>) -> Fitting<'a, u8> {
+fn fitting<'a>(p: &'a Progress, rx: &'a mut Pending<u8, anyhow::Error>) -> Fitting<'a, u8> {
     Fitting {
         title: "fitting the site blockmodel",
         progress: p,
-        pending: Pending::new(rx),
+        pending: rx,
         skip: false,
         status: None,
         start: Instant::now(),
@@ -44,8 +44,8 @@ fn key(c: char) -> KeyEvent {
     KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
 }
 
-fn channel_u8() -> (Sender<anyhow::Result<u8>>, Receiver<anyhow::Result<u8>>) {
-    channel()
+fn channel_u8() -> (Sender<anyhow::Result<u8>>, Pending<u8, anyhow::Error>) {
+    Pending::pair()
 }
 
 /// The k-means start in one colour up to its mark, the epochs in another
@@ -71,9 +71,9 @@ fn a_restarts_bar_marks_where_its_start_ends() {
 /// cancel; at any terminal size.
 #[test]
 fn draws_a_bar_per_restart_with_its_start() {
-    let (_tx, rx) = channel_u8();
+    let (_tx, mut rx) = channel_u8();
     let p = midway();
-    let mut v = fitting(&p, &rx);
+    let mut v = fitting(&p, &mut rx);
     let s = screen(&mut v, 110, 10);
     for want in [
         "restart 0",
@@ -106,9 +106,9 @@ fn draws_a_bar_per_restart_with_its_start() {
 /// input in hand, and says so.
 #[test]
 fn says_it_reads_before_the_restarts_start() {
-    let (_tx, rx) = channel_u8();
+    let (_tx, mut rx) = channel_u8();
     let p = Progress::new(2);
-    let mut v = fitting(&p, &rx);
+    let mut v = fitting(&p, &mut rx);
     assert!(screen(&mut v, 80, 6).contains("reading and filtering the reads"));
     v.handle_key(key('q'));
     assert!(p.cancelled());
@@ -120,9 +120,9 @@ fn says_it_reads_before_the_restarts_start() {
 /// is refused, and says why.
 #[test]
 fn q_cancels_until_the_fit_writes() {
-    let (_tx, rx) = channel_u8();
+    let (_tx, mut rx) = channel_u8();
     let p = midway();
-    let mut v = fitting(&p, &rx);
+    let mut v = fitting(&p, &mut rx);
     v.handle_key(key('q'));
     assert!(p.cancelled());
     assert!(screen(&mut v, 100, 8).contains("cancelling"));
@@ -130,7 +130,7 @@ fn q_cancels_until_the_fit_writes() {
 
     let p = midway();
     p.commit().unwrap();
-    let mut v = fitting(&p, &rx);
+    let mut v = fitting(&p, &mut rx);
     v.handle_key(key('q'));
     assert!(!p.cancelled());
     assert!(screen(&mut v, 100, 8).contains("too late to cancel"));
@@ -140,10 +140,10 @@ fn q_cancels_until_the_fit_writes() {
 /// on a key, or at once on an error.
 #[test]
 fn shows_the_verdict_then_ends() {
-    let (tx, rx) = channel_u8();
+    let (tx, mut rx) = channel_u8();
     let p = midway();
     p.optimised(settled()).unwrap();
-    let mut v = fitting(&p, &rx);
+    let mut v = fitting(&p, &mut rx);
     let s = screen(&mut v, 100, 12);
     assert!(
         s.contains("ELBO settled in 30 epochs") && s.contains("nothing to rerun"),
@@ -156,15 +156,15 @@ fn shows_the_verdict_then_ends() {
     v.handle_key(key('x'));
     assert!(v.done());
 
-    let (tx, rx) = channel_u8();
-    let mut v = fitting(&p, &rx);
+    let (tx, mut rx) = channel_u8();
+    let mut v = fitting(&p, &mut rx);
     tx.send(Err(crate::cluster::progress::Cancelled.into()))
         .unwrap();
     v.tick();
     assert!(v.done(), "an error ends it at once");
 
-    let (tx, rx) = channel_u8();
-    let mut v = fitting(&p, &rx);
+    let (tx, mut rx) = channel_u8();
+    let mut v = fitting(&p, &mut rx);
     drop(tx);
     v.tick();
     assert!(v.done(), "a fit that died ends it");
@@ -226,10 +226,10 @@ fn a_view_not_to_stay_leaves_once_the_fit_is_in() {
 /// Once the fit is done the verdict stays up, however long, until a key.
 #[test]
 fn the_verdict_stays_up_until_a_key() {
-    let (tx, rx) = channel_u8();
+    let (tx, mut rx) = channel_u8();
     let p = midway();
     p.optimised(settled()).unwrap();
-    let mut v = fitting(&p, &rx);
+    let mut v = fitting(&p, &mut rx);
     tx.send(Ok(3)).unwrap();
     v.tick();
     screen(&mut v, 100, 12);
@@ -244,9 +244,9 @@ fn the_verdict_stays_up_until_a_key() {
 /// restarts, with nothing reached, it cancels.
 #[test]
 fn ctrl_c_stops_the_restarts_early() {
-    let (_tx, rx) = channel_u8();
+    let (_tx, mut rx) = channel_u8();
     let p = midway();
-    let mut v = fitting(&p, &rx);
+    let mut v = fitting(&p, &mut rx);
     v.interrupt();
     assert_eq!(p.stopped_early(), Some(vec![20, 70, 0]));
     assert!(!p.cancelled());
@@ -259,7 +259,7 @@ fn ctrl_c_stops_the_restarts_early() {
     assert!(screen(&mut v, 100, 8).contains("stopping early already"));
 
     let p = Progress::new(2);
-    let mut v = fitting(&p, &rx);
+    let mut v = fitting(&p, &mut rx);
     v.interrupt();
     assert!(p.cancelled() && p.stopped_early().is_none());
     assert!(screen(&mut v, 80, 6).contains("cancelling once the step in hand ends"));
@@ -277,10 +277,10 @@ fn a_stop_too_late_leaves_once_written() {
         ),
         (|v: &mut Fitting<u8>| v.interrupt(), "too late to stop"),
     ] {
-        let (tx, rx) = channel_u8();
+        let (tx, mut rx) = channel_u8();
         let p = midway();
         p.optimised(settled()).unwrap();
-        let mut v = fitting(&p, &rx);
+        let mut v = fitting(&p, &mut rx);
         stop(&mut v);
         assert!(!p.cancelled() && p.stopped_early().is_none());
         let s = screen(&mut v, 100, 12);
@@ -359,9 +359,9 @@ fn braille(buf: &ratatui::buffer::Buffer) -> Vec<(u16, u16, ratatui::style::Styl
 /// start's end a line down the plot.
 #[test]
 fn traces_each_restart_under_the_bars() {
-    let (_tx, rx) = channel_u8();
+    let (_tx, mut rx) = channel_u8();
     let p = finished([0.0, 10.0, -10.0]);
-    let mut v = fitting(&p, &rx);
+    let mut v = fitting(&p, &mut rx);
     let buf = drawn(&mut v, 80, 24);
     let dots = braille(&buf);
     for i in 0..3 {
@@ -412,10 +412,10 @@ fn traces_each_restart_under_the_bars() {
 /// keeps its line.
 #[test]
 fn a_small_terminal_keeps_the_bars_and_drops_the_plot() {
-    let (_tx, rx) = channel_u8();
+    let (_tx, mut rx) = channel_u8();
     let p = finished([0.0, 0.3, -0.2]);
     p.optimised(settled()).unwrap();
-    let mut v = fitting(&p, &rx);
+    let mut v = fitting(&p, &mut rx);
     for (w, h) in [(80, 12), (30, 24)] {
         let buf = drawn(&mut v, w, h);
         assert!(braille(&buf).is_empty(), "{w}x{h}: no plot");

@@ -91,9 +91,7 @@ fn memory_estimate(
 /// Whether the restarts are drawn in the live view as they run: on a
 /// terminal, unless --batch-process says a bar.
 fn live(args: &ClusterArgs) -> bool {
-    !args.batch_process
-        && std::io::stderr().is_terminal()
-        && data_beans::interactive::tui_available()
+    !args.batch_process && std::io::stderr().is_terminal() && legume_tui::view::terminal_available()
 }
 
 /// `work` run counting on a progress of its own, which comes back with its
@@ -221,7 +219,7 @@ fn recorded(
 /// beside the run record named `record` (`.cmd.sh` for `.run.json`).
 fn save_command(args: &ClusterArgs, dir: &Path, record: &str) {
     let name = record.replace(".run.json", ".cmd.sh");
-    let script = crate::script::faba(&name, "faba cluster", None, false, 1);
+    let script = crate::script::faba(&name, "faba cluster").head(1);
     // The fit is done and recorded whether or not the script is written.
     if let Err(e) = crate::script::write(dir, &script, &command(args), true) {
         warn!("the command was not saved: {e:#}");

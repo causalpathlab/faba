@@ -5,7 +5,7 @@
 use super::{drawn, press, screen, tables};
 use crate::cluster::browse::{Modules, ModulesView};
 use crate::cluster::{record_name, write};
-use data_beans::interactive::ui::Screen;
+use crate::tui::ui::Screen;
 use ratatui::crossterm::event::KeyCode;
 use std::path::Path;
 

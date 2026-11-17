@@ -248,7 +248,8 @@ impl<'a> SitePicker<'a> {
             .and_then(|g| std::path::Path::new(g).parent())
             .filter(|d| d.is_dir())
             .map_or_else(|| self.annotation.dir.clone(), |d| d.to_path_buf());
-        self.mode = Mode::Gff(Browser::new(dir, is_annotation, |_| None).opened());
+        let want = browser::plain("annotation", "GTF/GFF file", is_annotation);
+        self.mode = Mode::Gff(Box::new(browser::open(dir, want, None)));
     }
 
     /// A key in the annotation browser: Enter on a file reads it.
@@ -257,16 +258,12 @@ impl<'a> SitePicker<'a> {
             return;
         };
         match browser.key(key) {
-            Nav::Moved => {}
-            Nav::Picked(path) => {
+            Outcome::Moved | Outcome::Ignored => {}
+            Outcome::Chosen(chosen) => {
                 self.mode = Mode::Browse;
-                self.load_gff(path.to_string_lossy().into());
+                self.load_gff(chosen.file().to_string_lossy().into());
             }
-            Nav::Ignored => {
-                if key.code == KeyCode::Esc {
-                    self.mode = Mode::Browse;
-                }
-            }
+            Outcome::Cancelled => self.mode = Mode::Browse,
         }
     }
 

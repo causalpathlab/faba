@@ -6,7 +6,7 @@
 use super::ModulesView;
 use crate::cluster::progress::view::trace::{chain_style, draw};
 use crate::cluster::progress::ELBO;
-use data_beans::interactive::ui::{help_line, panel, DIM, HIGHLIGHT};
+use crate::tui::ui::{help_line, panel, DIM, HIGHLIGHT};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};

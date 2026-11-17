@@ -6,7 +6,7 @@
 //! out a position's counts.
 
 use crate::figure::size::{Page, OWN};
-use data_beans::interactive::ui::{header, help_line, panel, Screen, DIM, HIGHLIGHT, PLAIN};
+use crate::tui::ui::{header, help_line, panel, Screen, DIM, HIGHLIGHT, PLAIN};
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Rect};

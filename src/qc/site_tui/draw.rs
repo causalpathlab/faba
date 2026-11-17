@@ -75,12 +75,12 @@ pub(super) fn render_gff(frame: &mut Frame, area: Rect, browser: &Browser) {
     let w = area.width.saturating_sub(4).clamp(20, 90);
     let rows = area.height.saturating_sub(6).clamp(3, 20);
     let title = format!(
-        " annotation (GTF/GFF) · {} {}",
-        crate::tui::tilde(&browser.cwd),
-        browser.list.find.tag()
+        " annotation (GTF/GFF) · {}",
+        crate::tui::browser::place(browser)
     );
     let inner = popup_frame(frame, area, w, rows + 2, title);
-    let lines = browser.lines(
+    let lines = crate::tui::browser::lines(
+        browser,
         rows as usize,
         inner.width as usize,
         "no subdirectory or GTF/GFF file",
@@ -270,6 +270,7 @@ impl<'a> SitePicker<'a> {
         .areas(inner);
         frame.render_widget(Paragraph::new(kept_key(self.weight)), key);
         HistPlot {
+            look: crate::tui::LOOK,
             bins: Binning::with_width(Scale::Linear, 1.0),
             kmin: 0,
             counts: &p.kept,
@@ -652,6 +653,7 @@ impl<'a> SitePicker<'a> {
         let pointer = self.pointer_key();
         let style = |k: i32| if c.drops(k, pointer) { ACCENTED } else { PLAIN };
         HistPlot {
+            look: crate::tui::LOOK,
             bins: col.hist.bins,
             kmin: col.hist.kmin,
             counts: &col.hist.counts,

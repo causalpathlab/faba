@@ -2,10 +2,9 @@
 //! terminal blank while it reads.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::RecvTimeoutError;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use data_beans::interactive::ui::{header, Screen, DIM, HIGHLIGHT};
+use super::ui::{header, Screen, DIM, HIGHLIGHT};
 use ratatui::crossterm::event::KeyEvent;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
@@ -13,17 +12,13 @@ use ratatui::Frame;
 
 use super::{bar_spans, on_thread, popup_frame, run_view, spinner_frame, Pending, View};
 
-/// How long the work may take before the spinner shows, so quick work
-/// never flickers the screen.
-const GRACE: Duration = Duration::from_millis(150);
-
 /// The screen shown while the work runs; done once its result arrives.
 struct Busy<'a, T> {
     badge: &'a str,
     what: &'a str,
     start: Instant,
     /// The work's result, once it comes.
-    pending: Pending<'a, T>,
+    pending: &'a mut Pending<T, anyhow::Error>,
     /// A key (or Ctrl-C) came: say it cannot stop the work.
     pressed: bool,
     /// Files done, of `total`; no bar when `total` is 0.
@@ -81,7 +76,7 @@ impl<T> Screen for Busy<'_, T> {
     }
 
     fn done(&self) -> bool {
-        self.pending.out().is_some() || self.pending.gone()
+        self.pending.done()
     }
 
     /// Pick up the result, else redraw for the spinner and the clock.
@@ -113,30 +108,26 @@ pub fn busy_counting<T: Send>(
     work: impl FnOnce(&AtomicUsize) -> anyhow::Result<T> + Send,
 ) -> anyhow::Result<T> {
     let done = AtomicUsize::new(0);
-    if !show || !data_beans::interactive::tui_available() {
+    if !show || !legume_tui::view::terminal_available() {
         return work(&done);
     }
-    let counter = &done;
     let (shown, out) = on_thread(
         &format!("{what}: the work"),
-        || work(counter),
-        |rx| {
-            match rx.recv_timeout(GRACE) {
-                Ok(out) => return (Ok(()), Some(out)),
-                Err(RecvTimeoutError::Disconnected) => return (Ok(()), None),
-                Err(RecvTimeoutError::Timeout) => {}
+        || work(&done),
+        |pending| {
+            if pending.wait_for(legume_tui::work::GRACE) {
+                return Ok(());
             }
             let mut screen = Busy {
                 badge,
                 what,
                 start: Instant::now(),
-                pending: Pending::new(rx),
+                pending,
                 pressed: false,
-                done: counter,
+                done: &done,
                 total,
             };
-            let shown = run_view(&mut screen);
-            (shown, screen.pending.take())
+            run_view(&mut screen)
         },
     );
     shown?;
@@ -146,17 +137,16 @@ pub fn busy_counting<T: Send>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::mpsc::channel;
 
     #[test]
     fn draws_at_any_terminal_size_and_ends_with_the_result() {
-        let (tx, rx) = channel();
+        let (tx, mut pending) = Pending::pair();
         let done = AtomicUsize::new(1);
         let mut b = Busy {
             badge: "pileup",
             what: "reading GENE1",
             start: Instant::now(),
-            pending: Pending::new(&rx),
+            pending: &mut pending,
             pressed: false,
             done: &done,
             total: 3,
@@ -167,21 +157,21 @@ mod tests {
             let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
             t.draw(|f| b.render(f)).unwrap();
         }
-        tx.send(7).unwrap();
+        tx.send(Ok(7)).unwrap();
         b.tick();
         assert!(b.done());
-        assert_eq!(b.pending.out(), Some(&7));
+        assert_eq!(b.pending.out().map(|o| *o.as_ref().unwrap()), Some(7));
     }
 
     #[test]
     fn work_that_dies_ends_the_spinner() {
-        let (tx, rx) = channel::<i32>();
+        let (tx, mut pending) = Pending::<i32, anyhow::Error>::pair();
         let done = AtomicUsize::new(0);
         let mut b = Busy {
             badge: "pwm",
             what: "collecting",
             start: Instant::now(),
-            pending: Pending::new(&rx),
+            pending: &mut pending,
             pressed: false,
             done: &done,
             total: 0,

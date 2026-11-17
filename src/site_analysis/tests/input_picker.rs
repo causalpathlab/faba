@@ -39,7 +39,7 @@ fn mark_files_from_a_folder_or_choose_the_folder() {
     let tmp = tree();
     let root = tmp.path().to_path_buf();
     let mut p = picker(root.clone(), None);
-    assert!(p.browser.list.select("plain"));
+    assert!(p.browser.select("plain"));
     press(&mut p, KeyCode::Char(' '));
     assert!(
         p.decision.is_none() && p.error.is_some(),
@@ -47,7 +47,7 @@ fn mark_files_from_a_folder_or_choose_the_folder() {
     );
 
     // A faba folder, chosen whole.
-    assert!(p.browser.list.select("out"));
+    assert!(p.browser.select("out"));
     press(&mut p, KeyCode::Char(' '));
     let folder = Chosen {
         paths: vec![text(&root.join("out"))],
@@ -57,7 +57,7 @@ fn mark_files_from_a_folder_or_choose_the_folder() {
 
     // Or opened, and only its site matrices listed and marked.
     let mut p = picker(root.join("out"), None);
-    let names: Vec<&str> = p.browser.list.shown().map(|e| e.name.as_str()).collect();
+    let names: Vec<&str> = p.browser.shown().iter().map(|e| e.name()).collect();
     assert_eq!(names, ["..", "a_m6a_site.zarr.zip", "b_m6a_site.zarr.zip"]);
     for (name, key) in [
         ("b_m6a_site.zarr.zip", KeyCode::Char(' ')),
@@ -65,7 +65,7 @@ fn mark_files_from_a_folder_or_choose_the_folder() {
         ("b_m6a_site.zarr.zip", KeyCode::Char(' ')),
         ("b_m6a_site.zarr.zip", KeyCode::Char(' ')),
     ] {
-        assert!(p.browser.list.select(name));
+        assert!(p.browser.select(name));
         press(&mut p, key);
     }
     let out = root.join("out");
@@ -74,8 +74,8 @@ fn mark_files_from_a_folder_or_choose_the_folder() {
         out.join("b_m6a_site.zarr.zip"),
     ];
     assert_eq!(
-        p.browser.marked.as_ref(),
-        Some(&marked),
+        p.browser.marks.iter().collect::<Vec<_>>(),
+        marked,
         "unmarked and marked again, in the order marked"
     );
     // Tab: a track each.
@@ -104,7 +104,8 @@ fn draws_at_any_terminal_size() {
         false,
     );
     p.browser
-        .toggle_mark(tmp.path().join("out/m6a_sites.parquet"));
+        .marks
+        .toggle(tmp.path().join("out/m6a_sites.parquet"));
     for (w, h) in [(20, 6), (80, 24), (200, 60)] {
         let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
         t.draw(|f| p.render(f)).unwrap();
@@ -116,14 +117,14 @@ fn opens_at_the_last_choice() {
     let tmp = tree();
     let root = tmp.path().to_path_buf();
     let p = picker(root.clone(), Some(&root.join("out/b_m6a_site.zarr.zip")));
-    assert_eq!(p.browser.cwd, root.join("out"));
+    assert_eq!(p.browser.dir, root.join("out"));
     assert_eq!(
-        p.browser.highlighted().map(|e| e.name.as_str()),
+        p.browser.current().map(|e| e.name()),
         Some("b_m6a_site.zarr.zip")
     );
     // Gone since: where it was asked from.
     let p = picker(root.clone(), Some(&root.join("gone/x_m6a_site.zarr.zip")));
-    assert_eq!(p.browser.cwd, root);
+    assert_eq!(p.browser.dir, root);
 }
 
 #[test]
@@ -161,7 +162,7 @@ fn the_genome_picker_lists_fasta_and_offers_a_download() {
         Reference::Genome,
         Some(true),
     );
-    let names: Vec<&str> = p.browser.list.shown().map(|e| e.name.as_str()).collect();
+    let names: Vec<&str> = p.browser.shown().iter().map(|e| e.name()).collect();
     assert!(names.contains(&"hg38.fa") && names.contains(&"mm10.fasta.gz"));
     assert!(!names.contains(&"notes.txt"), "{names:?}");
 
@@ -171,7 +172,7 @@ fn the_genome_picker_lists_fasta_and_offers_a_download() {
     press(&mut p, KeyCode::Esc);
     assert!(matches!(p.fetching, Fetching::No) && p.decision.is_none());
 
-    p.browser.list.select("hg38.fa");
+    p.browser.select("hg38.fa");
     press(&mut p, KeyCode::Enter);
     assert_eq!(p.decision, Some(Some(tmp.path().join("hg38.fa"))));
 
@@ -192,7 +193,7 @@ fn the_annotation_picker_lists_gtf_and_gff() {
         Reference::Annotation,
         None,
     );
-    let names: Vec<&str> = p.browser.list.shown().map(|e| e.name.as_str()).collect();
+    let names: Vec<&str> = p.browser.shown().iter().map(|e| e.name()).collect();
     assert!(names.contains(&"genes.gtf.gz") && names.contains(&"genes.gff3"));
     assert!(!names.contains(&"hg38.fa"), "{names:?}");
     press(&mut p, KeyCode::Tab);
@@ -203,24 +204,48 @@ fn the_annotation_picker_lists_gtf_and_gff() {
 }
 
 #[test]
-fn enter_only_hints_and_a_folder_asks_before_dropping_marks() {
+fn enter_takes_the_marked_or_the_file_here() {
+    let tmp = tree();
+    let out = tmp.path().join("out");
+    // Nothing marked: the file under the cursor.
+    let mut p = picker(out.clone(), None);
+    assert!(p.browser.select("b_m6a_site.zarr.zip"));
+    press(&mut p, KeyCode::Enter);
+    let here = Chosen {
+        paths: vec![text(&out.join("b_m6a_site.zarr.zip"))],
+        separate: false,
+    };
+    assert_eq!(p.decision, Some(Some(here)));
+
+    // Marked: those, not the one under the cursor.
+    let mut p = picker(out.clone(), None);
+    assert!(p.browser.select("a_m6a_site.zarr.zip"));
+    press(&mut p, KeyCode::Char(' '));
+    assert!(p.browser.select("b_m6a_site.zarr.zip"));
+    press(&mut p, KeyCode::Enter);
+    let marked = Chosen {
+        paths: vec![text(&out.join("a_m6a_site.zarr.zip"))],
+        separate: false,
+    };
+    assert_eq!(p.decision, Some(Some(marked)));
+
+    // Esc with nothing typed cancels.
+    let mut p = picker(out, None);
+    press(&mut p, KeyCode::Esc);
+    assert_eq!(p.decision, Some(None));
+}
+
+#[test]
+fn a_folder_asks_before_dropping_marks() {
     let tmp = tree();
     let root = tmp.path().to_path_buf();
     let mut p = picker(root.join("out"), None);
-    assert!(p.browser.list.select("a_m6a_site.zarr.zip"));
-    press(&mut p, KeyCode::Enter);
-    assert!(
-        p.browser.marked.as_ref().is_some_and(Vec::is_empty),
-        "Enter does not mark"
-    );
-    assert!(p
-        .error
-        .as_deref()
-        .is_some_and(|e| e.contains("Space marks")));
+    assert!(p.browser.select("a_m6a_site.zarr.zip"));
     press(&mut p, KeyCode::Char(' '));
+    assert_eq!(p.browser.marks.len(), 1, "Space marks");
     // Up to the root, where `out` is a faba folder.
     press(&mut p, KeyCode::Left);
-    assert!(p.browser.list.select("out"));
+    assert!(p.browser.select("out"));
     press(&mut p, KeyCode::Char(' '));
     assert!(p.decision.is_none() && p.error.as_deref().is_some_and(|e| e.contains("again")));
     press(&mut p, KeyCode::Char(' '));

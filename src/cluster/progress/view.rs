@@ -8,8 +8,8 @@
 //! tables are written.
 
 use super::Progress;
+use crate::tui::ui::{header, help_line, panel, Screen, ACCENTED, DIM, HIGHLIGHT};
 use crate::tui::{clock, on_thread, run_view, spinner_frame, Pending, View};
-use data_beans::interactive::ui::{header, help_line, panel, Screen, ACCENTED, DIM, HIGHLIGHT};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
@@ -27,7 +27,7 @@ struct Fitting<'a, T> {
     title: &'a str,
     progress: &'a Progress,
     /// The fit's result, once it comes.
-    pending: Pending<'a, anyhow::Result<T>>,
+    pending: &'a mut Pending<T, anyhow::Error>,
     /// Leave as soon as the result is in: a key came after the fit, a
     /// cancel came too late to stop it, or the view was never to stay.
     skip: bool,
@@ -280,11 +280,11 @@ fn watch_with<T: Send>(
     let (shown, out) = on_thread(
         "the fit",
         || work(progress),
-        |rx| {
+        |pending| {
             let mut screen = Fitting {
                 title,
                 progress,
-                pending: Pending::new(rx),
+                pending,
                 skip: !stay,
                 status: None,
                 start: Instant::now(),
@@ -294,7 +294,7 @@ fn watch_with<T: Send>(
             if shown.is_err() {
                 progress.cancel();
             }
-            (shown, screen.pending.take())
+            shown
         },
     );
     shown?;

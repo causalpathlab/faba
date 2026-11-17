@@ -14,7 +14,7 @@ use std::thread::JoinHandle;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
-use data_beans::interactive::ui::{DIM, HIGHLIGHT, PLAIN};
+use crate::tui::ui::{DIM, HIGHLIGHT, PLAIN};
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::Frame;

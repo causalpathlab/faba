@@ -5,7 +5,7 @@
 use super::*;
 use crate::cluster::read::{Cell, Site, SiteStats};
 use crate::cluster::write;
-use data_beans::interactive::ui::Screen;
+use crate::tui::ui::Screen;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};

@@ -207,7 +207,7 @@ pub(crate) fn region_style(region: usize) -> ratatui::style::Style {
 /// The colour key under a metagene: what the bars count (`unit`), each of
 /// `regions` in its colour, and what `c` switches to, when anything.
 pub(crate) fn region_key(unit: &str, regions: &[usize], next: Option<&str>) -> Line<'static> {
-    use data_beans::interactive::ui::DIM;
+    use crate::tui::ui::DIM;
     let mut spans = vec![Span::styled(format!(" {unit}:  "), DIM)];
     for &r in regions {
         spans.push(Span::styled("█ ", region_style(r)));
@@ -232,12 +232,12 @@ pub(crate) struct RegionGlyphs<'a> {
     /// Region names, by the bar at their middle.
     pub names: Vec<(usize, String)>,
     pub pointer: Option<usize>,
-    pub y_scale: data_beans::interactive::ui::Scale,
+    pub y_scale: crate::tui::ui::Scale,
 }
 
 impl RegionGlyphs<'_> {
     pub(crate) fn render(&self, buf: &mut ratatui::buffer::Buffer, area: ratatui::layout::Rect) {
-        use data_beans::interactive::ui::{Binning, HistPlot, Scale};
+        use crate::tui::ui::{Binning, HistPlot, Scale};
         let n = self.values.len();
         if n == 0 {
             return;
@@ -264,6 +264,7 @@ impl RegionGlyphs<'_> {
                 .map(|(_, t)| t.to_string())
         };
         HistPlot {
+            look: crate::tui::LOOK,
             bins: Binning::with_width(Scale::Linear, 1.0),
             kmin: 0,
             counts: &counts,

@@ -220,7 +220,7 @@ The producers (count, depth, atoi, dartseq, apa, snp, run, qc, cluster) take `ba
 Every write goes to `out`, which must not exist. Leave `out` out and the output goes in today's results folder, named after the input and the tool. Paths resolve against the server's working directory. Common flags have their own arguments; further flags go in `options`, as `faba <command> --help` lists them; `options` cannot name the output or open a view. Results give the paths written and what the run recorded (`results`: a fit's ELBO verdict, its cluster sizes).
 ```
 
-legume-mcp adds where the records are, the `notebook` tool (open with a plan: the question, the data, how the result will be checked) and the background jobs below.
+legume-mcp adds where the records are and the background jobs below. The project's notebook (open with a plan: the question, the data, how the result will be checked) is the `legume` server's, not faba's.
 
 | Tool | Does |
 |---|---|
@@ -230,7 +230,7 @@ legume-mcp adds where the records are, the `notebook` tool (open with a plan: th
 | `qc` | filters a directory into a new one |
 | `cluster` | fits cells by their own site reads, by gene counts (`modality` count), or by site reads within a count fit's cell modules (`within`); writes its tables to a new directory |
 | `pileup`, `metagene`, `pwm`, `cluster_view` | read what was written |
-| `notebook`, `job_status`, `job_wait`, `job_cancel` | from legume-mcp |
+| `job_status`, `job_wait`, `job_cancel` | from legume-mcp |
 
 ### Long runs in the background
 

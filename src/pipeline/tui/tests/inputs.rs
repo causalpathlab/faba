@@ -10,7 +10,7 @@ fn dir_with(files: &[&str]) -> tempfile::TempDir {
 }
 
 fn at(i: &mut Inputs, name: &str) {
-    assert!(i.bams.list.select(name));
+    assert!(i.bams.select(name));
 }
 
 #[test]
@@ -22,7 +22,7 @@ fn the_browser_lists_folders_and_bams_only() {
         "sample_B.bam",
     ]);
     let i = Inputs::new(tmp.path().to_path_buf());
-    let names: Vec<&str> = i.bams.list.shown().map(|e| e.name.as_str()).collect();
+    let names: Vec<&str> = i.bams.shown().iter().map(|e| e.name()).collect();
     assert_eq!(names, ["..", "sub", "sample_A.bam", "sample_B.bam"]);
     assert!(has_index(&tmp.path().join("sample_A.bam")));
     assert!(!has_index(&tmp.path().join("sample_B.bam")));
@@ -111,7 +111,7 @@ fn batch_names_are_the_pipelines_own() {
 fn the_browser_lists_what_known_snps_accepts() {
     let tmp = dir_with(&["a.vcf", "b.vcf.gz", "c.bcf", "d.parquet", "e.txt"]);
     let b = FileRow::KnownSnps.browser(tmp.path().to_path_buf());
-    let names: Vec<&str> = b.list.shown().map(|e| e.name.as_str()).collect();
+    let names: Vec<&str> = b.shown().iter().map(|e| e.name()).collect();
     assert_eq!(
         names,
         ["..", "sub", "a.vcf", "b.vcf.gz", "c.bcf", "d.parquet"]

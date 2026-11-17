@@ -5,7 +5,7 @@
 
 use super::super::go::Table;
 use super::{ModulesView, Pane};
-use data_beans::interactive::ui::{help_line, panel, DIM, HIGHLIGHT};
+use crate::tui::ui::{help_line, panel, DIM, HIGHLIGHT};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Rect;
 use ratatui::style::Style;

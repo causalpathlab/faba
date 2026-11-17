@@ -2,7 +2,7 @@
 //! up in the accent, unconverted hanging below.
 
 use super::super::Count;
-use data_beans::interactive::ui::{ACCENTED, PLAIN};
+use crate::tui::ui::{ACCENTED, PLAIN};
 use ratatui::buffer::Buffer;
 use ratatui::style::{Modifier, Style};
 

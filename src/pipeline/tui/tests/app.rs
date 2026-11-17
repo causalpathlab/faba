@@ -15,10 +15,10 @@ fn app_with_bams() -> (tempfile::TempDir, App) {
     }
     let mut a = App::new(run_cmd(), tmp.path().to_path_buf());
     for n in ["control_A.bam", "sample_A.bam"] {
-        assert!(a.inputs.bams.list.select(n));
+        assert!(a.inputs.bams.select(n));
         press(&mut a, KeyCode::Char(' '));
     }
-    assert!(a.inputs.bams.list.select("control_A.bam"));
+    assert!(a.inputs.bams.select("control_A.bam"));
     press(&mut a, KeyCode::Char(' '));
     a.inputs.gff = Some(tmp.path().join("genes.gff"));
     a.inputs.genome = Some(tmp.path().join("genome.fa"));
@@ -227,8 +227,8 @@ fn letters_in_the_bam_list_find_rather_than_command() {
         press(&mut a, KeyCode::Char(c));
     }
     assert!(!a.quit && a.page == Page::Inputs && a.note.is_none());
-    assert_eq!(a.inputs.bams.list.find.text, "qcp1b");
-    assert!(a.inputs.bams.list.is_empty());
+    assert_eq!(a.inputs.bams.filter, "qcp1b");
+    assert!(a.inputs.bams.current().is_none_or(|e| !e.is_file()));
     let s = screen(&mut a, 200, 20);
     assert!(
         s.contains("find: qcp1b") && s.contains("nothing matches"),
@@ -239,7 +239,7 @@ fn letters_in_the_bam_list_find_rather_than_command() {
     for c in "sample".chars() {
         press(&mut a, KeyCode::Char(c));
     }
-    assert_eq!(a.inputs.bams.highlighted().unwrap().name, "sample_A.bam");
+    assert_eq!(a.inputs.bams.current().unwrap().name(), "sample_A.bam");
     // The file pop-up finds the same way.
     press(&mut a, KeyCode::Tab);
     press(&mut a, KeyCode::Enter);
@@ -247,7 +247,8 @@ fn letters_in_the_bam_list_find_rather_than_command() {
         press(&mut a, KeyCode::Char(c));
     }
     let (_, b) = a.picking.as_ref().unwrap();
-    assert_eq!(b.list.len(), 1);
+    let names: Vec<&str> = b.shown().iter().map(|e| e.name()).collect();
+    assert_eq!(names, ["..", "genes.gff"]);
     press(&mut a, KeyCode::Enter);
     assert!(a.picking.is_none() && a.inputs.gff.is_some());
     press(&mut a, KeyCode::Char('q'));
@@ -317,15 +318,12 @@ fn clicks_pick_screens_panes_and_rows_and_the_wheel_moves() {
     let (_t, mut a) = app_with_bams();
     mouse(&mut a, click, Hit::Bams(Some(1)));
     assert_eq!(a.inputs.focus, InputsFocus::Bams);
-    assert_eq!(a.inputs.bams.list.at, 1);
+    assert_eq!(a.inputs.bams.row, 1);
     mouse(&mut a, click, Hit::Rows(Some(3)));
     assert_eq!((a.inputs.focus, a.inputs.row), (InputsFocus::Rows, 3));
     // The wheel over a pane focuses it and moves its cursor.
     mouse(&mut a, M::ScrollDown, Hit::Bams(None));
-    assert_eq!(
-        (a.inputs.focus, a.inputs.bams.list.at),
-        (InputsFocus::Bams, 2)
-    );
+    assert_eq!((a.inputs.focus, a.inputs.bams.row), (InputsFocus::Bams, 2));
     mouse(&mut a, click, Hit::Tab(Page::Steps));
     assert_eq!(a.page, Page::Steps);
     mouse(&mut a, click, Hit::Step(2));
@@ -654,8 +652,8 @@ fn one_bam_under_two_spellings_is_one_pick() {
     let mut a = App::new(cmd, tmp.path().to_path_buf());
     a.prefill(&m, &args);
     assert_eq!(a.inputs.picked.len(), 1);
-    assert!(a.inputs.bams.list.select("sample_A.bam"));
-    let shown = a.inputs.bams.cwd.join("sample_A.bam");
+    assert!(a.inputs.bams.select("sample_A.bam"));
+    let shown = a.inputs.bams.dir.join("sample_A.bam");
     assert_eq!(a.inputs.role_of(&shown), Some(Role::Fg));
     press(&mut a, KeyCode::Char(' '));
     assert_eq!(
@@ -911,7 +909,7 @@ fn fake_faba(tmp: &tempfile::TempDir, script: &str) -> PathBuf {
 fn a_kill_leaves_a_setup_without_asking() {
     let (_tmp, mut a) = app_with_bams();
     assert!(a.set_up(), "a setup to lose");
-    View::quit(&mut a);
+    Screen::quit(&mut a);
     assert!(a.quit && !a.leaving, "left at once, not asked");
     assert!(a.printed.is_none(), "nothing printed or run");
 }
@@ -935,7 +933,7 @@ fn a_kill_interrupts_a_run_and_lets_it_wrap_up() {
     );
     a.start().unwrap();
     wait_until_ready(a.job.as_ref().unwrap());
-    View::quit(&mut a);
+    Screen::quit(&mut a);
     assert!(a.quit);
     let job = a.job.as_mut().unwrap();
     let start = Instant::now();
@@ -981,15 +979,14 @@ fn a_run_ends_with_the_view_when_it_was_not_stopped() {
 #[test]
 fn the_mark_stands_clear_of_the_session_keys() {
     let (_t, mut a) = app_with_bams();
-    let session = legume_tui::Session::plain(&crate::tui::TOOL);
     let keys = vec![
         ("ctrl+alt+d".to_string(), "detach".to_string()),
         ("ctrl+alt+s".to_string(), "switch".to_string()),
     ];
-    let mut framed = crate::tui::Framed {
-        view: &mut a,
-        session: &session,
+    let mut framed = legume_tui::view::Framed {
+        screen: &mut a,
         keys,
+        look: crate::tui::LOOK,
     };
     let screen = crate::tui::screen_text(&mut framed, 160, 40);
     let rows: Vec<&str> = screen.lines().collect();
@@ -1005,7 +1002,7 @@ fn the_mark_stands_clear_of_the_session_keys() {
         rows[1]
     );
     // Drawn plain, it is where it always was.
-    let plain = crate::tui::screen_text(framed.view, 160, 40);
+    let plain = crate::tui::screen_text(framed.screen, 160, 40);
     let top = plain.lines().next().unwrap().trim_end();
     assert!(top.ends_with("▟▛█▜▙ ▟▛█▜▙ ▟▛█▜▙ ▟▛█▜▙"), "{top:?}");
 }
