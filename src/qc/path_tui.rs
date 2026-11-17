@@ -43,11 +43,12 @@ struct PathPicker {
 pub fn faba_browser(cwd: PathBuf, keep: impl Fn(&str) -> bool + 'static) -> Browser {
     let mut seen: FxHashMap<PathBuf, bool> = FxHashMap::default();
     let tag = move |dir: &Path| {
-        *seen
+        let faba = *seen
             .entry(dir.to_path_buf())
-            .or_insert_with(|| looks_like_faba_dir(dir))
+            .or_insert_with(|| looks_like_faba_dir(dir));
+        faba.then(|| "faba output".to_string())
     };
-    Browser::new(cwd, keep, tag)
+    Browser::new(cwd, keep, tag).noting_folders()
 }
 
 /// A directory next to `input` named after it, that does not exist yet.
@@ -208,12 +209,10 @@ impl Screen for PathPicker {
         let help = crate::tui::wrap_help(help, w.saturating_sub(2));
         let inner = popup_frame(frame, area, w, rows + 3 + help.len() as u16, title);
         let mut lines = match &self.step {
-            Step::Input => self.browser.lines(
-                rows as usize,
-                inner.width as usize,
-                "faba output",
-                "no subdirectory",
-            ),
+            Step::Input => {
+                self.browser
+                    .lines(rows as usize, inner.width as usize, "no subdirectory")
+            }
             Step::Output { input, line } => vec![
                 Line::from(vec![
                     Span::styled(" input  ", DIM),

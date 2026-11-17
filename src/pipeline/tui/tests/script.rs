@@ -1,5 +1,5 @@
 use super::*;
-use crate::script::quote;
+use legume_tui::form::script::quote;
 
 fn argv(bams: &[&str]) -> Vec<String> {
     let mut v = vec!["run".to_string(), "--batch-process".to_string()];
@@ -22,10 +22,10 @@ fn argv(bams: &[&str]) -> Vec<String> {
 
 #[test]
 fn the_script_text() {
-    let t = crate::script::text(&RUN, &argv(&["/d/sample_A.bam"]));
+    let t = legume_tui::form::script::text(&RUN, &argv(&["/d/sample_A.bam"]));
     assert!(t.starts_with("#!/usr/bin/env bash\n# Made by `faba run` (faba "));
     assert!(t.contains("set -euo pipefail\ncd \"$(dirname \"$0\")\"\n"));
-    assert!(t.contains("if [ -f pipeline_summary.json ]; then"));
+    assert!(t.contains("if [ -e pipeline_summary.json ]; then"));
     assert!(t.contains(
         "\"${FABA:-faba}\" run --batch-process \\\n  /d/sample_A.bam \\\n  -g /r/genes.gff \\\n"
     ));

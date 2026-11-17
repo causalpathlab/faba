@@ -20,7 +20,7 @@ fn the_apply_key_is_ctrl_r_and_nothing_else() {
         assert!(!is_apply(&k(KeyCode::Char(c), KeyModifiers::NONE)), "{c}");
     }
     // Typed into a find, it types nothing.
-    let mut f = Find::default();
+    let mut f = legume_tui::browse::Find::default();
     assert!(!f.key(&apply_key()) && f.text.is_empty());
 }
 

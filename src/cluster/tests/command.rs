@@ -95,15 +95,8 @@ fn the_saved_command_runs_the_same_fit_again() {
     let plain = command(&parse_cluster(&["faba", "/x.zarr"]));
     assert_eq!(plain, vec!["cluster".to_string(), "/x.zarr".to_string()]);
     // As a script: the program and `cluster` first, a flag a line.
-    let script = crate::script::Script {
-        name: "m6a_cluster.cmd.sh",
-        made_by: "faba cluster",
-        guard: None,
-        cd: false,
-        head: 1,
-        replace: true,
-    };
-    let text = crate::script::text(&script, &argv);
+    let script = crate::script::faba("m6a_cluster.cmd.sh", "faba cluster", None, false, 1);
+    let text = legume_tui::form::script::text(&script, &argv);
     assert!(text.contains("\"${FABA:-faba}\" cluster \\\n"), "{text}");
     assert!(text.contains("  --cell-roles 6"), "{text}");
     assert!(text.contains("  --fit '*_wt_*'"), "{text}");
@@ -131,15 +124,8 @@ fn the_saved_command_quotes_a_path_with_a_space() {
     assert_eq!(argv[1], "/x y/a.zarr");
     let out = after(&argv, "--output");
     assert!(out.starts_with('/') && out.ends_with("/my out"), "{out}");
-    let script = crate::script::Script {
-        name: "m6a_cluster.cmd.sh",
-        made_by: "faba cluster",
-        guard: None,
-        cd: false,
-        head: 1,
-        replace: true,
-    };
-    let text = crate::script::text(&script, &argv);
+    let script = crate::script::faba("m6a_cluster.cmd.sh", "faba cluster", None, false, 1);
+    let text = legume_tui::form::script::text(&script, &argv);
     assert!(text.contains(&format!("--output '{out}'")), "{text}");
     assert!(text.contains("'/x y/a.zarr'"), "{text}");
 }

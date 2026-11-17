@@ -248,7 +248,7 @@ impl<'a> SitePicker<'a> {
             .and_then(|g| std::path::Path::new(g).parent())
             .filter(|d| d.is_dir())
             .map_or_else(|| self.annotation.dir.clone(), |d| d.to_path_buf());
-        self.mode = Mode::Gff(Browser::new(dir, is_annotation, |_| false).opened());
+        self.mode = Mode::Gff(Browser::new(dir, is_annotation, |_| None).opened());
     }
 
     /// A key in the annotation browser: Enter on a file reads it.

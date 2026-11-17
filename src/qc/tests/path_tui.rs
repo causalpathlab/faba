@@ -34,8 +34,8 @@ fn browse_choose_an_input_and_name_the_output() {
     let names: Vec<&str> = p.browser.list.shown().map(|e| e.name.as_str()).collect();
     assert_eq!(names, ["..", "plain", "prof"]);
     assert!(
-        p.browser.list.shown().nth(2).unwrap().tagged
-            && !p.browser.list.shown().nth(1).unwrap().tagged
+        p.browser.list.shown().nth(2).unwrap().note.is_some()
+            && p.browser.list.shown().nth(1).unwrap().note.is_none()
     );
 
     // Not a faba directory: refused, still browsing.

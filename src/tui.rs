@@ -5,9 +5,24 @@
 
 pub mod browser;
 pub mod busy;
-pub mod form;
 
 pub use busy::{busy, busy_counting};
+pub use legume_tui::browse::{first_visible, home, moved, tilde, typed_path, window, FindList};
+
+/// The styles legume-tui's browser and form rows draw in, as faba's views
+/// draw: the cursor and marks highlighted, folders and notes dim.
+pub const LOOK: legume_tui::look::Look = legume_tui::look::Look {
+    page: data_beans::interactive::ui::PLAIN,
+    bold: HIGHLIGHT,
+    hint: DIM,
+    selected: HIGHLIGHT,
+    border: DIM,
+};
+
+/// The marker of a list's highlighted row.
+pub fn marker(on: bool) -> Span<'static> {
+    legume_tui::form::marker(on, &LOOK)
+}
 
 /// Frames of the spinners the workspace draws.
 pub const SPINNER: &str = "⠁⠂⠄⡀⢀⠠⠐⠈";
@@ -338,29 +353,6 @@ pub fn plain_axis(buf: &mut ratatui::buffer::Buffer, area: Rect) {
     }
 }
 
-/// The marker of a list's highlighted row.
-pub fn marker(on: bool) -> Span<'static> {
-    Span::styled(if on { "▸ " } else { "  " }, HIGHLIGHT)
-}
-
-/// The `rows` lines of `lines` around line `at`.
-pub fn window(lines: Vec<Line<'static>>, at: usize, rows: usize) -> Vec<Line<'static>> {
-    let first = first_visible(at, lines.len(), rows);
-    lines.into_iter().skip(first).take(rows).collect()
-}
-
-/// The first of `rows` visible items of a `len`-long list that keeps item
-/// `at` near the middle.
-pub fn first_visible(at: usize, len: usize, rows: usize) -> usize {
-    at.saturating_sub(rows.saturating_sub(1) / 2)
-        .min(len.saturating_sub(rows))
-}
-
-/// `at` moved by `d`, kept within `0..=last`.
-pub fn moved(at: usize, d: isize, last: usize) -> usize {
-    at.saturating_add_signed(d).min(last)
-}
-
 /// How many characters `n` takes written out, its sign included.
 pub fn digits(n: i64) -> usize {
     let width = n
@@ -380,35 +372,6 @@ pub fn hidden_marks(left: usize, right: usize) -> String {
         .flatten()
         .collect::<Vec<_>>()
         .join(" ")
-}
-
-/// The home folder, if known.
-pub fn home() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(PathBuf::from)
-}
-
-/// `p` with the home folder as `~`.
-pub fn tilde(p: &Path) -> String {
-    if let Some(rest) = home().and_then(|h| p.strip_prefix(h).ok().map(Path::to_path_buf)) {
-        return if rest.as_os_str().is_empty() {
-            "~".into()
-        } else {
-            format!("~/{}", rest.display())
-        };
-    }
-    p.display().to_string()
-}
-
-/// A path as typed into a line: `~` is home, and the rest is made absolute
-/// with `.` and `..` resolved (see [`browser::normalize`]).
-pub fn typed_path(text: &str) -> PathBuf {
-    let path = match (text.strip_prefix('~'), home()) {
-        (Some(rest), Some(h)) if rest.is_empty() || rest.starts_with('/') => {
-            h.join(rest.trim_start_matches('/'))
-        }
-        _ => PathBuf::from(text),
-    };
-    browser::normalize(&path)
 }
 
 /// `base/stem`, or `base/stem2`, `base/stem3`, ... : the first that does
@@ -444,7 +407,8 @@ pub(crate) fn output_problem(out: &str) -> Option<String> {
 }
 
 /// The apply key, as footers name it: Ctrl+R, a control byte every
-/// terminal sends as it is, so it is never taken for Enter.
+/// terminal sends as it is, so it is never taken for Enter: legume-tui's
+/// [`legume_tui::RUN_KEY`], capitalised as faba's footers write keys.
 pub const APPLY_KEYS: &str = "Ctrl+R";
 
 /// What a view says when Enter (plain or held with Shift, Alt or Ctrl) did
@@ -828,9 +792,9 @@ pub fn is_click_or_wheel(m: &MouseEvent) -> bool {
 
 /// Whether `key` is the apply key: Ctrl+R (with Shift or not, which
 /// terminals do not tell apart), and nothing else, so a stray key cannot
-/// write anything.
+/// write anything: legume-tui's run key ([`legume_tui::is_run_key`]).
 pub fn is_apply(key: &KeyEvent) -> bool {
-    key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('r' | 'R'))
+    legume_tui::is_run_key(key)
 }
 
 /// The apply key, as a button sends it.
@@ -851,165 +815,6 @@ fn is_stray(key: &KeyEvent) -> bool {
     let held = key.modifiers.intersects(chord)
         || (key.code == KeyCode::Enter && key.modifiers.contains(KeyModifiers::SHIFT));
     held && !is_apply(key)
-}
-
-/// What has been typed into a file list to narrow it: letters, digits and
-/// punctuation type, so a file pane takes no letter keys of its own.
-#[derive(Default, Debug, Clone)]
-pub struct Find {
-    pub text: String,
-}
-
-impl Find {
-    /// Take `key` if it edits the text: a typed character (not Space, which
-    /// panes keep for choosing), or Backspace and Esc while there is text.
-    pub fn key(&mut self, key: &KeyEvent) -> bool {
-        match key.code {
-            KeyCode::Char(c) if c != ' ' && !is_apply(key) => self.text.push(c),
-            KeyCode::Backspace if !self.text.is_empty() => {
-                self.text.pop();
-            }
-            KeyCode::Esc if !self.text.is_empty() => self.text.clear(),
-            _ => return false,
-        }
-        true
-    }
-
-    /// Where `key` jumps when typing a path: `/` with nothing typed to the
-    /// root, `~` to home, and `/` after a name to that folder in `cwd` (the
-    /// name as typed, else `dir`, the highlighted folder), so typing
-    /// `/data/runs/` walks there.
-    pub fn jump(&self, key: &KeyEvent, cwd: &Path, dir: Option<PathBuf>) -> Option<PathBuf> {
-        let KeyCode::Char(c @ ('/' | '~')) = key.code else {
-            return None;
-        };
-        match (c, self.text.as_str()) {
-            ('/', "") => cwd.ancestors().last().map(Path::to_path_buf),
-            ('~', "") => home(),
-            ('/', "..") => cwd.parent().map(Path::to_path_buf),
-            ('/', name) => Some(cwd.join(name)).filter(|p| p.is_dir()).or(dir),
-            _ => None,
-        }
-    }
-
-    /// A pane title's tail naming the text, if any.
-    pub fn tag(&self) -> String {
-        if self.text.is_empty() {
-            String::new()
-        } else {
-            format!("· find: {} ", self.text)
-        }
-    }
-}
-
-/// What a narrowed list says when nothing matches the typed text.
-pub const NOTHING_MATCHES: &str = "nothing matches; Backspace or Esc";
-
-/// A list of named items narrowed by what has been typed, with a cursor
-/// over those shown: a folder's listing, a site's releases or species.
-pub struct FindList<T> {
-    all: Vec<T>,
-    /// `all`'s names in lower case, to match against.
-    lower: Vec<String>,
-    /// Indices into `all` of the items shown.
-    shown: Vec<usize>,
-    /// The cursor, among the items shown.
-    pub at: usize,
-    pub find: Find,
-}
-
-impl<T> Default for FindList<T> {
-    fn default() -> Self {
-        Self {
-            all: Vec::new(),
-            lower: Vec::new(),
-            shown: Vec::new(),
-            at: 0,
-            find: Find::default(),
-        }
-    }
-}
-
-impl<T: AsRef<str>> FindList<T> {
-    /// Show all of `all`, with nothing typed and the cursor at `at`.
-    pub fn set(&mut self, all: Vec<T>, at: usize) {
-        self.lower = all.iter().map(|x| x.as_ref().to_lowercase()).collect();
-        self.shown = (0..all.len()).collect();
-        self.all = all;
-        self.at = at.min(self.shown.len().saturating_sub(1));
-        self.find = Find::default();
-    }
-
-    /// The items shown, in order.
-    pub fn shown(&self) -> impl Iterator<Item = &T> {
-        self.shown.iter().map(|&i| &self.all[i])
-    }
-
-    pub fn len(&self) -> usize {
-        self.shown.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.shown.is_empty()
-    }
-
-    /// The item under the cursor.
-    pub fn highlighted(&self) -> Option<&T> {
-        self.shown.get(self.at).map(|&i| &self.all[i])
-    }
-
-    pub fn step(&mut self, d: isize) {
-        self.at = moved(self.at, d, self.len().saturating_sub(1));
-    }
-
-    /// Put the cursor on the item shown named `name`; whether there is one.
-    pub fn select(&mut self, name: &str) -> bool {
-        let at = self.shown().position(|x| x.as_ref() == name);
-        self.at = at.unwrap_or(self.at);
-        at.is_some()
-    }
-
-    /// Take `key` if it edits the typed text (see [`Find::key`]) or moves
-    /// the cursor (↑/↓, PgUp/PgDn; letters type, so not `j`/`k`).
-    pub fn key(&mut self, key: &KeyEvent) -> bool {
-        if self.find.key(key) {
-            self.narrow();
-            return true;
-        }
-        let d = match key.code {
-            KeyCode::Up => -1,
-            KeyCode::Down => 1,
-            KeyCode::PageUp => -10,
-            KeyCode::PageDown => 10,
-            _ => return false,
-        };
-        self.step(d);
-        true
-    }
-
-    /// Show the items holding the typed text, any case, never `..`; the
-    /// cursor on the first that starts with it, else the first.
-    fn narrow(&mut self) {
-        let text = self.find.text.to_lowercase();
-        let lower = &self.lower;
-        self.shown = (0..lower.len())
-            .filter(|&i| text.is_empty() || (lower[i] != ".." && lower[i].contains(&text)))
-            .collect();
-        self.at = self
-            .shown
-            .iter()
-            .position(|&i| lower[i].starts_with(&text))
-            .unwrap_or(0);
-    }
-
-    /// What an empty list says: `empty`, or that nothing matches.
-    pub fn empty_note<'a>(&self, empty: &'a str) -> &'a str {
-        if self.find.text.is_empty() {
-            empty
-        } else {
-            NOTHING_MATCHES
-        }
-    }
 }
 
 #[cfg(test)]

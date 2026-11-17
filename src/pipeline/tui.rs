@@ -519,11 +519,7 @@ impl App {
     /// The whole command on one shell-quoted line, to run from anywhere:
     /// the output folder as an absolute path in place of `.`.
     pub fn command_line(&self) -> String {
-        let argv = self.argv_out();
-        std::iter::once("faba".to_string())
-            .chain(argv.iter().map(|w| crate::script::quote(w)))
-            .collect::<Vec<_>>()
-            .join(" ")
+        format!("faba {}", legume_tui::form::script::line(&self.argv_out()))
     }
 
     /// `p`: leave and print the command, writing and starting nothing;

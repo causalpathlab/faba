@@ -684,9 +684,9 @@ impl Arguments {
             match self.0.get(k) {
                 None | Some(Value::Null) => {}
                 Some(n @ Value::Number(_)) => {
-                    v.extend(crate::script::emit(
+                    v.extend(legume_tui::form::emit(
                         &flag,
-                        crate::script::Many::One,
+                        legume_tui::form::Many::One,
                         vec![n.to_string()],
                     ));
                 }
