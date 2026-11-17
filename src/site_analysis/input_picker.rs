@@ -218,7 +218,6 @@ impl Screen for InputPicker {
         let mut lines = self.browser.lines(
             rows as usize,
             inner.width as usize,
-            "faba output",
             "no subfolder or file to read",
         );
         lines.push(match &self.error {
@@ -295,7 +294,7 @@ impl ReferencePicker {
     /// whether the sites name chromosomes `chr1`, if known.
     pub fn new(cwd: PathBuf, command: &'static str, kind: Reference, chr: Option<bool>) -> Self {
         Self {
-            browser: Browser::new(cwd, kind.keep(), |_| false).opened(),
+            browser: Browser::new(cwd, kind.keep(), |_| None).opened(),
             command,
             kind,
             fetching: Fetching::No,
@@ -472,7 +471,6 @@ impl Screen for ReferencePicker {
         let mut lines = self.browser.lines(
             rows as usize,
             inner.width as usize,
-            "",
             &format!("no subfolder or {} here", self.kind.files()),
         );
         lines.push(match &self.note {

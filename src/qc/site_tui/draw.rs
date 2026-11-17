@@ -83,7 +83,6 @@ pub(super) fn render_gff(frame: &mut Frame, area: Rect, browser: &Browser) {
     let lines = browser.lines(
         rows as usize,
         inner.width as usize,
-        "",
         "no subdirectory or GTF/GFF file",
     );
     frame.render_widget(Paragraph::new(lines), inner);

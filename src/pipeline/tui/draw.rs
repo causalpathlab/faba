@@ -185,7 +185,7 @@ fn draw_inputs(app: &App, frame: &mut Frame, body: Rect) {
             let batch = batches
                 .get(&e.path)
                 .map_or_else(String::new, |b| format!("batch {b}"));
-            let index = if e.tagged {
+            let index = if e.note.as_deref() == Some(super::inputs::INDEXED) {
                 Span::styled("indexed", DIM)
             } else {
                 Span::styled("no index", ACCENTED)
@@ -361,7 +361,15 @@ fn draw_flags(app: &App, frame: &mut Frame, body: Rect) {
             let said = complaint
                 .as_deref()
                 .filter(|_| blamed == Some(f.long.as_str()));
-            lines.push(form::row_line(f, Some(i) == sel, 24, style, shown, said));
+            lines.push(legume_tui::form::row_line(
+                f,
+                Some(i) == sel,
+                24,
+                &crate::tui::LOOK,
+                style,
+                shown,
+                said,
+            ));
             flag_of.push(visible.iter().position(|&v| v == i));
         }
     }
@@ -474,7 +482,6 @@ fn draw_picking(app: &App, frame: &mut Frame, body: Rect) {
     let lines = b.lines(
         inner.height as usize,
         inner.width as usize,
-        "",
         "nothing to pick here",
     );
     frame.render_widget(Paragraph::new(lines), inner);

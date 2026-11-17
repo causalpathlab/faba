@@ -1,8 +1,8 @@
 //! The form of `faba run`'s flags: every flag but those the Inputs and
-//! Steps screens own (see [`crate::tui::form`] for the rows).
+//! Steps screens own (see [`legume_tui::form`] for the rows).
 
-pub use crate::tui::form::*;
 use clap::{Arg, Command};
+pub use legume_tui::form::{blamed, check, Form, Kind};
 
 /// Flags with no help heading that are never passed: the setup view's
 /// own, its session's among them. The Inputs and Steps screens own every

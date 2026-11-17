@@ -221,16 +221,9 @@ fn recorded(
 /// beside the run record named `record` (`.cmd.sh` for `.run.json`).
 fn save_command(args: &ClusterArgs, dir: &Path, record: &str) {
     let name = record.replace(".run.json", ".cmd.sh");
-    let script = crate::script::Script {
-        name: &name,
-        made_by: "faba cluster",
-        guard: None,
-        cd: false,
-        head: 1,
-        replace: true,
-    };
+    let script = crate::script::faba(&name, "faba cluster", None, false, 1);
     // The fit is done and recorded whether or not the script is written.
-    if let Err(e) = crate::script::write(dir, &script, &command(args)) {
+    if let Err(e) = crate::script::write(dir, &script, &command(args), true) {
         warn!("the command was not saved: {e:#}");
     }
 }

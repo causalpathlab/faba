@@ -55,7 +55,7 @@ impl FileRow {
                     .any(|x| n.ends_with(x))
             },
         };
-        Browser::new(start, keep, |_| false).opened()
+        Browser::new(start, keep, |_| None).opened()
     }
 
     /// Whether `d` downloads this row's file (see [`super::fetch`]).
@@ -106,6 +106,9 @@ impl Row {
     }
 }
 
+/// The note the BAM browser gives a BAM with its index beside it.
+pub const INDEXED: &str = "indexed";
+
 pub fn has_index(bam: &Path) -> bool {
     let s = bam.to_string_lossy();
     Path::new(&format!("{s}.bai")).exists() || bam.with_extension("bai").exists()
@@ -144,7 +147,12 @@ pub struct Inputs {
 impl Inputs {
     pub fn new(cwd: PathBuf) -> Self {
         Inputs {
-            bams: Browser::new(cwd, |n| n.ends_with(".bam"), has_index).opened(),
+            bams: Browser::new(
+                cwd,
+                |n| n.ends_with(".bam"),
+                |p| has_index(p).then(|| INDEXED.to_string()),
+            )
+            .opened(),
             picked: Vec::new(),
             gff: None,
             genome: None,

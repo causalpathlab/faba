@@ -25,7 +25,7 @@ impl ClusterArgs {
             definition()
                 .get_arguments()
                 .map(|a| a.get_id().as_str())
-                .filter(|id| crate::script::given_words(matches, id).is_some())
+                .filter(|id| legume_tui::form::given_words(matches, id).is_some())
                 .map(String::from)
                 .collect(),
         );
@@ -126,7 +126,11 @@ pub(super) fn command_except(args: &ClusterArgs, skip: &[&str]) -> Vec<String> {
             }
         } else if changed || args.given(id) {
             let ws = words(value).iter().map(|w| absolute(arg, w)).collect();
-            argv.extend(crate::script::emit(&flag, crate::script::many_of(arg), ws));
+            argv.extend(legume_tui::form::emit(
+                &flag,
+                legume_tui::form::many_of(arg),
+                ws,
+            ));
         }
     }
     argv
