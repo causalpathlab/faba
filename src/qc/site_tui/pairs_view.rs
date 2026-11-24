@@ -93,7 +93,7 @@ impl SitePicker<'_> {
         frame.render_widget(block, area);
         let [plot, said] =
             Layout::vertical([Constraint::Min(3), Constraint::Length(2)]).areas(inner);
-        let g = pairs::grid(&self.view().sites(), (x, y), &self.filter, pairs::BINS);
+        let (key, g) = self.grid_of((x, y), pairs::BINS);
         frame.render_widget(
             Paragraph::new(vec![
                 Line::styled(g.in_box_short(), DIM),
@@ -102,6 +102,11 @@ impl SitePicker<'_> {
             .wrap(ratatui::widgets::Wrap { trim: true }),
             said,
         );
+        // Its image is drawn again only when what it shows changed.
+        if self.pair_drawn[k] != Some(key) {
+            self.pair_plots[k].invalidate();
+            self.pair_drawn[k] = Some(key);
+        }
         let mut image = std::mem::take(&mut self.pair_plots[k]);
         let drawn = self.controls.images().is_some_and(|picker| {
             image.render(frame, plot, picker, |w, h| {
@@ -110,8 +115,27 @@ impl SitePicker<'_> {
         });
         self.pair_plots[k] = image;
         if !drawn {
-            draw_cells(frame, plot, &self.view().sites(), (x, y), &self.filter);
+            let bins = (plot.width.max(plot.height) as usize).max(1);
+            let (_, cells) = self.grid_of((x, y), bins);
+            draw_cells(frame, plot, &cells);
         }
+    }
+
+    /// The panel of `axes` binned `bins` a side, at the thresholds now:
+    /// binned again only when the modality, its axes, the fail bits or the
+    /// size changed since (see [`GridKey`]).
+    fn grid_of(&mut self, (x, y): (Axis, Axis), bins: usize) -> (GridKey, pairs::Grid) {
+        let key = (self.modality, x, y, self.view().generation, bins);
+        if let Some((_, g)) = self.pair_grids.iter().find(|(k, _)| *k == key) {
+            return (key, g.clone());
+        }
+        let g = pairs::grid(&self.view().sites(), (x, y), &self.filter, bins);
+        // Two sizes (image and cells) of four panels, and room to step.
+        if self.pair_grids.len() >= 16 {
+            self.pair_grids.remove(0);
+        }
+        self.pair_grids.push((key, g.clone()));
+        (key, g)
     }
 
     /// The 2D figure of modality `m` at the thresholds now, laid out for
@@ -126,13 +150,11 @@ impl SitePicker<'_> {
 
 /// The panel drawn in the terminal's own cells, without images: a square
 /// a cell, kept or removed by its colour and deeper as it holds more.
-fn draw_cells(frame: &mut Frame, area: Rect, s: &Sites, axes: (Axis, Axis), f: &SiteFilterArgs) {
+fn draw_cells(frame: &mut Frame, area: Rect, g: &pairs::Grid) {
     let (w, h) = (area.width as usize, area.height as usize);
     if w < 4 || h < 2 {
         return;
     }
-    // A grid of the area's shape: as many squares as cells across.
-    let g = pairs::grid(s, axes, f, w.max(h));
     let buf = frame.buffer_mut();
     for row in 0..h {
         for col in 0..w {

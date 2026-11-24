@@ -824,6 +824,35 @@ mod tests {
         <Cli as clap::Parser>::parse_from(std::iter::once("faba").chain(words)).qc
     }
 
+    /// Each step of the 2D view timed on a real faba directory, named by
+    /// `FABA_QC_TIMING_DIR` (read only; what it writes goes to a temporary
+    /// folder): `cargo test --release qc_timing -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn qc_timing() {
+        let Ok(input) = std::env::var("FABA_QC_TIMING_DIR") else {
+            eprintln!("FABA_QC_TIMING_DIR is not set");
+            return;
+        };
+        let args = parse(&format!("faba qc {input} --batch-process -o unused"));
+        let t = std::time::Instant::now();
+        let prep = prepare(&args, &input).unwrap();
+        let read = t.elapsed().as_secs_f64();
+        let out = tempfile::tempdir().unwrap();
+        let cells = cells_of(&prep.decisions);
+        let steps = crate::qc::site_tui::time_steps(
+            &prep.tables,
+            &prep.site_cells,
+            &args.site,
+            cells,
+            out.path(),
+        );
+        eprintln!("{read:>9.3} s  reading the site tables, the _site matrices and the cell QC");
+        for (what, s) in steps {
+            eprintln!("{s:>9.3} s  {what}");
+        }
+    }
+
     /// `--html` goes only to a file that is not there, with --batch-process
     /// or --dry-run: an existing one is refused before anything is read
     /// (the input here does not exist), naming it and asking for another

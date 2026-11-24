@@ -108,6 +108,11 @@ struct SiteView<'a> {
     genes: Option<std::sync::Arc<GeneSites>>,
     /// The 2D view's panels: each pair of axes, and why it is shown.
     pairs: Vec<(Axis, Axis, String)>,
+    /// Each axis' values, read once.
+    cache: pairs::Cache,
+    /// Bumped whenever a fail bit may have changed, so a panel binned at
+    /// an earlier one is binned again.
+    generation: u64,
 }
 
 impl<'a> SiteView<'a> {
@@ -123,6 +128,8 @@ impl<'a> SiteView<'a> {
             fails: vec![0; table.len()],
             genes: GeneSites::new(table).ok().map(Into::into),
             pairs: Vec::new(),
+            cache: pairs::Cache::default(),
+            generation: 0,
         };
         for c in view.criteria.clone() {
             view.update(c, f);
@@ -138,6 +145,7 @@ impl<'a> SiteView<'a> {
             n_cells: self.n_cells.as_deref(),
             fails: &self.fails,
             criteria: &self.criteria,
+            cache: &self.cache,
         }
     }
 
@@ -152,20 +160,22 @@ impl<'a> SiteView<'a> {
         self.n_cells.as_ref().map(|c| c[i])
     }
 
-    /// Recompute `c`'s bit for every site under `f`.
+    /// Recompute `c`'s bit for every site under `f`, in parallel; one pass,
+    /// whatever the other criteria.
     fn update(&mut self, c: Criterion, f: &SiteFilterArgs) {
+        use rayon::prelude::*;
         if !self.criteria.contains(&c) {
             return;
         }
         let bit = c.bit();
-        for i in 0..self.fails.len() {
-            let failed = c.fails(f, self.table, i, self.cells(i));
-            self.fails[i] = if failed {
-                self.fails[i] | bit
-            } else {
-                self.fails[i] & !bit
-            };
-        }
+        let (table, n_cells) = (self.table, self.n_cells.as_deref());
+        (self.fails.par_iter_mut().enumerate())
+            .with_min_len(1 << 15)
+            .for_each(|(i, m)| {
+                let failed = c.fails(f, table, i, n_cells.map(|n| n[i]));
+                *m = if failed { *m | bit } else { *m & !bit };
+            });
+        self.generation += 1;
     }
 }
 
@@ -234,6 +244,10 @@ enum Mode {
     Leave(Picked),
 }
 
+/// What a 2D panel is binned from: the modality, its axes, the fail bits'
+/// generation and the squares a side.
+type GridKey = (usize, Axis, Axis, u64, usize);
+
 /// The panel Tab moves to, which the arrow keys then drive.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Panel {
@@ -274,6 +288,10 @@ struct SitePicker<'a> {
     two_d: bool,
     pair_at: usize,
     pair_plots: [PlotImage; pairs::PANELS],
+    /// What each panel's image was last drawn of, and the panels binned
+    /// lately, so a draw that changes nothing bins nothing.
+    pair_drawn: [Option<GridKey>; pairs::PANELS],
+    pair_grids: Vec<(GridKey, pairs::Grid)>,
     meta: Meta,
     /// Where `meta` comes from, to read another annotation in its place.
     annotation: AnnotationSource,
@@ -325,6 +343,8 @@ impl<'a> SitePicker<'a> {
             two_d: false,
             pair_at: 0,
             pair_plots: Default::default(),
+            pair_drawn: Default::default(),
+            pair_grids: Vec::new(),
             meta,
             annotation: AnnotationSource::default(),
             weight: Weight::Coverage,
@@ -585,7 +605,6 @@ impl Screen for SitePicker<'_> {
             }
         }
         self.plot.invalidate();
-        self.pair_plots.iter_mut().for_each(PlotImage::invalidate);
         match self.mode {
             Mode::Gff(_) => self.gff_key(key),
             Mode::Edit(_) => self.edit_key(key),
@@ -708,6 +727,90 @@ pub fn write_page(
         report::FRAGMENT,
         &picker.report_source().data(),
     )
+}
+
+/// Each step of the 2D view timed on real tables (see the ignored
+/// `qc_timing` test), in seconds: building each modality's fail masks and
+/// Auto's pairs, the pairs alone, binning four panels, the view's first
+/// draw, a threshold's keypress, an axis' step, the figures and the page,
+/// written into `out`.
+#[cfg(test)]
+pub(crate) fn time_steps(
+    tables: &FxHashMap<Box<str>, SiteTable>,
+    site_cells: &FxHashMap<Box<str>, FxHashMap<Box<str>, usize>>,
+    filter: &SiteFilterArgs,
+    cells: Vec<crate::qc::cells_plot::Cells>,
+    out: &std::path::Path,
+) -> Vec<(String, f64)> {
+    use ratatui::crossterm::event::KeyModifiers;
+    use std::time::Instant;
+    let mut said = Vec::new();
+    let mut time = |what: String, t: Instant| said.push((what, t.elapsed().as_secs_f64()));
+    let t = Instant::now();
+    let views = site_views(tables, site_cells, filter);
+    let sizes: Vec<String> = views
+        .iter()
+        .map(|v| format!("{} {}", v.table.modality, v.table.len()))
+        .collect();
+    time(
+        format!("fail masks + Auto, every modality ({})", sizes.join(", ")),
+        t,
+    );
+    let big = (0..views.len())
+        .max_by_key(|&m| views[m].table.len())
+        .unwrap_or(0);
+    let s = views[big].sites();
+    let t = Instant::now();
+    let auto = pairs::auto_pairs(&s, pairs::PANELS);
+    time(
+        format!("Auto's pairs alone, {}", views[big].table.modality),
+        t,
+    );
+    let t = Instant::now();
+    for p in &auto {
+        pairs::grid(&s, (p.x, p.y), filter, pairs::BINS);
+    }
+    time("binning four panels".into(), t);
+    let mut p = SitePicker::new(
+        "timing",
+        views,
+        filter.clone(),
+        Meta::Unavailable("timing".into()),
+    );
+    p.modality = big;
+    p.cells = cells;
+    let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(200, 60)).unwrap();
+    let key = |c| KeyEvent::new(c, KeyModifiers::NONE);
+    let t = Instant::now();
+    crate::tui::feed(&mut p, key(KeyCode::Char('d')));
+    term.draw(|f| p.render(f)).unwrap();
+    time("opening the 2D view (d, one draw)".into(), t);
+    while p.criterion() != Criterion::MinCoverage {
+        crate::tui::feed(&mut p, key(KeyCode::Down));
+    }
+    let t = Instant::now();
+    crate::tui::feed(&mut p, key(KeyCode::Char('+')));
+    term.draw(|f| p.render(f)).unwrap();
+    time("a threshold's keypress (+, one draw)".into(), t);
+    crate::tui::feed(&mut p, key(KeyCode::Tab));
+    crate::tui::feed(&mut p, key(KeyCode::Tab));
+    let t = Instant::now();
+    crate::tui::feed(&mut p, key(KeyCode::Char('x')));
+    term.draw(|f| p.render(f)).unwrap();
+    time("a panel's axis (x, one draw)".into(), t);
+    let t = Instant::now();
+    let figures = p.figures(crate::figure::size::OWN).unwrap();
+    time(format!("the view's {} figures, drawn", figures.len()), t);
+    let t = Instant::now();
+    let html = out.join("qc.html");
+    let title = "faba qc · timing".to_string();
+    crate::report::write(&html, &title, report::FRAGMENT, &p.report_source().data()).unwrap();
+    let size = std::fs::metadata(&html).map_or(0, |m| m.len());
+    time(
+        format!("the page, written ({:.1} MB)", size as f64 / 1e6),
+        t,
+    );
+    said
 }
 
 /// What one site threshold does to one modality, for `faba qc --dry-run`.

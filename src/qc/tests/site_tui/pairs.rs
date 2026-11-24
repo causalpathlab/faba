@@ -11,6 +11,7 @@ fn sites<'a>(v: &'a SiteView) -> Sites<'a> {
         n_cells: v.n_cells.as_deref(),
         fails: &v.fails,
         criteria: &v.criteria,
+        cache: &v.cache,
     }
 }
 

@@ -35,6 +35,8 @@ pub struct Sites<'a> {
     pub fails: &'a [u8],
     /// The criteria that apply.
     pub criteria: &'a [Criterion],
+    /// Each axis' values, read once (they never change with a threshold).
+    pub cache: &'a Cache,
 }
 
 impl Sites<'_> {
@@ -45,7 +47,31 @@ impl Sites<'_> {
     fn cells(&self, i: usize) -> Option<usize> {
         self.n_cells.map(|c| c[i])
     }
+
+    /// Axis `a`'s values per site, on its drawn scale, and its range.
+    pub fn column(&self, a: Axis) -> &Column {
+        self.cache.0[a as usize].get_or_init(|| {
+            use rayon::prelude::*;
+            let values: Vec<f32> = (0..self.len())
+                .into_par_iter()
+                .map(|i| a.value(self, i) as f32)
+                .collect();
+            let range = range_of(&values, a);
+            Column { values, range }
+        })
+    }
 }
+
+/// One axis' values per site, on its drawn scale, and the range it is
+/// drawn over.
+pub struct Column {
+    pub values: Vec<f32>,
+    pub range: (f64, f64),
+}
+
+/// Each axis' [`Column`], filled as it is first asked for.
+#[derive(Default)]
+pub struct Cache([std::sync::OnceLock<Column>; 7]);
 
 /// What a panel's axis shows: a criterion's raw value, drawn on a scale
 /// that spreads it (logs for counts, `-log10` for p-values). The edit ratio
@@ -208,17 +234,33 @@ impl Pair {
     }
 }
 
-/// Every pair of `s`'s axes, scored.
+/// Every pair of `s`'s axes, scored: one pass over the sites counts each
+/// set of failed thresholds, and each pair's split is read off those.
 pub fn score_pairs(s: &Sites) -> Vec<Pair> {
+    use rayon::prelude::*;
     let axes = axes(s);
-    let ranks: Vec<Vec<f64>> = axes.iter().map(|&a| sampled_ranks(s, a)).collect();
+    let ranks: Vec<Vec<f64>> = axes.par_iter().map(|&a| sampled_ranks(s, a)).collect();
+    let masks = (s.fails.par_chunks(1 << 16))
+        .map(|chunk| {
+            let mut n = [0usize; 256];
+            chunk.iter().for_each(|&m| n[m as usize] += 1);
+            n
+        })
+        .reduce(
+            || [0; 256],
+            |mut a, b| {
+                a.iter_mut().zip(b).for_each(|(x, y)| *x += y);
+                a
+            },
+        );
     let mut out = Vec::new();
     for p in 0..axes.len() {
         for q in p + 1..axes.len() {
             let (bx, by) = (axes[p].bits(), axes[q].bits());
-            let split = (s.fails.iter())
-                .filter(|&&m| (m & bx != 0) != (m & by != 0))
-                .count();
+            let split = (0..256)
+                .filter(|&m| (m as u8 & bx != 0) != (m as u8 & by != 0))
+                .map(|m| masks[m])
+                .sum();
             out.push(Pair {
                 x: axes[p],
                 y: axes[q],
@@ -256,7 +298,8 @@ pub fn auto_pairs(s: &Sites, k: usize) -> Vec<Pair> {
 /// last), at most [`SAMPLE`] of them.
 fn sampled_ranks(s: &Sites, a: Axis) -> Vec<f64> {
     let step = s.len().div_ceil(SAMPLE).max(1);
-    let v: Vec<f64> = (0..s.len()).step_by(step).map(|i| a.value(s, i)).collect();
+    let col = &s.column(a).values;
+    let v: Vec<f64> = (0..s.len()).step_by(step).map(|i| col[i] as f64).collect();
     let mut order: Vec<usize> = (0..v.len()).collect();
     let key = |x: f64| if x.is_nan() { f64::INFINITY } else { x };
     order.sort_by(|&p, &q| key(v[p]).total_cmp(&key(v[q])));
@@ -298,10 +341,14 @@ fn pearson(a: &[f64], b: &[f64]) -> f64 {
 /// quantiles (on a sample), widened a little; a value past it is drawn at
 /// its end.
 pub fn range(s: &Sites, a: Axis) -> (f64, f64) {
-    let step = s.len().div_ceil(SAMPLE * 4).max(1);
-    let mut v: Vec<f64> = (0..s.len())
-        .step_by(step)
-        .map(|i| a.value(s, i))
+    s.column(a).range
+}
+
+/// [`range`] of `values` on axis `a`.
+fn range_of(values: &[f32], a: Axis) -> (f64, f64) {
+    let step = values.len().div_ceil(SAMPLE * 4).max(1);
+    let mut v: Vec<f64> = (values.iter().step_by(step))
+        .map(|&x| x as f64)
         .filter(|x| x.is_finite())
         .collect();
     if v.is_empty() {
@@ -336,11 +383,17 @@ pub struct Grid {
     /// Sites in the box kept, and removed by a threshold not drawn here.
     pub in_kept: usize,
     pub in_removed: usize,
+    /// The busiest square's sites, which the deepest colour stands for.
+    pub top: u32,
 }
 
-/// The panel of axes `x` and `y` over `s` at the thresholds `f`.
+/// The panel of axes `x` and `y` over `s` at the thresholds `f`, binned in
+/// parallel from the axes' cached values; the box's counts read off the
+/// fail bits (in the box: passing both axes' thresholds).
 pub fn grid(s: &Sites, (x, y): (Axis, Axis), f: &SiteFilterArgs, bins: usize) -> Grid {
-    let (xr, yr) = (range(s, x), range(s, y));
+    use rayon::prelude::*;
+    let (cx, cy) = (s.column(x), s.column(y));
+    let (xr, yr) = (cx.range, cy.range);
     let open = |(lo, hi): (Option<f64>, Option<f64>), r: (f64, f64)| {
         (
             lo.unwrap_or(f64::NEG_INFINITY),
@@ -350,44 +403,65 @@ pub fn grid(s: &Sites, (x, y): (Axis, Axis), f: &SiteFilterArgs, bins: usize) ->
     };
     let (xlo, xhi, _) = open(x.passes(f, s), xr);
     let (ylo, yhi, _) = open(y.passes(f, s), yr);
-    let mut g = Grid {
+    // Each value's square along an axis, from a scale and offset.
+    let along = |(lo, hi): (f64, f64)| {
+        let k = (bins as f64 / (hi - lo)) as f32;
+        let last = bins as f32 - 1.0;
+        move |v: f32| ((v - lo as f32) * k).floor().clamp(0.0, last) as usize
+    };
+    let (sx, sy) = (along(xr), along(yr));
+    let drawn = x.bits() | y.bits();
+    let n = bins * bins;
+    // Per chunk: kept and removed per square, then the box's two counts.
+    let (kept, removed, in_kept, in_removed) = (0..s.len())
+        .into_par_iter()
+        .with_min_len(1 << 15)
+        .fold(
+            || (vec![0u32; n], vec![0u32; n], 0usize, 0usize),
+            |mut acc, i| {
+                let (vx, vy) = (cx.values[i], cy.values[i]);
+                if vx.is_nan() || vy.is_nan() {
+                    return acc;
+                }
+                let m = s.fails[i];
+                let at = sy(vy) * bins + sx(vx);
+                if m == 0 {
+                    acc.0[at] += 1;
+                    acc.2 += 1;
+                } else {
+                    acc.1[at] += 1;
+                    acc.3 += usize::from(m & drawn == 0);
+                }
+                acc
+            },
+        )
+        .reduce(
+            || (vec![0u32; n], vec![0u32; n], 0, 0),
+            |mut a, b| {
+                a.0.iter_mut().zip(&b.0).for_each(|(p, q)| *p += q);
+                a.1.iter_mut().zip(&b.1).for_each(|(p, q)| *p += q);
+                (a.0, a.1, a.2 + b.2, a.3 + b.3)
+            },
+        );
+    let top = (kept.iter().zip(&removed))
+        .map(|(k, r)| k + r)
+        .max()
+        .unwrap_or(0)
+        .max(1);
+    Grid {
         x,
         y,
         xr,
         yr,
         bins,
-        kept: vec![0; bins * bins],
-        removed: vec![0; bins * bins],
+        top,
+        kept,
+        removed,
         xbox: (xlo.max(xr.0), xhi.min(xr.1)),
         ybox: (ylo.max(yr.0), yhi.min(yr.1)),
-        in_kept: 0,
-        in_removed: 0,
-    };
-    let slot = |v: f64, (lo, hi): (f64, f64)| {
-        let t = ((v - lo) / (hi - lo) * bins as f64).floor();
-        t.clamp(0.0, bins as f64 - 1.0) as usize
-    };
-    for i in 0..s.len() {
-        let (vx, vy) = (x.value(s, i), y.value(s, i));
-        if vx.is_nan() || vy.is_nan() {
-            continue;
-        }
-        let kept = s.fails[i] == 0;
-        let at = slot(vy, yr) * bins + slot(vx, xr);
-        if kept {
-            g.kept[at] += 1;
-        } else {
-            g.removed[at] += 1;
-        }
-        if (xlo..=xhi).contains(&vx) && (ylo..=yhi).contains(&vy) {
-            if kept {
-                g.in_kept += 1;
-            } else {
-                g.in_removed += 1;
-            }
-        }
+        in_kept,
+        in_removed,
     }
-    g
 }
 
 impl Grid {
@@ -416,11 +490,7 @@ impl Grid {
         if total == 0 {
             return None;
         }
-        let top = (0..self.kept.len())
-            .map(|j| self.kept[j] + self.removed[j])
-            .max()
-            .unwrap_or(1);
-        let depth = 0.18 + 0.82 * (total as f64).ln_1p() / (top as f64).ln_1p();
+        let depth = 0.18 + 0.82 * (total as f64).ln_1p() / (self.top as f64).ln_1p();
         let base = rgb(if k >= r { KEPT } else { REMOVED });
         let mix = |c: u8| (255.0 + (c as f64 - 255.0) * depth).round() as u8;
         Some((mix(base.0), mix(base.1), mix(base.2)))
