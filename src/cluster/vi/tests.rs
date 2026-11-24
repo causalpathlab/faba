@@ -24,6 +24,7 @@ impl Steps for Stub {
     fn units(&self) -> f64 {
         10.0
     }
+    const UNIT: &'static str = "unit";
     fn first(&mut self) -> Option<()> {
         Some(())
     }
@@ -64,6 +65,7 @@ fn ran(stub: &mut Stub, cells: usize, options: &Options) -> (f64, Ran, Vec<(usiz
     let epoch = |e: usize, f: f64| told.lock().unwrap().push((e, f));
     let no = || false;
     let hooks = Hooks {
+        begin: &|_| {},
         epoch: &epoch,
         stop: &no,
         cancelled: &no,

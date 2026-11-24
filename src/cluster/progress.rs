@@ -1,15 +1,18 @@
 //! A fit's progress: each restart's steps (its k-means start's
 //! iterations, then its epochs) counted as they are done, and its ELBO at
 //! each epoch, read from another thread (by `faba cluster`: a view with the
-//! traces on a terminal, else a bar on stderr), and a cancel that the fits
-//! see between their steps.
+//! traces on a terminal, else a bar on stderr, or lines on it off a
+//! terminal, see [`report`]), and a cancel that the fits see between their
+//! steps.
 
+use super::vi::Aim;
 use std::io::IsTerminal;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
 pub mod advice;
+pub mod report;
 pub mod spark;
 pub mod view;
 
@@ -63,7 +66,16 @@ pub struct Progress {
     interrupt: Option<Arc<AtomicBool>>,
     /// The fit's verdict, once it ends.
     optimised: OnceLock<advice::Verdict>,
+    /// The restart whose epochs run now ([`NONE`] before the first), and
+    /// when the first began.
+    fitting: AtomicUsize,
+    epochs_began: OnceLock<Instant>,
+    /// What the fit's convergence is measured by, once told.
+    aim: OnceLock<Aim>,
 }
+
+/// No restart fitting yet.
+const NONE: usize = usize::MAX;
 
 /// The line under a fit by variational inference's traces, its k-means
 /// start `warmup` steps.
@@ -88,6 +100,9 @@ impl Progress {
             traces: (0..chains).map(|_| Mutex::default()).collect(),
             interrupt: None,
             optimised: OnceLock::new(),
+            fitting: AtomicUsize::new(NONE),
+            epochs_began: OnceLock::new(),
+            aim: OnceLock::new(),
         }
     }
 
@@ -98,7 +113,7 @@ impl Progress {
 
     /// Restart `i`'s trace, held.
     fn trace_of(&self, i: usize) -> MutexGuard<'_, Vec<(usize, f64)>> {
-        self.traces[i].lock().expect("a chain's trace")
+        self.traces[i].lock().expect("a restart's trace")
     }
 
     /// Every restart's [`Progress::trace`].
@@ -251,6 +266,18 @@ impl Progress {
         let _ = self.schedule.set((total, warmup));
     }
 
+    /// What the fit's convergence is measured by, as its first restart
+    /// tells it, for the lines said off a terminal (see [`report`]).
+    pub fn aim(&self, aim: Aim) {
+        let _ = self.aim.set(aim);
+    }
+
+    /// Restart `i`'s epochs begin, the starts done.
+    pub fn fitting(&self, i: usize) {
+        let _ = self.epochs_began.get_or_init(Instant::now);
+        self.fitting.store(i, Ordering::Relaxed);
+    }
+
     /// Restart `i` at step `n` at least, started now if it was not.
     pub fn reach(&self, i: usize, n: usize) {
         let _ = self.started[i].get_or_init(Instant::now);
@@ -280,21 +307,24 @@ impl Progress {
     }
 }
 
-/// `work`, with `progress` drawn on a bar on stderr meanwhile when it is
-/// [`Progress::on_stderr`] (off a terminal indicatif hides the bar: no
-/// thread to draw it).
+/// `work`, with `progress` on stderr meanwhile when it is
+/// [`Progress::on_stderr`]: drawn on a bar on a terminal, else said in a
+/// line now and then (see [`report`]), where indicatif would hide the bar.
 pub fn barred<T: Send>(progress: &Progress, work: impl FnOnce() -> T + Send) -> T {
-    if progress.bar && std::io::stderr().is_terminal() {
-        let (stop, stopped) = std::sync::mpsc::channel::<()>();
-        std::thread::scope(|s| {
-            s.spawn(|| draw_bar(progress, stopped));
-            let out = work();
-            drop(stop);
-            out
-        })
-    } else {
-        work()
+    if !progress.bar {
+        return work();
     }
+    let (stop, stopped) = std::sync::mpsc::channel::<()>();
+    std::thread::scope(|s| {
+        if std::io::stderr().is_terminal() {
+            s.spawn(|| draw_bar(progress, stopped));
+        } else {
+            s.spawn(|| report::report(progress, stopped));
+        }
+        let out = work();
+        drop(stop);
+        out
+    })
 }
 
 /// How often the bar is brought up to date.

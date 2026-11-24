@@ -205,6 +205,16 @@ pub struct Fit<'a> {
     pub prior: Prior,
 }
 
+/// What a sweep does once its cells have stepped: nothing more (their
+/// terms at their stored locals are its score), a pass at their new locals
+/// for their terms, or that pass with their statistics added into a
+/// [`Stats`].
+enum Then<'s> {
+    Nothing,
+    Score,
+    Gather(&'s mut Stats),
+}
+
 /// What a sweep over cells gives: their ELBO terms at their stored locals
 /// (`phi` at its optimum) and after their steps.
 struct Swept {
@@ -284,13 +294,11 @@ impl Fit<'_> {
     /// precision and precision times mean; with `acc`, the cell's statistics
     /// for the globals added into it (genes x B, then each block's `sum phi
     /// w`, then its `sum phi (kappa - w (mu + nu))`).
-    #[allow(clippy::too_many_arguments)]
     fn pass(
         &self,
         c: usize,
         cell: &Cell,
-        g: &Globals,
-        cache: &Cache,
+        (g, cache): (&Globals, &Cache),
         mut acc: Option<&mut [f64]>,
         xi: Xi,
         sc: &mut Scratch,
@@ -355,7 +363,7 @@ impl Fit<'_> {
             // The first pass's bounds at their optimum (the ELBO at `cell`),
             // kept for the passes after.
             let xi = if round == 0 { Xi::Fresh } else { Xi::Fixed };
-            let (f, n, prec, num) = self.pass(c, &cell, g, cache, None, xi, &mut sc);
+            let (f, n, prec, num) = self.pass(c, &cell, (g, cache), None, xi, &mut sc);
             before.get_or_insert(f);
             if iters == 0 {
                 break;
@@ -375,19 +383,15 @@ impl Fit<'_> {
 
     /// The steps of `cells` from their stored locals, up to `iters` rounds
     /// each (none: a score), [`CHUNK`] cells at a time (each chunk's in
-    /// parallel), stored back; then, when `after` or `stats` asks, a pass at
-    /// the new locals for their terms of the ELBO, their statistics added
-    /// into `stats` when given. None when `cancelled` says so between
-    /// chunks.
-    #[allow(clippy::too_many_arguments)]
+    /// parallel), stored back; then what `then` asks of the new locals (see
+    /// [`Then`]). None when `cancelled` says so between chunks.
     fn sweep(
         &self,
         cells: &[usize],
         locals: &mut Locals,
         g: &Globals,
         iters: usize,
-        mut stats: Option<&mut Stats>,
-        after: bool,
+        mut then: Then,
         cancelled: &(dyn Fn() -> bool + Sync),
     ) -> Option<Swept> {
         let (aa, k) = (self.prior.cell_roles, self.blocks());
@@ -415,13 +419,13 @@ impl Fit<'_> {
                 locals.t[c * aa..(c + 1) * aa].copy_from_slice(&cell.t);
                 (locals.e[c], locals.s[c]) = (cell.e, cell.s);
             }
-            if !(after || stats.is_some()) {
+            if matches!(then, Then::Nothing) {
                 continue;
             }
             // The cells' terms at their new locals, their statistics with
             // them: in fixed parts, the last slot the terms.
             let held: &Locals = locals;
-            let want = stats.is_some();
+            let want = matches!(then, Then::Gather(_));
             let len = if want { genes + 2 * k + 1 } else { 1 };
             let sum = sum_parts(chunk.len(), len, PARTS, |acc, i| {
                 let (last, rest) = acc.split_last_mut().expect("a slot for the terms");
@@ -429,11 +433,11 @@ impl Fit<'_> {
                 let mut sc = Scratch::default();
                 let cell = cell_of(held, chunk[i]);
                 *last += self
-                    .pass(chunk[i], &cell, g, &cache, into, Xi::Fresh, &mut sc)
+                    .pass(chunk[i], &cell, (g, &cache), into, Xi::Fresh, &mut sc)
                     .0;
             });
             out.after += sum[len - 1];
-            if let Some(stats) = stats.as_deref_mut() {
+            if let Then::Gather(stats) = &mut then {
                 stats
                     .gene
                     .iter_mut()
@@ -544,7 +548,7 @@ fn score(
     g: &Globals,
     cancelled: &(dyn Fn() -> bool + Sync),
 ) -> Option<f64> {
-    let swept = fit.sweep(all, locals, g, 0, None, false, cancelled)?;
+    let swept = fit.sweep(all, locals, g, 0, Then::Nothing, cancelled)?;
     Some(swept.after + fit.global_terms(g))
 }
 
@@ -592,6 +596,7 @@ impl vi::Steps for SiteSteps<'_, '_> {
     fn units(&self) -> f64 {
         self.fit.data.reads()
     }
+    const UNIT: &'static str = "read";
 
     fn first(&mut self) -> Option<()> {
         let (all, cancelled) = (&self.all, self.cancelled);
@@ -602,8 +607,7 @@ impl vi::Steps for SiteSteps<'_, '_> {
                 &mut self.locals,
                 globals,
                 2 * LOCAL_ITERS,
-                None,
-                false,
+                Then::Nothing,
                 cancelled,
             )
             .map(|_| ())
@@ -617,8 +621,7 @@ impl vi::Steps for SiteSteps<'_, '_> {
             &mut self.locals,
             &self.globals,
             LOCAL_ITERS,
-            Some(&mut stats),
-            false,
+            Then::Gather(&mut stats),
             self.cancelled,
         )?;
         fit.global_step(&mut self.globals, &stats, scale, rho);
@@ -644,8 +647,7 @@ impl vi::Steps for SiteSteps<'_, '_> {
             &mut self.locals,
             &self.globals,
             LOCAL_ITERS,
-            Some(&mut stats),
-            false,
+            Then::Gather(&mut stats),
             self.cancelled,
         )?;
         let terms = fit.global_terms(&self.globals);
@@ -668,8 +670,7 @@ impl vi::Steps for SiteSteps<'_, '_> {
             &mut self.locals,
             &self.globals,
             LOCAL_ITERS,
-            None,
-            true,
+            Then::Score,
             self.cancelled,
         )?;
         Some(swept.after + fit.global_terms(&self.globals))

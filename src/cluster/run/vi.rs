@@ -83,6 +83,8 @@ pub(in crate::cluster) fn restarts<S: Send, F>(
             Err(e) => {
                 log::warn!("restart {i}: {e:#}");
                 failed.get_or_insert(e);
+                // Nothing left of it to count.
+                progress.reach(i, warmup + epochs);
                 ends.push(None);
                 continue;
             }
@@ -91,11 +93,14 @@ pub(in crate::cluster) fn restarts<S: Send, F>(
             ends.push(None);
             continue;
         }
+        progress.fitting(i);
         let epoch = |e: usize, f: f64| {
             progress.reach(i, warmup + e);
             progress.note(i, warmup + e, f);
         };
+        let begin = |aim| progress.aim(aim);
         let hooks = Hooks {
+            begin: &begin,
             epoch: &epoch,
             stop: &stop,
             cancelled: &cancelled,
@@ -133,9 +138,10 @@ pub(in crate::cluster) struct Best<F> {
 }
 
 /// The restarts of `work` (see [`restarts`]), their `warmup` steps of
-/// k-means then `epochs` at most counted on `progress` (drawn on its bar);
-/// the best of them. [`progress::Cancelled`] when the run was, or was
-/// stopped before any restart finished an epoch (nothing to write).
+/// k-means then `epochs` at most counted on `progress` (drawn on its bar,
+/// or said in lines off a terminal); the best of them.
+/// [`progress::Cancelled`] when the run was, or was stopped before any
+/// restart finished an epoch (nothing to write).
 pub(in crate::cluster) fn best<F: Send>(
     progress: &progress::Progress,
     (warmup, epochs): (usize, usize),

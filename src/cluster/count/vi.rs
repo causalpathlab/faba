@@ -265,13 +265,34 @@ struct Stats {
 
 /// What a sweep over cells gives: their ELBO terms before and after their
 /// steps, their `E theta` by role summed before and after, and
-/// (when asked) each one's `n_ca` in their order.
+/// (when [`Then::UnitsAndN`]) each one's `n_ca` in their order.
 struct Swept {
     before: f64,
     after: f64,
     theta_old: Vec<f64>,
     theta_new: Vec<f64>,
     n: Vec<f64>,
+}
+
+/// What a sweep gathers of its cells' steps: nothing, their `u_ga` added
+/// into a slice (genes x A), or that and each one's `n_ca`.
+enum Then<'u> {
+    Nothing,
+    Units(&'u mut [f64]),
+    UnitsAndN(&'u mut [f64]),
+}
+
+impl Then<'_> {
+    fn u(&mut self) -> Option<&mut [f64]> {
+        match self {
+            Then::Nothing => None,
+            Then::Units(u) | Then::UnitsAndN(u) => Some(u),
+        }
+    }
+
+    fn keeps_n(&self) -> bool {
+        matches!(self, Then::UnitsAndN(_))
+    }
 }
 
 /// Cells stepped together: their steps are held at once, so this bounds
@@ -323,9 +344,8 @@ impl<'a> Fit<'a> {
     }
 
     /// One pass over cell `c`'s counts at `cell`, `x / Z` kept when `keep_w`,
-    /// `sum x ln Z` taken when `data`.
-    fn pass(&self, c: usize, cell: &Cell, cache: &Cache, keep_w: bool, data: bool) -> Pass {
-        let want = data;
+    /// `sum x ln Z` taken when `want`.
+    fn pass(&self, c: usize, cell: &Cell, cache: &Cache, keep_w: bool, want: bool) -> Pass {
         let aa = self.aa;
         let (genes, xs) = self.counts.of(c);
         let t_exp: Vec<f64> = (cell.t.iter().zip(&cell.tr))
@@ -391,18 +411,15 @@ impl<'a> Fit<'a> {
 
     /// The steps of `cells` from their stored locals against `cache`, up to
     /// `iters` rounds each, [`CHUNK`] cells at a time (each chunk's in
-    /// parallel), stored back: their `u_ga` added into `u` (genes x A) when
-    /// given, their `n_ca` kept when `keep_n`. None when `cancelled` says so
-    /// between chunks.
-    #[allow(clippy::too_many_arguments)]
+    /// parallel), stored back, then what `then` gathers of them (see
+    /// [`Then`]). None when `cancelled` says so between chunks.
     fn sweep(
         &self,
         cells: &[usize],
         locals: &mut Locals,
         cache: &Cache,
         iters: usize,
-        mut u: Option<&mut [f64]>,
-        keep_n: bool,
+        mut then: Then,
         cancelled: &(dyn Fn() -> bool + Sync),
     ) -> Option<Swept> {
         let aa = self.aa;
@@ -411,16 +428,17 @@ impl<'a> Fit<'a> {
             after: 0.0,
             theta_old: vec![0.0; aa],
             theta_new: vec![0.0; aa],
-            n: Vec::with_capacity(if keep_n { cells.len() * aa } else { 0 }),
+            n: Vec::with_capacity(if then.keeps_n() { cells.len() * aa } else { 0 }),
         };
         for chunk in cells.chunks(CHUNK) {
             if cancelled() {
                 return None;
             }
-            let (held, keep_w): (&Locals, bool) = (locals, u.is_some());
+            let held: &Locals = locals;
+            let keep = then.u().is_some();
             let steps: Vec<Step> = chunk
                 .par_iter()
-                .map(|&c| self.step(c, Cell::of(held, c, aa), cache, iters, keep_w))
+                .map(|&c| self.step(c, Cell::of(held, c, aa), cache, iters, keep))
                 .collect();
             for (&c, s) in chunk.iter().zip(&steps) {
                 out.before += s.before;
@@ -432,12 +450,12 @@ impl<'a> Fit<'a> {
                     .zip(&locals.tr[r]))
                 .for_each(|((o, t), r)| *o += t / r);
                 s.cell.means_into(&mut out.theta_new);
-                if keep_n {
+                if then.keeps_n() {
                     out.n.extend_from_slice(&s.last.n);
                 }
                 s.cell.store(locals, c, aa);
             }
-            if let Some(u) = u.as_deref_mut() {
+            if let Some(u) = then.u() {
                 self.add_u(chunk, &steps, u);
             }
         }
@@ -499,8 +517,7 @@ impl<'a> Fit<'a> {
             locals,
             &cache,
             LOCAL_ITERS,
-            Some(&mut u),
-            true,
+            Then::UnitsAndN(&mut u),
             cancelled,
         )?;
         let stats = self.stats(&u, &cache);
@@ -615,6 +632,7 @@ impl vi::Steps for CountSteps<'_, '_> {
     fn units(&self) -> f64 {
         self.fit.counts.total()
     }
+    const UNIT: &'static str = "count";
 
     fn first(&mut self) -> Option<()> {
         let cache = self.globals.cache();
@@ -623,8 +641,7 @@ impl vi::Steps for CountSteps<'_, '_> {
             &mut self.locals,
             &cache,
             2 * LOCAL_ITERS,
-            None,
-            false,
+            Then::Nothing,
             self.cancelled,
         )?;
         self.theta_total = swept.theta_new;
@@ -640,8 +657,7 @@ impl vi::Steps for CountSteps<'_, '_> {
             &mut self.locals,
             &cache,
             LOCAL_ITERS,
-            Some(&mut u),
-            false,
+            Then::Units(&mut u),
             self.cancelled,
         )?;
         for ((t, new), old) in self
@@ -747,7 +763,7 @@ fn score(
     cancelled: &(dyn Fn() -> bool + Sync),
 ) -> Option<f64> {
     let cache = globals.cache();
-    let swept = fit.sweep(all, locals, &cache, 0, None, false, cancelled)?;
+    let swept = fit.sweep(all, locals, &cache, 0, Then::Nothing, cancelled)?;
     Some(swept.after + fit.global_terms(globals.kl(&fit.prior), &cache, &swept.theta_new))
 }
 
