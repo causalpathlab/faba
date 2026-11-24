@@ -416,6 +416,15 @@ fn the_report_carries_the_top_sites_by_p_value() {
     assert_eq!(m["gene"].as_array().unwrap().len(), carried);
     assert_eq!(m["pairs"].as_array().unwrap().len(), 4);
     assert_eq!(m["auto"].as_array().unwrap().len(), 4);
+    // With a metagene, weighed by coverage: drawn of every site, not only
+    // those carried.
+    let t = with_genes(table(M6A, n));
+    let mut p = picker(&t, None, SiteFilterArgs::default_values());
+    p.set_meta(Meta::ready(vec![Some(meta_layout(t.len()))], vec![]));
+    let data = report_json(&p);
+    let m = &data["modalities"][0];
+    assert!((m["sites"].as_u64().unwrap() as usize) < n);
+    assert!(m["meta"]["all"].as_array().is_some_and(|a| !a.is_empty()));
     let small = table(M6A, 500);
     let (_d, p) = report_picker(&small);
     let m = &report_json(&p)["modalities"][0];

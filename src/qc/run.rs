@@ -248,6 +248,66 @@ fn html_problem(args: &QcArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Refused, before anything is read, when a dry run's figures cannot go
+/// where asked: `--dry-run --plots` writes them to `-o DIR`'s `qc_plots/`,
+/// DIR new or empty (never a fileset, nothing else in it).
+fn dry_plots_problem(args: &QcArgs) -> anyhow::Result<()> {
+    if !(args.dry_run && args.plots) {
+        return Ok(());
+    }
+    let Some(out) = args.output.as_deref() else {
+        anyhow::bail!(
+            "`faba qc --dry-run --plots` writes its figures under -o DIR: name one, new or empty"
+        );
+    };
+    if let Some(problem) = crate::tui::output_problem(out) {
+        anyhow::bail!("-o {problem}: faba qc never writes over files; name another");
+    }
+    Ok(())
+}
+
+/// A dry run's figures: each modality's knobs and pairs, each batch's
+/// cells, under `-o DIR/qc_plots`.
+fn write_dry_plots(
+    args: &QcArgs,
+    input: &str,
+    prep: &Prepared,
+    gff: Option<&str>,
+) -> anyhow::Result<()> {
+    let Some(out) = args
+        .output
+        .as_deref()
+        .filter(|_| args.dry_run && args.plots)
+    else {
+        return Ok(());
+    };
+    dry_plots_problem(args)?;
+    let page = args
+        .size
+        .page_at_least((crate::qc::site_tui::QC_LEAST_W, 0.0), "a qc figure")?;
+    let mut figures = if prep.tables.values().any(|t| !t.is_empty()) {
+        site_figures(
+            input,
+            &prep.tables,
+            &prep.site_cells,
+            &args.site,
+            gff,
+            &args.genes,
+            page,
+        )?
+    } else {
+        Vec::new()
+    };
+    figures.extend(cell_figures(&prep.decisions, page));
+    let dir = format!("{out}/qc_plots");
+    std::fs::create_dir_all(&dir)?;
+    for f in &figures {
+        crate::figure::save_with_png(&f.svg, &format!("{dir}/{}", f.stem))?;
+    }
+    info!("wrote {} figures under {dir}", figures.len());
+    Ok(())
+}
+
 /// `--html`'s page, at `filter`, once the run has what it shows; the file
 /// checked again, as it may have appeared meanwhile.
 fn write_html(
@@ -275,6 +335,7 @@ fn write_html(
 
 pub fn run_qc(args: &QcArgs) -> anyhow::Result<()> {
     html_problem(args)?;
+    dry_plots_problem(args)?;
     if args.dry_run {
         return dry_run(args);
     }
@@ -359,8 +420,9 @@ fn dry_run(args: &QcArgs) -> anyhow::Result<()> {
     }
     print!("{out}");
     let has_sites = prep.tables.values().any(|t| !t.is_empty());
+    let gff = explicit_or_recorded(args.gff.as_deref(), input, "gff", "annotation");
+    write_dry_plots(args, input, &prep, gff.as_deref())?;
     if has_sites {
-        let gff = explicit_or_recorded(args.gff.as_deref(), input, "gff", "annotation");
         write_html(args, input, &prep, gff.as_deref())?;
     } else if args.html.is_some() {
         log::warn!("no editing site table: --html writes no page");
@@ -853,6 +915,101 @@ mod tests {
         }
     }
 
+    /// One modality's sampled sites, as the snapshot keeps them.
+    #[derive(serde::Serialize, serde::Deserialize)]
+    /// (Reals as their bits: JSON has no NaN or infinity.)
+    struct Snap {
+        modality: String,
+        pv: Vec<u32>,
+        coverage: Vec<u64>,
+        converted: Vec<u64>,
+        control_coverage: Vec<u64>,
+        edit_ratio: Vec<u32>,
+        fold: Vec<u32>,
+        raw_log_odds: Vec<u64>,
+        gene_id: Vec<u32>,
+        n_genes: usize,
+        n_cells: Option<Vec<usize>>,
+    }
+
+    /// The figures and the page redrawn from a snapshot in
+    /// `FABA_QC_SNAPSHOT` (a JSON file), into `FABA_QC_REDRAW_OUT`; the
+    /// snapshot made first, once, from the faba directory in
+    /// `FABA_QC_TIMING_DIR` (read only), sampling at most 60,000 sites per
+    /// modality: `cargo test qc_redraw -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn qc_redraw() {
+        let (Ok(snap), Ok(out)) = (
+            std::env::var("FABA_QC_SNAPSHOT"),
+            std::env::var("FABA_QC_REDRAW_OUT"),
+        ) else {
+            eprintln!("FABA_QC_SNAPSHOT and FABA_QC_REDRAW_OUT are not set");
+            return;
+        };
+        type Saved = (Vec<Snap>, Vec<crate::qc::cells_plot::Cells>);
+        if !std::path::Path::new(&snap).exists() {
+            let input = std::env::var("FABA_QC_TIMING_DIR").expect("FABA_QC_TIMING_DIR");
+            let args = parse(&format!("faba qc {input} --batch-process -o unused"));
+            let prep = prepare(&args, &input).unwrap();
+            let mut snaps = Vec::new();
+            for (m, t) in &prep.tables {
+                let n_cells = prep.site_cells.get(m).map(|acc| t.cells_per_site(acc));
+                let step = t.len().div_ceil(60_000).max(1);
+                let pick = |i: &usize| i.is_multiple_of(step);
+                let idx: Vec<usize> = (0..t.len()).filter(pick).collect();
+                let take = |v: &[f32]| idx.iter().map(|&i| v[i].to_bits()).collect::<Vec<_>>();
+                let takeu = |v: &[u64]| idx.iter().map(|&i| v[i]).collect::<Vec<_>>();
+                snaps.push(Snap {
+                    modality: m.to_string(),
+                    pv: take(&t.pv),
+                    coverage: takeu(&t.coverage),
+                    converted: takeu(&t.converted),
+                    control_coverage: takeu(&t.control_coverage),
+                    edit_ratio: take(&t.edit_ratio),
+                    fold: take(&t.fold),
+                    raw_log_odds: idx.iter().map(|&i| t.raw_log_odds[i].to_bits()).collect(),
+                    gene_id: idx.iter().map(|&i| t.gene_id[i]).collect(),
+                    n_genes: t.n_genes,
+                    n_cells: n_cells.map(|n| idx.iter().map(|&i| n[i]).collect()),
+                });
+            }
+            let saved: Saved = (snaps, cells_of(&prep.decisions));
+            std::fs::write(&snap, serde_json::to_string(&saved).unwrap()).unwrap();
+        }
+        let (snaps, cells): Saved =
+            serde_json::from_str(&std::fs::read_to_string(&snap).unwrap()).unwrap();
+        let tables: Vec<(SiteTable, Option<Vec<usize>>)> = (snaps.into_iter())
+            .map(|s| {
+                let t = SiteTable {
+                    modality: s.modality.into(),
+                    batch: arrow::record_batch::RecordBatch::new_empty(std::sync::Arc::new(
+                        arrow::datatypes::Schema::empty(),
+                    )),
+                    key: (0..s.pv.len()).map(|i| format!("s{i}").into()).collect(),
+                    gene_id: s.gene_id,
+                    n_genes: s.n_genes,
+                    pv: s.pv.iter().map(|&b| f32::from_bits(b)).collect(),
+                    coverage: s.coverage,
+                    converted: s.converted,
+                    control_coverage: s.control_coverage,
+                    edit_ratio: s.edit_ratio.iter().map(|&b| f32::from_bits(b)).collect(),
+                    fold: s.fold.iter().map(|&b| f32::from_bits(b)).collect(),
+                    raw_log_odds: s.raw_log_odds.iter().map(|&b| f64::from_bits(b)).collect(),
+                };
+                (t, s.n_cells)
+            })
+            .collect();
+        let mut tables = tables;
+        tables.sort_by_key(|(t, _)| SITE_MODALITIES.iter().position(|m| **m == *t.modality));
+        std::fs::create_dir_all(&out).unwrap();
+        let t = std::time::Instant::now();
+        let f = SiteFilterArgs::default_values();
+        let written = crate::qc::site_tui::redraw(&tables, &f, cells, std::path::Path::new(&out));
+        eprintln!("redrawn in {:.3} s:", t.elapsed().as_secs_f64());
+        written.iter().for_each(|p| eprintln!("  {}", p.display()));
+    }
+
     /// `--html` goes only to a file that is not there, with --batch-process
     /// or --dry-run: an existing one is refused before anything is read
     /// (the input here does not exist), naming it and asking for another
@@ -885,6 +1042,29 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("folder"));
+    }
+
+    /// A dry run's figures go under -o DIR, new or empty: a DIR with files
+    /// is refused before anything is read, and one is needed.
+    #[test]
+    fn dry_run_plots_refuse_a_folder_with_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("mine.txt"), "mine").unwrap();
+        let d = dir.path().display();
+        let args = parse(&format!("faba qc /no/such/input --dry-run --plots -o {d}"));
+        let err = run_qc(&args).unwrap_err().to_string();
+        assert!(err.contains("already contains files"), "{err}");
+        let none = parse("faba qc /no/such/input --dry-run --plots");
+        assert!(dry_plots_problem(&none)
+            .unwrap_err()
+            .to_string()
+            .contains("-o DIR"));
+        let empty = tempfile::tempdir().unwrap();
+        let fresh = parse(&format!(
+            "faba qc in --dry-run --plots -o {}",
+            empty.path().display()
+        ));
+        assert!(dry_plots_problem(&fresh).is_ok());
     }
 
     #[test]

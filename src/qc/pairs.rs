@@ -15,7 +15,7 @@ use crate::figure::{Anchor, Canvas, FAINT, INK, MUTED};
 /// A site that every threshold keeps, drawn in this.
 pub const KEPT: &str = "#2a78d6";
 /// A site some threshold removes.
-pub const REMOVED: &str = "#8a8f8b";
+pub const REMOVED: &str = "#eb6834";
 /// Panels a view shows.
 pub const PANELS: usize = 4;
 /// Bins per side of a panel's grid.
@@ -156,20 +156,44 @@ impl Axis {
         }
     }
 
-    /// A drawn value back as its criterion reads it, for a tick.
-    pub fn tick(self, v: f64) -> String {
-        let n = |x: f64| {
-            if x >= 1000.0 {
-                format!("{:.0}k", x / 1000.0)
-            } else {
-                format!("{x:.0}")
-            }
+    /// Its ticks within the drawn range `r`, each a drawn position and its
+    /// label: on a count's log scale at 0 (where the scale has it), 1, 10,
+    /// 100 and on, as counts read; otherwise about five round values, with
+    /// the decimals their step needs.
+    pub fn ticks(self, r: (f64, f64)) -> Vec<(f64, String)> {
+        let count = |x: f64| match x {
+            x if x >= 1e6 => format!("{}M", x / 1e6),
+            x if x >= 1e3 => format!("{}k", x / 1e3),
+            x => format!("{x}"),
         };
+        let inside = |p: f64| p >= r.0 - 1e-9 && p <= r.1 + 1e-9;
         match self {
-            Axis::Coverage => n(10f64.powf(v)),
-            Axis::Converted | Axis::Cells => n(10f64.powf(v) - 1.0),
-            Axis::EditRatio => format!("{v:.2}"),
-            Axis::Fold | Axis::LogOdds | Axis::Pvalue => format!("{v:.0}"),
+            Axis::Coverage | Axis::Converted | Axis::Cells => {
+                // Drawn as log10(v) for coverage, log10(v + 1) for the rest.
+                let at = |v: f64| match self {
+                    Axis::Coverage => v.log10(),
+                    _ => (v + 1.0).log10(),
+                };
+                // 0, then 10 on for a count drawn as log10(v + 1): 1 would
+                // crowd 0.
+                let first = if self == Axis::Coverage { 0 } else { 1 };
+                let decades = (first..10).map(|k| 10f64.powi(k));
+                let zero = (self != Axis::Coverage).then_some(0.0);
+                let all: Vec<(f64, String)> = (zero.into_iter().chain(decades))
+                    .map(|v| (at(v), count(v)))
+                    .filter(|(p, _)| inside(*p))
+                    .collect();
+                // Every other decade when there are many.
+                let every = all.len().div_ceil(6).max(1);
+                all.into_iter().step_by(every).collect()
+            }
+            _ => {
+                let (values, step) = round_ticks(r);
+                let places = (-step.log10().floor()).max(0.0) as usize;
+                (values.into_iter())
+                    .map(|v| (v, format!("{v:.places$}")))
+                    .collect()
+            }
         }
     }
 
@@ -535,25 +559,15 @@ impl Grid {
         for (a, b2, c, d) in [(px, py + ph, px + pw, py + ph), (px, py, px, py + ph)] {
             canvas.line(a, b2, c, d, FAINT, 0.8);
         }
-        for v in ticks(self.xr) {
-            canvas.text(
-                sx(v),
-                py + ph + size * 1.2,
-                &self.x.tick(v),
-                size * 0.9,
-                Anchor::Middle,
-                MUTED,
-            );
+        for (v, label) in self.x.ticks(self.xr) {
+            canvas.line(sx(v), py + ph, sx(v), py + ph + 3.0, FAINT, 0.8);
+            let at = (sx(v), py + ph + size * 1.4);
+            canvas.text(at.0, at.1, &label, size * 0.9, Anchor::Middle, MUTED);
         }
-        for v in ticks(self.yr) {
-            canvas.text(
-                px - size * 0.4,
-                sy(v) + size * 0.35,
-                &self.y.tick(v),
-                size * 0.9,
-                Anchor::End,
-                MUTED,
-            );
+        for (v, label) in self.y.ticks(self.yr) {
+            canvas.line(px - 3.0, sy(v), px, sy(v), FAINT, 0.8);
+            let at = (px - size * 0.5, sy(v) + size * 0.35);
+            canvas.text(at.0, at.1, &label, size * 0.9, Anchor::End, MUTED);
         }
         canvas.text(
             px + pw / 2.0,
@@ -567,24 +581,27 @@ impl Grid {
     }
 }
 
-/// About five round ticks within `(lo, hi)`.
-fn ticks((lo, hi): (f64, f64)) -> Vec<f64> {
+/// About five round ticks within `(lo, hi)`, and their step.
+fn round_ticks((lo, hi): (f64, f64)) -> (Vec<f64>, f64) {
     let span = hi - lo;
     if span.is_nan() || span <= 0.0 {
-        return vec![lo];
+        return (vec![lo], 1.0);
     }
     let raw = span / 4.0;
     let mag = 10f64.powf(raw.log10().floor());
-    let step = [1.0, 2.0, 2.5, 5.0, 10.0]
+    let step = [1.0, 2.0, 5.0, 10.0]
         .iter()
         .map(|m| m * mag)
         .find(|&s| s >= raw)
         .unwrap_or(10.0 * mag);
     let first = (lo / step).ceil() * step;
-    (0..)
+    let values = (0..)
         .map(|k| first + k as f64 * step)
         .take_while(|&v| v <= hi + 1e-9)
-        .collect()
+        // -0 written as 0.
+        .map(|v| if v.abs() < step * 1e-9 { 0.0 } else { v })
+        .collect();
+    (values, step)
 }
 
 /// `#rrggbb` as its parts.

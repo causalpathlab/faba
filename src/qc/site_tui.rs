@@ -813,6 +813,52 @@ pub(crate) fn time_steps(
     said
 }
 
+/// The 2D figures, the cell figures and the page of `tables` (each with
+/// its kept cells per site) and `cells`, at `filter`, written into `out`
+/// as SVG and PNG: for redrawing them quickly (see the ignored `qc_redraw`
+/// test).
+#[cfg(test)]
+pub(crate) fn redraw(
+    tables: &[(SiteTable, Option<Vec<usize>>)],
+    filter: &SiteFilterArgs,
+    cells: Vec<crate::qc::cells_plot::Cells>,
+    out: &std::path::Path,
+) -> Vec<std::path::PathBuf> {
+    let views: Vec<SiteView> = (tables.iter())
+        .map(|(t, n)| SiteView::new(t, n.clone(), filter))
+        .collect();
+    let mut p = SitePicker::new(
+        "redraw",
+        views,
+        filter.clone(),
+        Meta::Unavailable("redraw".into()),
+    );
+    let mut written = Vec::new();
+    let mut save = |stem: &str, svg: &str| {
+        let prefix = out.join(stem).to_string_lossy().into_owned();
+        written.extend(
+            crate::figure::save_with_png(svg, &prefix)
+                .unwrap()
+                .into_iter()
+                .map(Into::into),
+        );
+    };
+    for m in 0..p.views.len() {
+        let stem = pairs_view::pairs_stem(&p.views[m].table.modality);
+        save(&stem, &p.pairs_figure(m, crate::figure::size::OWN));
+    }
+    for c in &cells {
+        let svg = c.figure((720.0, 320.0));
+        save(&format!("{}_cells", c.batch), &svg);
+    }
+    p.cells = cells;
+    let html = out.join("qc.html");
+    let title = "faba qc · redraw".to_string();
+    crate::report::write(&html, &title, report::FRAGMENT, &p.report_source().data()).unwrap();
+    written.push(html);
+    written
+}
+
 /// What one site threshold does to one modality, for `faba qc --dry-run`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThresholdCount {

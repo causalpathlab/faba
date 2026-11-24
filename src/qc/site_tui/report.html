@@ -67,7 +67,7 @@
   <p class="note" id="carried"></p>
 
   <h2>Two thresholds at a time</h2>
-  <p class="lede">Each panel puts two thresholds' values against each other: <span class="sw" style="background:#2a78d6"></span> sites kept by every threshold, <span class="sw" style="background:#8a8f8b"></span> sites removed by at least one, deeper where there are more. The dashed box is where both drawn thresholds pass, so a site in the box but removed is removed by a threshold not drawn there. Pick each panel's axes, or let <b>Auto</b> choose the pairs that split the most sites on axes that agree least.</p>
+  <p class="lede">Each panel puts two thresholds' values against each other: <span class="sw" style="background:#2a78d6"></span> sites kept by every threshold, <span class="sw" style="background:#eb6834"></span> sites removed by at least one, deeper where there are more. The dashed box is where both drawn thresholds pass, so a site in the box but removed is removed by a threshold not drawn there. Pick each panel's axes, or let <b>Auto</b> choose the pairs that split the most sites on axes that agree least.</p>
   <div class="pairbar"><button type="button" id="auto">Auto</button></div>
   <div class="pairs" id="pairs"></div>
 
@@ -473,17 +473,13 @@ function draw() {
 }
 
 // ---- Two thresholds at a time: as `faba qc`'s 2D view draws them. ----
-const KEPT = "#2a78d6", REMOVED = "#8a8f8b", OUTLIER = "#eb6834", BINS = 44;
+const KEPT = "#2a78d6", REMOVED = "#eb6834", OUTLIER = REMOVED, EMPTY = "#8a8f8b", BINS = 44;
 const AXES = new Map(DATA.axes.map(a => [a.key, a]));
 // A criterion's raw value on the axis' drawn scale, as src/qc/pairs.rs.
 const SCALED = {
   coverage: v => Math.log10(Math.max(v, 1)), converted: v => Math.log10(v + 1), cells: v => Math.log10(v + 1),
   edit_ratio: v => v, log_odds: v => v, fold: v => Math.log2(v),
   pvalue: v => v <= 0 ? Infinity : -Math.log10(v),
-};
-const TICK = {
-  coverage: v => compact(10 ** v), converted: v => compact(10 ** v - 1), cells: v => compact(10 ** v - 1),
-  edit_ratio: v => v.toFixed(2), fold: v => v.toFixed(0), log_odds: v => v.toFixed(0), pvalue: v => v.toFixed(0),
 };
 // Each modality's axis values, read once, and its panels as written.
 mods.forEach(m => {
@@ -508,6 +504,22 @@ function passes(m, key) {
     if (k.max && key !== "pvalue") hi = v; else lo = v;
   }
   return [lo, hi];
+}
+// An axis' ticks as [drawn position, label], as src/qc/pairs.rs: a count's
+// log scale at 0, 1, 10, 100…; otherwise round values, decimals by step.
+function axisTicks(key, [lo, hi]) {
+  const inside = p => p >= lo - 1e-9 && p <= hi + 1e-9;
+  if (key === "coverage" || key === "converted" || key === "cells") {
+    const at = v => key === "coverage" ? Math.log10(v) : Math.log10(v + 1);
+    const vals = key === "coverage" ? [...Array(10)].map((_, k) => 10 ** k) : [0].concat([...Array(9)].map((_, k) => 10 ** (k + 1)));
+    const all = vals.map(v => [at(v), compact(v)]).filter(([p]) => inside(p));
+    const every = Math.max(1, Math.ceil(all.length / 6));
+    return all.filter((_, k) => k % every === 0);
+  }
+  const span = hi - lo, raw = span / 4, mag = 10 ** Math.floor(Math.log10(raw));
+  const step = [1, 2, 5, 10].map(x => x * mag).find(x => x >= raw), places = Math.max(0, -Math.floor(Math.log10(step)));
+  const out = []; for (let v = Math.ceil(lo / step) * step; v <= hi + 1e-9; v += step) out.push([v, (Math.abs(v) < step * 1e-9 ? 0 : v).toFixed(places)]);
+  return out;
 }
 const ticksOf = ([lo, hi]) => {
   const raw = (hi - lo) / 4, mag = 10 ** Math.floor(Math.log10(raw)), step = [1, 2, 2.5, 5, 10].map(x => x * mag).find(s => s >= raw);
@@ -544,8 +556,8 @@ function drawPanel(canvas, m, p) {
   if (x1 > x0 && y1 > y0) ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
   ctx.setLineDash([]); ctx.strokeStyle = css("--rule"); ctx.strokeRect(l, t, pw, ph);
   ctx.fillStyle = css("--dim"); ctx.textAlign = "center";
-  ticksOf(xr).forEach(v => ctx.fillText(TICK[p.x](v), sx(v), t + ph + 13));
-  ctx.textAlign = "right"; ticksOf(yr).forEach(v => ctx.fillText(TICK[p.y](v), l - 5, sy(v) + 4));
+  axisTicks(p.x, xr).forEach(([v, s]) => ctx.fillText(s, sx(v), t + ph + 13));
+  ctx.textAlign = "right"; axisTicks(p.y, yr).forEach(([v, s]) => ctx.fillText(s, l - 5, sy(v) + 4));
   ctx.fillStyle = css("--fg"); ctx.textAlign = "center"; ctx.fillText(AXES.get(p.x).name, l + pw / 2, H - 6);
   ctx.save(); ctx.translate(12, t + ph / 2); ctx.rotate(-Math.PI / 2); ctx.fillText(AXES.get(p.y).name, 0, 0); ctx.restore();
   return [inK, inR];
@@ -579,7 +591,7 @@ function drawCells() {
   }).join("");
   box.querySelectorAll("canvas").forEach(c => {
     const b = DATA.cells[Number(c.dataset.c)], [ctx, W, H] = fit(c), l = 50, t = 10, pw = W - 60, ph = H - 46;
-    const colour = v => [KEPT, OUTLIER, REMOVED][v], lg = v => Math.log10(Math.max(v, 1));
+    const colour = v => [KEPT, OUTLIER, EMPTY][v], lg = v => Math.log10(Math.max(v, 1));
     const axes = (xt, yt, xm, ym) => {
       ctx.strokeStyle = css("--rule"); ctx.strokeRect(l, t, pw, ph); ctx.fillStyle = css("--dim");
       ctx.textAlign = "center"; for (let k = 0; k <= Math.floor(xm); k++) ctx.fillText(compact(10 ** k), l + k / xm * pw, t + ph + 13);

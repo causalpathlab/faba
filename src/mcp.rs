@@ -1228,24 +1228,46 @@ fn qc(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
     if let Some(h) = &html {
         argv.push(format!("--html={h}"));
     }
-    if a.flag("dry_run")? {
-        argv.push("--dry-run".into());
-        let printed = cx.run(command(&argv)?)?;
-        return Ok(vec![Content::Json(json!({
-            "dry_run": tsv_rows(&printed),
-            "html": html,
-            "note": "nothing written but `html`; `removes` counts every site failing a threshold, `only_this` those failing it alone; a `pair` row is a pair Auto picks for the 2D panels, `removes` the sites one of its thresholds keeps and the other drops",
-        }))]);
-    }
     let plots = a.flag("plots")?;
     if plots {
         argv.push("--plots".into());
+    }
+    if a.flag("dry_run")? {
+        argv.push("--dry-run".into());
+        // The figures, without cutting: under `out`, new, never a fileset.
+        let out = match plots {
+            true => {
+                let out = a.out_or(cx, (&named(&input, "qc_plots"), ""), exists)?;
+                argv.push(format!("--output={out}"));
+                Some(out)
+            }
+            false => None,
+        };
+        let printed = cx.run(command(&argv)?)?;
+        let mut content = vec![Content::Json(json!({
+            "dry_run": tsv_rows(&printed),
+            "html": html,
+            "plots": out.as_ref().map(|o| format!("{o}/qc_plots")),
+            "note": "no fileset written, only `plots` and `html` when asked; `removes` counts every site failing a threshold, `only_this` those failing it alone; a `pair` row is a pair Auto picks for the 2D panels, `removes` the sites one of its thresholds keeps and the other drops",
+        }))];
+        if let Some(out) = &out {
+            content.extend(qc_images(out)?);
+        }
+        return Ok(content);
     }
     argv.push("--batch-process".into());
     let out = a.out_or(cx, (&named(&input, "qc"), ""), exists)?;
     let what = format!("qc of {input}");
     let v = run_out(a, cx, argv, &out, &what)?;
-    let mut images: Vec<PathBuf> = std::fs::read_dir(Path::new(&out).join("qc_plots"))
+    let mut content = vec![Content::Json(v)];
+    content.extend(qc_images(&out)?);
+    Ok(content)
+}
+
+/// The figures under `out`'s `qc_plots/`, as images, in name order, at
+/// most [`QC_IMAGES`].
+fn qc_images(out: &str) -> Result<Vec<Content>> {
+    let mut images: Vec<PathBuf> = std::fs::read_dir(Path::new(out).join("qc_plots"))
         .into_iter()
         .flatten()
         .flatten()
@@ -1253,11 +1275,9 @@ fn qc(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
         .filter(|p| p.extension().is_some_and(|x| x == "png"))
         .collect();
     images.sort();
-    let mut content = vec![Content::Json(v)];
-    for p in images.iter().take(QC_IMAGES) {
-        content.push(Content::Png(std::fs::read(p)?));
-    }
-    Ok(content)
+    (images.iter().take(QC_IMAGES))
+        .map(|p| Ok(Content::Png(std::fs::read(p)?)))
+        .collect()
 }
 
 /// The tools that draw a figure, each taking its size as `width` and

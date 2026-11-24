@@ -7,7 +7,7 @@ use crate::figure::{Anchor, Canvas, FAINT, INK, MUTED};
 use data_beans::qc_lib::QcReport;
 
 /// The verdict on a barcode.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Verdict {
     Kept,
@@ -23,8 +23,8 @@ impl Verdict {
     pub fn colour(self) -> &'static str {
         match self {
             Verdict::Kept => crate::qc::pairs::KEPT,
-            Verdict::Outlier => "#eb6834",
-            Verdict::NearEmpty => crate::qc::pairs::REMOVED,
+            Verdict::Outlier => crate::qc::pairs::REMOVED,
+            Verdict::NearEmpty => "#8a8f8b",
         }
     }
 
@@ -38,7 +38,7 @@ impl Verdict {
 }
 
 /// A batch's barcodes: each one's counts, detected genes and verdict.
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Cells {
     pub batch: Box<str>,
     pub counts: Vec<f32>,
@@ -91,6 +91,8 @@ impl Cells {
                 x += 100.0;
             }
             let half = (w - 12.0) / 2.0;
+            let note = "right: a square blue where most of its barcodes are kept, orange where not";
+            c.text(12.0 + half, 32.0, note, 9.0, Anchor::Start, MUTED);
             self.knee(c, (6.0, 40.0, half - 6.0, h - 46.0));
             self.density(c, (6.0 + half, 40.0, half - 6.0, h - 46.0));
         })
@@ -127,8 +129,13 @@ impl Cells {
     fn density(&self, c: &mut Canvas, (x, y, w, h): (f64, f64, f64, f64)) {
         const BINS: usize = 44;
         let lg = |v: f32| (v as f64).max(1.0).log10();
-        let xr = (0.0, self.counts.iter().map(|&v| lg(v)).fold(1.0, f64::max));
-        let yr = (0.0, self.genes.iter().map(|&v| lg(v)).fold(1.0, f64::max));
+        // From the decade below the fewest to the most: no empty decades.
+        let span = |v: &[f32]| {
+            let lo = v.iter().map(|&x| lg(x)).fold(f64::INFINITY, f64::min);
+            let hi = v.iter().map(|&x| lg(x)).fold(1.0, f64::max);
+            (lo.floor().clamp(0.0, (hi - 1.0).max(0.0)), hi)
+        };
+        let (xr, yr) = (span(&self.counts), span(&self.genes));
         let frame = Frame::new((x, y, w, h), xr, yr);
         let (mut kept, mut other) = (vec![0u32; BINS * BINS], vec![0u32; BINS * BINS]);
         let slot = |v: f64, (lo, hi): (f64, f64)| {
@@ -158,7 +165,7 @@ impl Cells {
                 let base = if k >= o {
                     Verdict::Kept
                 } else {
-                    Verdict::NearEmpty
+                    Verdict::Outlier
                 };
                 let fill = shade(base.colour(), depth);
                 let px = frame.px + bx as f64 * cw;
@@ -235,11 +242,11 @@ impl Frame {
                 format!("{n:.0}")
             }
         };
-        for k in 0..=(self.xr.1.floor() as i32) {
+        for k in (self.xr.0.ceil() as i32)..=(self.xr.1.floor() as i32) {
             let (tx, ty) = self.at(k as f64, self.yr.0);
             c.text(tx, ty + 11.0, &label(k as f64), 8.0, Anchor::Middle, MUTED);
         }
-        for k in 0..=(self.yr.1.floor() as i32) {
+        for k in (self.yr.0.ceil() as i32)..=(self.yr.1.floor() as i32) {
             let (tx, ty) = self.at(self.xr.0, k as f64);
             c.text(
                 tx - 4.0,

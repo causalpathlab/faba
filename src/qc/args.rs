@@ -197,13 +197,14 @@ pub struct QcArgs {
     #[arg(
         long = "plots",
         default_value_t = false,
-        help = "With --batch-process, also draw the view's figures under qc_plots/",
-        long_help = "With --batch-process, also draw the figures the view writes on apply:\n\
-                     for every site modality and knob, `qc_plots/{modality}_{knob}.{pdf,png}`,\n\
+        help = "With --batch-process or --dry-run, also draw the view's figures under qc_plots/",
+        long_help = "With --batch-process or --dry-run, also draw the figures the view writes on\n\
+                     apply: for every site modality and knob, `qc_plots/{modality}_{knob}.{pdf,png}`,\n\
                      at the --site-* values given, with the metagene when an annotation is found;\n\
                      each modality's thresholds two at a time, `{modality}_pairs` (the pairs Auto\n\
                      picks); and each batch's cell QC, `{batch}_cells` (the knee, and genes\n\
-                     detected by counts)."
+                     detected by counts). With --dry-run they go under -o DIR, new or empty, and\n\
+                     nothing else is written: what the cut would do, without cutting."
     )]
     pub plots: bool,
 
@@ -228,10 +229,12 @@ pub struct QcArgs {
     #[arg(
         long = "dry-run",
         default_value_t = false,
-        help = "Print what the cell QC and each --site-* threshold would remove; write nothing",
+        help = "Print what the cell QC and each --site-* threshold would remove; write no fileset",
         long_help = "Print, as TSV on stdout, what the cell QC keeps per batch and what each\n\
-                     --site-* threshold removes per modality (alone, and only by it), at the\n\
-                     values given; write nothing. Needs INPUT_DIR only."
+                     --site-* threshold removes per modality (alone, and only by it), and the\n\
+                     pairs of thresholds Auto picks to show two at a time, at the values given;\n\
+                     write no fileset. Needs INPUT_DIR only; with --plots -o DIR, also the figures\n\
+                     (new or empty DIR), with --html FILE the page (FILE must not exist)."
     )]
     #[serde(skip)]
     pub dry_run: bool,

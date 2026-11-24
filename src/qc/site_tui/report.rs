@@ -312,7 +312,15 @@ impl ViewSource {
                 })
                 .collect()
         };
-        let meta = layout.map(|layout| self.meta(layout, weight.as_deref()));
+        // The metagene is drawn here, of every site, not only those carried.
+        let meta = layout.map(|layout| {
+            let all = (self.weight != Weight::Sites).then(|| {
+                (0..self.sites)
+                    .map(|i| self.weight.of(columns, i) as u64)
+                    .collect::<Vec<_>>()
+            });
+            self.meta(layout, all.as_deref())
+        });
         let genes = self.genes.as_deref();
         Modality {
             name: self.name,
