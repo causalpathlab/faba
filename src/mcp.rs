@@ -220,7 +220,7 @@ fn tools() -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "cluster",
-            "Cluster cells by their site reads (`faba cluster`). `data` is a faba directory or site matrices. The model is a blockmodel of cell modules and gene modules, a methylation shift per pair and each cell's own level, fitted by variational inference from k-means starts (`chains` restarts, the best by ELBO kept; `svi_epochs`, `batch_size`, `epochs`, `tol`). The MCMC fits of faba before 0.19 are gone: `model` link or crp, `sweeps`, `burn_in`, `shift`, `profile_strength` and `holdout` are refused. Tables go to `out`, a new directory, not back into `data`. With `modality` count, cluster cells by their gene counts instead (count matrices), fitted alike: its verdict is whether the best restart's ELBO settled. With `within`, the run record of such a count fit (count_blockmodel.run.json), fit the sites within each of its cell modules, one fit a module, into `out`/within/{m}/{group}/, with `out`/{m}_within.run.json naming them all and {m}_within_cells.parquet giving each cell its nested label (C3.2); `data` may then be left out, and the matrices are those beside the count fit's inputs. While it fits, a progress line every 15 s says the restart and epoch, the ELBO per read (or count) and its last move against `tol`, the share of steps done and about how long is left (an upper bound: a restart that settles ends early); with `background`, job_status shows the latest in `last_lines`.",
+            "Cluster cells by their site reads (`faba cluster`). `data` is a faba directory or site matrices. The model is a blockmodel of cell modules and gene modules, a methylation shift per pair and each cell's own level, fitted by variational inference from k-means starts (`chains` restarts, the best by ELBO kept; `svi_epochs`, `batch_size`, `epochs`, `tol`). The MCMC fits of faba before 0.19 are gone: `model` link or crp, `sweeps`, `burn_in`, `shift`, `profile_strength` and `holdout` are refused. Tables go to `out`, a new directory, not back into `data`. With `modality` count, cluster cells by their gene counts instead (count matrices), fitted alike: its verdict is whether the best restart's ELBO settled. With `within`, the run record of such a count fit (count_blockmodel.run.json), fit the sites within each of its cell modules, one fit a module, into `out`/within/{m}/{group}/, with `out`/{m}_within.run.json naming them all and {m}_within_cells.parquet giving each cell its nested label (C3.2); `data` may then be left out, and the matrices are those beside the count fit's inputs. The sites' batches pair with the count fit's by name (the same, or one named with its folder: `b1` and `runs/a/b1`); when that is ambiguous the run is refused, listing each choice: ask the user which is meant, then run again with `batch_map`. While it fits, a progress line every 15 s says the restart and epoch, the ELBO per read (or count) and its last move against `tol`, the share of steps done and about how long is left (an upper bound: a restart that settles ends early); with `background`, job_status shows the latest in `last_lines`.",
             schema(
                 json!({
                     "data": { "type": "array", "items": { "type": "string" }, "description": "A faba directory, or site (or, with `modality` count, count) matrices; required unless `within` is given" },
@@ -233,6 +233,13 @@ fn tools() -> Vec<ToolSpec> {
                     "epochs": { "type": "integer", "minimum": 1, "description": "Epochs at most" },
                     "tol": { "type": "number", "minimum": 0, "description": "Converged when an epoch moves the ELBO by less than this per count (per read for a site fit)" },
                     "fit": { "type": "string", "description": "Fit only matrices whose path matches this pattern (`*`, `?`); the rest are assigned after" },
+                    "batch_map": {
+                        "description": "With `within`: which of the count fit's batches each of the sites' batches is, taken before any pairing by name. An object {\"SITES\": \"COUNT\"} or a list of \"SITES=COUNT\"; an empty COUNT leaves that batch unmatched. Give it when the run is refused as ambiguous: the refusal lists each choice",
+                        "anyOf": [
+                            { "type": "object", "additionalProperties": { "type": "string" } },
+                            { "type": "array", "items": { "type": "string" } },
+                        ],
+                    },
                     "out": out(), "options": options(),
                 }),
                 &[],
@@ -1261,6 +1268,22 @@ fn refuse_removed(a: &Arguments) -> Result<()> {
     Ok(())
 }
 
+/// `cluster`'s `batch_map`, as `--batch-map` takes each pair: from an
+/// object of `SITES: COUNT`, or a list of `SITES=COUNT`.
+fn batch_map(a: &Arguments) -> Result<Vec<String>> {
+    match a.0.get("batch_map") {
+        None | Some(Value::Null) => Ok(Vec::new()),
+        Some(Value::Object(m)) => (m.iter())
+            .map(|(sites, count)| match count {
+                Value::String(c) => Ok(format!("{sites}={c}")),
+                Value::Null => Ok(format!("{sites}=")),
+                other => bail!("`batch_map` {sites}: the count fit's batch, a string, not {other}"),
+            })
+            .collect(),
+        Some(_) => a.strings("batch_map"),
+    }
+}
+
 fn cluster(a: &Arguments, cx: &Call) -> Result<Value> {
     // Before anything is resolved (`out` may make today's folder).
     refuse_removed(a)?;
@@ -1282,6 +1305,10 @@ fn cluster(a: &Arguments, cx: &Call) -> Result<Value> {
     argv.extend(data.iter().cloned());
     push_opt(&mut argv, "--modality", a.str("modality"));
     push_opt(&mut argv, "--fit", a.str("fit"));
+    for pair in batch_map(a)? {
+        // As one word: a batch named `-x` is not read as a flag.
+        argv.push(format!("--batch-map={pair}"));
+    }
     argv.extend(a.numbers(&[
         "cell_roles",
         "gene_roles",
@@ -1749,6 +1776,24 @@ sites	m6A	10	2
         assert!(tools().iter().any(|t| {
             t.name == "cluster" && t.input_schema["properties"]["within"].is_object()
         }));
+    }
+
+    /// `batch_map` is an object of `SITES: COUNT` or a list of
+    /// `SITES=COUNT`, each pair one `--batch-map`; anything else is refused.
+    #[test]
+    fn cluster_batch_map_is_an_object_or_a_list() {
+        let map = |v| super::batch_map(&Arguments(json!({ "batch_map": v })));
+        assert_eq!(
+            map(json!({ "/x/solo": "solo", "b": "" })).unwrap(),
+            ["/x/solo=solo", "b="]
+        );
+        assert_eq!(map(json!(["-b=c/b"])).unwrap(), ["-b=c/b"]);
+        assert!(map(json!({ "b": 3 })).is_err());
+        assert!(map(json!(7)).is_err());
+        assert!(super::batch_map(&Arguments(json!({}))).unwrap().is_empty());
+        let cluster = tools().into_iter().find(|t| t.name == "cluster").unwrap();
+        assert!(cluster.input_schema["properties"]["batch_map"].is_object());
+        assert!(cluster.description.contains("`batch_map`"));
     }
 
     /// The MCMC fits' arguments are refused by name, `model` blocks taken;
