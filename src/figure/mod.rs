@@ -35,6 +35,29 @@ pub const MUTED: &str = "#6b6b6b";
 pub const FAINT: &str = "#cfcfcf";
 /// The one accent, as on screen: what a threshold drops, the cursor.
 pub const ACCENT: &str = "#d97757";
+
+/// `#rrggbb` as its parts, each 0 to 255.
+pub fn rgb(hex: &str) -> (f64, f64, f64) {
+    let p = |i: usize| {
+        hex.get(i..i + 2)
+            .and_then(|h| u8::from_str_radix(h, 16).ok())
+    };
+    let p = |i: usize| p(i).unwrap_or(0) as f64;
+    (p(1), p(3), p(5))
+}
+
+/// `a` to `b` at `t` (0 `a`, 1 `b`), as `#rrggbb`.
+pub fn mix(a: (f64, f64, f64), b: (f64, f64, f64), t: f64) -> String {
+    let (r, g, b2) = mixed(a, b, t);
+    format!("#{r:02x}{g:02x}{b2:02x}")
+}
+
+/// [`mix`], as its parts.
+pub fn mixed(a: (f64, f64, f64), b: (f64, f64, f64), t: f64) -> (u8, u8, u8) {
+    let t = t.clamp(0.0, 1.0);
+    let c = |x: f64, y: f64| (x + (y - x) * t).round() as u8;
+    (c(a.0, b.0), c(a.1, b.1), c(a.2, b.2))
+}
 const FONT: &str = "Helvetica, Arial, 'DejaVu Sans', sans-serif";
 
 /// Escape text for SVG content and attributes.

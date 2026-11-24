@@ -7,6 +7,7 @@
 use super::*;
 use crate::figure::size::Page;
 use ratatui::style::Color;
+use std::sync::Arc;
 
 /// The 2D figure's own size, in points, when the page sets neither side.
 const OWN_SIZE: (f64, f64) = (720.0, 640.0);
@@ -103,44 +104,55 @@ impl SitePicker<'_> {
         frame.render_widget(block, area);
         let [plot, said] =
             Layout::vertical([Constraint::Min(3), Constraint::Length(2)]).areas(inner);
-        let (key, g) = self.grid_of((x, y), pairs::BINS);
+        // Binned once, at the size it is drawn: an image's squares, or one a
+        // cell of the terminal's own.
+        let images = self.controls.images().is_some();
+        let bins = match images {
+            true => pairs::BINS,
+            false => (plot.width.max(plot.height) as usize).max(1),
+        };
+        let (key, g) = self.grid_of((x, y), bins);
         frame.render_widget(
             Paragraph::new(vec![
-                Line::styled(g.in_box_short(), DIM),
+                Line::styled(g.in_box(true), DIM),
                 Line::styled(why, DIM),
             ])
             .wrap(ratatui::widgets::Wrap { trim: true }),
             said,
         );
+        if !images {
+            draw_cells(frame, plot, &g);
+            return;
+        }
         // Its image is drawn again only when what it shows changed.
         if self.pair_drawn[k] != Some(key) {
             self.pair_plots[k].invalidate();
             self.pair_drawn[k] = Some(key);
         }
         let mut image = std::mem::take(&mut self.pair_plots[k]);
-        let drawn = self.controls.images().is_some_and(|picker| {
+        if let Some(picker) = self.controls.images() {
             image.render(frame, plot, picker, |w, h| {
                 figure::svg(w, h, |c| g.draw(c, (0.0, 0.0, w, h), ""))
-            })
-        });
-        self.pair_plots[k] = image;
-        if !drawn {
-            let bins = (plot.width.max(plot.height) as usize).max(1);
-            let (_, cells) = self.grid_of((x, y), bins);
-            draw_cells(frame, plot, &cells);
+            });
         }
+        self.pair_plots[k] = image;
     }
 
     /// The panel of `axes` binned `bins` a side, at the thresholds now:
     /// binned again only when the modality, its axes, the fail bits or the
     /// size changed since (see [`GridKey`]).
-    fn grid_of(&mut self, (x, y): (Axis, Axis), bins: usize) -> (GridKey, pairs::Grid) {
+    fn grid_of(&mut self, (x, y): (Axis, Axis), bins: usize) -> (GridKey, Arc<pairs::Grid>) {
         let key = (self.modality, x, y, self.view().generation, bins);
         if let Some((_, g)) = self.pair_grids.iter().find(|(k, _)| *k == key) {
             return (key, g.clone());
         }
-        let g = pairs::grid(&self.view().sites(), (x, y), &self.filter, bins);
-        // Two sizes (image and cells) of four panels, and room to step.
+        let g = Arc::new(pairs::grid(
+            &self.view().sites(),
+            (x, y),
+            &self.filter,
+            bins,
+        ));
+        // Four panels, and room to step through their axes.
         if self.pair_grids.len() >= 16 {
             self.pair_grids.remove(0);
         }
@@ -168,9 +180,9 @@ fn draw_cells(frame: &mut Frame, area: Rect, g: &pairs::Grid) {
     let buf = frame.buffer_mut();
     for row in 0..h {
         for col in 0..w {
-            let bx = col * g.bins / w;
-            let by = (h - 1 - row) * g.bins / h;
-            if let Some((r, gr, b)) = g.colour(by * g.bins + bx) {
+            let bx = col * g.squares.bins / w;
+            let by = (h - 1 - row) * g.squares.bins / h;
+            if let Some((r, gr, b)) = g.squares.colour(by * g.squares.bins + bx) {
                 let cell = &mut buf[(area.x + col as u16, area.y + row as u16)];
                 cell.set_char('█').set_fg(Color::Rgb(r, gr, b));
             }

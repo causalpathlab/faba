@@ -372,7 +372,7 @@ fn only_is_what_turning_the_threshold_off_keeps() {
         let mut off = p.filter.clone();
         k.set(&mut off, k.permissive());
         let regained = kept_linear(&t, Some(&c), &off) - kept;
-        assert_eq!(p.tally.only, regained, "{k:?}");
+        assert_eq!(p.tally.alone[k as usize], regained, "{k:?}");
     }
     let mut term = Terminal::new(TestBackend::new(150, 40)).unwrap();
     term.draw(|f| p.render(f)).unwrap();
@@ -430,16 +430,12 @@ fn site_figures_draw_every_knob_without_a_view() {
     .into_iter()
     .collect();
     let f = SiteFilterArgs::default_values();
-    let figures = site_figures(
-        "in",
-        &tables,
-        &FxHashMap::default(),
-        &f,
-        None,
-        &[],
-        crate::figure::size::OWN,
-    )
-    .unwrap();
+    let figures_at = |page| {
+        let none = FxHashMap::default();
+        let cells = CellsShared::default();
+        Batch::new("in", &tables, &none, &f, (None, &[]), cells)?.figures(page)
+    };
+    let figures = figures_at(crate::figure::size::OWN).unwrap();
     // A figure per modality and knob, and each modality's 2D panels.
     let expected = threshold_counts(&tables, &FxHashMap::default(), &f).len() + tables.len();
     assert_eq!(figures.len(), expected);
@@ -453,7 +449,7 @@ fn site_figures_draw_every_knob_without_a_view() {
     // its plots would not fit.
     let at = |w: f64| {
         let page = (Some(w * crate::figure::size::PT), None);
-        site_figures("in", &tables, &FxHashMap::default(), &f, None, &[], page)
+        figures_at(page)
     };
     let wide = at(12.0).unwrap();
     assert!(wide

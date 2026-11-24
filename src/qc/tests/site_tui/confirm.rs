@@ -57,6 +57,7 @@ fn confirming_writes_in_the_view_and_shows_progress() {
     let mut p = picker(&t, None, start.clone());
     p.writer = Writer {
         page: crate::figure::size::OWN,
+        cells: Default::default(),
         output: "out_qc",
         progress: &progress,
         start: Some(Box::new(|f, figures| {
@@ -303,6 +304,7 @@ fn a_kill_lets_a_write_under_way_finish() {
     let mut p = picker(&t, None, start);
     p.writer = Writer {
         page: crate::figure::size::OWN,
+        cells: Default::default(),
         output: "out_qc",
         progress: &progress,
         start: Some(Box::new(|_, _| {})),

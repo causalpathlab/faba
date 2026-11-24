@@ -9,6 +9,7 @@
 
 pub mod args;
 pub mod cells_plot;
+pub mod density;
 pub mod layout;
 pub mod matrix;
 pub mod pairs;

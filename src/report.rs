@@ -110,32 +110,33 @@ pub fn write(
         .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))
 }
 
-/// [`write`], but never over a file: written aside, then linked into
-/// place, which fails if `path` exists by then (a file that appeared while
-/// the page was written stays as it was).
+/// [`write`], but never over a file: written to its
+/// [`crate::common::part_of`] file, then linked into place, which fails if
+/// `path` exists by then (a file that appeared meanwhile stays as it was).
 pub fn write_new(
     path: &Path,
     title: &str,
     fragment: &str,
     data: &impl Serialize,
 ) -> anyhow::Result<()> {
-    let aside = path.with_extension("html.writing");
-    let said = |e: &dyn std::fmt::Display| anyhow::anyhow!("{}: {e}", path.display());
-    anyhow::ensure!(
-        !path.exists(),
-        "{} already exists: not replacing it; name another path",
-        path.display()
-    );
-    crate::common::write_replacing(&aside, |w| stream(w, title, fragment, data))
-        .map_err(|e| said(&e))?;
-    let placed = std::fs::hard_link(&aside, path);
-    let _ = std::fs::remove_file(&aside);
-    placed.map_err(|e| match e.kind() {
-        std::io::ErrorKind::AlreadyExists => anyhow::anyhow!(
+    let taken = || {
+        anyhow::anyhow!(
             "{} already exists: not replacing it; name another path",
             path.display()
-        ),
-        _ => said(&e),
+        )
+    };
+    if path.exists() {
+        return Err(taken());
+    }
+    let part = crate::common::part_of(path);
+    let written = std::fs::File::create(&part)
+        .map_err(anyhow::Error::from)
+        .and_then(|f| stream(std::io::BufWriter::new(f), title, fragment, data))
+        .and_then(|()| Ok(std::fs::hard_link(&part, path)?));
+    let _ = std::fs::remove_file(&part);
+    written.map_err(|e| match e.downcast_ref::<std::io::Error>() {
+        Some(io) if io.kind() == std::io::ErrorKind::AlreadyExists => taken(),
+        _ => anyhow::anyhow!("{}: {e}", path.display()),
     })
 }
 

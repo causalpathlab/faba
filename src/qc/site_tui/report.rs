@@ -56,7 +56,6 @@ pub(super) struct Data {
 struct AxisInfo {
     key: Axis,
     name: &'static str,
-    short: &'static str,
     criteria: Vec<usize>,
 }
 
@@ -230,6 +229,8 @@ pub(super) struct Source {
     views: Vec<ViewSource>,
     /// The annotation, once read.
     annotation: Option<Arc<Annotation>>,
+    /// Each batch's cell QC, summarised on the report's thread.
+    cells: super::CellsShared,
 }
 
 /// One view's columns, as [`Source`] takes them.
@@ -262,7 +263,9 @@ impl Source {
             mut data,
             views,
             annotation,
+            cells,
         } = self;
+        data.cells = cells.iter().map(CellsData::of).collect();
         let a = annotation.as_deref();
         data.modalities = views
             .into_iter()
@@ -305,11 +308,13 @@ impl ViewSource {
                 (raw, near)
             })
             .unzip();
-        let weight = (self.weight != Weight::Sites).then(|| {
-            (carried.iter())
-                .map(|&i| self.weight.of(columns, i) as u64)
+        // Every site's weight once: the metagene's, and the carried sites'.
+        let all = (self.weight != Weight::Sites).then(|| {
+            (0..self.sites)
+                .map(|i| self.weight.of(columns, i) as u64)
                 .collect::<Vec<_>>()
         });
+        let weight = (all.as_ref()).map(|w| carried.iter().map(|&i| w[i]).collect::<Vec<_>>());
         let info = |p: &[(Axis, Axis, String)]| -> Vec<PairInfo> {
             (p.iter())
                 .map(|(x, y, why)| PairInfo {
@@ -320,14 +325,7 @@ impl ViewSource {
                 .collect()
         };
         // The metagene is drawn here, of every site, not only those carried.
-        let meta = layout.map(|layout| {
-            let all = (self.weight != Weight::Sites).then(|| {
-                (0..self.sites)
-                    .map(|i| self.weight.of(columns, i) as u64)
-                    .collect::<Vec<_>>()
-            });
-            self.meta(layout, all.as_deref())
-        });
+        let meta = layout.map(|layout| self.meta(layout, all.as_deref()));
         let genes = self.genes.as_deref();
         Modality {
             name: self.name,
@@ -461,14 +459,14 @@ impl SitePicker<'_> {
                 .map(|&a| AxisInfo {
                     key: a,
                     name: a.name(),
-                    short: a.short(),
                     criteria: a.criteria().iter().map(|&c| c as usize).collect(),
                 })
                 .collect(),
-            cells: self.cells.iter().map(CellsData::of).collect(),
+            cells: Vec::new(),
         };
         Source {
             data,
+            cells: self.cells.clone(),
             views: (0..self.views.len()).map(|m| self.view_source(m)).collect(),
             annotation: match &self.meta {
                 Meta::Ready(a) => Some(a.clone()),
@@ -481,6 +479,12 @@ impl SitePicker<'_> {
     fn view_source(&self, m: usize) -> ViewSource {
         let v = &self.views[m];
         let t = v.table;
+        // Auto's pairs once: the panels too, when none were picked.
+        let auto = pairs::auto_panels(&v.sites(), pairs::PANELS);
+        let shown = match v.pairs.is_empty() {
+            true => auto.clone(),
+            false => v.pairs.clone(),
+        };
         ViewSource {
             name: t.modality.to_string(),
             sites: t.len(),
@@ -495,12 +499,10 @@ impl SitePicker<'_> {
             }),
             weight: self.weight,
             fails: v.fails.clone(),
-            pairs: v.shown_pairs(),
-            auto: (pairs::auto_pairs(&v.sites(), pairs::PANELS).into_iter())
-                .map(|p| (p.x, p.y, p.why()))
-                .collect(),
+            pairs: shown,
+            auto,
             ranges: (pairs::axes(&v.sites()).into_iter())
-                .map(|a| (a, pairs::range(&v.sites(), a)))
+                .map(|a| (a, v.sites().column(a).range))
                 .collect(),
         }
     }

@@ -459,8 +459,8 @@ fn the_report_carries_every_site_without_a_p_value() {
 #[test]
 fn the_page_labels_counts_over_the_sites_carried_and_boxes_by_fail_bits() {
     let page = crate::qc::site_tui::report::FRAGMENT;
-    assert!(page.contains("are over the sites carried"));
-    assert!(page.contains("the other rows, the ${m.sites} carried"));
+    assert!(page.contains("all but kept and p-value: over the ${m.sites} carried"));
+    assert!(page.contains("which every site left off fails"));
     assert!(page.contains("(m.fails[i] & drawn) === 0"));
     assert!(!page.contains("every count is exact"));
 }

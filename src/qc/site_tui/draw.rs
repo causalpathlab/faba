@@ -617,7 +617,7 @@ impl<'a> SitePicker<'a> {
             (PLAIN, format!("pass the other thresholds {front}")),
             (
                 ACCENTED,
-                format!("filtered out only by this {}", self.tally.only),
+                format!("filtered out only by this {}", self.tally.alone[c as usize]),
             ),
         ]);
         let key_rows = if key_text.width() > inner.width as usize {

@@ -2,18 +2,7 @@
 //! picks, and a panel's squares and box.
 
 use super::*;
-use crate::qc::pairs::{self, Axis, Sites};
-
-/// The view's sites as [`Sites`].
-fn sites<'a>(v: &'a SiteView) -> Sites<'a> {
-    Sites {
-        table: v.table,
-        n_cells: v.n_cells.as_deref(),
-        fails: &v.fails,
-        criteria: &v.criteria,
-        cache: &v.cache,
-    }
-}
+use crate::qc::pairs::{self, Axis};
 
 /// A table with a control arm and cells has every axis; without cells,
 /// none of them.
@@ -22,9 +11,9 @@ fn a_table_has_the_axes_of_its_criteria() {
     let t = table("m6a", 500);
     let f = SiteFilterArgs::default_values();
     let v = SiteView::new(&t, Some(cells(500)), &f);
-    assert_eq!(pairs::axes(&sites(&v)), Axis::ALL.to_vec());
+    assert_eq!(pairs::axes(&v.sites()), Axis::ALL.to_vec());
     let v = SiteView::new(&t, None, &f);
-    assert!(!pairs::axes(&sites(&v)).contains(&Axis::Cells));
+    assert!(!pairs::axes(&v.sites()).contains(&Axis::Cells));
 }
 
 /// Auto picks four distinct pairs, the first the best scored, each split
@@ -35,7 +24,7 @@ fn auto_picks_distinct_pairs_spread_over_the_axes() {
     let t = table("m6a", 2000);
     let f = SiteFilterArgs::default_values();
     let v = SiteView::new(&t, Some(cells(2000)), &f);
-    let s = sites(&v);
+    let s = v.sites();
     let picked = pairs::auto_pairs(&s, pairs::PANELS);
     assert_eq!(picked.len(), 4);
     let best = (pairs::score_pairs(&s).iter().map(|p| p.score())).fold(f64::MIN, f64::max);
@@ -61,12 +50,12 @@ fn a_panel_bins_every_site_and_counts_its_box() {
     let t = table("m6a", 1500);
     let f = SiteFilterArgs::default_values();
     let v = SiteView::new(&t, Some(cells(1500)), &f);
-    let s = sites(&v);
+    let s = v.sites();
     let g = pairs::grid(&s, (Axis::Coverage, Axis::Pvalue), &f, pairs::BINS);
-    let binned: u32 = g.kept.iter().chain(&g.removed).sum();
+    let binned: u32 = g.squares.kept.iter().chain(&g.squares.other).sum();
     assert_eq!(binned as usize, t.len());
     let kept = v.fails.iter().filter(|&&m| m == 0).count();
-    assert_eq!(g.kept.iter().sum::<u32>() as usize, kept);
+    assert_eq!(g.squares.kept.iter().sum::<u32>() as usize, kept);
     let drawn = Axis::Coverage.bits() | Axis::Pvalue.bits();
     let in_box = |want_kept: bool| {
         (0..t.len())
@@ -74,7 +63,11 @@ fn a_panel_bins_every_site_and_counts_its_box() {
             .count()
     };
     assert_eq!((g.in_kept, g.in_removed), (in_box(true), in_box(false)));
-    assert!(g.in_box().starts_with("in the box: "), "{}", g.in_box());
+    assert!(
+        g.in_box(false).starts_with("in the box: "),
+        "{}",
+        g.in_box(false)
+    );
 }
 
 /// A p-value's upper bound is the box's lower end on -log10 p; an edit
@@ -87,7 +80,7 @@ fn the_box_ends_follow_the_thresholds() {
     f.site_min_edit_ratio = 0.1;
     f.site_max_edit_ratio = 0.9;
     let v = SiteView::new(&t, None, &f);
-    let s = sites(&v);
+    let s = v.sites();
     let (lo, hi) = Axis::Pvalue.passes(&f, &s);
     assert!((lo.unwrap() - 2.0).abs() < 1e-6 && hi.is_none());
     assert_eq!(
@@ -105,7 +98,7 @@ fn the_figure_draws_each_pair() {
     let t = table("m6a", 800);
     let f = SiteFilterArgs::default_values();
     let v = SiteView::new(&t, Some(cells(800)), &f);
-    let s = sites(&v);
+    let s = v.sites();
     let picked: Vec<_> = (pairs::auto_pairs(&s, 4).into_iter())
         .map(|p| (p.x, p.y, p.why()))
         .collect();
@@ -179,12 +172,12 @@ fn the_panels_axes_step_and_auto_puts_them_back() {
     press(&mut p, KeyCode::Tab);
     assert_eq!(p.panel, Panel::Thresholds);
     let (x, y, _) = p.view().pairs[0];
-    let before = pairs::grid(&sites(p.view()), (x, y), &p.filter, pairs::BINS).in_kept;
+    let before = pairs::grid(&p.view().sites(), (x, y), &p.filter, pairs::BINS).in_kept;
     focus_on(&mut p, Criterion::MinCoverage);
     for _ in 0..30 {
         press(&mut p, KeyCode::Char('+'));
     }
-    let after = pairs::grid(&sites(p.view()), (x, y), &p.filter, pairs::BINS).in_kept;
+    let after = pairs::grid(&p.view().sites(), (x, y), &p.filter, pairs::BINS).in_kept;
     assert!(after < before, "{before} -> {after}");
 }
 
@@ -194,10 +187,13 @@ fn a_zero_p_value_does_not_stretch_the_axis() {
     let t = table("m6a", 600);
     let f = SiteFilterArgs::default_values();
     let v = SiteView::new(&t, Some(cells(600)), &f);
-    let s = sites(&v);
+    let s = v.sites();
     assert!(t.pv.contains(&0.0));
-    let (_, hi) = pairs::range(&s, Axis::Pvalue);
+    let (_, hi) = s.column(Axis::Pvalue).range;
     assert!(hi < 20.0, "{hi}");
     let g = pairs::grid(&s, (Axis::LogOdds, Axis::Pvalue), &f, pairs::BINS);
-    assert_eq!(g.kept.iter().chain(&g.removed).sum::<u32>(), 600);
+    assert_eq!(
+        g.squares.kept.iter().chain(&g.squares.other).sum::<u32>(),
+        600
+    );
 }
