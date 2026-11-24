@@ -37,6 +37,20 @@ impl Verdict {
     }
 }
 
+/// Squares a side of the cells' density.
+pub const BINS: usize = 44;
+/// Points along the knee's log rank axis, at most (and where it turns).
+pub const KNEE_STEPS: usize = 400;
+
+/// The cells' density: its ranges (log10) and kept and the rest per square.
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+pub struct Grid {
+    pub xr: (f64, f64),
+    pub yr: (f64, f64),
+    pub kept: Vec<u32>,
+    pub other: Vec<u32>,
+}
+
 /// A batch's barcodes: each one's counts, detected genes and verdict.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Cells {
@@ -98,45 +112,55 @@ impl Cells {
         })
     }
 
-    /// Counts by rank, both on log scales, the curve coloured by verdict.
-    fn knee(&self, c: &mut Canvas, (x, y, w, h): (f64, f64, f64, f64)) {
+    /// The knee as drawn: each barcode's log10 rank and log10 counts,
+    /// thinned to a point each 1/`steps` of the log rank axis and wherever
+    /// the verdict turns, the last always; and that axis' end.
+    pub fn knee_points(&self, steps: usize) -> (Vec<(f64, f64, Verdict)>, f64) {
         let mut order: Vec<usize> = (0..self.counts.len()).collect();
         order.sort_by(|&a, &b| self.counts[b].total_cmp(&self.counts[a]));
-        let n = order.len().max(2) as f64;
-        let top = self.counts.iter().copied().fold(1.0f32, f32::max) as f64;
-        let frame = Frame::new((x, y, w, h), (0.0, n.log10()), (0.0, top.max(10.0).log10()));
-        frame.axes(c, ("barcode rank", "counts"), true);
-        let mut last: Option<(f64, f64)> = None;
+        let end = (order.len().max(2) as f64).log10();
+        let gap = end / steps.max(1) as f64;
+        let mut out: Vec<(f64, f64, Verdict)> = Vec::new();
         for (r, &i) in order.iter().enumerate() {
-            let p = frame.at(
-                (r as f64 + 1.0).log10(),
-                (self.counts[i] as f64).max(1.0).log10(),
-            );
-            // A point a pixel on from the last, or where the verdict turns.
-            if let Some(q) = last {
-                let turn = r > 0 && self.verdict[order[r - 1]] != self.verdict[i];
-                if (p.0 - q.0).abs() < 0.6 && !turn && r + 1 < order.len() {
-                    continue;
-                }
-                c.line(q.0, q.1, p.0, p.1, self.verdict[i].colour(), 1.6);
+            let x = (r as f64 + 1.0).log10();
+            let p = (x, (self.counts[i] as f64).max(1.0).log10(), self.verdict[i]);
+            let keep = match out.last() {
+                None => true,
+                Some(q) => x - q.0 >= gap || q.2 != p.2 || r + 1 == order.len(),
+            };
+            if keep {
+                out.push(p);
             }
-            last = Some(p);
+        }
+        (out, end)
+    }
+
+    /// Counts by rank, both on log scales, the curve coloured by verdict.
+    fn knee(&self, c: &mut Canvas, (x, y, w, h): (f64, f64, f64, f64)) {
+        let (points, end) = self.knee_points(KNEE_STEPS);
+        let top = points.first().map_or(1.0, |p| p.1);
+        let frame = Frame::new((x, y, w, h), (0.0, end), (0.0, top.max(1.0)));
+        frame.axes(c, ("barcode rank", "counts"), true);
+        for pair in points.windows(2) {
+            let (a, b) = (
+                frame.at(pair[0].0, pair[0].1),
+                frame.at(pair[1].0, pair[1].1),
+            );
+            c.line(a.0, a.1, b.0, b.1, pair[1].2.colour(), 1.6);
         }
     }
 
-    /// Genes detected by counts (log scales), a square kept or not by
-    /// which most of its barcodes are, deeper as it holds more.
-    fn density(&self, c: &mut Canvas, (x, y, w, h): (f64, f64, f64, f64)) {
-        const BINS: usize = 44;
+    /// Genes detected by counts (log10, from the decade below the fewest
+    /// to the most), binned [`BINS`] a side: the ranges, then kept and the
+    /// rest per square (row-major from the bottom left).
+    pub fn density_grid(&self) -> Grid {
         let lg = |v: f32| (v as f64).max(1.0).log10();
-        // From the decade below the fewest to the most: no empty decades.
         let span = |v: &[f32]| {
             let lo = v.iter().map(|&x| lg(x)).fold(f64::INFINITY, f64::min);
             let hi = v.iter().map(|&x| lg(x)).fold(1.0, f64::max);
             (lo.floor().clamp(0.0, (hi - 1.0).max(0.0)), hi)
         };
         let (xr, yr) = (span(&self.counts), span(&self.genes));
-        let frame = Frame::new((x, y, w, h), xr, yr);
         let (mut kept, mut other) = (vec![0u32; BINS * BINS], vec![0u32; BINS * BINS]);
         let slot = |v: f64, (lo, hi): (f64, f64)| {
             (((v - lo) / (hi - lo) * BINS as f64) as usize).min(BINS - 1)
@@ -149,6 +173,24 @@ impl Cells {
                 other[at] += 1;
             }
         }
+        Grid {
+            xr,
+            yr,
+            kept,
+            other,
+        }
+    }
+
+    /// Genes detected by counts (log scales), a square kept or not by
+    /// which most of its barcodes are, deeper as it holds more.
+    fn density(&self, c: &mut Canvas, (x, y, w, h): (f64, f64, f64, f64)) {
+        let Grid {
+            xr,
+            yr,
+            kept,
+            other,
+        } = self.density_grid();
+        let frame = Frame::new((x, y, w, h), xr, yr);
         let top = (0..kept.len())
             .map(|j| kept[j] + other[j])
             .max()

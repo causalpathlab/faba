@@ -18,6 +18,15 @@ impl SitePicker<'_> {
         if !self.two_d && self.panel == Panel::Pairs {
             self.panel = Panel::Thresholds;
         }
+        self.ensure_pairs();
+    }
+
+    /// The modality on screen's panels, Auto's when none were picked yet:
+    /// picked only once the 2D view shows them.
+    pub(super) fn ensure_pairs(&mut self) {
+        if self.two_d && self.view().pairs.is_empty() {
+            self.views[self.modality].auto_pairs();
+        }
     }
 
     /// `A`: Auto's pairs for the modality on screen, at the thresholds now.
@@ -67,6 +76,7 @@ impl SitePicker<'_> {
 
     /// The 2D view in `area`: the modality's panels two by two.
     pub(super) fn render_pairs(&mut self, frame: &mut Frame, area: Rect) {
+        self.ensure_pairs();
         let [top, bottom] =
             Layout::vertical([Constraint::Fill(1), Constraint::Fill(1)]).areas(area);
         let cells: Vec<Rect> = [top, bottom]
@@ -144,7 +154,7 @@ impl SitePicker<'_> {
         let v = &self.views[m];
         let title = format!("{} sites, two thresholds at a time", v.table.modality);
         let size = crate::figure::size::fill(page, || OWN_SIZE);
-        pairs::figure(&v.sites(), &v.pairs, &self.filter, size, &title)
+        pairs::figure(&v.sites(), &v.shown_pairs(), &self.filter, size, &title)
     }
 }
 

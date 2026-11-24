@@ -110,6 +110,35 @@ pub fn write(
         .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))
 }
 
+/// [`write`], but never over a file: written aside, then linked into
+/// place, which fails if `path` exists by then (a file that appeared while
+/// the page was written stays as it was).
+pub fn write_new(
+    path: &Path,
+    title: &str,
+    fragment: &str,
+    data: &impl Serialize,
+) -> anyhow::Result<()> {
+    let aside = path.with_extension("html.writing");
+    let said = |e: &dyn std::fmt::Display| anyhow::anyhow!("{}: {e}", path.display());
+    anyhow::ensure!(
+        !path.exists(),
+        "{} already exists: not replacing it; name another path",
+        path.display()
+    );
+    crate::common::write_replacing(&aside, |w| stream(w, title, fragment, data))
+        .map_err(|e| said(&e))?;
+    let placed = std::fs::hard_link(&aside, path);
+    let _ = std::fs::remove_file(&aside);
+    placed.map_err(|e| match e.kind() {
+        std::io::ErrorKind::AlreadyExists => anyhow::anyhow!(
+            "{} already exists: not replacing it; name another path",
+            path.display()
+        ),
+        _ => said(&e),
+    })
+}
+
 /// To a tenth, which is all a page shows of a read count.
 pub(crate) fn tenth(x: f64) -> f64 {
     (10.0 * x).round() / 10.0
@@ -220,6 +249,25 @@ impl Drop for Writing {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// [`write_new`] writes a page where nothing is, and refuses a file
+    /// that is there, leaving it as it was and nothing beside it.
+    #[test]
+    fn write_new_never_overwrites() {
+        let dir = tempfile::tempdir().unwrap();
+        let fresh = dir.path().join("fresh.html");
+        write_new(&fresh, "t", "<p>x</p>", &serde_json::json!({})).unwrap();
+        assert!(std::fs::read_to_string(&fresh)
+            .unwrap()
+            .contains("<p>x</p>"));
+        let taken = dir.path().join("taken.html");
+        std::fs::write(&taken, "mine").unwrap();
+        let err = write_new(&taken, "t", "<p>x</p>", &serde_json::json!({})).unwrap_err();
+        assert!(err.to_string().contains("already exists"), "{err}");
+        assert_eq!(std::fs::read_to_string(&taken).unwrap(), "mine");
+        let left: Vec<_> = std::fs::read_dir(dir.path()).unwrap().flatten().collect();
+        assert_eq!(left.len(), 2, "nothing written aside is left");
+    }
 
     /// The page as [`stream`] writes it.
     fn streamed(title: &str, fragment: &str, data: &impl Serialize) -> String {

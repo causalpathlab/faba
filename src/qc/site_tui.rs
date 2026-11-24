@@ -134,8 +134,18 @@ impl<'a> SiteView<'a> {
         for c in view.criteria.clone() {
             view.update(c, f);
         }
-        view.auto_pairs();
         view
+    }
+
+    /// The panels shown: those chosen, else Auto's at the thresholds now
+    /// (picked only when something shows them).
+    fn shown_pairs(&self) -> Vec<(Axis, Axis, String)> {
+        match self.pairs.is_empty() {
+            true => (pairs::auto_pairs(&self.sites(), pairs::PANELS).into_iter())
+                .map(|p| (p.x, p.y, p.why()))
+                .collect(),
+            false => self.pairs.clone(),
+        }
     }
 
     /// Its sites as the 2D panels read them.
@@ -721,7 +731,7 @@ pub fn write_page(
     picker.meta.wait();
     picker.cells = cells;
     let title = format!("faba qc · {}", picker.title);
-    crate::report::write(
+    crate::report::write_new(
         path,
         &title,
         report::FRAGMENT,
@@ -876,13 +886,34 @@ pub struct ThresholdCount {
 }
 
 /// Every applicable threshold's counts at `filter`, modality by modality.
+#[cfg(test)]
 pub fn threshold_counts(
     tables: &FxHashMap<Box<str>, SiteTable>,
     site_cells: &FxHashMap<Box<str>, FxHashMap<Box<str>, usize>>,
     filter: &SiteFilterArgs,
 ) -> Vec<ThresholdCount> {
+    dry_counts(tables, site_cells, filter).0
+}
+
+/// Each modality's pairs Auto picks, by modality.
+pub type ModalityPairs = Vec<(Box<str>, pairs::Pair)>;
+
+/// [`threshold_counts`] and the pairs Auto picks, modality by modality,
+/// from one set of views (for `faba qc --dry-run`).
+pub fn dry_counts(
+    tables: &FxHashMap<Box<str>, SiteTable>,
+    site_cells: &FxHashMap<Box<str>, FxHashMap<Box<str>, usize>>,
+    filter: &SiteFilterArgs,
+) -> (Vec<ThresholdCount>, ModalityPairs) {
+    let views = site_views(tables, site_cells, filter);
+    let mut pairs_of = Vec::new();
+    for v in &views {
+        for p in pairs::auto_pairs(&v.sites(), pairs::PANELS) {
+            pairs_of.push((v.table.modality.clone(), p));
+        }
+    }
     let mut out = Vec::new();
-    for v in site_views(tables, site_cells, filter) {
+    for v in views {
         let kept = v.fails.iter().filter(|&&f| f == 0).count();
         for &c in &v.criteria {
             let bit = c.bit();
@@ -897,23 +928,7 @@ pub fn threshold_counts(
             });
         }
     }
-    out
-}
-
-/// The pairs Auto picks for the 2D panels at `filter`, modality by
-/// modality.
-pub fn auto_pairs(
-    tables: &FxHashMap<Box<str>, SiteTable>,
-    site_cells: &FxHashMap<Box<str>, FxHashMap<Box<str>, usize>>,
-    filter: &SiteFilterArgs,
-) -> Vec<(Box<str>, pairs::Pair)> {
-    let mut out = Vec::new();
-    for v in site_views(tables, site_cells, filter) {
-        for p in pairs::auto_pairs(&v.sites(), pairs::PANELS) {
-            out.push((v.table.modality.clone(), p));
-        }
-    }
-    out
+    (out, pairs_of)
 }
 
 pub fn run_site_picker(

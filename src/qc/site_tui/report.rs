@@ -68,23 +68,30 @@ struct PairInfo {
     why: String,
 }
 
-/// A batch's barcodes: counts, detected genes and the verdict on each (0
-/// kept, 1 a MAD outlier, 2 near empty).
+/// A batch's cell QC as the page draws it, the size of a figure whatever
+/// the barcodes: the barcodes with each verdict (kept, MAD outlier, near
+/// empty), the knee as its thinned points (log10 rank, log10 counts,
+/// verdict) and the rank axis' end, and the density's grid.
 #[derive(Serialize)]
 pub(super) struct CellsData {
     batch: String,
-    counts: Vec<u32>,
-    genes: Vec<u32>,
-    verdict: Vec<u8>,
+    tally: [usize; 3],
+    knee: Vec<(f32, f32, u8)>,
+    knee_end: f64,
+    density: crate::qc::cells_plot::Grid,
 }
 
 impl CellsData {
     pub(super) fn of(c: &crate::qc::cells_plot::Cells) -> Self {
+        let (points, knee_end) = c.knee_points(crate::qc::cells_plot::KNEE_STEPS);
         Self {
             batch: c.batch.to_string(),
-            counts: c.counts.iter().map(|&v| v as u32).collect(),
-            genes: c.genes.iter().map(|&v| v as u32).collect(),
-            verdict: c.verdict.iter().map(|&v| v as u8).collect(),
+            tally: c.tally(),
+            knee: (points.iter())
+                .map(|&(x, y, v)| (x as f32, y as f32, v as u8))
+                .collect(),
+            knee_end,
+            density: c.density_grid(),
         }
     }
 }
@@ -344,16 +351,17 @@ impl ViewSource {
 
     /// The sites the page carries, in table order, and the largest p-value
     /// among them when not every site is (see [`CARRIED`]).
+    /// A site without a p-value (NaN) is always carried: it passes any
+    /// p-value threshold, so only sites with a larger one are left off.
     fn carried(&self, columns: RawColumns) -> (Vec<usize>, Option<f32>) {
-        if self.sites <= CARRIED || !self.criteria.contains(&Criterion::MaxPv) {
+        let mut by_p: Vec<f32> = columns.pv.iter().copied().filter(|p| !p.is_nan()).collect();
+        if by_p.len() <= CARRIED || !self.criteria.contains(&Criterion::MaxPv) {
             return ((0..self.sites).collect(), None);
         }
-        let mut by_p: Vec<f32> = columns.pv.to_vec();
-        let at = CARRIED - 1;
-        let (_, limit, _) = by_p.select_nth_unstable_by(at, f32::total_cmp);
+        let (_, limit, _) = by_p.select_nth_unstable_by(CARRIED - 1, f32::total_cmp);
         let limit = *limit;
         let carried = (0..self.sites)
-            .filter(|&i| columns.pv[i].total_cmp(&limit).is_le())
+            .filter(|&i| columns.pv[i].is_nan() || columns.pv[i] <= limit)
             .collect();
         (carried, Some(limit))
     }
@@ -487,7 +495,7 @@ impl SitePicker<'_> {
             }),
             weight: self.weight,
             fails: v.fails.clone(),
-            pairs: v.pairs.clone(),
+            pairs: v.shown_pairs(),
             auto: (pairs::auto_pairs(&v.sites(), pairs::PANELS).into_iter())
                 .map(|p| (p.x, p.y, p.why()))
                 .collect(),
@@ -512,7 +520,7 @@ impl SitePicker<'_> {
             path.clone(),
         );
         self.report.spawn(path, move || {
-            crate::report::write(&to, &title, FRAGMENT, &source.data())
+            crate::report::write_new(&to, &title, FRAGMENT, &source.data())
         })
     }
 

@@ -114,7 +114,8 @@ const written = new Map(DATA.criteria.map(k => [k.id, decode(k, k.now)]));
 const thr = new Map(written);
 // The page carries each modality's strongest sites by p-value; every site it
 // left off has a larger p-value than its limit, so with the p-value threshold
-// at or below the smallest limit each one fails it and every count is exact.
+// at or below the smallest limit each one fails it: kept and the p-value row
+// count every site; the rest is over the sites carried.
 const PV = DATA.criteria.find(k => k.flag === "--site-max-pv")?.id ?? -1;
 const limits = DATA.modalities.map(md => md.limit).filter(l => l !== null && l !== undefined);
 const LIMIT = limits.length ? Math.min(...limits) : null;
@@ -323,7 +324,7 @@ function bars(canvas, back, front, colour, ys, ticks, pointer, dividers, xTitle)
   const left = 52, right = 14, top = 16, bottom = xTitle ? 40 : 24, n = Math.max(front.length, 1);
   const pw = W - left - right, ph = H - top - bottom, bw = pw / n;
   const fg = css("--fg"), dim = css("--dim"), rule = css("--rule"), backC = getComputedStyle(document.getElementById("term")).getPropertyValue("--back").trim();
-  const peak = Math.max(1e-9, ...(back || front));
+  const peak = (back || front).reduce((a, v) => v > a ? v : a, 1e-9);
   const h = v => ph * yScaled(ys, v) / yScaled(ys, peak);
   ctx.strokeStyle = rule; ctx.lineWidth = 1;
   ctx.beginPath(); ctx.moveTo(left, top + ph + 0.5); ctx.lineTo(W - right, top + ph + 0.5); ctx.stroke();
@@ -366,6 +367,7 @@ function drawTable() {
   });
   lines.push("<div></div>");
   lines.push(`<div><span class="dim">  kept </span><span class="on">${tally.kept}</span><span class="dim"> / ${n} sites (${pct(tally.kept, n)}%)</span></div>`);
+  if (m.total > m.sites) lines.push(`<div class="dim">  the p-value row and kept count every site;</div><div class="dim">  the other rows, the ${m.sites} carried</div>`);
   lines.push(`<div><span class="dim">  in </span><b>${tally.genes}</b><span class="dim"> / ${m.nGenes} genes</span></div>`);
   lines.push("<div></div>");
   DATA.legend.forEach(l => lines.push(`<div class="dim">  ${esc(l)}</div>`));
@@ -379,7 +381,7 @@ function drawHist() {
   const inf = col.nInf > 0 ? `   ${col.nInf} infinite, drawn at the end bin` : "";
   document.getElementById("hist-stat").innerHTML = `min <b>${esc(fmtShort(k, col.lo))}</b>   max <b>${esc(fmtShort(k, col.hi))}</b>${inf}`;
   const front = tally.subset.reduce((a, b) => a + b, 0);
-  document.getElementById("hist-key").innerHTML = `<i style="background:var(--back)"></i>all sites ${mod().sites}<i style="background:var(--fg)"></i>pass the other thresholds ${front}<i style="background:var(--accent)"></i>filtered out only by this ${tally.only}`;
+  document.getElementById("hist-key").innerHTML = `<i style="background:var(--back)"></i>${mod().total > mod().sites ? `the ${mod().sites} sites carried` : `all sites ${mod().sites}`}<i style="background:var(--fg)"></i>pass the other thresholds ${front}<i style="background:var(--accent)"></i>filtered out only by this ${tally.only}`;
   const every = Math.max(Math.floor(nb / 6), 1), ticks = [];
   for (let b = 0; b < nb; b += every) {
     let j = b; while (j < nb && !isFinite(col.lowest[j])) j++;
@@ -534,13 +536,16 @@ function drawPanel(canvas, m, p) {
   const slot = (v, [lo, hi]) => Math.min(BINS - 1, Math.max(0, Math.floor((v - lo) / (hi - lo) * BINS)));
   const kept = new Uint32Array(BINS * BINS), rem = new Uint32Array(BINS * BINS);
   const [xlo, xhi] = passes(m, p.x), [ylo, yhi] = passes(m, p.y);
+  // In the box: passing both drawn axes' thresholds, read off the fail bits
+  // as src/qc/pairs.rs's grid() does.
+  const drawn = [...AXES.get(p.x).criteria, ...AXES.get(p.y).criteria].reduce((b, id) => b | 1 << id, 0);
   let inK = 0, inR = 0;
   for (let i = 0; i < xs.length; i++) {
     const x = xs[i], y = ys[i];
     if (x !== x || y !== y) continue;
     const ok = m.fails[i] === 0, at = slot(y, yr) * BINS + slot(x, xr);
     (ok ? kept : rem)[at]++;
-    if (x >= xlo && x <= xhi && y >= ylo && y <= yhi) ok ? inK++ : inR++;
+    if (ok) inK++; else if ((m.fails[i] & drawn) === 0) inR++;
   }
   let top = 1; for (let j = 0; j < kept.length; j++) top = Math.max(top, kept[j] + rem[j]);
   const sx = v => l + (v - xr[0]) / (xr[1] - xr[0]) * pw, sy = v => t + ph - (v - yr[0]) / (yr[1] - yr[0]) * ph;
@@ -586,49 +591,45 @@ document.getElementById("auto").addEventListener("click", () => { const m = mod(
 function drawCells() {
   const box = document.getElementById("cells");
   box.innerHTML = DATA.cells.map((b, j) => {
-    const n = [0, 0, 0]; b.verdict.forEach(v => n[v]++);
-    return `<div class="pair"><div class="pick"><b>${esc(b.batch)}</b> ${n[0]} kept · ${n[1]} MAD outliers · ${n[2]} near empty</div><canvas data-c="${j}" data-kind="knee"></canvas><canvas data-c="${j}" data-kind="genes"></canvas></div>`;
+    const [k, o, e] = b.tally;
+    return `<div class="pair"><div class="pick"><b>${esc(b.batch)}</b> ${k} kept · ${o} MAD outliers · ${e} near empty</div><canvas data-c="${j}" data-kind="knee"></canvas><canvas data-c="${j}" data-kind="genes"></canvas></div>`;
   }).join("");
   box.querySelectorAll("canvas").forEach(c => {
     const b = DATA.cells[Number(c.dataset.c)], [ctx, W, H] = fit(c), l = 50, t = 10, pw = W - 60, ph = H - 46;
-    const colour = v => [KEPT, OUTLIER, EMPTY][v], lg = v => Math.log10(Math.max(v, 1));
-    const axes = (xt, yt, xm, ym) => {
+    const colour = v => [KEPT, OUTLIER, EMPTY][v];
+    // The axes over log10 ranges [x0, x1] and [y0, y1], ticked at each decade.
+    const axes = (xt, yt, [x0, x1], [y0, y1]) => {
       ctx.strokeStyle = css("--rule"); ctx.strokeRect(l, t, pw, ph); ctx.fillStyle = css("--dim");
-      ctx.textAlign = "center"; for (let k = 0; k <= Math.floor(xm); k++) ctx.fillText(compact(10 ** k), l + k / xm * pw, t + ph + 13);
-      ctx.textAlign = "right"; for (let k = 0; k <= Math.floor(ym); k++) ctx.fillText(compact(10 ** k), l - 5, t + ph - k / ym * ph + 4);
+      ctx.textAlign = "center"; for (let k = Math.ceil(x0); k <= Math.floor(x1); k++) ctx.fillText(compact(10 ** k), l + (k - x0) / (x1 - x0) * pw, t + ph + 13);
+      ctx.textAlign = "right"; for (let k = Math.ceil(y0); k <= Math.floor(y1); k++) ctx.fillText(compact(10 ** k), l - 5, t + ph - (k - y0) / (y1 - y0) * ph + 4);
       ctx.fillStyle = css("--fg"); ctx.textAlign = "center"; ctx.fillText(xt, l + pw / 2, H - 6);
       ctx.save(); ctx.translate(12, t + ph / 2); ctx.rotate(-Math.PI / 2); ctx.fillText(yt, 0, 0); ctx.restore();
     };
     if (c.dataset.kind === "knee") {
-      const order = b.counts.map((_, i) => i).sort((p, q) => b.counts[q] - b.counts[p]);
-      const xm = Math.max(1, lg(order.length)), ym = Math.max(1, lg(b.counts[order[0]] || 1));
-      ctx.lineWidth = 2; let last = null;
-      order.forEach((i, r) => {
-        const x = l + lg(r + 1) / xm * pw, y = t + ph - lg(b.counts[i]) / ym * ph;
-        if (last && (x - last[0] >= 0.6 || r === order.length - 1 || b.verdict[i] !== last[2])) { ctx.strokeStyle = colour(b.verdict[i]); ctx.beginPath(); ctx.moveTo(last[0], last[1]); ctx.lineTo(x, y); ctx.stroke(); last = [x, y, b.verdict[i]]; }
-        else if (!last) last = [x, y, b.verdict[i]];
-      });
-      axes("barcode rank", "counts", xm, ym);
+      const xr = [0, Math.max(b.kneeEnd ?? b.knee_end, 1e-9)], yr = [0, Math.max(b.knee.length ? b.knee[0][1] : 1, 1)];
+      const at = ([x, y]) => [l + x / xr[1] * pw, t + ph - y / yr[1] * ph];
+      ctx.lineWidth = 2;
+      for (let i = 1; i < b.knee.length; i++) {
+        const [ax, ay] = at(b.knee[i - 1]), [bx, by] = at(b.knee[i]);
+        ctx.strokeStyle = colour(b.knee[i][2]); ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
+      }
+      axes("barcode rank", "counts", xr, yr);
     } else {
-      const xm = Math.max(1, ...b.counts.map(lg)), ym = Math.max(1, ...b.genes.map(lg));
-      const kept = new Uint32Array(BINS * BINS), other = new Uint32Array(BINS * BINS);
-      const slot = (v, m) => Math.min(BINS - 1, Math.floor(lg(v) / m * BINS));
-      b.counts.forEach((v, i) => { const at = slot(b.genes[i], ym) * BINS + slot(v, xm); (b.verdict[i] === 0 ? kept : other)[at]++; });
-      let top = 1; for (let j = 0; j < kept.length; j++) top = Math.max(top, kept[j] + other[j]);
-      const cw = pw / BINS, ch = ph / BINS;
-      for (let by = 0; by < BINS; by++) for (let bx = 0; bx < BINS; bx++) {
-        const k = kept[by * BINS + bx], o = other[by * BINS + bx]; if (!(k + o)) continue;
+      const d = b.density, n = Math.round(Math.sqrt(d.kept.length)), cw = pw / n, ch = ph / n;
+      let top = 1; for (let j = 0; j < d.kept.length; j++) top = Math.max(top, d.kept[j] + d.other[j]);
+      for (let by = 0; by < n; by++) for (let bx = 0; bx < n; bx++) {
+        const k = d.kept[by * n + bx], o = d.other[by * n + bx]; if (!(k + o)) continue;
         ctx.fillStyle = shadeOf(k >= o ? KEPT : REMOVED, 0.18 + 0.82 * Math.log1p(k + o) / Math.log1p(top));
         ctx.fillRect(l + bx * cw, t + ph - (by + 1) * ch, Math.ceil(cw), Math.ceil(ch));
       }
-      axes("counts", "genes detected", xm, ym);
+      axes("counts", "genes detected", d.xr, d.yr);
     }
   });
 }
 {
   const left = mods.filter(m => m.total > m.sites);
   document.getElementById("carried").textContent = left.length
-    ? `To stay small to share, the page carries each modality's strongest sites by p-value (${left.map(m => `${m.name}: ${m.sites} of ${m.total}`).join(", ")}). Every site left off has a larger p-value than p = ${LIMIT.toPrecision(3)}, so with the p-value threshold held at or below it (the page holds it there) each one fails it and every count is exact. faba qc's view and faba mcp read every site.`
+    ? `To stay small to share, the page carries each modality's strongest sites by p-value (${left.map(m => `${m.name}: ${m.sites} of ${m.total}`).join(", ")}). Every site left off has a larger p-value than p = ${LIMIT.toPrecision(3)}, so with the p-value threshold held at or below it (the page holds it there) each one fails it: the kept count and the p-value row count every site. The other rows, the histograms, the genes and the 2D panels are over the sites carried. faba qc's view and faba mcp read every site.`
     : "";
 }
 

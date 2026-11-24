@@ -431,6 +431,40 @@ fn the_report_carries_the_top_sites_by_p_value() {
     assert!(m["limit"].is_null() && m["sites"] == 500 && m["total"] == 500);
 }
 
+/// Sites without a p-value pass any p-value threshold, so the page carries
+/// them all: every site it leaves off has a p-value past its limit.
+#[test]
+fn the_report_carries_every_site_without_a_p_value() {
+    let n = crate::qc::site_tui::report::CARRIED + 3000;
+    let mut t = table(M6A, n);
+    for i in (0..n).step_by(97) {
+        t.pv[i] = f32::NAN;
+    }
+    let (_dir, p) = report_picker(&t);
+    let m = &report_json(&p)["modalities"][0];
+    let limit = m["limit"].as_f64().unwrap() as f32;
+    let nan = t.pv.iter().filter(|p| p.is_nan()).count();
+    let at_most = t.pv.iter().filter(|&&p| p <= limit).count();
+    assert_eq!(m["sites"].as_u64().unwrap() as usize, nan + at_most);
+    let dropped = t.pv.iter().filter(|&&p| !p.is_nan() && p > limit).count();
+    assert_eq!(
+        n - nan - at_most,
+        dropped,
+        "every site left off has p past the limit"
+    );
+}
+
+/// The page says which counts are over the sites carried, and counts a
+/// panel's box from the fail bits, as `grid()` does.
+#[test]
+fn the_page_labels_counts_over_the_sites_carried_and_boxes_by_fail_bits() {
+    let page = crate::qc::site_tui::report::FRAGMENT;
+    assert!(page.contains("are over the sites carried"));
+    assert!(page.contains("the other rows, the ${m.sites} carried"));
+    assert!(page.contains("(m.fails[i] & drawn) === 0"));
+    assert!(!page.contains("every count is exact"));
+}
+
 #[test]
 fn the_report_page_loads_nothing() {
     let page = crate::qc::site_tui::report::FRAGMENT.to_lowercase();

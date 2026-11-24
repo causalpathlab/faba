@@ -32,7 +32,7 @@ use super::path_tui::ask_paths;
 use super::progress::{FinishOnDrop, Progress};
 use super::repool::repool_gene_level;
 use super::site_tui::{
-    auto_pairs, qc_flags, run_site_picker, site_figures, threshold_counts, Figure, Picked, Writer,
+    dry_counts, qc_flags, run_site_picker, site_figures, Figure, Picked, Writer,
 };
 use super::sites::{
     accumulate_site_cells, read_site_table, site_matrix_rows, write_site_tables, SiteTable,
@@ -241,8 +241,13 @@ fn html_problem(args: &QcArgs) -> anyhow::Result<()> {
         "--html {html} already exists: faba qc never overwrites a file; name another path"
     );
     let parent = path.parent().filter(|p| !p.as_os_str().is_empty());
+    // Inside the output folder of a cut is fine: it is made before the page.
+    let made = |p: &std::path::Path| {
+        let out = args.output.as_deref().map(std::path::Path::new);
+        args.batch_process && out.is_some_and(|o| p.starts_with(o))
+    };
     anyhow::ensure!(
-        parent.is_none_or(|p| p.is_dir()),
+        parent.is_none_or(|p| p.is_dir() || made(p)),
         "--html {html}: its folder does not exist; name a path in one that does"
     );
     Ok(())
@@ -320,6 +325,13 @@ fn write_html(
         return Ok(());
     };
     html_problem(args)?;
+    // A folder inside the output folder, made now (see [`html_problem`]).
+    if let Some(parent) = std::path::Path::new(html)
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent)?;
+    }
     let pages = (cells_of(&prep.decisions), std::path::Path::new(html));
     crate::qc::site_tui::write_page(
         input,
@@ -401,7 +413,8 @@ fn dry_run(args: &QcArgs) -> anyhow::Result<()> {
             n - kept,
         ));
     }
-    for t in threshold_counts(&prep.tables, &prep.site_cells, &args.site) {
+    let (counts, pairs) = dry_counts(&prep.tables, &prep.site_cells, &args.site);
+    for t in counts {
         out.push_str(&format!(
             "sites\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
             t.modality, t.flag, t.threshold, t.removes, t.only, t.kept, t.sites
@@ -409,7 +422,7 @@ fn dry_run(args: &QcArgs) -> anyhow::Result<()> {
     }
     // The 2D panels Auto picks: `removes`, the sites one of the pair's
     // thresholds keeps and the other drops.
-    for (m, p) in auto_pairs(&prep.tables, &prep.site_cells, &args.site) {
+    for (m, p) in pairs {
         out.push_str(&format!(
             "pair\t{m}\t{} x {}\trank correlation {:.2}\t{}\t\t\t\n",
             p.x.short(),
@@ -510,6 +523,8 @@ fn filter_fileset(
         )?;
         if has_sites {
             write_html(args, input, &prep, gff.as_deref())?;
+        } else if args.html.is_some() {
+            log::warn!("no editing site table: --html writes no page");
         }
         return Ok(Some(args.site.clone()));
     }
@@ -1042,6 +1057,17 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("folder"));
+        // Inside a cut's output folder, made before the page: fine.
+        let out = dir.path().join("cut");
+        let o = out.display();
+        for page in [format!("{o}/qc.html"), format!("{o}/pages/qc.html")] {
+            let inside = parse(&format!("faba qc in --batch-process -o {o} --html {page}"));
+            assert!(html_problem(&inside).is_ok(), "{page}");
+        }
+        let elsewhere = parse(&format!(
+            "faba qc in --batch-process -o {o} --html /no/such/dir/qc.html"
+        ));
+        assert!(html_problem(&elsewhere).is_err());
     }
 
     /// A dry run's figures go under -o DIR, new or empty: a DIR with files
