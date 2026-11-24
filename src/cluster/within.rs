@@ -278,46 +278,14 @@ impl CountCells {
         out
     }
 
-    /// The count fit's batch of each of the sites' batches (those of
-    /// `cells`). A batch met in several folders is named with its folder,
-    /// as typed in each round (see [`args::qualify_batches`]): the same
-    /// name, or else the one batch that is the other named with its folder,
-    /// when no other batch of the sites is that one too. A count fit of one
-    /// batch and sites of one are the same batch, whatever its names.
-    fn batches<'a>(&'a self, cells: &'a [read::Cell]) -> FxHashMap<&'a str, &'a ByBarcode> {
-        let mut ours: Vec<&str> = cells.iter().map(|c| &*c.batch).collect();
-        ours.sort_unstable();
-        ours.dedup();
-        if let ([ours], 1) = (ours.as_slice(), self.cells.len()) {
-            return self.cells.values().map(|theirs| (*ours, theirs)).collect();
-        }
-        // Each of the sites' batches with the count fit's batch it names.
-        let alike: Vec<(&str, &str)> = (ours.iter())
-            .filter_map(|&ours| {
-                if let Some((theirs, _)) = self.cells.get_key_value(ours) {
-                    return Some((ours, &**theirs));
-                }
-                let mut alike = (self.cells.keys())
-                    .filter(|theirs| qualifies(ours, theirs) || qualifies(theirs, ours));
-                let theirs = alike.next()?;
-                alike.next().is_none().then_some((ours, &**theirs))
-            })
-            .collect();
-        let mut named: FxHashMap<&str, usize> = FxHashMap::default();
-        for (_, theirs) in &alike {
-            *named.entry(theirs).or_default() += 1;
-        }
-        (alike.into_iter())
-            .filter(|(_, theirs)| named[theirs] == 1)
-            .map(|(ours, theirs)| (ours, &self.cells[theirs]))
-            .collect()
-    }
-
-    /// `cells` (the sites') by their group in the count fit. Refused when
+    /// `cells` (the sites') by their group in the count fit, their batches
+    /// paired with its as `pairing` says (see [`pairing`]). Refused when
     /// none is among the count fit's cells: the two are of other cells, or
     /// name them otherwise.
-    fn group(&self, cells: &[read::Cell]) -> anyhow::Result<Grouped> {
-        let batches = self.batches(cells);
+    fn group(&self, cells: &[read::Cell], pairing: &pairing::Pairing) -> anyhow::Result<Grouped> {
+        let batches: FxHashMap<&str, &ByBarcode> = (pairing.of().into_iter())
+            .filter_map(|(ours, theirs)| Some((ours, self.cells.get(theirs)?)))
+            .collect();
         let mut out = Grouped::default();
         for (i, cell) in cells.iter().enumerate() {
             let of = (batches.get(&*cell.batch)).and_then(|b| b.get(&cell.barcode).copied());
@@ -389,7 +357,11 @@ pub(super) fn run(args: &ClusterArgs) -> anyhow::Result<Option<String>> {
     let m = all.modality.to_ascii_lowercase();
     let name = record_name(&m);
     let mut record = record.file_name(&name);
-    let grouped = match count.group(&all.cells) {
+    let pairing = match pair_batches(args, &count, &all.cells) {
+        Ok(pairing) => pairing,
+        Err(e) => return failed(record, e),
+    };
+    let grouped = match count.group(&all.cells, &pairing) {
         Ok(grouped) => grouped,
         Err(e) => return failed(record, e),
     };
@@ -508,6 +480,7 @@ pub(super) fn run(args: &ClusterArgs) -> anyhow::Result<Option<String>> {
             },
             "model": args::recorded(args),
             "table": table,
+            "batches": pairing.recorded(),
             "groups": fits,
             "halted": halted,
         }),
@@ -542,6 +515,35 @@ pub(super) fn run(args: &ClusterArgs) -> anyhow::Result<Option<String>> {
     Ok(Some(m))
 }
 
+/// How the batches of `cells` (the sites') pair with `count`'s: those
+/// `--batch-map` names first, what is still ambiguous asked in a pop-up on
+/// a terminal and refused off one (see [`pairing::resolve`]). A site batch
+/// left unmatched though it could be one of the count fit's is warned of.
+fn pair_batches(
+    args: &ClusterArgs,
+    count: &CountCells,
+    cells: &[read::Cell],
+) -> anyhow::Result<pairing::Pairing> {
+    let named = (args.batch_map.iter())
+        .map(|s| pairing::Named::parse(s))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let ours: Vec<&str> = cells.iter().map(|c| &*c.batch).collect();
+    let mut asked = pairing::ask;
+    let ask: Option<&mut pairing::Ask> = super::live(args).then_some(&mut asked);
+    let pairing = pairing::resolve(count, &ours, &named, ask)?;
+    for p in pairing.pairs.iter().filter(|p| p.sites != p.count) {
+        log::info!(
+            "the sites' batch {} is the count fit's {}",
+            p.sites,
+            p.count
+        );
+    }
+    for (sites, why) in &pairing.left {
+        log::warn!("the sites' batch {sites} is left unmatched: {why}");
+    }
+    Ok(pairing)
+}
+
 /// Each cell's main role (1.., none when not kept) in the cell table at
 /// `path`, which is to have `cells` rows: a group's cells in the order
 /// they were fitted.
@@ -566,6 +568,8 @@ pub(in crate::cluster) fn listed(
         groups,
     ))
 }
+
+mod pairing;
 
 #[cfg(test)]
 mod tests;
