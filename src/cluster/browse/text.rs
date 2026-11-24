@@ -107,9 +107,8 @@ impl Default for Shown {
             #[command(flatten)]
             shown: Shown,
             /// What the levels conflict with in `faba cluster-view`.
-            #[arg(long, hide = true)]
-            #[allow(dead_code)]
-            html: Option<String>,
+            #[arg(id = "html", long = "html", hide = true)]
+            _html: Option<String>,
         }
         Line::parse_from(["shown"]).shown
     }

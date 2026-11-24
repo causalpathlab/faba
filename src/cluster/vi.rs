@@ -42,9 +42,23 @@ impl Default for Options {
 /// before it), whether to stop (and write what it has), and whether it was
 /// cancelled (nothing to write).
 pub struct Hooks<'h> {
+    /// What the fit's convergence is measured by, told as it begins.
+    pub begin: &'h (dyn Fn(Aim) + Sync),
     pub epoch: &'h (dyn Fn(usize, f64) + Sync),
     pub stop: &'h (dyn Fn() -> bool + Sync),
     pub cancelled: &'h (dyn Fn() -> bool + Sync),
+}
+
+/// What a fit's convergence is measured by: the ELBO per `unit` (count or
+/// read), `units` of them, settled when an epoch of coordinate ascent moves
+/// it by under `tol`, after `svi` stochastic epochs (whose ELBO no test
+/// reads).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Aim {
+    pub units: f64,
+    pub unit: &'static str,
+    pub tol: f64,
+    pub svi: usize,
 }
 
 /// A fit's steps, which [`run`] schedules; each none when it was
@@ -56,8 +70,9 @@ pub trait Steps {
     /// The fit's end: its last pass, its ELBO among it.
     type End;
 
-    /// The units (counts or reads) the tolerance is per.
+    /// The units (counts or reads) the tolerance is per, and their name.
     fn units(&self) -> f64;
+    const UNIT: &'static str;
     /// Every cell fitted to the start's globals, before any global step.
     fn first(&mut self) -> Option<()>;
     /// The local steps of `cells`, then a stochastic global step of size
@@ -107,6 +122,13 @@ pub fn run<S: Steps>(
     } else {
         0
     };
+    let units = steps.units().max(1.0);
+    (hooks.begin)(Aim {
+        units,
+        unit: S::UNIT,
+        tol: options.tol,
+        svi,
+    });
     // Batches as even as the cells allow: none a scrap scaled up.
     let batch = cells.div_ceil(batches.max(1));
     let tau0 = batches as f64;
@@ -134,7 +156,6 @@ pub fn run<S: Steps>(
     // start (the previous epoch's end) as they go, and the state they
     // leave; converged, the epoch ends there, its global step not taken.
     let (mut last, mut converged, mut end) = (None::<f64>, false, None);
-    let units = steps.units().max(1.0);
     for e in (svi + 1)..=options.epochs {
         if (hooks.stop)() || done < e - 1 {
             break;

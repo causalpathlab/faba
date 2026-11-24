@@ -7,7 +7,6 @@ license = "MIT"
 authors = ["Yongjin Park <ypp@stat.ubc.ca> <yongjin.park@ubc.ca>"]
 description = "Feature statistics Accumulator for Base-pair-level Analysis — BAM to per-cell sparse matrices"
 repository = "https://github.com/causalpathlab/faba"
-homepage = "https://github.com/causalpathlab/faba"
 readme = "README.md"
 keywords = ["genomics", "rna", "bam", "single-cell", "epitranscriptomics"]
 categories = ["science", "command-line-utilities"]
@@ -54,7 +53,7 @@ mcp = ["dep:legume-mcp"]
 hdf5 = ["data-beans/hdf5"]
 
 [dependencies]
-data-beans = { version = "0.13", default-features = false, features = ["aux", "tui"] }
+data-beans = { version = "0.14", default-features = false, features = ["aux", "tui"] }
 # Detachable sessions for the views, the image protocol of the attached
 # terminal, the runner of the child `faba run` follows, and the file
 # browser, flag form and command scripts the views share.

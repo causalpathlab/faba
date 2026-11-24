@@ -83,6 +83,7 @@ fn fitted(options: &Options) -> (Vec<(usize, f64)>, Fitted, f64) {
         }
     };
     let hooks = Hooks {
+        begin: &|_| {},
         epoch: &epoch,
         stop: &|| false,
         cancelled: &|| false,

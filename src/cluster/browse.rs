@@ -493,6 +493,7 @@ fn show(
 /// command refuses it, with nothing read but run records: the pages
 /// `--html html` would write, one for one fit, and for a within record
 /// opened whole one more for each fitted group; none without `html`.
+#[cfg(feature = "mcp")]
 pub(crate) fn opens(
     data_files: &[Box<str>],
     modality: Option<&str>,

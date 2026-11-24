@@ -231,7 +231,8 @@ fn heatmap(m: &Modules, look: Look, title: &str, size: Page) -> Result<String, S
                 c.rect(x + 1.0, y + 1.0, cell - 2.0, cell - 2.0, &colour);
                 let text = match look {
                     Look::Shift | Look::Z => format!("{v:+.2}"),
-                    Look::Percent => format!("{v:.0}"),
+                    // As the grid writes it: a whole %, or UMIs per cell.
+                    Look::Percent => m.block(rows[i])[j].number().unwrap_or_default(),
                 };
                 let ink = if dark { "#ffffff" } else { INK };
                 c.text(
@@ -280,7 +281,6 @@ fn heatmap(m: &Modules, look: Look, title: &str, size: Page) -> Result<String, S
 
 /// A plot's frame: its y range ticked at the ends and the middle on the
 /// left of `(x, y, w, h)`, its x range under it, and their labels.
-#[allow(clippy::too_many_arguments)]
 fn axes(
     c: &mut Canvas,
     (x, y, w, h): (f64, f64, f64, f64),

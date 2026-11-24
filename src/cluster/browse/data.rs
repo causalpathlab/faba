@@ -572,21 +572,32 @@ pub(super) fn bounds(positions: impl Iterator<Item = i64> + Clone) -> (i64, i64)
 
 /// The models of the modules' genes among `all`: by key, else by symbol
 /// (ASCII case aside, as the pileup matches them), on the gene's chromosome.
+/// A symbol on several chromosomes (multi-copy RNAs, the PAR genes) finds
+/// the model on the site's.
 pub fn gene_models(m: &Modules, all: &[GeneModel]) -> FxHashMap<Box<str>, GeneModel> {
     let by_key: FxHashMap<&str, &GeneModel> = all.iter().map(|g| (g.key.as_ref(), g)).collect();
-    let by_symbol: FxHashMap<String, &GeneModel> = all
-        .iter()
-        .map(|g| (g.symbol.to_ascii_lowercase(), g))
-        .collect();
+    let mut by_symbol: FxHashMap<String, Vec<&GeneModel>> = FxHashMap::default();
+    for g in all {
+        by_symbol
+            .entry(g.symbol.to_ascii_lowercase())
+            .or_default()
+            .push(g);
+    }
     let mut out = FxHashMap::default();
     for s in &m.sites {
         if out.contains_key(&s.gene) {
             continue;
         }
+        let on_chr = |g: &&GeneModel| chr_eq(&g.chr, &s.chr);
         let found = by_key
             .get(s.gene.as_ref())
-            .or_else(|| by_symbol.get(&query_symbol(&s.gene).to_ascii_lowercase()));
-        if let Some(&g) = found.filter(|g| chr_eq(&g.chr, &s.chr)) {
+            .copied()
+            .filter(on_chr)
+            .or_else(|| {
+                let symbol = query_symbol(&s.gene).to_ascii_lowercase();
+                by_symbol.get(&symbol)?.iter().copied().find(on_chr)
+            });
+        if let Some(g) = found {
             out.insert(s.gene.clone(), g.clone());
         }
     }

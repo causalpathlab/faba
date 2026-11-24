@@ -59,10 +59,10 @@ fn modules_are_shared_condition_or_batch_specific() {
     );
     let mut batch_of = Vec::new();
     let mut shares = Vec::new();
-    for b in 0..4 {
+    for (b, &condition) in d.condition_of.iter().enumerate() {
         for _ in 0..40 {
             batch_of.push(b);
-            let mutant = d.condition_of[b] == 0;
+            let mutant = condition == 0;
             let row: [f32; 4] = match b {
                 0 => [0.25, 0.5, 0.25, 0.0],
                 2 => [0.25, 0.5, 0.0, 0.25],
