@@ -267,7 +267,7 @@ pub fn find_all_conversion_sites(
     gff_map
         .records()
         .par_iter()
-        .progress_with(new_progress_bar(njobs as u64))
+        .progress_with(new_progress_bar(njobs as u64).with_message("conversion sites: genes"))
         .try_for_each_init(
             || {
                 let faidx = load_fasta_index(&params.genome_file)
@@ -545,7 +545,9 @@ pub fn gather_conversion_stats(
     gene_sites
         .into_iter()
         .par_bridge()
-        .progress_with(new_progress_bar(gene_sites.len() as u64))
+        .progress_with(
+            new_progress_bar(gene_sites.len() as u64).with_message("conversion counts: genes"),
+        )
         .try_for_each_init(
             crate::data::bam_io::BamReaderCache::new,
             |cache, gs| -> anyhow::Result<()> {

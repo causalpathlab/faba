@@ -59,7 +59,7 @@ pub fn run_read_depth_pipeline_with_cells(
 
         let segment_stats = jobs
             .par_iter()
-            .progress_with(new_progress_bar(njobs))
+            .progress_with(new_progress_bar(njobs).with_message("read depth: blocks"))
             .map(
                 |(chr, lb, ub)| -> anyhow::Result<Vec<(CellBarcode, Box<str>, f32)>> {
                     let bed = Bed {

@@ -96,7 +96,7 @@ pub fn pileup_known_snps_by_gene(
 
     records
         .par_iter()
-        .progress_with(new_progress_bar(njobs))
+        .progress_with(new_progress_bar(njobs).with_message("known SNPs: genes"))
         .try_for_each_init(
             crate::data::bam_io::BamReaderCache::new,
             |cache, rec| -> anyhow::Result<()> {
@@ -193,7 +193,7 @@ pub fn pileup_known_snps_by_region(
 
     chromosomes
         .par_iter()
-        .progress_with(new_progress_bar(njobs))
+        .progress_with(new_progress_bar(njobs).with_message("known SNPs: chromosomes"))
         .try_for_each_init(
             crate::data::bam_io::BamReaderCache::new,
             |cache, chr| -> anyhow::Result<()> {
@@ -283,7 +283,7 @@ pub fn discover_snps_by_gene(
 
     records
         .par_iter()
-        .progress_with(new_progress_bar(njobs))
+        .progress_with(new_progress_bar(njobs).with_message("SNP discovery: genes"))
         .try_for_each_init(
             || {
                 let faidx = load_fasta_index(&params.genome_file)
@@ -390,7 +390,7 @@ pub fn discover_snps_by_region(params: &SnpParams) -> anyhow::Result<Vec<SnpSite
     let arc_sites = Arc::new(Mutex::new(Vec::<SnpSite>::new()));
 
     jobs.par_iter()
-        .progress_with(new_progress_bar(njobs))
+        .progress_with(new_progress_bar(njobs).with_message("SNP discovery: regions"))
         .try_for_each_init(
             || {
                 let faidx = load_fasta_index(&params.genome_file)
@@ -577,7 +577,9 @@ pub fn gather_snp_allele_counts_by_gene(
     called_sites
         .iter()
         .par_bridge()
-        .progress_with(new_progress_bar(called_sites.len() as u64))
+        .progress_with(
+            new_progress_bar(called_sites.len() as u64).with_message("SNP allele counts: sites"),
+        )
         .try_for_each_init(
             crate::data::bam_io::BamReaderCache::new,
             |cache, entry| -> anyhow::Result<()> {

@@ -94,7 +94,7 @@ fn find_all_polya_sites(
     gff_map
         .records()
         .par_iter()
-        .progress_with(new_progress_bar(njobs as u64))
+        .progress_with(new_progress_bar(njobs as u64).with_message("poly-A sites: genes"))
         .try_for_each_init(
             crate::data::bam_io::BamReaderCache::new,
             |cache, rec| -> anyhow::Result<()> {
@@ -178,7 +178,9 @@ fn gather_polya_stats(
     gene_sites
         .into_iter()
         .par_bridge()
-        .progress_with(new_progress_bar(gene_sites.len() as u64))
+        .progress_with(
+            new_progress_bar(gene_sites.len() as u64).with_message("poly-A counts: genes"),
+        )
         .try_for_each_init(
             crate::data::bam_io::BamReaderCache::new,
             |cache, gs| -> anyhow::Result<()> {
@@ -353,7 +355,7 @@ pub fn run_mixture(args: &CountApaArgs) -> anyhow::Result<()> {
 
     let results: Vec<(Vec<CellSiteCount>, Vec<ApaSiteAnnotation>)> = utrs
         .par_iter()
-        .progress_with(new_progress_bar(njobs as u64))
+        .progress_with(new_progress_bar(njobs as u64).with_message("APA: UTRs"))
         .map_init(crate::data::bam_io::BamReaderCache::new, |cache, utr| {
             process_utr(
                 cache,
