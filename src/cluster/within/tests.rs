@@ -541,3 +541,52 @@ fn settings_within_cannot_fit_with_are_refused() {
         assert!(err.contains(says), "{words:?}: {err}");
     }
 }
+
+/// Two `--batch-map` pairs may not name one count batch: refused, not two
+/// site batches grouped against it.
+#[test]
+fn a_count_batch_named_twice_is_refused() {
+    let tmp = tempfile::tempdir().unwrap();
+    let count = three_batches(tmp.path());
+    let sites = [cell("x", "B0"), cell("y", "B0")];
+    let err = pairing_of(&count, &sites, &["x=solo", "y=solo"]).unwrap_err();
+    assert!(
+        format!("{err:#}").contains("names the count fit's batch solo twice"),
+        "{err:#}"
+    );
+}
+
+/// A site batch whose same-named count batch `--batch-map` gave to another
+/// is left unmatched and said why, not dropped without a word.
+#[test]
+fn a_same_name_taken_by_the_map_is_said() {
+    let tmp = tempfile::tempdir().unwrap();
+    let count = three_batches(tmp.path());
+    let sites = [cell("/x/solo", "B0"), cell("solo", "B0")];
+    let p = pairing_of(&count, &sites, &["/x/solo=solo"]).unwrap();
+    assert!(
+        p.left
+            .iter()
+            .any(|(s, why)| &**s == "solo" && why.contains("given to another batch")),
+        "{:?}",
+        p.left
+    );
+}
+
+/// A site batch with `=` in its name splits at the last one.
+#[test]
+fn batch_map_splits_at_the_last_equals() {
+    let n = pairing::Named::parse("run=1=b1").unwrap();
+    assert_eq!((&*n.sites, n.count.as_deref()), ("run=1", Some("b1")));
+}
+
+/// Answers given when asked are kept, as the flags that give them again.
+#[test]
+fn answers_are_kept_as_flags() {
+    let tmp = tempfile::tempdir().unwrap();
+    let count = three_batches(tmp.path());
+    let ours = ["b"];
+    let mut ask = |_: &pairing::Ambiguity| Ok(Some(pairing::Answer::Take(0)));
+    let p = pairing::resolve(&count, &ours, &[], Some(&mut ask)).unwrap();
+    assert_eq!(p.answered, ["b=a/b"]);
+}

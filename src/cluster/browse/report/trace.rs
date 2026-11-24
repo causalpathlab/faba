@@ -18,7 +18,7 @@ pub(super) enum Section {
 }
 
 /// The restarts, the steps run and the k-means start's, and the verdict's
-/// words and advice (none without a run record).
+/// words and advice (without a verdict, why: no advice).
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct Drawn {
@@ -26,7 +26,7 @@ pub(super) struct Drawn {
     steps: usize,
     warmup: usize,
     converged: bool,
-    said: Option<String>,
+    said: String,
     advice: Option<String>,
 }
 
@@ -63,7 +63,7 @@ pub(super) fn section(fit: &Fit) -> Section {
         steps: fit.span(),
         warmup: t.warmup,
         converged: verdict.is_none_or(|v| v.converged()),
-        said: verdict.map(|v| v.said()),
+        said: verdict.map_or_else(|| fit.unjudged().to_string(), |v| v.said()),
         advice: verdict.map(|v| v.advice()),
     }))
 }

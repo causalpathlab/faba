@@ -405,7 +405,7 @@ fn trace(m: &Modules) -> Vec<String> {
                 out.push(format!("advice: {advice}"));
             }
         }
-        None => out.push("verdict: none (no run record beside the tables)".into()),
+        None => out.push(format!("verdict: none ({})", fit.unjudged())),
     }
     out
 }

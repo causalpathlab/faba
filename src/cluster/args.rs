@@ -216,9 +216,9 @@ pub struct ClusterArgs {
         long_help = "With --within: the sites' batch SITES is the count fit's batch COUNT, taken\n\
                      before any pairing by name. Repeat it, once a pair; `SITES=` leaves a batch\n\
                      unmatched. Without it a batch pairs with the count fit's of the same name, or\n\
-                     else the one that is it named with its folder (`b1` and `runs/a/b1`). When that\n\
-                     is ambiguous the run asks which on a terminal, and off one is refused, naming\n\
-                     each choice."
+                     else the one that is the same batch named with its folder (`b1` and\n\
+                     `runs/a/b1`). When that is ambiguous the run asks which on a terminal, and off\n\
+                     one is refused, naming each choice. SITES=COUNT splits at the last `=`."
     )]
     pub(super) batch_map: Vec<Box<str>>,
 

@@ -286,7 +286,7 @@ if (TRACE.restarts) {
   document.getElementById("trace").hidden = false;
   document.getElementById("trace-legend").innerHTML = TRACE.restarts.map(c => `<span class="key"><i style="background:${c.color}"></i>${esc(c.name)}</span>`).join("");
   const said = document.getElementById("trace-said");
-  said.textContent = TRACE.said ?? "no run record beside the tables: no verdict"; said.classList.toggle("check", !TRACE.converged);
+  said.textContent = TRACE.said; said.classList.toggle("check", !TRACE.converged);
   document.getElementById("trace-advice").textContent = TRACE.advice ?? "";
   const c = document.getElementById("c-trace");
   // The crosshair at the step under the pointer, on the plot's span.

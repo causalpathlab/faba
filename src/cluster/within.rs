@@ -346,6 +346,11 @@ pub(super) fn run(args: &ClusterArgs) -> anyhow::Result<Option<String>> {
         }
         super::unless_cancelled(args, error)
     };
+    // A mistyped --batch-map is refused before the sites are read.
+    let named = match named_batches(args, &count) {
+        Ok(named) => named,
+        Err(e) => return failed(record, e),
+    };
     let title = format!("reading the sites to fit within {}", count.record.display());
     let (_, all) = super::watched(args, &title, false, |p| {
         read::read_inputs(&args::inputs(args)?, p)
@@ -357,7 +362,7 @@ pub(super) fn run(args: &ClusterArgs) -> anyhow::Result<Option<String>> {
     let m = all.modality.to_ascii_lowercase();
     let name = record_name(&m);
     let mut record = record.file_name(&name);
-    let pairing = match pair_batches(args, &count, &all.cells) {
+    let pairing = match pair_batches(args, &count, &all.cells, &named) {
         Ok(pairing) => pairing,
         Err(e) => return failed(record, e),
     };
@@ -515,22 +520,39 @@ pub(super) fn run(args: &ClusterArgs) -> anyhow::Result<Option<String>> {
     Ok(Some(m))
 }
 
+/// The pairs `--batch-map` names, each count batch among `count`'s: what
+/// can be checked before the sites are read.
+fn named_batches(args: &ClusterArgs, count: &CountCells) -> anyhow::Result<Vec<pairing::Named>> {
+    let named = (args.batch_map.iter())
+        .map(|s| pairing::Named::parse(s))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    for n in &named {
+        if let Some(c) = n.count.as_deref() {
+            anyhow::ensure!(
+                count.cells.contains_key(c),
+                "--batch-map {}={c}: the count fit has no batch {c}",
+                n.sites
+            );
+        }
+    }
+    Ok(named)
+}
+
 /// How the batches of `cells` (the sites') pair with `count`'s: those
-/// `--batch-map` names first, what is still ambiguous asked in a pop-up on
-/// a terminal and refused off one (see [`pairing::resolve`]). A site batch
-/// left unmatched though it could be one of the count fit's is warned of.
+/// `named` (by `--batch-map`) first, what is still ambiguous asked in a
+/// pop-up on a terminal and refused off one (see [`pairing::resolve`]). A
+/// site batch left unmatched though it could be one of the count fit's is
+/// warned of; what was answered is said as the flags that give it again.
 fn pair_batches(
     args: &ClusterArgs,
     count: &CountCells,
     cells: &[read::Cell],
+    named: &[pairing::Named],
 ) -> anyhow::Result<pairing::Pairing> {
-    let named = (args.batch_map.iter())
-        .map(|s| pairing::Named::parse(s))
-        .collect::<anyhow::Result<Vec<_>>>()?;
     let ours: Vec<&str> = cells.iter().map(|c| &*c.batch).collect();
     let mut asked = pairing::ask;
     let ask: Option<&mut pairing::Ask> = super::live(args).then_some(&mut asked);
-    let pairing = pairing::resolve(count, &ours, &named, ask)?;
+    let pairing = pairing::resolve(count, &ours, named, ask)?;
     for p in pairing.pairs.iter().filter(|p| p.sites != p.count) {
         log::info!(
             "the sites' batch {} is the count fit's {}",
@@ -540,6 +562,16 @@ fn pair_batches(
     }
     for (sites, why) in &pairing.left {
         log::warn!("the sites' batch {sites} is left unmatched: {why}");
+    }
+    if !pairing.answered.is_empty() {
+        let flags: Vec<String> = (pairing.answered.iter())
+            .map(|a| format!("--batch-map '{a}'"))
+            .collect();
+        log::warn!(
+            "as answered; to pair the same way off a terminal (the saved command has none of \
+             these), add: {}",
+            flags.join(" ")
+        );
     }
     Ok(pairing)
 }

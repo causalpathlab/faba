@@ -28,9 +28,11 @@ pub(in crate::cluster) struct Named {
 }
 
 impl Named {
-    /// `SITES=COUNT`, or `SITES=` for none.
+    /// `SITES=COUNT`, or `SITES=` for none, split at the last `=` (a site
+    /// batch may have one in its name; the count fit's batches are named
+    /// without).
     pub(in crate::cluster) fn parse(s: &str) -> anyhow::Result<Self> {
-        let (sites, count) = s.split_once('=').ok_or_else(|| {
+        let (sites, count) = s.rsplit_once('=').ok_or_else(|| {
             anyhow::anyhow!(
                 "--batch-map {s}: write SITES=COUNT (the sites' batch, then the count fit's), \
                  or SITES= to leave it unmatched"
@@ -135,6 +137,8 @@ pub(in crate::cluster) struct Pairing {
     pub left: Vec<(Box<str>, String)>,
     /// What is still to be chosen.
     pub ambiguous: Vec<Ambiguity>,
+    /// What was chosen when asked, as `--batch-map` would name it.
+    pub answered: Vec<String>,
 }
 
 impl Pairing {
@@ -186,6 +190,7 @@ impl CountCells {
         ours: &[&str],
         named: &[Named],
     ) -> anyhow::Result<Pairing> {
+        // (Few: `resolve` gives each batch once.)
         let mut ours: Vec<&str> = ours.to_vec();
         ours.sort_unstable();
         ours.dedup();
@@ -219,8 +224,11 @@ impl CountCells {
                         n.said(),
                         theirs.join(", ")
                     );
+                    anyhow::ensure!(
+                        taken.insert(c),
+                        "--batch-map names the count fit's batch {c} twice"
+                    );
                     out.pairs.push(pair(&n.sites, c, By::Named));
-                    taken.insert(c);
                 }
                 None => (out.left).push((n.sites.clone(), "--batch-map left it unmatched".into())),
             }
@@ -228,10 +236,18 @@ impl CountCells {
         let rest: Vec<&str> = ours.iter().copied().filter(|o| !done.contains(o)).collect();
         // The same name first: it wins over a folder's.
         for &o in &rest {
-            if self.cells.contains_key(o) && taken.insert(o) {
-                out.pairs.push(pair(o, o, By::Same));
-                done.insert(o);
+            if !self.cells.contains_key(o) {
+                continue;
             }
+            if taken.insert(o) {
+                out.pairs.push(pair(o, o, By::Same));
+            } else {
+                out.left.push((
+                    o.into(),
+                    format!("the count fit's {o} was given to another batch by --batch-map"),
+                ));
+            }
+            done.insert(o);
         }
         // Then a batch named with its folder, where only one pairing is
         // possible.
@@ -309,10 +325,16 @@ pub(in crate::cluster) fn resolve(
     named: &[Named],
     mut ask: Option<&mut Ask<'_>>,
 ) -> anyhow::Result<Pairing> {
+    let given = named.len();
+    // Each batch once, not once a cell, before any question.
+    let mut ours: Vec<&str> = ours.to_vec();
+    ours.sort_unstable();
+    ours.dedup();
     let mut named = named.to_vec();
     loop {
-        let pairing = count.pairing(ours, &named)?;
+        let mut pairing = count.pairing(&ours, &named)?;
         let Some(first) = pairing.ambiguous.first() else {
+            pairing.answered = named[given..].iter().map(Named::said).collect();
             return Ok(pairing);
         };
         let Some(ask) = ask.as_mut() else {

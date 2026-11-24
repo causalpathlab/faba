@@ -26,6 +26,8 @@ pub struct Fit {
     pub trace: Result<Trace, String>,
     /// The verdict on the fit (see [`Fit::verdict`]).
     verdict: Option<Verdict>,
+    /// Whether a run record was read beside the tables.
+    recorded: bool,
 }
 
 /// What a `faba cluster` run record says of its fit by variational
@@ -92,6 +94,7 @@ impl Fit {
             steps,
             trace,
             verdict,
+            recorded: record.is_ok(),
         }
     }
 
@@ -99,6 +102,14 @@ impl Fit {
     /// record.
     pub fn verdict(&self) -> Option<&Verdict> {
         self.verdict.as_ref()
+    }
+
+    /// Why there is no verdict, in a few words.
+    pub fn unjudged(&self) -> &'static str {
+        match self.recorded {
+            true => "the run record gives no verdict",
+            false => "no run record beside the tables",
+        }
     }
 
     /// The steps a plot of the trace spans: those scheduled, or the last
