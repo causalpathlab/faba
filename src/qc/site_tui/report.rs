@@ -24,7 +24,7 @@ const INFINITE: f64 = 1e39;
 /// so with the p-value threshold held at or below the last one carried
 /// (the page's limit), each one left off fails it and every count stays
 /// exact. The view and `faba mcp` read every site.
-pub(crate) const CARRIED: usize = 200_000;
+pub(crate) const CARRIED: usize = 50_000;
 
 /// What the page reads from `#data`.
 #[derive(Serialize)]

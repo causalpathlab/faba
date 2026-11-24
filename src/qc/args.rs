@@ -216,7 +216,7 @@ pub struct QcArgs {
         long_help = "With --batch-process or --dry-run, also write the page Ctrl+E writes in the\n\
                      view, at the --site-* values given: the thresholds recounted live, their\n\
                      pairs two at a time, and each batch's cell QC. It carries each modality's\n\
-                     strongest 200,000 sites by p-value, its counts exact (the p-value threshold\n\
+                     strongest 50,000 sites by p-value, its counts exact (the p-value threshold\n\
                      holds at or below the last site carried); the view and `faba mcp` read every\n\
                      site. FILE must not exist: faba qc never overwrites one."
     )]

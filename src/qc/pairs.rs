@@ -253,7 +253,8 @@ impl Pair {
     pub fn why(&self) -> String {
         format!(
             "auto: {} sites pass one of these thresholds and fail the other; rank correlation {:.2}",
-            self.split, self.rho
+            crate::site_analysis::pileup::fmt_thousands(self.split as i64),
+            self.rho
         )
     }
 }
@@ -493,7 +494,8 @@ impl Grid {
     pub fn in_box(&self) -> String {
         format!(
             "in the box: {} kept · {} removed by a threshold not drawn here",
-            self.in_kept, self.in_removed
+            crate::site_analysis::pileup::fmt_thousands(self.in_kept as i64),
+            crate::site_analysis::pileup::fmt_thousands(self.in_removed as i64)
         )
     }
 
@@ -501,7 +503,8 @@ impl Grid {
     pub fn in_box_short(&self) -> String {
         format!(
             "in the box: {} kept · {} removed by others",
-            self.in_kept, self.in_removed
+            crate::site_analysis::pileup::fmt_thousands(self.in_kept as i64),
+            crate::site_analysis::pileup::fmt_thousands(self.in_removed as i64)
         )
     }
 

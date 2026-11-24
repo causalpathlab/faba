@@ -572,7 +572,7 @@ function drawPairs() {
   }
   [...box.querySelectorAll("canvas")].forEach((c, k) => {
     const p = m.panels[k], [inK, inR] = drawPanel(c, m, p);
-    document.getElementById(`said-${k}`).textContent = `in the box: ${inK} kept · ${inR} removed by a threshold not drawn here · ${p.why}`;
+    document.getElementById(`said-${k}`).textContent = `in the box: ${inK.toLocaleString("en-US")} kept · ${inR.toLocaleString("en-US")} removed by a threshold not drawn here · ${p.why}`;
   });
 }
 document.getElementById("pairs").addEventListener("change", e => {
