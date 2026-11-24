@@ -19,6 +19,13 @@ const FILE: (&str, &str) = ("qc_report", ".html");
 /// reads it back as one.
 const INFINITE: f64 = 1e39;
 
+/// The most sites a page carries per modality: the strongest by p-value
+/// (ties at the last included). Every site left off has a larger p-value,
+/// so with the p-value threshold held at or below the last one carried
+/// (the page's limit), each one left off fails it and every count stays
+/// exact. The view and `faba mcp` read every site.
+pub(crate) const CARRIED: usize = 200_000;
+
 /// What the page reads from `#data`.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -38,6 +45,48 @@ pub(super) struct Data {
     /// The metagene's regions, by name and colour.
     regions: [&'static str; 3],
     colours: [&'static str; 3],
+    /// The 2D panels' axes, by key.
+    axes: Vec<AxisInfo>,
+    /// Each batch's barcodes and the cell QC's verdict on each.
+    cells: Vec<CellsData>,
+}
+
+/// An axis of the 2D panels: its key, names, and the criteria it carries.
+#[derive(Serialize)]
+struct AxisInfo {
+    key: Axis,
+    name: &'static str,
+    short: &'static str,
+    criteria: Vec<usize>,
+}
+
+/// A panel's axes, and why it is shown.
+#[derive(Serialize)]
+struct PairInfo {
+    x: Axis,
+    y: Axis,
+    why: String,
+}
+
+/// A batch's barcodes: counts, detected genes and the verdict on each (0
+/// kept, 1 a MAD outlier, 2 near empty).
+#[derive(Serialize)]
+pub(super) struct CellsData {
+    batch: String,
+    counts: Vec<u32>,
+    genes: Vec<u32>,
+    verdict: Vec<u8>,
+}
+
+impl CellsData {
+    pub(super) fn of(c: &crate::qc::cells_plot::Cells) -> Self {
+        Self {
+            batch: c.batch.to_string(),
+            counts: c.counts.iter().map(|&v| v as u32).collect(),
+            genes: c.genes.iter().map(|&v| v as u32).collect(),
+            verdict: c.verdict.iter().map(|&v| v as u8).collect(),
+        }
+    }
 }
 
 /// A criterion as the view shows and steps it.
@@ -68,7 +117,17 @@ struct Knob {
 #[serde(rename_all = "camelCase")]
 struct Modality {
     name: String,
+    /// The sites carried (see [`CARRIED`]), and all the table's.
     sites: usize,
+    total: usize,
+    /// The largest p-value carried when not every site is: the p-value
+    /// threshold the page holds at or below it.
+    limit: Option<f32>,
+    /// The 2D panels as the view had them, the pairs Auto picks at the
+    /// thresholds as written, and each axis' drawn range.
+    pairs: Vec<PairInfo>,
+    auto: Vec<PairInfo>,
+    ranges: Vec<(Axis, (f64, f64))>,
     n_genes: usize,
     /// The criteria that apply, by id in the view's order, and for each
     /// its raw value per site.
@@ -183,6 +242,10 @@ struct ViewSource {
     /// What the bars add up.
     weight: Weight,
     fails: Vec<u8>,
+    /// The 2D panels, Auto's at the thresholds now, and the axes' ranges.
+    pairs: Vec<(Axis, Axis, String)>,
+    auto: Vec<(Axis, Axis, String)>,
+    ranges: Vec<(Axis, (f64, f64))>,
 }
 
 impl Source {
@@ -216,17 +279,18 @@ impl ViewSource {
     ) -> Modality {
         let columns = self.columns.as_raw();
         let cells = |i: usize| self.n_cells.as_ref().map(|n| n[i]);
+        let (carried, limit) = self.carried(columns);
         let (raw, near) = self
             .criteria
             .iter()
             .map(|&c| {
                 let mut near = Vec::new();
-                let raw = (0..self.sites)
-                    .map(|i| {
+                let raw = (carried.iter().enumerate())
+                    .map(|(j, &i)| {
                         let x = c.raw_in(columns, i, cells(i));
                         let value = Value::of(c, x);
                         if matches!(value, Value::Real(y) if y != x as f32 && !y.is_nan()) {
-                            near.push(i as u32);
+                            near.push(j as u32);
                         }
                         value
                     })
@@ -235,25 +299,55 @@ impl ViewSource {
             })
             .unzip();
         let weight = (self.weight != Weight::Sites).then(|| {
-            (0..self.sites)
-                .map(|i| self.weight.of(columns, i) as u64)
+            (carried.iter())
+                .map(|&i| self.weight.of(columns, i) as u64)
                 .collect::<Vec<_>>()
         });
+        let info = |p: &[(Axis, Axis, String)]| -> Vec<PairInfo> {
+            (p.iter())
+                .map(|(x, y, why)| PairInfo {
+                    x: *x,
+                    y: *y,
+                    why: why.clone(),
+                })
+                .collect()
+        };
         let meta = layout.map(|layout| self.meta(layout, weight.as_deref()));
         let genes = self.genes.as_deref();
         Modality {
             name: self.name,
-            sites: self.sites,
+            sites: carried.len(),
+            total: self.sites,
+            limit,
+            pairs: info(&self.pairs),
+            auto: info(&self.auto),
+            ranges: self.ranges,
             n_genes: self.n_genes,
             criteria: self.criteria.iter().map(|&c| c as usize).collect(),
             raw,
             near,
-            pos: genes.map(|g| g.pos.values().to_vec()),
+            pos: genes.map(|g| carried.iter().map(|&i| g.pos.value(i)).collect()),
             genes: genes.map(|g| genes_of(g, &self.pins, models)),
-            gene: self.gene,
+            gene: carried.iter().map(|&i| self.gene[i]).collect(),
             weight,
             meta,
         }
+    }
+
+    /// The sites the page carries, in table order, and the largest p-value
+    /// among them when not every site is (see [`CARRIED`]).
+    fn carried(&self, columns: RawColumns) -> (Vec<usize>, Option<f32>) {
+        if self.sites <= CARRIED || !self.criteria.contains(&Criterion::MaxPv) {
+            return ((0..self.sites).collect(), None);
+        }
+        let mut by_p: Vec<f32> = columns.pv.to_vec();
+        let at = CARRIED - 1;
+        let (_, limit, _) = by_p.select_nth_unstable_by(at, f32::total_cmp);
+        let limit = *limit;
+        let carried = (0..self.sites)
+            .filter(|&i| columns.pv[i].total_cmp(&limit).is_le())
+            .collect();
+        (carried, Some(limit))
     }
 
     /// Its metagene on `layout` under the thresholds as written, each site
@@ -347,6 +441,15 @@ impl SitePicker<'_> {
             legend: LEGEND,
             regions: coding(REGION_NAMES),
             colours: coding(REGION_COLOURS),
+            axes: (Axis::ALL.iter())
+                .map(|&a| AxisInfo {
+                    key: a,
+                    name: a.name(),
+                    short: a.short(),
+                    criteria: a.criteria().iter().map(|&c| c as usize).collect(),
+                })
+                .collect(),
+            cells: self.cells.iter().map(CellsData::of).collect(),
         };
         Source {
             data,
@@ -376,6 +479,13 @@ impl SitePicker<'_> {
             }),
             weight: self.weight,
             fails: v.fails.clone(),
+            pairs: v.pairs.clone(),
+            auto: (pairs::auto_pairs(&v.sites(), pairs::PANELS).into_iter())
+                .map(|p| (p.x, p.y, p.why()))
+                .collect(),
+            ranges: (pairs::axes(&v.sites()).into_iter())
+                .map(|a| (a, pairs::range(&v.sites(), a)))
+                .collect(),
         }
     }
 

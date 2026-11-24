@@ -8,6 +8,7 @@
 //! filtered fileset. It never touches a BAM.
 
 pub mod args;
+pub mod cells_plot;
 pub mod layout;
 pub mod matrix;
 pub mod pairs;

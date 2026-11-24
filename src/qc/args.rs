@@ -200,9 +200,26 @@ pub struct QcArgs {
         help = "With --batch-process, also draw the view's figures under qc_plots/",
         long_help = "With --batch-process, also draw the figures the view writes on apply:\n\
                      for every site modality and knob, `qc_plots/{modality}_{knob}.{pdf,png}`,\n\
-                     at the --site-* values given, with the metagene when an annotation is found."
+                     at the --site-* values given, with the metagene when an annotation is found;\n\
+                     each modality's thresholds two at a time, `{modality}_pairs` (the pairs Auto\n\
+                     picks); and each batch's cell QC, `{batch}_cells` (the knee, and genes\n\
+                     detected by counts)."
     )]
     pub plots: bool,
+
+    #[arg(
+        long = "html",
+        value_name = "FILE",
+        value_hint = clap::ValueHint::FilePath,
+        help = "With --batch-process or --dry-run, also write the view's page, to share (FILE must not exist)",
+        long_help = "With --batch-process or --dry-run, also write the page Ctrl+E writes in the\n\
+                     view, at the --site-* values given: the thresholds recounted live, their\n\
+                     pairs two at a time, and each batch's cell QC. It carries each modality's\n\
+                     strongest 200,000 sites by p-value, its counts exact (the p-value threshold\n\
+                     holds at or below the last site carried); the view and `faba mcp` read every\n\
+                     site. FILE must not exist: faba qc never overwrites one."
+    )]
+    pub html: Option<Box<str>>,
 
     /// The figures' size on the page (only with --plots).
     #[command(flatten)]

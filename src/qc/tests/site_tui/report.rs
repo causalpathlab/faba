@@ -375,6 +375,54 @@ fn a_report_that_cannot_be_written_says_why() {
 }
 
 #[test]
+fn the_report_page_script_parses() {
+    let page = crate::qc::site_tui::report::FRAGMENT;
+    let code = page.rsplit_once("<script>").unwrap().1;
+    let code = code.rsplit_once("</script>").unwrap().0;
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("page.js");
+    std::fs::write(&path, code).unwrap();
+    match std::process::Command::new("node")
+        .arg("--check")
+        .arg(&path)
+        .output()
+    {
+        Ok(out) => assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        ),
+        Err(_) => eprintln!("no node: the page's script is not checked"),
+    }
+}
+
+/// The page carries the strongest sites by p-value, those tied at the
+/// last one too, and says its limit; a table within the cap is carried
+/// whole. Its 2D panels and Auto's pairs come with it.
+#[test]
+fn the_report_carries_the_top_sites_by_p_value() {
+    let n = crate::qc::site_tui::report::CARRIED + 300;
+    let t = table(M6A, n);
+    let (_dir, p) = report_picker(&t);
+    let data = report_json(&p);
+    let m = &data["modalities"][0];
+    let limit = m["limit"].as_f64().unwrap() as f32;
+    let carried = t.pv.iter().filter(|&&v| v <= limit).count();
+    assert_eq!(
+        (m["sites"].as_u64(), m["total"].as_u64()),
+        (Some(carried as u64), Some(n as u64))
+    );
+    assert!(carried >= crate::qc::site_tui::report::CARRIED && carried < n);
+    assert_eq!(m["gene"].as_array().unwrap().len(), carried);
+    assert_eq!(m["pairs"].as_array().unwrap().len(), 4);
+    assert_eq!(m["auto"].as_array().unwrap().len(), 4);
+    let small = table(M6A, 500);
+    let (_d, p) = report_picker(&small);
+    let m = &report_json(&p)["modalities"][0];
+    assert!(m["limit"].is_null() && m["sites"] == 500 && m["total"] == 500);
+}
+
+#[test]
 fn the_report_page_loads_nothing() {
     let page = crate::qc::site_tui::report::FRAGMENT.to_lowercase();
     for net in [

@@ -32,7 +32,7 @@ use super::path_tui::ask_paths;
 use super::progress::{FinishOnDrop, Progress};
 use super::repool::repool_gene_level;
 use super::site_tui::{
-    qc_flags, run_site_picker, site_figures, threshold_counts, Figure, Picked, Writer,
+    auto_pairs, qc_flags, run_site_picker, site_figures, threshold_counts, Figure, Picked, Writer,
 };
 use super::sites::{
     accumulate_site_cells, read_site_table, site_matrix_rows, write_site_tables, SiteTable,
@@ -223,7 +223,58 @@ fn resolve_paths(args: &QcArgs) -> anyhow::Result<(String, String)> {
     Ok((input, output))
 }
 
+/// Refused, before anything is read, when `--html` cannot be written as
+/// asked: without --batch-process or --dry-run (the view writes its page on
+/// Ctrl+E), to a file that exists (never overwritten), or into a folder
+/// that does not.
+fn html_problem(args: &QcArgs) -> anyhow::Result<()> {
+    let Some(html) = args.html.as_deref() else {
+        return Ok(());
+    };
+    anyhow::ensure!(
+        args.batch_process || args.dry_run,
+        "--html writes the page with --batch-process or --dry-run; in the view, Ctrl+E writes it"
+    );
+    let path = std::path::Path::new(html);
+    anyhow::ensure!(
+        !path.exists(),
+        "--html {html} already exists: faba qc never overwrites a file; name another path"
+    );
+    let parent = path.parent().filter(|p| !p.as_os_str().is_empty());
+    anyhow::ensure!(
+        parent.is_none_or(|p| p.is_dir()),
+        "--html {html}: its folder does not exist; name a path in one that does"
+    );
+    Ok(())
+}
+
+/// `--html`'s page, at `filter`, once the run has what it shows; the file
+/// checked again, as it may have appeared meanwhile.
+fn write_html(
+    args: &QcArgs,
+    input: &str,
+    prep: &Prepared,
+    gff: Option<&str>,
+) -> anyhow::Result<()> {
+    let Some(html) = args.html.as_deref() else {
+        return Ok(());
+    };
+    html_problem(args)?;
+    let pages = (cells_of(&prep.decisions), std::path::Path::new(html));
+    crate::qc::site_tui::write_page(
+        input,
+        &prep.tables,
+        &prep.site_cells,
+        &args.site,
+        (gff, &args.genes),
+        pages,
+    )?;
+    info!("wrote {html}");
+    Ok(())
+}
+
 pub fn run_qc(args: &QcArgs) -> anyhow::Result<()> {
+    html_problem(args)?;
     if args.dry_run {
         return dry_run(args);
     }
@@ -295,8 +346,46 @@ fn dry_run(args: &QcArgs) -> anyhow::Result<()> {
             t.modality, t.flag, t.threshold, t.removes, t.only, t.kept, t.sites
         ));
     }
+    // The 2D panels Auto picks: `removes`, the sites one of the pair's
+    // thresholds keeps and the other drops.
+    for (m, p) in auto_pairs(&prep.tables, &prep.site_cells, &args.site) {
+        out.push_str(&format!(
+            "pair\t{m}\t{} x {}\trank correlation {:.2}\t{}\t\t\t\n",
+            p.x.short(),
+            p.y.short(),
+            p.rho,
+            p.split
+        ));
+    }
     print!("{out}");
+    let has_sites = prep.tables.values().any(|t| !t.is_empty());
+    if has_sites {
+        let gff = explicit_or_recorded(args.gff.as_deref(), input, "gff", "annotation");
+        write_html(args, input, &prep, gff.as_deref())?;
+    } else if args.html.is_some() {
+        log::warn!("no editing site table: --html writes no page");
+    }
     Ok(())
+}
+
+/// Each batch's barcodes and the cell QC's verdicts, for the page.
+fn cells_of(decisions: &[CellDecision]) -> Vec<crate::qc::cells_plot::Cells> {
+    (decisions.iter())
+        .map(|d| crate::qc::cells_plot::Cells::of(&d.batch, &d.report))
+        .collect()
+}
+
+/// Each batch's cell QC as a figure, `qc_plots/{batch}_cells`, laid out
+/// for `page`.
+fn cell_figures(decisions: &[CellDecision], page: crate::figure::Page) -> Vec<Figure> {
+    let size = crate::figure::size::fill(page, || (720.0, 320.0));
+    decisions
+        .iter()
+        .map(|d| Figure {
+            stem: format!("{}_cells", d.batch),
+            svg: crate::qc::cells_plot::Cells::of(&d.batch, &d.report).figure(size),
+        })
+        .collect()
 }
 
 /// Everything read before the site thresholds are decided: the input's
@@ -332,7 +421,7 @@ fn filter_fileset(
                 "no editing site table to pick thresholds on; cutting cells and features only"
             );
         }
-        let figures = if args.plots && has_sites {
+        let mut figures = if args.plots && has_sites {
             let pinned = &args.genes;
             site_figures(
                 input,
@@ -346,6 +435,9 @@ fn filter_fileset(
         } else {
             Vec::new()
         };
+        if args.plots {
+            figures.extend(cell_figures(&prep.decisions, page));
+        }
         write_fileset(
             &prep,
             args,
@@ -354,6 +446,9 @@ fn filter_fileset(
             &figures,
             &Progress::default(),
         )?;
+        if has_sites {
+            write_html(args, input, &prep, gff.as_deref())?;
+        }
         return Ok(Some(args.site.clone()));
     }
     let progress = Progress::default();
@@ -366,18 +461,24 @@ fn filter_fileset(
             &args.site,
             gff.as_deref(),
             &args.genes,
-            Writer {
-                output: out_dir,
-                progress: &progress,
-                page,
-                start: Some(Box::new(|site: SiteFilterArgs, figures: Vec<Figure>| {
-                    let (prep, progress) = (&prep, &progress);
-                    writer = Some(s.spawn(move || {
-                        let _finish = FinishOnDrop(progress);
-                        write_fileset(prep, args, out_dir, &site, &figures, progress)
-                    }));
-                })),
-            },
+            (
+                Writer {
+                    output: out_dir,
+                    progress: &progress,
+                    page,
+                    start: Some(Box::new(
+                        |site: SiteFilterArgs, mut figures: Vec<Figure>| {
+                            let (prep, progress) = (&prep, &progress);
+                            figures.extend(cell_figures(&prep.decisions, page));
+                            writer = Some(s.spawn(move || {
+                                let _finish = FinishOnDrop(progress);
+                                write_fileset(prep, args, out_dir, &site, &figures, progress)
+                            }));
+                        },
+                    )),
+                },
+                cells_of(&prep.decisions),
+            ),
         )?;
         *gff = picked_gff;
         if let Some(w) = writer {
@@ -721,6 +822,40 @@ mod tests {
         }
         let words = cmd.split(' ').skip(2); // `faba qc`
         <Cli as clap::Parser>::parse_from(std::iter::once("faba").chain(words)).qc
+    }
+
+    /// `--html` goes only to a file that is not there, with --batch-process
+    /// or --dry-run: an existing one is refused before anything is read
+    /// (the input here does not exist), naming it and asking for another
+    /// path, and left as it was.
+    #[test]
+    fn html_refuses_a_file_that_exists_before_any_work() {
+        let dir = tempfile::tempdir().unwrap();
+        let taken = dir.path().join("qc.html");
+        std::fs::write(&taken, "mine").unwrap();
+        let t = taken.display();
+        for mode in ["--batch-process -o out", "--dry-run"] {
+            let args = parse(&format!("faba qc /no/such/input {mode} --html {t}"));
+            let err = run_qc(&args).unwrap_err().to_string();
+            assert!(
+                err.contains(&t.to_string()) && err.contains("another path"),
+                "{err}"
+            );
+        }
+        assert_eq!(std::fs::read_to_string(&taken).unwrap(), "mine");
+        let free = dir.path().join("new.html");
+        let view = parse(&format!("faba qc /no/such/input --html {}", free.display()));
+        assert!(html_problem(&view)
+            .unwrap_err()
+            .to_string()
+            .contains("Ctrl+E"));
+        let batch = parse(&format!("faba qc in --dry-run --html {}", free.display()));
+        assert!(html_problem(&batch).is_ok());
+        let nowhere = parse("faba qc in --dry-run --html /no/such/dir/qc.html");
+        assert!(html_problem(&nowhere)
+            .unwrap_err()
+            .to_string()
+            .contains("folder"));
     }
 
     #[test]

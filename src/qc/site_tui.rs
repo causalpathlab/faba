@@ -293,6 +293,8 @@ struct SitePicker<'a> {
     report: crate::report::Writing,
     /// A message for the footer, until the next key.
     status: Option<String>,
+    /// Each batch's cell QC, for the report.
+    cells: Vec<crate::qc::cells_plot::Cells>,
 }
 
 impl<'a> SitePicker<'a> {
@@ -334,6 +336,7 @@ impl<'a> SitePicker<'a> {
             report_dir: std::env::current_dir().unwrap_or_default(),
             report: Default::default(),
             status: None,
+            cells: Vec::new(),
         }
         .pin_genes(&[])
         .with_refreshed_meta()
@@ -685,6 +688,28 @@ pub fn site_figures(
     picker.figures(page)
 }
 
+/// The page `Ctrl+E` writes, written without a terminal at `filter`, with
+/// each batch's `cells`, to `path`: for `faba qc --html`.
+pub fn write_page(
+    input_dir: &str,
+    tables: &FxHashMap<Box<str>, SiteTable>,
+    site_cells: &FxHashMap<Box<str>, FxHashMap<Box<str>, usize>>,
+    filter: &SiteFilterArgs,
+    (gff, pinned): (Option<&str>, &[Box<str>]),
+    (cells, path): (Vec<crate::qc::cells_plot::Cells>, &std::path::Path),
+) -> anyhow::Result<()> {
+    let mut picker = picker(input_dir, tables, site_cells, filter, gff, pinned)?;
+    picker.meta.wait();
+    picker.cells = cells;
+    let title = format!("faba qc · {}", picker.title);
+    crate::report::write(
+        path,
+        &title,
+        report::FRAGMENT,
+        &picker.report_source().data(),
+    )
+}
+
 /// What one site threshold does to one modality, for `faba qc --dry-run`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThresholdCount {
@@ -726,6 +751,22 @@ pub fn threshold_counts(
     out
 }
 
+/// The pairs Auto picks for the 2D panels at `filter`, modality by
+/// modality.
+pub fn auto_pairs(
+    tables: &FxHashMap<Box<str>, SiteTable>,
+    site_cells: &FxHashMap<Box<str>, FxHashMap<Box<str>, usize>>,
+    filter: &SiteFilterArgs,
+) -> Vec<(Box<str>, pairs::Pair)> {
+    let mut out = Vec::new();
+    for v in site_views(tables, site_cells, filter) {
+        for p in pairs::auto_pairs(&v.sites(), pairs::PANELS) {
+            out.push((v.table.modality.clone(), p));
+        }
+    }
+    out
+}
+
 pub fn run_site_picker(
     input_dir: &str,
     tables: &FxHashMap<Box<str>, SiteTable>,
@@ -733,10 +774,11 @@ pub fn run_site_picker(
     filter: &SiteFilterArgs,
     gff: Option<&str>,
     pinned: &[Box<str>],
-    writer: Writer<'_>,
+    (writer, cells): (Writer<'_>, Vec<crate::qc::cells_plot::Cells>),
 ) -> anyhow::Result<(Picked, Option<Box<str>>)> {
     let mut picker = picker(input_dir, tables, site_cells, filter, gff, pinned)?;
     picker.writer = writer;
+    picker.cells = cells;
     picker.controls = Controls::new("qc_sites").detect();
     match run_view(&mut picker) {
         // Stopped by `faba kill` once the fileset was written: it is
