@@ -30,8 +30,8 @@ mod text;
 mod view;
 mod within;
 
-pub(super) use data::read_record;
 pub use data::{gene_models, Count, Modules};
+pub(super) use data::{read_record, run::refuse_mcmc};
 #[cfg(test)]
 pub use order::diagonal;
 pub use order::standardized;

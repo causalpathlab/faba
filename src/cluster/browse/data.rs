@@ -292,6 +292,11 @@ impl Modules {
         modality: &str,
         record: Option<(String, serde_json::Value)>,
     ) -> anyhow::Result<Self> {
+        // An MCMC fit's record is refused before any table is read.
+        let record = record.map_or_else(|| run::record(dir, modality), Ok);
+        if let Ok((name, r)) = &record {
+            run::refuse_mcmc(name, r)?;
+        }
         let path = |name: &str| dir.join(format!("{modality}_{name}.parquet"));
         let table = |name: &str| {
             let path = path(name);
@@ -345,10 +350,6 @@ impl Modules {
                 "no {}: rerun `faba cluster` for each site's counts",
                 path("site_stats").display()
             );
-        }
-        let record = record.map_or_else(|| run::record(dir, modality), Ok);
-        if let Ok((name, r)) = &record {
-            run::refuse_mcmc(name, r)?;
         }
         let main = (from.sites.iter())
             .filter_map(|s| Some((s.gene.clone(), *main.get(s.gene.as_ref())?)))

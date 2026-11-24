@@ -71,13 +71,10 @@ impl Fit {
                     .filter(|r| r.get("elbo").is_some())
                     .count();
                 let number = |k: &str| vi[k].as_u64().unwrap_or(0) as usize;
-                let spread = match vi["unit"].as_str() {
-                    Some(u) => (
-                        vi["spread_per_unit"].as_f64().unwrap_or(0.0),
-                        Unit::named(u),
-                    ),
+                let spread = match serde_json::from_value::<Unit>(vi["unit"].clone()) {
+                    Ok(u) => (vi["spread_per_unit"].as_f64().unwrap_or(0.0), u),
                     // 0.18: the unit in the field's name.
-                    None => match vi["spread_per_count"].as_f64() {
+                    Err(_) => match vi["spread_per_count"].as_f64() {
                         Some(x) => (x, Unit::Count),
                         None => (vi["spread_per_read"].as_f64().unwrap_or(0.0), Unit::Read),
                     },

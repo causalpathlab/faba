@@ -205,8 +205,8 @@ if (MODEL.svg) {
   document.getElementById("model-body").hidden = false;
   document.getElementById("model-diagram").innerHTML = MODEL.svg;
   document.getElementById("model-preset").textContent = MODEL.preset ? `the ${MODEL.preset} preset` : "no preset: switches set by hand";
-  const off = "off", inf = MODEL.strength === "inf" ? "∞" : MODEL.strength;
-  const shown = [["cell roles A", MODEL.cellRoles], ["gene roles B", MODEL.geneRoles], ["strength S", inf], ["α", MODEL.alpha], ["gene α", MODEL.geneAlpha], ["σδ", MODEL.shiftSd ?? off], ["σν", MODEL.cellSd], ["weights", "symmetric"]];
+  const off = "off";
+  const shown = [["cell roles A", MODEL.cellRoles], ["gene roles B", MODEL.geneRoles], ["strength S", "∞"], ["α", MODEL.alpha], ["gene α", MODEL.geneAlpha], ["σδ", MODEL.shiftSd ?? off], ["σν", MODEL.cellSd], ["weights", "symmetric"]];
   document.getElementById("model-settings").innerHTML = shown.map(([k, v]) => `<span>${esc(k)} <b>${esc(v)}</b></span>`).join("");
 } else {
   const why = document.getElementById("model-why");

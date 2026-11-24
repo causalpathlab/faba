@@ -58,8 +58,8 @@ fn the_blocks_preset_is_drawn_as_set() {
     let s = run(&["--cell-roles", "6", "--cell-sd", "0.7"]);
     assert_eq!(s["preset"], "blocks");
     assert_eq!(
-        [&s["cellRoles"], &s["geneRoles"], &s["strength"]],
-        [&Value::from(6), &Value::from(8), &Value::from("inf")]
+        [&s["cellRoles"], &s["geneRoles"]],
+        [&Value::from(6), &Value::from(8)]
     );
     assert_eq!(
         (s["alpha"].as_f64(), s["geneAlpha"].as_f64()),

@@ -11,13 +11,12 @@
 
 use super::{qualifies, CountCells};
 use crate::cluster::progress;
-use crate::tui::ui::{header, help_line, Screen, HIGHLIGHT};
-use crate::tui::{marker, popup_frame, View};
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use crate::tui::ui::{header, Screen};
+use crate::tui::View;
+use legume_tui::widgets::{numbered, Menu, Outcome};
+use ratatui::crossterm::event::KeyEvent;
 use ratatui::Frame;
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashSet;
 
 /// One `--batch-map` pair: a site batch and the count fit's batch it is,
 /// none to leave it unmatched (`SITES=`).
@@ -43,6 +42,24 @@ impl Named {
             sites: sites.into(),
             count: (!count.is_empty()).then(|| count.into()),
         })
+    }
+
+    /// Refused when it names a batch the count fit `count` does not have:
+    /// what can be checked before the sites are read.
+    pub(in crate::cluster) fn check(&self, count: &CountCells) -> anyhow::Result<()> {
+        let Some(c) = self.count.as_deref() else {
+            return Ok(());
+        };
+        if count.cells.contains_key(c) {
+            return Ok(());
+        }
+        let mut theirs: Vec<&str> = count.cells.keys().map(|k| &**k).collect();
+        theirs.sort_unstable();
+        anyhow::bail!(
+            "--batch-map {}: the count fit has no batch {c} (its batches: {})",
+            self.said(),
+            theirs.join(", ")
+        )
     }
 
     /// As `--batch-map` takes it.
@@ -142,13 +159,6 @@ pub(in crate::cluster) struct Pairing {
 }
 
 impl Pairing {
-    /// The count batch each site batch is.
-    pub(in crate::cluster) fn of(&self) -> FxHashMap<&str, &str> {
-        (self.pairs.iter())
-            .map(|p| (&*p.sites, &*p.count))
-            .collect()
-    }
-
     /// For the within record: each pair and how it was made, and what was
     /// left unmatched and why.
     pub(in crate::cluster) fn recorded(&self) -> serde_json::Value {
@@ -178,8 +188,9 @@ impl Pairing {
 }
 
 impl CountCells {
-    /// How `ours` (the sites' batches) pair with the count fit's: `named`
-    /// first (refused when it names a batch neither has), then the same
+    /// How `ours` (the sites' batches, each once and in order) pair with
+    /// the count fit's: `named` first (refused when it names a batch
+    /// neither has), then the same
     /// name, then the one batch that is the other named with its folder
     /// (see [`qualifies`]); a count fit of one batch and sites of one are
     /// the same batch, whatever their names. A batch of the same name wins
@@ -190,14 +201,10 @@ impl CountCells {
         ours: &[&str],
         named: &[Named],
     ) -> anyhow::Result<Pairing> {
-        // (Few: `resolve` gives each batch once.)
-        let mut ours: Vec<&str> = ours.to_vec();
-        ours.sort_unstable();
-        ours.dedup();
         let mut theirs: Vec<&str> = self.cells.keys().map(|k| &**k).collect();
         theirs.sort_unstable();
         let mut out = Pairing::default();
-        if let ([one], [only], []) = (ours.as_slice(), theirs.as_slice(), named) {
+        if let ([one], [only], []) = (ours, theirs.as_slice(), named) {
             out.pairs.push(pair(one, only, By::Only));
             return Ok(out);
         }
@@ -218,12 +225,7 @@ impl CountCells {
             );
             match &n.count {
                 Some(c) => {
-                    anyhow::ensure!(
-                        self.cells.contains_key(c),
-                        "--batch-map {}: the count fit has no batch {c} (its batches: {})",
-                        n.said(),
-                        theirs.join(", ")
-                    );
+                    n.check(self)?;
                     anyhow::ensure!(
                         taken.insert(c),
                         "--batch-map names the count fit's batch {c} twice"
@@ -326,7 +328,7 @@ pub(in crate::cluster) fn resolve(
     mut ask: Option<&mut Ask<'_>>,
 ) -> anyhow::Result<Pairing> {
     let given = named.len();
-    // Each batch once, not once a cell, before any question.
+    // Each batch once (few), in order, before any question.
     let mut ours: Vec<&str> = ours.to_vec();
     ours.sort_unstable();
     ours.dedup();
@@ -375,25 +377,32 @@ pub(in crate::cluster) enum Answer {
 }
 
 /// The question a terminal is asked: which of an ambiguity's pairings is
-/// meant, or none; Esc cancels the run.
+/// meant, or none, in a [`Menu`]; Esc cancels the run.
 pub(in crate::cluster) struct Question {
-    about: String,
-    rows: Vec<String>,
-    at: usize,
+    menu: Menu<Answer>,
     /// The answer; `Some(None)` when cancelled.
     pub decision: Option<Option<Answer>>,
 }
 
 impl Question {
     pub(in crate::cluster) fn new(a: &Ambiguity) -> Self {
-        let mut rows: Vec<String> = (a.choices.iter())
-            .map(|(s, c)| format!("sites' {s}  =  count fit's {c}"))
+        let mut items: Vec<(String, String, Answer)> = (a.choices.iter().enumerate())
+            .map(|(i, (s, c))| {
+                let detail = format!("--batch-map '{s}={c}'");
+                (
+                    format!("sites' {s}  =  count fit's {c}"),
+                    detail,
+                    Answer::Take(i),
+                )
+            })
             .collect();
-        rows.push("neither: leave them unmatched".into());
+        items.push((
+            "neither: leave them unmatched".into(),
+            String::new(),
+            Answer::Neither,
+        ));
         Self {
-            about: a.said(),
-            rows,
-            at: 0,
+            menu: Menu::new(a.said(), numbered(items)),
             decision: None,
         }
     }
@@ -411,44 +420,17 @@ impl Screen for Question {
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
-        let last = self.rows.len() - 1;
-        match key.code {
-            KeyCode::Up | KeyCode::Char('k') => self.at = self.at.saturating_sub(1),
-            KeyCode::Down | KeyCode::Char('j') => self.at = (self.at + 1).min(last),
-            KeyCode::Enter => {
-                self.decision = Some(Some(match self.at {
-                    i if i == last => Answer::Neither,
-                    i => Answer::Take(i),
-                }))
-            }
-            KeyCode::Esc | KeyCode::Char('q') => self.decision = Some(None),
-            _ => {}
+        match self.menu.key(key.code) {
+            Outcome::Open => {}
+            Outcome::Cancel => self.decision = Some(None),
+            Outcome::Chosen(answer) => self.decision = Some(Some(answer)),
         }
     }
 
     fn render(&mut self, frame: &mut Frame) {
         let area = frame.area();
         frame.render_widget(header("cluster", "which batch is which?", "--within"), area);
-        let w = area.width.saturating_sub(4).clamp(30, 100);
-        let wrapped = legume_tui::text::wrap_words(&self.about, w.saturating_sub(4) as usize);
-        let h = (wrapped.len() + self.rows.len() + 4) as u16;
-        let inner = popup_frame(frame, area, w, h, " batches ".into());
-        let mut lines: Vec<Line> = wrapped.into_iter().map(Line::from).collect();
-        lines.push(Line::from(""));
-        for (i, row) in self.rows.iter().enumerate() {
-            let on = i == self.at;
-            let style = if on { HIGHLIGHT } else { Default::default() };
-            lines.push(Line::from(vec![
-                marker(on),
-                Span::styled(row.clone(), style),
-            ]));
-        }
-        lines.push(help_line(&[
-            ("↑/↓", "move"),
-            ("Enter", "take"),
-            ("Esc", "cancel the run"),
-        ]));
-        frame.render_widget(Paragraph::new(lines), inner);
+        self.menu.draw(frame, area, &crate::tui::LOOK);
     }
 }
 

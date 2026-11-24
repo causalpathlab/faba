@@ -207,6 +207,7 @@ impl CountCells {
         let name = path.file_name().unwrap_or_default().to_string_lossy();
         let dir = crate::run_record::default_output_dir(&path.to_string_lossy());
         let json = super::browse::read_record(&dir, &name).map_err(anyhow::Error::msg)?;
+        super::browse::refuse_mcmc(&name, &json)?;
         let modality = json.pointer("/results/tables/modality");
         anyhow::ensure!(
             json["job"].as_str() == Some("cluster")
@@ -283,8 +284,8 @@ impl CountCells {
     /// none is among the count fit's cells: the two are of other cells, or
     /// name them otherwise.
     fn group(&self, cells: &[read::Cell], pairing: &pairing::Pairing) -> anyhow::Result<Grouped> {
-        let batches: FxHashMap<&str, &ByBarcode> = (pairing.of().into_iter())
-            .filter_map(|(ours, theirs)| Some((ours, self.cells.get(theirs)?)))
+        let batches: FxHashMap<&str, &ByBarcode> = (pairing.pairs.iter())
+            .filter_map(|p| Some((&*p.sites, self.cells.get(&*p.count)?)))
             .collect();
         let mut out = Grouped::default();
         for (i, cell) in cells.iter().enumerate() {
@@ -504,7 +505,11 @@ pub(super) fn run(args: &ClusterArgs) -> anyhow::Result<Option<String>> {
             );
             Ok(())
         });
-    super::save_command(args, &dir, &name);
+    // The pairs answered when asked are saved as named, so that the command
+    // runs again off a terminal.
+    let mut saved = args.clone();
+    (saved.batch_map).extend(pairing.answered.iter().map(|a| a.as_str().into()));
+    super::save_command(&saved, &dir, &name);
     record.finish(&outcome);
     outcome?;
     let mut lines = vec![format!(
@@ -527,13 +532,7 @@ fn named_batches(args: &ClusterArgs, count: &CountCells) -> anyhow::Result<Vec<p
         .map(|s| pairing::Named::parse(s))
         .collect::<anyhow::Result<Vec<_>>>()?;
     for n in &named {
-        if let Some(c) = n.count.as_deref() {
-            anyhow::ensure!(
-                count.cells.contains_key(c),
-                "--batch-map {}={c}: the count fit has no batch {c}",
-                n.sites
-            );
-        }
+        n.check(count)?;
     }
     Ok(named)
 }
@@ -542,14 +541,16 @@ fn named_batches(args: &ClusterArgs, count: &CountCells) -> anyhow::Result<Vec<p
 /// `named` (by `--batch-map`) first, what is still ambiguous asked in a
 /// pop-up on a terminal and refused off one (see [`pairing::resolve`]). A
 /// site batch left unmatched though it could be one of the count fit's is
-/// warned of; what was answered is said as the flags that give it again.
+/// warned of.
 fn pair_batches(
     args: &ClusterArgs,
     count: &CountCells,
     cells: &[read::Cell],
     named: &[pairing::Named],
 ) -> anyhow::Result<pairing::Pairing> {
-    let ours: Vec<&str> = cells.iter().map(|c| &*c.batch).collect();
+    // The few batches, in one pass over the cells.
+    let ours: rustc_hash::FxHashSet<&str> = cells.iter().map(|c| &*c.batch).collect();
+    let ours: Vec<&str> = ours.into_iter().collect();
     let mut asked = pairing::ask;
     let ask: Option<&mut pairing::Ask> = super::live(args).then_some(&mut asked);
     let pairing = pairing::resolve(count, &ours, named, ask)?;
@@ -562,16 +563,6 @@ fn pair_batches(
     }
     for (sites, why) in &pairing.left {
         log::warn!("the sites' batch {sites} is left unmatched: {why}");
-    }
-    if !pairing.answered.is_empty() {
-        let flags: Vec<String> = (pairing.answered.iter())
-            .map(|a| format!("--batch-map '{a}'"))
-            .collect();
-        log::warn!(
-            "as answered; to pair the same way off a terminal (the saved command has none of \
-             these), add: {}",
-            flags.join(" ")
-        );
     }
     Ok(pairing)
 }

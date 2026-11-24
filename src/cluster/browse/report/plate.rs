@@ -2,7 +2,7 @@
 //! settings and its plate diagram (see [`crate::cluster::settings`]). The
 //! page styles the diagram's classes from the shell's theme tokens.
 
-use crate::cluster::settings::{strength, Recorded, Settings};
+use crate::cluster::settings::{Recorded, Settings};
 use serde::Serialize;
 use std::fmt::Write;
 
@@ -15,15 +15,13 @@ pub(super) enum Section {
     Omitted { why: String },
 }
 
-/// The run's settings (`strength` `"inf"`) and its diagram.
+/// The run's settings and its diagram.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct Drawn {
     preset: Option<String>,
     cell_roles: usize,
     gene_roles: usize,
-    #[serde(serialize_with = "strength::serialize")]
-    strength: f64,
     alpha: f64,
     gene_alpha: f64,
     shift_sd: Option<f64>,
@@ -40,7 +38,6 @@ pub(super) fn section(run: &Result<Recorded, super::super::data::Unsettled>) -> 
                 preset: r.preset.clone(),
                 cell_roles: s.cell_roles,
                 gene_roles: s.gene_roles,
-                strength: s.strength,
                 alpha: s.alpha,
                 gene_alpha: s.gene_alpha,
                 shift_sd: s.shift_sd,

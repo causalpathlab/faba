@@ -51,7 +51,7 @@ pub struct Hooks<'h> {
 
 /// What the ELBO of a fit is per: a site fit's reads, or a count fit's
 /// counts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Unit {
     Read,
@@ -64,14 +64,6 @@ impl Unit {
         match self {
             Unit::Read => "read",
             Unit::Count => "count",
-        }
-    }
-
-    /// The unit a record names (`count`; any other, `read`).
-    pub fn named(name: &str) -> Self {
-        match name {
-            "count" => Unit::Count,
-            _ => Unit::Read,
         }
     }
 }

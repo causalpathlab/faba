@@ -22,7 +22,7 @@ pub(in crate::cluster::browse) fn record(
 /// of faba before 0.19, which faba no longer reads: what only they
 /// recorded (a split R-hat, a crp fit's posterior, the chains' pooling, the
 /// sampler's sweeps) and no fit by variational inference.
-pub(in crate::cluster::browse) fn refuse_mcmc(
+pub(in crate::cluster) fn refuse_mcmc(
     name: &str,
     record: &serde_json::Value,
 ) -> anyhow::Result<()> {
