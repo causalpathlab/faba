@@ -221,7 +221,7 @@ fn collect_from_reads(
         .progress_with(if quiet {
             indicatif::ProgressBar::hidden()
         } else {
-            new_progress_bar(sites.len() as u64)
+            new_progress_bar(sites.len() as u64).with_message("PWM: sites")
         })
         .map(|site| -> anyhow::Result<Vec<DnaBaseCount>> {
             let mut local_pwm = empty();

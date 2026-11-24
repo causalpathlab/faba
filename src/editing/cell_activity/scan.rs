@@ -394,7 +394,7 @@ pub fn scan_cell_activity(
     let merged: Mutex<ActivityTally> = Mutex::new(ActivityTally::default());
     records
         .par_iter()
-        .progress_with(new_progress_bar(records.len() as u64))
+        .progress_with(new_progress_bar(records.len() as u64).with_message("cell activity: genes"))
         .try_for_each_init(
             || {
                 let faidx = load_fasta_index(&params.genome_file)
