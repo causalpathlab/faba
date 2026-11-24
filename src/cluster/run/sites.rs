@@ -89,7 +89,7 @@ pub(in crate::cluster) fn blocks_fit(
     super::vi::conclude(
         progress,
         record,
-        "read",
+        crate::cluster::vi::Unit::Read,
         &best,
         (warmup, options.epochs, options.tol),
         super::vi::empty_roles(&means.block_links(), b),

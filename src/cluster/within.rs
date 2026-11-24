@@ -103,10 +103,6 @@ pub(in crate::cluster) struct GroupFit {
     /// Its fit's run record, in that directory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub record: Option<String>,
-    /// Its chains' split R-hat: an MCMC fit's (faba before 0.19), as an
-    /// older within record keeps it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rhat: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub converged: Option<bool>,
     /// It was stopped early: its tables are from fewer epochs.
@@ -123,19 +119,15 @@ impl GroupFit {
             why: None,
             dir: None,
             record: None,
-            rhat: None,
             converged: None,
             stopped_early: false,
         }
     }
 
-    /// What became of it, in words: its status, its chains' R-hat and
-    /// verdict, and why it was skipped or failed.
+    /// What became of it, in words: its status, its verdict, and why it
+    /// was skipped or failed.
     pub(in crate::cluster) fn what(&self) -> String {
         let mut what = self.status.said().to_string();
-        if let Some(rhat) = self.rhat {
-            what.push_str(&format!(", R-hat {rhat:.2}"));
-        }
         match self.converged {
             Some(true) => what.push_str(", converged"),
             Some(false) => what.push_str(", not converged"),

@@ -4,7 +4,7 @@
 
 use super::super::args::ClusterArgs;
 use super::super::progress::{self, advice};
-use super::super::vi::{Hooks, Options, Ran};
+use super::super::vi::{Hooks, Options, Ran, Unit};
 use crate::run_record::RunRecord;
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
@@ -38,7 +38,7 @@ pub(in crate::cluster) type Restarts<F> = (Option<(usize, F)>, Vec<Option<End>>)
 /// told its Lloyd iterations and whether to stop), then the fits one after
 /// another, each using every thread. Restart `i`'s random numbers are
 /// seeded `seed + i`; its start's `warmup` steps, then its epochs (of
-/// `epochs` at most), are counted on `progress` as chain `i` and its ELBO
+/// `epochs` at most), are counted on `progress` as restart `i` and its ELBO
 /// traced there. Only the best fit by ELBO is kept. Refused when no restart
 /// could start and none was stopped.
 pub(in crate::cluster) fn restarts<S: Send, F>(
@@ -190,7 +190,7 @@ pub(in crate::cluster) fn empty_roles(units: &[f64], bb: usize) -> serde_json::V
 pub(in crate::cluster) fn conclude<F>(
     progress: &progress::Progress,
     record: &mut RunRecord,
-    unit: &'static str,
+    unit: Unit,
     best: &Best<F>,
     (warmup, asked, tol): (usize, usize, f64),
     empty_roles: serde_json::Value,
@@ -229,7 +229,7 @@ pub(in crate::cluster) fn conclude<F>(
         &serde_json::json!({
             "sweeps": warmup + asked,
             "burn_in": warmup,
-            "quantity": progress::ELBO,
+            "quantity": "ELBO",
         }),
     );
     // (A restart that never ran says so: readers count those with an ELBO.)

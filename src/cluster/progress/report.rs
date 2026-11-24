@@ -30,21 +30,21 @@ impl Progress {
     /// the fit begins.
     pub fn standing(&self) -> Option<String> {
         let (total, warmup) = self.schedule()?;
-        let chains = self.chains();
-        let ran = (0..chains).filter_map(|i| self.running(i)).max()?;
-        let share = 100.0 * self.sum() as f64 / (chains * total).max(1) as f64;
+        let restarts = self.restarts();
+        let ran = (0..restarts).filter_map(|i| self.running(i)).max()?;
+        let share = 100.0 * self.sum() as f64 / (restarts * total).max(1) as f64;
         let i = Some(self.fitting.load(Ordering::Relaxed)).filter(|&i| i != NONE);
         let fitting = (i, self.epochs_began.get(), self.aim.get());
         let (Some(i), Some(began), Some(aim)) = fitting else {
-            let least = (0..chains).map(|i| self.done(i)).min().unwrap_or(0);
+            let least = (0..restarts).map(|i| self.done(i)).min().unwrap_or(0);
             return Some(format!(
-                "k-means starts of {chains} restarts: {least}/{warmup} iterations; {} in",
+                "k-means starts of {restarts} restarts: {least}/{warmup} iterations; {} in",
                 clock(ran)
             ));
         };
         let epochs = total - warmup;
         let epoch = self.epochs_run(i, warmup);
-        let mut line = format!("restart {}/{chains}: {epoch}/{epochs} epochs", i + 1);
+        let mut line = format!("restart {}/{restarts}: {epoch}/{epochs} epochs", i + 1);
         let per = |f: f64| f / aim.units;
         // Its last two ELBOs, newest first.
         let tail: Vec<f64> = self.trace_of(i).iter().rev().take(2).map(|p| p.1).collect();
@@ -62,8 +62,8 @@ impl Progress {
         }
         line.push_str(&format!("; {share:.0}% of the steps, {} in", clock(ran)));
         // The pace of the epochs run, not of those credited without running.
-        let run: usize = (0..chains).map(|i| self.epochs_run(i, warmup)).sum();
-        let left: usize = (0..chains)
+        let run: usize = (0..restarts).map(|i| self.epochs_run(i, warmup)).sum();
+        let left: usize = (0..restarts)
             .map(|i| total.saturating_sub(self.done(i)))
             .sum();
         let since = Instant::elapsed(began).as_secs_f64();
@@ -98,7 +98,7 @@ mod tests {
 
     const AIM: Aim = Aim {
         units: 100.0,
-        unit: "read",
+        unit: crate::cluster::vi::Unit::Read,
         tol: 1e-5,
         svi: 2,
     };

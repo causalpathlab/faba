@@ -180,15 +180,15 @@ impl ModulesArgs {
             .collect()
     }
 
-    /// The session the browser runs in; none under --batch-process or
-    /// --html. Matrices named start a new one; with none, live sessions
-    /// are offered first.
-    /// Whether this writes or prints instead of browsing: no session, no
-    /// input browser.
+    /// Whether this writes or prints instead of browsing (--batch-process,
+    /// --html, --figure): no session, no input browser.
     fn writes(&self) -> bool {
         self.batch_process || self.html.is_some() || self.figure.is_some()
     }
 
+    /// The session the browser runs in; none when it writes or prints
+    /// instead (see [`Self::writes`]). Matrices named start a new one; with
+    /// none, live sessions are offered first.
     pub fn view_session(&self) -> Option<legume_tui::Options> {
         let target = !self.data_files.is_empty();
         (!self.writes()).then(|| self.session.options(target))
@@ -295,8 +295,8 @@ fn record_at(path: &Path) -> anyhow::Result<Option<(PathBuf, String, serde_json:
 
 /// The blockmodel fit the file at `path` describes when it is a `faba
 /// cluster` run record, from its contents: none for any other file
-/// (another command's record among them), refused for a crp fit's record,
-/// which has no modules. The modality is the one its `tables` say; an older
+/// (another command's record among them), refused for one of the MCMC
+/// fits' (faba before 0.19). The modality is the one its `tables` say; an older
 /// record's, the one its name begins with, else the one whose tables are
 /// beside it. Each table it names is looked for beside it.
 fn read_fit_record(path: &Path) -> anyhow::Result<Option<FitRecord>> {
@@ -307,15 +307,13 @@ fn read_fit_record(path: &Path) -> anyhow::Result<Option<FitRecord>> {
     if record["job"].as_str() != Some("cluster") {
         return Ok(None);
     }
+    data::run::refuse_mcmc(&path.display().to_string(), &record)?;
     let results = &record["results"];
-    let blockmodel = !results["model"].is_null() || !results["blockmodel"].is_null();
     anyhow::ensure!(
-        blockmodel || results["posterior"].is_null(),
-        "{} is the record of a `faba cluster --model crp` fit (faba before 0.19), which \
-         has no modules: name a blockmodel fit's, or fit again with `faba cluster`",
+        !results["model"].is_null(),
+        "{} records no blockmodel fit",
         path.display()
     );
-    anyhow::ensure!(blockmodel, "{} records no blockmodel fit", path.display());
     let entry = &results["tables"];
     let modality = entry["modality"]
         .as_str()
@@ -576,7 +574,7 @@ fn open_tables(dir: &Path, modality: Option<&str>) -> anyhow::Result<String> {
 fn title(dir: &Path, modules: &Modules) -> String {
     let model = match &modules.run {
         Ok(r) => r.label(),
-        Err(why) if why == data::COUNT_FIT => "count blockmodel".to_string(),
+        Err(data::Unsettled::CountFit) => "count blockmodel".to_string(),
         Err(_) => "settings not recorded".to_string(),
     };
     format!("{} · {} · {model}", dir.display(), modules.modality)

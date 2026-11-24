@@ -1,6 +1,7 @@
 //! The fit's convergence in the browser: the badge in the header from the
 //! run record, `t` opening the saved trace full pane with the verdict and
-//! its advice under it, and older tables, which kept no trace, saying so.
+//! its advice under it, tables without a trace saying so, and the MCMC
+//! fits of faba before 0.19 refused.
 
 use super::{drawn, press, screen, tables};
 use crate::cluster::browse::{Modules, ModulesView};
@@ -9,9 +10,9 @@ use crate::tui::ui::Screen;
 use ratatui::crossterm::event::KeyCode;
 use std::path::Path;
 
-/// Two chains' traces, a point every 5 of 200 sweeps, wobbling about
+/// Two restarts' traces, a point every 5 of 200 steps, wobbling about
 /// `levels` past a climb over the first 20.
-pub(super) fn chains(levels: [f64; 2]) -> Vec<Vec<(usize, f64)>> {
+pub(super) fn restarts(levels: [f64; 2]) -> Vec<Vec<(usize, f64)>> {
     levels
         .iter()
         .map(|&l| {
@@ -26,35 +27,32 @@ pub(super) fn chains(levels: [f64; 2]) -> Vec<Vec<(usize, f64)>> {
         .collect()
 }
 
-/// The fixture's tables in `dir` beside a Gibbs-sampled blocks run's
-/// record (faba before 0.19), split R-hat `rhat`, burn-in 20 of 200
-/// sweeps, and with `traced` its trace.
-pub(super) fn fitted(dir: &Path, rhat: f64, traced: bool) {
-    fitted_with(dir, rhat, traced.then(|| chains([0.0, 0.5])), 2, &[]);
+/// The fixture's tables in `dir` beside a blocks fit's record, its best
+/// restart `converged` (else still rising) after 30 of 180 epochs, the
+/// k-means start 20 steps, and with `traced` its trace.
+pub(super) fn fitted(dir: &Path, converged: bool, traced: bool) {
+    fitted_with(dir, converged, traced.then(|| restarts([0.0, 0.5])));
 }
 
-/// [`fitted`], the trace `traced` (none: no trace), the run's `--chains`
-/// and what its pooling found `unsettled`, the record written as faba
-/// before 0.19 wrote it: no quantity in its trace (the log joint).
-fn fitted_with(
-    dir: &Path,
-    rhat: f64,
-    traced: Option<Vec<Vec<(usize, f64)>>>,
-    chains: usize,
-    unsettled: &[&str],
-) {
+/// [`fitted`], the trace `traced` (none: no trace).
+fn fitted_with(dir: &Path, converged: bool, traced: Option<Vec<Vec<(usize, f64)>>>) {
     tables(dir);
+    let n = traced.as_ref().map_or(2, Vec::len);
+    let restarts: Vec<_> = (0..n)
+        .map(|i| serde_json::json!({"restart": i, "elbo": -9.0}))
+        .collect();
     let record = serde_json::json!({
         "job": "cluster", "status": "ok",
-        "options": {"model": "blocks", "chains": chains, "sweeps": 200, "burn_in": 20},
+        "options": {"chains": n, "epochs": 180},
         "results": {
             "model": {"preset": "blocks", "settings": {
                 "cell_roles": 8, "gene_roles": 8, "alpha": 0.5, "gene_alpha": 0.5,
-                "weights": {"hdp": 1.0}, "shift_sd": 1.0, "strength": "inf", "cell_sd": 1.0,
+                "weights": "symmetric", "shift_sd": 1.0, "strength": "inf", "cell_sd": 1.0,
             }},
-            "blockmodel": {"rhat_log_joint": rhat},
-            "trace": {"sweeps": 200, "burn_in": 20},
-            "pooling": {"unsettled": unsettled},
+            "trace": {"sweeps": 200, "burn_in": 20, "quantity": "ELBO"},
+            "fit": {"method": "vi", "unit": "read", "restarts": restarts, "best": 0,
+                "converged": converged, "stopped_early": false, "epochs": 30, "asked": 180,
+                "spread_per_unit": 0.01, "tol": 1e-5},
         },
     });
     if let Some(t) = traced {
@@ -64,25 +62,25 @@ fn fitted_with(
 }
 
 /// The modules of [`fitted`].
-pub(super) fn load(rhat: f64, traced: bool) -> Modules {
+pub(super) fn load(converged: bool, traced: bool) -> Modules {
     let tmp = tempfile::tempdir().unwrap();
-    fitted(tmp.path(), rhat, traced);
+    fitted(tmp.path(), converged, traced);
     Modules::load(tmp.path(), "m6a", None).unwrap()
 }
 
 #[test]
 fn the_trace_is_read_back_as_written() {
-    let m = load(1.02, true);
+    let m = load(true, true);
     let t = m.fit.trace.as_ref().unwrap();
-    assert_eq!(t.chains, chains([0.0, 0.5]));
-    assert_eq!((m.fit.sweeps, t.burn_in), (200, 20));
-    assert_eq!(m.fit.verdict().map(|v| v.rhat), Some(1.02));
+    assert_eq!(t.restarts, restarts([0.0, 0.5]));
+    assert_eq!((m.fit.steps, t.warmup), (200, 20));
+    assert!(m.fit.verdict().is_some_and(|v| v.converged()));
 }
 
 #[test]
 fn the_header_says_whether_the_fit_converged() {
-    for (rhat, badge) in [(1.02, "R-hat 1.02 ok"), (1.31, "R-hat 1.31 check")] {
-        let m = load(rhat, true);
+    for (converged, badge) in [(true, "ELBO ok"), (false, "ELBO check")] {
+        let m = load(converged, true);
         let mut v = ModulesView::new("test", &m);
         let s = screen(&mut v, 120, 30);
         assert!(s.lines().next().unwrap().contains(badge), "{s}");
@@ -90,14 +88,14 @@ fn the_header_says_whether_the_fit_converged() {
     // No record, no badge.
     let m = super::loaded();
     let mut v = ModulesView::new("test", &m);
-    assert!(!screen(&mut v, 120, 30).contains("R-hat"));
+    assert!(!screen(&mut v, 120, 30).contains("ELBO"));
 }
 
-/// `t` opens the trace full pane, a line per chain under the verdict's
+/// `t` opens the trace full pane, a line per restart under the verdict's
 /// words and advice; `t` or Esc closes it, and the footer says so.
 #[test]
 fn t_opens_the_trace_with_the_verdict_and_esc_or_t_closes_it() {
-    let m = load(1.31, true);
+    let m = load(false, true);
     let mut v = ModulesView::new("test", &m);
     assert!(
         screen(&mut v, 120, 30).contains("t trace"),
@@ -106,8 +104,8 @@ fn t_opens_the_trace_with_the_verdict_and_esc_or_t_closes_it() {
     for close in [KeyCode::Esc, KeyCode::Char('t')] {
         press(&mut v, KeyCode::Char('t'));
         let s = screen(&mut v, 120, 30);
-        assert!(s.contains("R-hat 1.31: chains disagree"), "{s}");
-        assert!(s.contains("fit again with `faba cluster`"), "{s}");
+        assert!(s.contains("ELBO still rising after 30 epochs"), "{s}");
+        assert!(s.contains("run again with --epochs 360"), "{s}");
         assert!(s.contains("close") && !s.contains("gene modules ·"), "{s}");
         let buf = drawn(&mut v, 120, 30);
         let braille = (0..30)
@@ -116,7 +114,7 @@ fn t_opens_the_trace_with_the_verdict_and_esc_or_t_closes_it() {
                 ('\u{2801}'..='\u{28ff}').contains(&buf[at].symbol().chars().next().unwrap())
             })
             .count();
-        assert!(braille > 20, "the chains drawn: {braille} cells");
+        assert!(braille > 20, "the restarts drawn: {braille} cells");
         press(&mut v, close);
         assert!(
             screen(&mut v, 120, 30).contains("gene modules ·"),
@@ -129,76 +127,75 @@ fn t_opens_the_trace_with_the_verdict_and_esc_or_t_closes_it() {
     assert!(v.done(), "q quits from the trace too");
 }
 
-/// Older tables kept no trace: `t` says so in one line and opens nothing;
-/// the badge still comes from the record's R-hat.
+/// Tables without a trace: `t` says so in one line and opens nothing; the
+/// badge still comes from the record.
 #[test]
-fn older_tables_without_a_trace_say_why() {
-    let m = load(1.02, false);
+fn tables_without_a_trace_say_why() {
+    let m = load(true, false);
     let mut v = ModulesView::new("test", &m);
     press(&mut v, KeyCode::Char('t'));
     let s = screen(&mut v, 120, 30);
     assert!(s.contains("gene modules ·"), "nothing opened: {s}");
     assert!(s.contains("no m6a_trace.parquet"), "{s}");
-    assert!(s.lines().next().unwrap().contains("R-hat 1.02 ok"), "{s}");
+    assert!(s.lines().next().unwrap().contains("ELBO ok"), "{s}");
 }
 
-/// An older single chain's fit, with no trace: one chain, by the record's
-/// `--chains`, with the advice to run more.
+/// Tables without their run record have neither a trace to draw (its
+/// k-means steps are the record's) nor a verdict.
 #[test]
-fn an_older_single_chain_is_one_chain() {
+fn without_a_record_there_is_no_trace_or_verdict() {
     let tmp = tempfile::tempdir().unwrap();
-    fitted_with(tmp.path(), 1.01, None, 1, &[]);
+    fitted(tmp.path(), true, true);
+    std::fs::remove_file(tmp.path().join(record_name("m6a"))).unwrap();
     let m = Modules::load(tmp.path(), "m6a", None).unwrap();
-    let v = m.fit.verdict().unwrap();
-    assert_eq!(v.said(), "one chain (R-hat 1.01)");
-    assert!(v.advice().contains("compare restarts"), "{}", v.advice());
+    assert!(m.fit.verdict().is_none() && m.fit.trace.is_err());
 }
 
-/// A trace whose chains skip one (no rows for it) reads it back empty;
+/// A trace whose restarts skip one (no rows for it) reads it back empty;
 /// the page leaves it out, the others keeping their names.
 #[test]
-fn a_chain_with_no_points_is_left_off_the_page() {
+fn a_restart_with_no_points_is_left_off_the_page() {
     let tmp = tempfile::tempdir().unwrap();
-    let [a, b] = <[_; 2]>::try_from(chains([0.0, 0.5])).unwrap();
-    fitted_with(tmp.path(), 1.01, Some(vec![a, Vec::new(), b]), 3, &[]);
+    let [a, b] = <[_; 2]>::try_from(restarts([0.0, 0.5])).unwrap();
+    fitted_with(tmp.path(), true, Some(vec![a, Vec::new(), b]));
     let m = Modules::load(tmp.path(), "m6a", None).unwrap();
-    assert_eq!(m.fit.trace.as_ref().unwrap().chains[1], Vec::new());
+    assert_eq!(m.fit.trace.as_ref().unwrap().restarts[1], Vec::new());
     let data = serde_json::to_value(crate::cluster::browse::report::data(
         &m,
         &Default::default(),
     ))
     .unwrap();
-    let drawn = data["trace"]["chains"].as_array().unwrap();
+    let drawn = data["trace"]["restarts"].as_array().unwrap();
     let names: Vec<_> = drawn.iter().map(|c| c["name"].as_str().unwrap()).collect();
-    assert_eq!(names, ["chain 0", "chain 2"]);
+    assert_eq!(names, ["restart 0", "restart 2"]);
     assert!(drawn
         .iter()
         .all(|c| !c["points"].as_array().unwrap().is_empty()));
 }
 
-/// Chains that agree on their traces, but whose pooling found quantities
-/// short of convergence, are not ok: the header says to check, the trace
-/// names them.
+/// The record of an MCMC fit of faba before 0.19 (no fit by variational
+/// inference in it, a split R-hat instead) is refused, saying to fit again.
 #[test]
-fn what_the_pooling_found_unsettled_is_checked() {
+fn an_mcmc_fit_is_refused() {
     let tmp = tempfile::tempdir().unwrap();
-    fitted_with(
-        tmp.path(),
-        1.02,
-        Some(chains([0.0, 0.5])),
-        2,
-        &["shift (0, 1)"],
-    );
-    let m = Modules::load(tmp.path(), "m6a", None).unwrap();
-    let mut v = ModulesView::new("test", &m);
-    let s = screen(&mut v, 120, 30);
+    tables(tmp.path());
+    let record = serde_json::json!({
+        "job": "cluster", "status": "ok",
+        "results": {"model": {}, "blockmodel": {"rhat_log_joint": 1.02},
+            "trace": {"sweeps": 200, "burn_in": 20}},
+    });
+    let at = tmp.path().join(record_name("m6a"));
+    std::fs::write(&at, record.to_string()).unwrap();
+    let err = Modules::load(tmp.path(), "m6a", None).unwrap_err();
     assert!(
-        s.lines().next().unwrap().contains("R-hat 1.02 check"),
-        "{s}"
+        format!("{err:#}").contains("MCMC fit of faba before 0.19"),
+        "{err:#}"
     );
-    press(&mut v, KeyCode::Char('t'));
-    let s = screen(&mut v, 120, 30);
-    assert!(s.contains("shift (0, 1)"), "{s}");
+    let err = crate::cluster::browse::fit_record(&[at.to_string_lossy().into()]).unwrap_err();
+    assert!(
+        format!("{err:#}").contains("fit again with `faba cluster`"),
+        "{err:#}"
+    );
 }
 
 /// A fit by variational inference's record: its verdict under `fit` with
@@ -214,7 +211,7 @@ fn vi_fitted(dir: &Path, results: serde_json::Value) {
     {
         r.extend(more);
     }
-    write::trace(&chains([-2.0, -2.1]), &dir.join("m6a_trace.parquet")).unwrap();
+    write::trace(&restarts([-2.0, -2.1]), &dir.join("m6a_trace.parquet")).unwrap();
     std::fs::write(dir.join(record_name("m6a")), record.to_string()).unwrap();
 }
 

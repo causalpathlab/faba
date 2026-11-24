@@ -278,7 +278,6 @@ fn a_groups_fit_is_listed_and_said_in_words() {
     let mut fitted = GroupFit::new(Group(2), 120, Status::Fitted);
     fitted.dir = Some("within/m6a/C3".into());
     fitted.record = Some("m6a_blockmodel.run.json".into());
-    fitted.rhat = Some(1.018);
     fitted.converged = Some(true);
     let mut early = fitted.clone();
     early.converged = Some(false);
@@ -286,15 +285,9 @@ fn a_groups_fit_is_listed_and_said_in_words() {
     let mut skipped = GroupFit::new(Group(4), 7, Status::Skipped);
     skipped.why = Some("7 cells to fit, fewer than --within-min-cells 50".into());
     let waiting = GroupFit::new(Group(3), 60, Status::NotRun);
-    assert_eq!(fitted.what(), "fitted, R-hat 1.02, converged");
-    assert_eq!(
-        fitted.line(),
-        "C3\t120 cells\tfitted, R-hat 1.02, converged"
-    );
-    assert_eq!(
-        early.what(),
-        "fitted, R-hat 1.02, not converged, stopped early"
-    );
+    assert_eq!(fitted.what(), "fitted, converged");
+    assert_eq!(fitted.line(), "C3\t120 cells\tfitted, converged");
+    assert_eq!(early.what(), "fitted, not converged, stopped early");
     assert_eq!(
         skipped.what(),
         "skipped: 7 cells to fit, fewer than --within-min-cells 50"

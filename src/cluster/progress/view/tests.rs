@@ -13,7 +13,13 @@ use std::time::Duration;
 /// The verdict of a fit that settled in 30 epochs of 60, its 3 restarts'
 /// ELBO per read within 0.001.
 fn settled() -> Verdict {
-    Verdict::vi(true, false, (30, 60), 3, (0.001, "read"))
+    Verdict::vi(
+        true,
+        false,
+        (30, 60),
+        3,
+        (0.001, crate::cluster::vi::Unit::Read),
+    )
 }
 
 /// Three restarts of 100 steps, 40 of them the k-means start: one started
@@ -53,17 +59,21 @@ fn channel_u8() -> (Sender<anyhow::Result<u8>>, Pending<u8, anyhow::Error>) {
 #[test]
 fn a_restarts_bar_marks_where_its_start_ends() {
     let text = |spans: &[Span]| spans.iter().map(|s| s.content.as_ref()).collect::<String>();
-    let early = chain_bar(20, 100, 40, 10);
+    let early = restart_bar(20, 100, 40, 10);
     assert_eq!(text(&early), "██░░│░░░░░");
     assert_eq!(early[0].style, ACCENTED);
-    let late = chain_bar(70, 100, 40, 10);
+    let late = restart_bar(70, 100, 40, 10);
     assert_eq!(text(&late), "████│██░░░");
     assert_eq!(
         late.iter().map(|s| s.style).collect::<Vec<_>>(),
         [ACCENTED, DIM, HIGHLIGHT, DIM]
     );
-    assert_eq!(text(&chain_bar(0, 100, 0, 5)), "░░░░░", "no start, no mark");
-    assert_eq!(text(&chain_bar(100, 100, 40, 5)), "██│██");
+    assert_eq!(
+        text(&restart_bar(0, 100, 0, 5)),
+        "░░░░░",
+        "no start, no mark"
+    );
+    assert_eq!(text(&restart_bar(100, 100, 40, 5)), "██│██");
 }
 
 /// Each restart's bar, steps and phase, its time taken and left counted
@@ -365,7 +375,7 @@ fn traces_each_restart_under_the_bars() {
     let buf = drawn(&mut v, 80, 24);
     let dots = braille(&buf);
     for i in 0..3 {
-        let colour = chain_style(i).fg;
+        let colour = restart_style(i).fg;
         assert!(colour.is_some(), "restart {i} has a colour");
         assert!(
             dots.iter().any(|d| d.2.fg == colour),
@@ -432,11 +442,11 @@ fn a_small_terminal_keeps_the_bars_and_drops_the_plot() {
 /// Each of many restarts has its own colour, on its label and its line.
 #[test]
 fn many_chains_each_have_their_own_colour() {
-    let colours: Vec<_> = (0..16).map(|i| chain_style(i).fg).collect();
+    let colours: Vec<_> = (0..16).map(|i| restart_style(i).fg).collect();
     for (i, a) in colours.iter().enumerate() {
-        assert!(a.is_some(), "chain {i} has a colour");
+        assert!(a.is_some(), "restart {i} has a colour");
         for (j, b) in colours.iter().enumerate().skip(i + 1) {
-            assert_ne!(a, b, "chains {i} and {j}");
+            assert_ne!(a, b, "restarts {i} and {j}");
         }
     }
 }

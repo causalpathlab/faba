@@ -498,8 +498,10 @@ pub fn site_stats(sites: &[Site], stats: &SiteStats, path: &Path) -> anyhow::Res
     write(columns, path)
 }
 
-/// One row per traced point of each chain: the chain (from 0, as the
-/// summary numbers them), the sweep and the log joint there.
+/// One row per traced point of each restart: the restart (from 0, as the
+/// summary numbers them), the step and the ELBO there, in columns named
+/// as the MCMC fits named them (`chain`, `sweep`, `log_joint`), so that
+/// every fit's trace reads alike.
 pub fn trace(traces: &[Vec<(usize, f64)>], path: &Path) -> anyhow::Result<()> {
     let points = || {
         traces

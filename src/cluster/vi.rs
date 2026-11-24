@@ -49,6 +49,39 @@ pub struct Hooks<'h> {
     pub cancelled: &'h (dyn Fn() -> bool + Sync),
 }
 
+/// What the ELBO of a fit is per: a site fit's reads, or a count fit's
+/// counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Unit {
+    Read,
+    Count,
+}
+
+impl Unit {
+    /// `read` or `count`, as records and messages name it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Unit::Read => "read",
+            Unit::Count => "count",
+        }
+    }
+
+    /// The unit a record names (`count`; any other, `read`).
+    pub fn named(name: &str) -> Self {
+        match name {
+            "count" => Unit::Count,
+            _ => Unit::Read,
+        }
+    }
+}
+
+impl std::fmt::Display for Unit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// What a fit's convergence is measured by: the ELBO per `unit` (count or
 /// read), `units` of them, settled when an epoch of coordinate ascent moves
 /// it by under `tol`, after `svi` stochastic epochs (whose ELBO no test
@@ -56,7 +89,7 @@ pub struct Hooks<'h> {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Aim {
     pub units: f64,
-    pub unit: &'static str,
+    pub unit: Unit,
     pub tol: f64,
     pub svi: usize,
 }
@@ -72,7 +105,7 @@ pub trait Steps {
 
     /// The units (counts or reads) the tolerance is per, and their name.
     fn units(&self) -> f64;
-    const UNIT: &'static str;
+    const UNIT: Unit;
     /// Every cell fitted to the start's globals, before any global step.
     fn first(&mut self) -> Option<()>;
     /// The local steps of `cells`, then a stochastic global step of size

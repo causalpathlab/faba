@@ -27,7 +27,7 @@ fn nested(dir: &Path) -> PathBuf {
         "count_record": dir.join("gone").join(within::COUNT_RECORD),
         "groups": [
             { "group": "C1", "cells": 80, "status": "fitted", "dir": "within/m6a/C1",
-              "record": "m6a_blockmodel.run.json", "rhat": 1.02, "converged": true },
+              "record": "m6a_blockmodel.run.json", "converged": true },
             { "group": "C2", "cells": 9, "status": "skipped", "why": "9 cells to fit" },
             { "group": "C3", "cells": 60, "status": "failed", "why": "no sites past the filters" },
         ],
@@ -164,7 +164,7 @@ fn the_printout_is_every_fits_modules() {
     assert_eq!(
         lines[summary + 1..summary + 4],
         [
-            "C1\t80 cells\tfitted, R-hat 1.02, converged",
+            "C1\t80 cells\tfitted, converged",
             "C2\t9 cells\tskipped: 9 cells to fit",
             "C3\t60 cells\tfailed: no sites past the filters",
         ]
@@ -211,7 +211,7 @@ fn the_pages_link_to_each_other() {
         [None, Some("fit.C1.html".into()), None, None]
     );
     assert!(on_count[0].here && on_count[1..].iter().all(|l| !l.here));
-    assert_eq!(on_count[1].note, "80 cells, fitted, R-hat 1.02, converged");
+    assert_eq!(on_count[1].note, "80 cells, fitted, converged");
     assert_eq!(on_count[2].note, "9 cells, skipped: 9 cells to fit");
 
     let on_group = nested.links(html, nested.group("C1").ok());
@@ -251,7 +251,7 @@ fn the_list_moves_and_opens_only_fits() {
     for shown in [
         "1 of 3 groups fitted",
         "the count fit: gene modules",
-        "80 cells   fitted, R-hat 1.02, converged",
+        "80 cells   fitted, converged",
         "9 cells   skipped: 9 cells to fit",
         "open the fit",
     ] {

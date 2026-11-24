@@ -42,8 +42,6 @@ struct Counter(AtomicUsize);
 
 /// Steps done per restart of a run, its schedule once it starts, and
 /// whether it was cancelled; shared between the restarts and a watcher.
-/// (A restart is a chain in what the browser shares with the MCMC fits'
-/// records of faba before 0.19.)
 pub struct Progress {
     /// Steps done by each restart, by its index (its seed's offset).
     done: Vec<Counter>,
@@ -83,21 +81,20 @@ pub(in crate::cluster) fn vi_caption(warmup: usize) -> String {
     format!(" │ the k-means start ends at step {warmup}; then each restart's epochs")
 }
 
-/// What a fit by variational inference traces.
-pub(in crate::cluster) const ELBO: &str = "ELBO";
-
 impl Progress {
-    /// For a run of `chains` restarts, none started, watched from
+    /// For a run of `restarts` restarts, none started, watched from
     /// elsewhere.
-    pub fn new(chains: usize) -> Self {
+    pub fn new(restarts: usize) -> Self {
         Self {
-            done: (0..chains).map(|_| Counter(AtomicUsize::new(0))).collect(),
-            started: (0..chains).map(|_| OnceLock::new()).collect(),
+            done: (0..restarts)
+                .map(|_| Counter(AtomicUsize::new(0)))
+                .collect(),
+            started: (0..restarts).map(|_| OnceLock::new()).collect(),
             schedule: OnceLock::new(),
             state: AtomicU8::new(RUNNING),
             late: AtomicBool::new(false),
             bar: false,
-            traces: (0..chains).map(|_| Mutex::default()).collect(),
+            traces: (0..restarts).map(|_| Mutex::default()).collect(),
             interrupt: None,
             optimised: OnceLock::new(),
             fitting: AtomicUsize::new(NONE),
@@ -118,7 +115,7 @@ impl Progress {
 
     /// Every restart's [`Progress::trace`].
     pub fn traces(&self) -> Vec<Vec<(usize, f64)>> {
-        (0..self.chains()).map(|i| self.trace(i)).collect()
+        (0..self.restarts()).map(|i| self.trace(i)).collect()
     }
 
     /// The fit's verdict, once it ends (see [`Progress::optimised`]).
@@ -128,24 +125,24 @@ impl Progress {
 
     /// [`Progress::new`], for the command line's own run: the
     /// process's interrupt flag stops its restarts early.
-    pub fn interruptible(chains: usize) -> Self {
+    pub fn interruptible(restarts: usize) -> Self {
         Self {
             interrupt: Some(legume_numeric::matrix::stop::stop_flag()),
-            ..Self::new(chains)
+            ..Self::new(restarts)
         }
     }
 
     /// [`Progress::interruptible`], its restarts drawn on a bar on stderr
     /// while they run, when stderr is a terminal.
-    pub fn on_stderr(chains: usize) -> Self {
+    pub fn on_stderr(restarts: usize) -> Self {
         Self {
             bar: true,
-            ..Self::interruptible(chains)
+            ..Self::interruptible(restarts)
         }
     }
 
     /// Restarts of the run.
-    pub fn chains(&self) -> usize {
+    pub fn restarts(&self) -> usize {
         self.done.len()
     }
 
@@ -231,7 +228,7 @@ impl Progress {
     /// fit writes what they reached, and its record says so.
     pub fn stopped_early(&self) -> Option<Vec<usize>> {
         (self.state.load(Ordering::SeqCst) == STOPPED)
-            .then(|| (0..self.chains()).map(|i| self.done(i)).collect())
+            .then(|| (0..self.restarts()).map(|i| self.done(i)).collect())
     }
 
     /// [`Cancelled`] when the run was: a fit checks between the steps
@@ -303,7 +300,7 @@ impl Progress {
 
     /// Steps done by every restart together.
     fn sum(&self) -> usize {
-        (0..self.chains()).map(|i| self.done(i)).sum()
+        (0..self.restarts()).map(|i| self.done(i)).sum()
     }
 }
 
@@ -341,17 +338,17 @@ fn draw_bar(progress: &Progress, stopped: std::sync::mpsc::Receiver<()>) {
         let Some((total, warmup)) = progress.schedule() else {
             continue;
         };
-        let chains = progress.chains();
+        let restarts = progress.restarts();
         let bar =
-            bar.get_or_insert_with(|| crate::common::new_progress_bar((chains * total) as u64));
-        let least = (0..chains).map(|i| progress.done(i)).min().unwrap_or(0);
+            bar.get_or_insert_with(|| crate::common::new_progress_bar((restarts * total) as u64));
+        let least = (0..restarts).map(|i| progress.done(i)).min().unwrap_or(0);
         let epochs = least >= warmup;
         if shown != Some(epochs) {
             shown = Some(epochs);
             bar.set_message(if epochs {
-                format!("epochs over {chains} restarts")
+                format!("epochs over {restarts} restarts")
             } else {
-                format!("k-means starts of {chains} restarts")
+                format!("k-means starts of {restarts} restarts")
             });
         }
         bar.set_position(progress.sum() as u64);

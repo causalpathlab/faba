@@ -1,11 +1,10 @@
-//! The fit's saved trace, full pane on `t`: each chain's log joint by
-//! sweep as the fitting view drew it, the chains named in their colours,
-//! and under it the verdict and its advice (see
+//! The fit's saved trace, full pane on `t`: each restart's ELBO by step
+//! as the fitting view drew it, the restarts named in their colours, and
+//! under it the verdict and its advice (see
 //! [`crate::cluster::progress::advice`]).
 
 use super::ModulesView;
-use crate::cluster::progress::view::trace::{chain_style, draw};
-use crate::cluster::progress::ELBO;
+use crate::cluster::progress::view::trace::{draw, restart_style};
 use crate::tui::ui::{help_line, panel, DIM, HIGHLIGHT};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -31,62 +30,48 @@ impl ModulesView<'_> {
         }
     }
 
-    /// The header's word on convergence, its R-hat and `ok` or `check`;
-    /// none without a record of the R-hat.
+    /// The header's word on convergence, `ELBO ok` or `ELBO check`; none
+    /// without a record of the fit.
     pub(super) fn badge(&self) -> Option<String> {
         self.m.fit.verdict().map(|v| v.badge())
     }
 
     /// The trace pane in `area` above the footer in `foot`: the plot over
-    /// the sweeps run, then the chains' names, where the burn-in ends, the
-    /// verdict and its advice.
+    /// the steps run, then the restarts' names, where the k-means start
+    /// ends, and (with a record of the fit) the verdict and its advice.
     pub(super) fn draw_trace(&self, frame: &mut Frame, area: Rect, foot: Rect) {
         let help = help_line(&[("t/Esc", "close"), ("q", "quit")]);
         frame.render_widget(Paragraph::new(help), foot);
-        let (Ok(t), Some(verdict)) = (&self.m.fit.trace, self.m.fit.verdict()) else {
+        let Ok(t) = &self.m.fit.trace else {
             return;
         };
-        let block = match t.quantity.as_str() {
-            ELBO => panel(" trace · each restart's ELBO by epoch ".into(), true),
-            _ => panel(" trace · each chain's log joint by sweep ".into(), true),
-        };
+        let block = panel(" trace · each restart's ELBO by epoch ".into(), true);
         let inner = block.inner(area);
         frame.render_widget(block, area);
-        // A fit by variational inference has restarts; an MCMC fit (faba
-        // before 0.19) chains.
-        let each = if t.quantity == ELBO {
-            "restart"
-        } else {
-            "chain"
-        };
         let mut names = vec![Span::raw(" ")];
         names.extend(
-            (0..t.chains.len()).map(|i| Span::styled(format!("{each} {i}  "), chain_style(i))),
+            (0..t.restarts.len()).map(|i| Span::styled(format!("restart {i}  "), restart_style(i))),
         );
-        let style = if verdict.converged() { DIM } else { HIGHLIGHT };
-        let under = vec![
+        let mut under = vec![
             Line::from(names),
             Line::from(Span::styled(
-                match t.quantity.as_str() {
-                    ELBO => crate::cluster::progress::vi_caption(t.burn_in),
-                    _ => format!(" │ the burn-in ends at sweep {}", t.burn_in),
-                },
+                crate::cluster::progress::vi_caption(t.warmup),
                 DIM,
             )),
-            Line::raw(""),
-            Line::from(Span::styled(format!(" {}", verdict.said()), style)),
-            Line::from(Span::styled(format!(" {}", verdict.advice()), DIM)),
         ];
+        // Without a record, the trace alone: no verdict to say.
+        if let Some(verdict) = self.m.fit.verdict() {
+            let style = if verdict.converged() { DIM } else { HIGHLIGHT };
+            under.extend([
+                Line::raw(""),
+                Line::from(Span::styled(format!(" {}", verdict.said()), style)),
+                Line::from(Span::styled(format!(" {}", verdict.advice()), DIM)),
+            ]);
+        }
         let [plot, below] =
             Layout::vertical([Constraint::Fill(1), Constraint::Length(under.len() as u16)])
                 .areas(inner);
-        draw(
-            frame,
-            plot,
-            &t.chains,
-            (self.m.fit.span(), t.burn_in),
-            &t.quantity,
-        );
+        draw(frame, plot, &t.restarts, (self.m.fit.span(), t.warmup));
         frame.render_widget(Paragraph::new(under), below);
     }
 }

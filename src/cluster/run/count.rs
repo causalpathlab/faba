@@ -240,7 +240,7 @@ pub(in crate::cluster) fn count_fit(
     super::vi::conclude(
         progress,
         record,
-        "count",
+        crate::cluster::vi::Unit::Count,
         &best,
         (warmup, options.epochs, options.tol),
         super::vi::empty_roles(&means.units, bb),

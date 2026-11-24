@@ -1,9 +1,9 @@
 //! The view `faba cluster` shows on a terminal while it fits: a bar per
-//! chain, its burn-in marked, with the time taken and left; under them
-//! each chain's log joint as it goes; then whether a chain lags, and once
-//! summarised the verdict on that and the chains' split R-hat, and what to
-//! do about it (see [`super::advice`]). `q` cancels, and nothing is
-//! written; Ctrl+C stops the chains early, and what they kept is written.
+//! restart, the end of its k-means start marked, with the time taken and
+//! left; under them each restart's ELBO as it goes; once the fit ends, the
+//! verdict and what to do about it (see [`super::advice`]). `q` cancels,
+//! and nothing is written; Ctrl+C stops the restarts early, and what they
+//! reached is written.
 //! Once the fit writes, too late for either, it leaves as soon as the
 //! tables are written.
 
@@ -17,7 +17,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use std::borrow::Cow;
 use std::time::Instant;
-use trace::chain_style;
+use trace::restart_style;
 
 pub(in crate::cluster) mod trace;
 
@@ -40,7 +40,7 @@ impl<T> Fitting<'_, T> {
     /// start filled in one colour, the epochs in another), its steps and
     /// phase, then its time taken and left since it started, in `width`
     /// cells.
-    fn chain_line(&self, i: usize, (total, warmup): (usize, usize), width: u16) -> Line<'static> {
+    fn restart_line(&self, i: usize, (total, warmup): (usize, usize), width: u16) -> Line<'static> {
         let done = self.progress.done(i).min(total);
         let running = self.progress.running(i);
         let phase = match running {
@@ -62,8 +62,8 @@ impl<T> Fitting<'_, T> {
         let w = usize::from(width)
             .saturating_sub(head.len() + tail.len() + 1)
             .max(4);
-        let mut spans = vec![Span::styled(head, chain_style(i))];
-        spans.extend(chain_bar(done, total, warmup, w));
+        let mut spans = vec![Span::styled(head, restart_style(i))];
+        spans.extend(restart_bar(done, total, warmup, w));
         spans.push(Span::styled(tail, DIM));
         Line::from(spans)
     }
@@ -95,8 +95,8 @@ impl<T> Fitting<'_, T> {
     /// over (none when too few), then the lines after; the bars first, the
     /// lines after next, when rows run short.
     fn sampling(&self, frame: &mut Frame, area: Rect, schedule: (usize, usize)) {
-        let mut bars: Vec<Line> = (0..self.progress.chains())
-            .map(|i| self.chain_line(i, schedule, area.width))
+        let mut bars: Vec<Line> = (0..self.progress.restarts())
+            .map(|i| self.restart_line(i, schedule, area.width))
             .collect();
         bars.push(Line::from(Span::styled(super::vi_caption(schedule.1), DIM)));
         let traces = self.progress.traces();
@@ -111,7 +111,7 @@ impl<T> Fitting<'_, T> {
         ])
         .areas(area);
         frame.render_widget(Paragraph::new(bars), bars_at);
-        trace::draw(frame, plot_at, &traces, schedule, super::ELBO);
+        trace::draw(frame, plot_at, &traces, schedule);
         frame.render_widget(Paragraph::new(after), after_at);
     }
 
@@ -158,21 +158,21 @@ impl<T> Fitting<'_, T> {
 /// A `width`-cell bar for `done` of `total` steps, `│` at the end of the
 /// `warmup` steps of the k-means start, the start filled in one colour and
 /// the epochs in another, the rest dim.
-fn chain_bar(done: usize, total: usize, warmup: usize, width: usize) -> Vec<Span<'static>> {
+fn restart_bar(done: usize, total: usize, warmup: usize, width: usize) -> Vec<Span<'static>> {
     let cells = |n: usize| crate::tui::filled(n as u64, total as u64, width).min(width);
     let (mark, full) = (cells(warmup), cells(done));
-    // The mark's cell, when the burn-in ends inside the bar.
+    // The mark's cell, when the k-means start ends inside the bar.
     let at_mark = usize::from(mark > 0 && mark < width);
-    // Where the sampling begins: after the mark.
+    // Where the epochs begin: after the mark.
     let after = (mark + at_mark).min(width);
-    let burnt = full.min(mark);
-    let sampled = full.max(after) - after;
+    let started = full.min(mark);
+    let epochs = full.max(after) - after;
     [
-        ("█", burnt, ACCENTED),
-        ("░", mark - burnt, DIM),
+        ("█", started, ACCENTED),
+        ("░", mark - started, DIM),
         ("│", at_mark, DIM),
-        ("█", sampled, HIGHLIGHT),
-        ("░", width - after - sampled, DIM),
+        ("█", epochs, HIGHLIGHT),
+        ("░", width - after - epochs, DIM),
     ]
     .into_iter()
     .filter(|&(_, n, _)| n > 0)
@@ -235,7 +235,7 @@ impl<T> Screen for Fitting<'_, T> {
         }
     }
 
-    /// Ctrl+C (or a stop of the process) stops the chains early.
+    /// Ctrl+C (or a stop of the process) stops the restarts early.
     fn interrupt(&mut self) {
         self.stop_early();
     }
@@ -256,7 +256,7 @@ impl<T> Screen for Fitting<'_, T> {
     }
 }
 
-/// Run `work` (a fit counting its sweeps on `progress`) on a thread, with
+/// Run `work` (a fit counting its steps on `progress`) on a thread, with
 /// the view under `title` until it is done; its result. With `stay` the
 /// view of a fit that is written stays up until a key (the last thing
 /// shown); without, it leaves at once, for what comes next.

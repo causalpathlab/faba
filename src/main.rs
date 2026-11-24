@@ -287,7 +287,7 @@ Example:\n  \
             placed against it. With --modality count, a Poisson blockmodel of the gene\n\
             counts, fitted alike; with --within, the sites within each of a count fit's\n\
             cell modules. (The MCMC fits, --model link and crp, the sampler's --sweeps and\n\
-            --holdout, were removed in faba 0.19; older records still open.)\n\n\
+            --holdout, were removed in faba 0.19, and their records no longer open.)\n\n\
             Outputs, in the output directory (the tables `faba cluster-view` reads):\n\
             - {modality}_cell_roles.parquet (every input cell's roles, `fitted`: in the fit,\n\
               not placed after, and its `level`), _gene_roles (each gene's roles), _blocks\n\
@@ -295,7 +295,7 @@ Example:\n  \
               block holds, most enriched first; sites with a read or more), _site_cells\n\
               (each site's reads per cell role over every gene role, the full pileups),\n\
               _site_stats (each site's raw reads and cells), and _trace (each restart's\n\
-              ELBO by step: chain, sweep, log_joint, as older fits named them)\n\
+              ELBO by step, in columns chain, sweep and log_joint: restart, step, ELBO)\n\
             - {modality}_blockmodel.run.json: the run record, with the model's settings,\n\
               the verdict (results.fit) and the tables it wrote (`faba cluster-view` opens\n\
               the fit from it); the command beside it (.cmd.sh) runs it again.\n\
@@ -340,9 +340,10 @@ Example:\n  \
             heatmap or a heatmap of each row's z across the cell modules, diagonally ordered;\n\
             `/` finds a gene. The tables are written by `faba cluster`, and opened as their\n\
             run record says, its preset in the header.\n\
-            The header says whether the fit converged (its ELBO, `ok` or `check`; an older\n\
-            MCMC fit's split R-hat); `t` shows each restart's ELBO as it ran\n\
-            ({modality}_trace), with what to do about it. Without a terminal (or with --batch-process) the modules are printed\n\
+            The header says whether the fit converged (its ELBO, `ok` or `check`); `t`\n\
+            shows each restart's ELBO as it ran ({modality}_trace), with what to do\n\
+            about it. The records of the MCMC fits of faba before 0.19 are refused: fit\n\
+            again with `faba cluster`. Without a terminal (or with --batch-process) the modules are printed\n\
             instead; --html writes them as one self-contained page instead (`e` in the\n\
             browser), the trace drawn in its Model section."),
         after_long_help = "Example:\n  faba cluster-view out/m6a_blockmodel.run.json\n  faba cluster-view out/\n  faba cluster-view out/ --modality atoi\n  faba cluster-view out/ --html cluster.html"

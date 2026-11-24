@@ -2,7 +2,7 @@
 //! `cluster_view` returns them: the modules grid (gene modules against cell
 //! modules, each block coloured by its fitted shift, a count fit's log rate,
 //! its methylated %, UMIs per cell, or that standardized across the cell
-//! modules), the trace (each restart's or chain's ELBO or log joint by
+//! modules), the trace (each restart's ELBO by
 //! step), and the cell modules against the batches. Each is laid out for a
 //! size when one is given (inches), its text at a size that reads in print.
 
@@ -16,7 +16,7 @@ use crate::figure::{esc, svg, Anchor, Canvas, FAINT, INK, MUTED};
 pub enum Plot {
     /// Gene modules against cell modules.
     Modules,
-    /// Each restart's (or chain's) ELBO (or log joint) by step.
+    /// Each restart's ELBO by step.
     Trace,
     /// Cell modules against the batches: each one's share in each.
     Batches,
@@ -330,12 +330,12 @@ fn tick(v: f64) -> String {
 /// A tick label's width at most, in font sizes.
 const TICK: f64 = 4.5;
 
-/// The trace: each restart's or chain's line over its steps, the start
-/// (k-means) or burn-in's end marked, in a colour of its own.
+/// The trace: each restart's ELBO over its steps, in a colour of its own,
+/// the end of its k-means start marked.
 fn trace(m: &Modules, title: &str, size: Page) -> Result<String, String> {
     let t = m.fit.trace.as_ref().map_err(Clone::clone)?;
     let points: Vec<(f64, f64)> = t
-        .chains
+        .restarts
         .iter()
         .flatten()
         .map(|&(x, v)| (x as f64, v))
@@ -343,7 +343,6 @@ fn trace(m: &Modules, title: &str, size: Page) -> Result<String, String> {
     if points.is_empty() {
         return Err("the trace holds no points".into());
     }
-    let vi = t.quantity == crate::cluster::progress::ELBO;
     let (x0, x1) = points
         .iter()
         .fold((f64::MAX, f64::MIN), |a, p| (a.0.min(p.0), a.1.max(p.0)));
@@ -366,20 +365,20 @@ fn trace(m: &Modules, title: &str, size: Page) -> Result<String, String> {
     ];
     Ok(svg(w, h, |c: &mut Canvas| {
         heading(c, title, f, w);
-        let names = match vi {
-            true => ("k-means iteration, then epoch", "ELBO"),
-            false => ("sweep", "log joint"),
-        };
+        let names = ("k-means iteration, then epoch", "ELBO");
         axes(c, (left, top, pw, ph), (x0, x1), (y0, y1), names, f);
-        if t.burn_in as f64 > x0 && (t.burn_in as f64) < x1 {
-            let x = sx(t.burn_in as f64);
+        if t.warmup as f64 > x0 && (t.warmup as f64) < x1 {
+            let x = sx(t.warmup as f64);
             c.dashed(x, top, x, top + ph, FAINT, 0.8);
         }
-        for (i, chain) in t.chains.iter().enumerate() {
-            let line: Vec<(f64, f64)> = chain.iter().map(|&(x, v)| (sx(x as f64), sy(v))).collect();
+        for (i, restart) in t.restarts.iter().enumerate() {
+            let line: Vec<(f64, f64)> = restart
+                .iter()
+                .map(|&(x, v)| (sx(x as f64), sy(v)))
+                .collect();
             let colour = colours[i % colours.len()];
             c.polyline(&line, colour, 1.5);
-            let name = format!("{} {i}", if vi { "restart" } else { "chain" });
+            let name = format!("restart {i}");
             c.text(
                 left + pw + f,
                 top + 1.3 * f * (i as f64 + 1.0),

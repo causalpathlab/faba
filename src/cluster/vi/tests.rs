@@ -24,7 +24,7 @@ impl Steps for Stub {
     fn units(&self) -> f64 {
         10.0
     }
-    const UNIT: &'static str = "unit";
+    const UNIT: Unit = Unit::Read;
     fn first(&mut self) -> Option<()> {
         Some(())
     }
