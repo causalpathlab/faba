@@ -197,12 +197,30 @@ pub struct QcArgs {
     #[arg(
         long = "plots",
         default_value_t = false,
-        help = "With --batch-process, also draw the view's figures under qc_plots/",
-        long_help = "With --batch-process, also draw the figures the view writes on apply:\n\
-                     for every site modality and knob, `qc_plots/{modality}_{knob}.{pdf,png}`,\n\
-                     at the --site-* values given, with the metagene when an annotation is found."
+        help = "With --batch-process or --dry-run, also draw the view's figures under qc_plots/",
+        long_help = "With --batch-process or --dry-run, also draw the figures the view writes on\n\
+                     apply: for every site modality and knob, `qc_plots/{modality}_{knob}.{pdf,png}`,\n\
+                     at the --site-* values given, with the metagene when an annotation is found;\n\
+                     each modality's thresholds two at a time, `{modality}_pairs` (the pairs Auto\n\
+                     picks); and each batch's cell QC, `{batch}_cells` (the knee, and genes\n\
+                     detected by counts). With --dry-run they go under -o DIR, new or empty, and\n\
+                     nothing else is written: what the cut would do, without cutting."
     )]
     pub plots: bool,
+
+    #[arg(
+        long = "html",
+        value_name = "FILE",
+        value_hint = clap::ValueHint::FilePath,
+        help = "With --batch-process or --dry-run, also write the view's page, to share (FILE must not exist)",
+        long_help = "With --batch-process or --dry-run, also write the page Ctrl+E writes in the\n\
+                     view, at the --site-* values given: the thresholds recounted live, their\n\
+                     pairs two at a time, and each batch's cell QC. It carries each modality's\n\
+                     strongest 50,000 sites by p-value, its counts exact (the p-value threshold\n\
+                     holds at or below the last site carried); the view and `faba mcp` read every\n\
+                     site. FILE must not exist: faba qc never overwrites one."
+    )]
+    pub html: Option<Box<str>>,
 
     /// The figures' size on the page (only with --plots).
     #[command(flatten)]
@@ -211,10 +229,12 @@ pub struct QcArgs {
     #[arg(
         long = "dry-run",
         default_value_t = false,
-        help = "Print what the cell QC and each --site-* threshold would remove; write nothing",
+        help = "Print what the cell QC and each --site-* threshold would remove; write no fileset",
         long_help = "Print, as TSV on stdout, what the cell QC keeps per batch and what each\n\
-                     --site-* threshold removes per modality (alone, and only by it), at the\n\
-                     values given; write nothing. Needs INPUT_DIR only."
+                     --site-* threshold removes per modality (alone, and only by it), and the\n\
+                     pairs of thresholds Auto picks to show two at a time, at the values given;\n\
+                     write no fileset. Needs INPUT_DIR only; with --plots -o DIR, also the figures\n\
+                     (new or empty DIR), with --html FILE the page (FILE must not exist)."
     )]
     #[serde(skip)]
     pub dry_run: bool,

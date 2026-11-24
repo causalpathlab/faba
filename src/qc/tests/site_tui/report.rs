@@ -375,6 +375,97 @@ fn a_report_that_cannot_be_written_says_why() {
 }
 
 #[test]
+fn the_report_page_script_parses() {
+    let page = crate::qc::site_tui::report::FRAGMENT;
+    let code = page.rsplit_once("<script>").unwrap().1;
+    let code = code.rsplit_once("</script>").unwrap().0;
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("page.js");
+    std::fs::write(&path, code).unwrap();
+    match std::process::Command::new("node")
+        .arg("--check")
+        .arg(&path)
+        .output()
+    {
+        Ok(out) => assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        ),
+        Err(_) => eprintln!("no node: the page's script is not checked"),
+    }
+}
+
+/// The page carries the strongest sites by p-value, those tied at the
+/// last one too, and says its limit; a table within the cap is carried
+/// whole. Its 2D panels and Auto's pairs come with it.
+#[test]
+fn the_report_carries_the_top_sites_by_p_value() {
+    let n = crate::qc::site_tui::report::CARRIED + 300;
+    let t = table(M6A, n);
+    let (_dir, p) = report_picker(&t);
+    let data = report_json(&p);
+    let m = &data["modalities"][0];
+    let limit = m["limit"].as_f64().unwrap() as f32;
+    let carried = t.pv.iter().filter(|&&v| v <= limit).count();
+    assert_eq!(
+        (m["sites"].as_u64(), m["total"].as_u64()),
+        (Some(carried as u64), Some(n as u64))
+    );
+    assert!(carried >= crate::qc::site_tui::report::CARRIED && carried < n);
+    assert_eq!(m["gene"].as_array().unwrap().len(), carried);
+    assert_eq!(m["pairs"].as_array().unwrap().len(), 4);
+    assert_eq!(m["auto"].as_array().unwrap().len(), 4);
+    // With a metagene, weighed by coverage: drawn of every site, not only
+    // those carried.
+    let t = with_genes(table(M6A, n));
+    let mut p = picker(&t, None, SiteFilterArgs::default_values());
+    p.set_meta(Meta::ready(vec![Some(meta_layout(t.len()))], vec![]));
+    let data = report_json(&p);
+    let m = &data["modalities"][0];
+    assert!((m["sites"].as_u64().unwrap() as usize) < n);
+    assert!(m["meta"]["all"].as_array().is_some_and(|a| !a.is_empty()));
+    let small = table(M6A, 500);
+    let (_d, p) = report_picker(&small);
+    let m = &report_json(&p)["modalities"][0];
+    assert!(m["limit"].is_null() && m["sites"] == 500 && m["total"] == 500);
+}
+
+/// Sites without a p-value pass any p-value threshold, so the page carries
+/// them all: every site it leaves off has a p-value past its limit.
+#[test]
+fn the_report_carries_every_site_without_a_p_value() {
+    let n = crate::qc::site_tui::report::CARRIED + 3000;
+    let mut t = table(M6A, n);
+    for i in (0..n).step_by(97) {
+        t.pv[i] = f32::NAN;
+    }
+    let (_dir, p) = report_picker(&t);
+    let m = &report_json(&p)["modalities"][0];
+    let limit = m["limit"].as_f64().unwrap() as f32;
+    let nan = t.pv.iter().filter(|p| p.is_nan()).count();
+    let at_most = t.pv.iter().filter(|&&p| p <= limit).count();
+    assert_eq!(m["sites"].as_u64().unwrap() as usize, nan + at_most);
+    let dropped = t.pv.iter().filter(|&&p| !p.is_nan() && p > limit).count();
+    assert_eq!(
+        n - nan - at_most,
+        dropped,
+        "every site left off has p past the limit"
+    );
+}
+
+/// The page says which counts are over the sites carried, and counts a
+/// panel's box from the fail bits, as `grid()` does.
+#[test]
+fn the_page_labels_counts_over_the_sites_carried_and_boxes_by_fail_bits() {
+    let page = crate::qc::site_tui::report::FRAGMENT;
+    assert!(page.contains("all but kept and p-value: over the ${m.sites} carried"));
+    assert!(page.contains("which every site left off fails"));
+    assert!(page.contains("(m.fails[i] & drawn) === 0"));
+    assert!(!page.contains("every count is exact"));
+}
+
+#[test]
 fn the_report_page_loads_nothing() {
     let page = crate::qc::site_tui::report::FRAGMENT.to_lowercase();
     for net in [

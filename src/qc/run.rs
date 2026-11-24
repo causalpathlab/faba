@@ -31,9 +31,7 @@ use super::matrix::{
 use super::path_tui::ask_paths;
 use super::progress::{FinishOnDrop, Progress};
 use super::repool::repool_gene_level;
-use super::site_tui::{
-    qc_flags, run_site_picker, site_figures, threshold_counts, Figure, Picked, Writer,
-};
+use super::site_tui::{qc_flags, run_site_picker, Batch, CellsShared, Figure, Picked, Writer};
 use super::sites::{
     accumulate_site_cells, read_site_table, site_matrix_rows, write_site_tables, SiteTable,
 };
@@ -223,7 +221,79 @@ fn resolve_paths(args: &QcArgs) -> anyhow::Result<(String, String)> {
     Ok((input, output))
 }
 
+/// Refused, before anything is read, when `--html` cannot be written as
+/// asked: without --batch-process or --dry-run (the view writes its page on
+/// Ctrl+E), or to a file that exists (never overwritten; the write itself
+/// refuses one that appears meanwhile).
+fn html_problem(args: &QcArgs) -> anyhow::Result<()> {
+    let Some(html) = args.html.as_deref() else {
+        return Ok(());
+    };
+    anyhow::ensure!(
+        args.batch_process || args.dry_run,
+        "--html writes the page with --batch-process or --dry-run; in the view, Ctrl+E writes it"
+    );
+    anyhow::ensure!(
+        !std::path::Path::new(html).exists(),
+        "--html {html} already exists: faba qc never overwrites a file; name another path"
+    );
+    Ok(())
+}
+
+/// Refused, before anything is read, when a dry run's figures cannot go
+/// where asked: `--dry-run --plots` writes them to `-o DIR`'s `qc_plots/`,
+/// DIR new or empty (never a fileset, nothing else in it).
+fn dry_plots_problem(args: &QcArgs) -> anyhow::Result<()> {
+    if !(args.dry_run && args.plots) {
+        return Ok(());
+    }
+    let Some(out) = args.output.as_deref() else {
+        anyhow::bail!(
+            "`faba qc --dry-run --plots` writes its figures under -o DIR: name one, new or empty"
+        );
+    };
+    if let Some(problem) = crate::tui::output_problem(out) {
+        anyhow::bail!("-o {problem}: faba qc never writes over files; name another");
+    }
+    Ok(())
+}
+
+/// A dry run's figures: each modality's knobs and pairs, each batch's
+/// cells, under `-o DIR/qc_plots` (checked new or empty before anything
+/// was read, see [`dry_plots_problem`]).
+fn write_dry_plots(args: &QcArgs, batch: &mut Batch) -> anyhow::Result<()> {
+    let out = args.output.as_deref().unwrap_or_default();
+    let page = args
+        .size
+        .page_at_least((crate::qc::site_tui::QC_LEAST_W, 0.0), "a qc figure")?;
+    let figures = batch.figures(page)?;
+    let failed = save_figures(out, &figures, &Progress::default());
+    if let Some((stem, e)) = failed.first() {
+        anyhow::bail!("qc_plots/{stem}: not saved: {e}");
+    }
+    info!("wrote {} figures under {out}/qc_plots", figures.len());
+    Ok(())
+}
+
+/// `--html`'s page, at the thresholds given, its folder made first; never
+/// over a file (see [`html_problem`]).
+fn write_html(args: &QcArgs, batch: &mut Batch) -> anyhow::Result<()> {
+    let Some(html) = args.html.as_deref() else {
+        return Ok(());
+    };
+    let path = std::path::Path::new(html);
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent)?;
+    }
+    if batch.write_page(path)? {
+        info!("wrote {html}");
+    }
+    Ok(())
+}
+
 pub fn run_qc(args: &QcArgs) -> anyhow::Result<()> {
+    html_problem(args)?;
+    dry_plots_problem(args)?;
     if args.dry_run {
         return dry_run(args);
     }
@@ -268,7 +338,9 @@ pub fn run_qc(args: &QcArgs) -> anyhow::Result<()> {
 }
 
 /// `faba qc --dry-run`: the cell verdicts per batch and each site
-/// threshold's counts per modality, as TSV on stdout; nothing written.
+/// threshold's counts per modality, as TSV on stdout; then, after a blank
+/// line, the pairs Auto picks to show two at a time, a TSV of their own.
+/// No fileset; the figures and the page when asked.
 fn dry_run(args: &QcArgs) -> anyhow::Result<()> {
     let input = args
         .input_dir
@@ -289,14 +361,68 @@ fn dry_run(args: &QcArgs) -> anyhow::Result<()> {
             n - kept,
         ));
     }
-    for t in threshold_counts(&prep.tables, &prep.site_cells, &args.site) {
+    let gff = explicit_or_recorded(args.gff.as_deref(), input, "gff", "annotation");
+    let mut batch = Batch::new(
+        input,
+        &prep.tables,
+        &prep.site_cells,
+        &args.site,
+        (gff.as_deref(), &args.genes),
+        cells_of(&prep.decisions),
+    )?;
+    let (counts, pairs) = batch.counts();
+    for t in counts {
         out.push_str(&format!(
             "sites\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
             t.modality, t.flag, t.threshold, t.removes, t.only, t.kept, t.sites
         ));
     }
+    // The pairs Auto picks for the 2D panels: `split`, the sites one of
+    // the pair's thresholds keeps and the other drops.
+    out.push_str("\nmodality\tx\ty\trank_correlation\tsplit\n");
+    for (m, p) in pairs {
+        out.push_str(&format!(
+            "{m}\t{}\t{}\t{:.2}\t{}\n",
+            p.x.short(),
+            p.y.short(),
+            p.rho,
+            p.split
+        ));
+    }
     print!("{out}");
-    Ok(())
+    if args.plots {
+        write_dry_plots(args, &mut batch)?;
+    }
+    write_html(args, &mut batch)
+}
+
+/// `figures` saved under `out/qc_plots/` as PDF and PNG, in parallel, each
+/// a step on `progress`; those not saved, and why.
+fn save_figures(out: &str, figures: &[Figure], progress: &Progress) -> Vec<(String, String)> {
+    use rayon::prelude::*;
+    if figures.is_empty() {
+        return Vec::new();
+    }
+    let dir = format!("{out}/qc_plots");
+    let made = std::fs::create_dir_all(&dir).map_err(|e| e.to_string());
+    (figures.par_iter())
+        .filter_map(|f| {
+            progress.next(format!("qc_plots/{}", f.stem));
+            let saved = made.clone().and_then(|()| {
+                crate::figure::save_with_png(&f.svg, &format!("{dir}/{}", f.stem))
+                    .map_err(|e| e.to_string())
+            });
+            saved.err().map(|e| (f.stem.clone(), e))
+        })
+        .collect()
+}
+
+/// Each batch's barcodes and the cell QC's verdicts, for the figures and
+/// the page.
+fn cells_of(decisions: &[CellDecision]) -> CellsShared {
+    (decisions.iter())
+        .map(|d| crate::qc::cells_plot::Cells::of(&d.batch, &d.report))
+        .collect()
 }
 
 /// Everything read before the site thresholds are decided: the input's
@@ -332,19 +458,21 @@ fn filter_fileset(
                 "no editing site table to pick thresholds on; cutting cells and features only"
             );
         }
-        let figures = if args.plots && has_sites {
-            let pinned = &args.genes;
-            site_figures(
+        let cells = cells_of(&prep.decisions);
+        let mut batch = match args.plots || args.html.is_some() {
+            true => Some(Batch::new(
                 input,
                 &prep.tables,
                 &prep.site_cells,
                 &args.site,
-                gff.as_deref(),
-                pinned,
-                page,
-            )?
-        } else {
-            Vec::new()
+                (gff.as_deref(), &args.genes),
+                cells,
+            )?),
+            false => None,
+        };
+        let figures = match (&mut batch, args.plots) {
+            (Some(b), true) => b.figures(page)?,
+            _ => Vec::new(),
         };
         write_fileset(
             &prep,
@@ -354,6 +482,9 @@ fn filter_fileset(
             &figures,
             &Progress::default(),
         )?;
+        if let Some(b) = &mut batch {
+            write_html(args, b)?;
+        }
         return Ok(Some(args.site.clone()));
     }
     let progress = Progress::default();
@@ -370,6 +501,7 @@ fn filter_fileset(
                 output: out_dir,
                 progress: &progress,
                 page,
+                cells: cells_of(&prep.decisions),
                 start: Some(Box::new(|site: SiteFilterArgs, figures: Vec<Figure>| {
                     let (prep, progress) = (&prep, &progress);
                     writer = Some(s.spawn(move || {
@@ -684,21 +816,8 @@ fn write_fileset(
     write_lines(&lines, &format!("{out_dir}/qc_summary.tsv"))?;
     // 7. the view's figures, as it showed them when the cut was applied.
     //    The fileset is complete without them, so a failed one only warns.
-    if !figures.is_empty() {
-        let dir = format!("{out_dir}/qc_plots");
-        let made = std::fs::create_dir_all(&dir);
-        for f in figures {
-            progress.next(format!("qc_plots/{}", f.stem));
-            let saved = match &made {
-                Ok(()) => {
-                    crate::figure::save_with_png(&f.svg, &format!("{dir}/{}", f.stem)).map(|_| ())
-                }
-                Err(e) => Err(anyhow::anyhow!("{e}")),
-            };
-            if let Err(e) = saved {
-                log::warn!("qc_plots/{}: not saved: {e}", f.stem);
-            }
-        }
+    for (stem, e) in save_figures(out_dir, figures, progress) {
+        log::warn!("qc_plots/{stem}: not saved: {e}");
     }
     debug_assert_eq!(
         progress.started(),
@@ -721,6 +840,190 @@ mod tests {
         }
         let words = cmd.split(' ').skip(2); // `faba qc`
         <Cli as clap::Parser>::parse_from(std::iter::once("faba").chain(words)).qc
+    }
+
+    /// Each step of the 2D view timed on a real faba directory, named by
+    /// `FABA_QC_TIMING_DIR` (read only; what it writes goes to a temporary
+    /// folder): `cargo test --release qc_timing -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn qc_timing() {
+        let Ok(input) = std::env::var("FABA_QC_TIMING_DIR") else {
+            eprintln!("FABA_QC_TIMING_DIR is not set");
+            return;
+        };
+        let args = parse(&format!("faba qc {input} --batch-process -o unused"));
+        let t = std::time::Instant::now();
+        let prep = prepare(&args, &input).unwrap();
+        let read = t.elapsed().as_secs_f64();
+        let out = tempfile::tempdir().unwrap();
+        let cells = cells_of(&prep.decisions);
+        let steps = crate::qc::site_tui::time_steps(
+            &prep.tables,
+            &prep.site_cells,
+            &args.site,
+            cells,
+            out.path(),
+        );
+        eprintln!("{read:>9.3} s  reading the site tables, the _site matrices and the cell QC");
+        for (what, s) in steps {
+            eprintln!("{s:>9.3} s  {what}");
+        }
+    }
+
+    /// One modality's sampled sites, as the snapshot keeps them.
+    #[derive(serde::Serialize, serde::Deserialize)]
+    /// (Reals as their bits: JSON has no NaN or infinity.)
+    struct Snap {
+        modality: String,
+        pv: Vec<u32>,
+        coverage: Vec<u64>,
+        converted: Vec<u64>,
+        control_coverage: Vec<u64>,
+        edit_ratio: Vec<u32>,
+        fold: Vec<u32>,
+        raw_log_odds: Vec<u64>,
+        gene_id: Vec<u32>,
+        n_genes: usize,
+        n_cells: Option<Vec<usize>>,
+    }
+
+    /// The figures and the page redrawn from a snapshot in
+    /// `FABA_QC_SNAPSHOT` (a JSON file), into `FABA_QC_REDRAW_OUT`; the
+    /// snapshot made first, once, from the faba directory in
+    /// `FABA_QC_TIMING_DIR` (read only), sampling at most 60,000 sites per
+    /// modality: `cargo test qc_redraw -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn qc_redraw() {
+        let (Ok(snap), Ok(out)) = (
+            std::env::var("FABA_QC_SNAPSHOT"),
+            std::env::var("FABA_QC_REDRAW_OUT"),
+        ) else {
+            eprintln!("FABA_QC_SNAPSHOT and FABA_QC_REDRAW_OUT are not set");
+            return;
+        };
+        type Saved = (Vec<Snap>, Vec<crate::qc::cells_plot::Cells>);
+        if !std::path::Path::new(&snap).exists() {
+            let input = std::env::var("FABA_QC_TIMING_DIR").expect("FABA_QC_TIMING_DIR");
+            let args = parse(&format!("faba qc {input} --batch-process -o unused"));
+            let prep = prepare(&args, &input).unwrap();
+            let mut snaps = Vec::new();
+            for (m, t) in &prep.tables {
+                let n_cells = prep.site_cells.get(m).map(|acc| t.cells_per_site(acc));
+                let step = t.len().div_ceil(60_000).max(1);
+                let pick = |i: &usize| i.is_multiple_of(step);
+                let idx: Vec<usize> = (0..t.len()).filter(pick).collect();
+                let take = |v: &[f32]| idx.iter().map(|&i| v[i].to_bits()).collect::<Vec<_>>();
+                let takeu = |v: &[u64]| idx.iter().map(|&i| v[i]).collect::<Vec<_>>();
+                snaps.push(Snap {
+                    modality: m.to_string(),
+                    pv: take(&t.pv),
+                    coverage: takeu(&t.coverage),
+                    converted: takeu(&t.converted),
+                    control_coverage: takeu(&t.control_coverage),
+                    edit_ratio: take(&t.edit_ratio),
+                    fold: take(&t.fold),
+                    raw_log_odds: idx.iter().map(|&i| t.raw_log_odds[i].to_bits()).collect(),
+                    gene_id: idx.iter().map(|&i| t.gene_id[i]).collect(),
+                    n_genes: t.n_genes,
+                    n_cells: n_cells.map(|n| idx.iter().map(|&i| n[i]).collect()),
+                });
+            }
+            let saved: Saved = (snaps, cells_of(&prep.decisions).to_vec());
+            std::fs::write(&snap, serde_json::to_string(&saved).unwrap()).unwrap();
+        }
+        let (snaps, cells): Saved =
+            serde_json::from_str(&std::fs::read_to_string(&snap).unwrap()).unwrap();
+        let tables: Vec<(SiteTable, Option<Vec<usize>>)> = (snaps.into_iter())
+            .map(|s| {
+                let t = SiteTable {
+                    modality: s.modality.into(),
+                    batch: arrow::record_batch::RecordBatch::new_empty(std::sync::Arc::new(
+                        arrow::datatypes::Schema::empty(),
+                    )),
+                    key: (0..s.pv.len()).map(|i| format!("s{i}").into()).collect(),
+                    gene_id: s.gene_id,
+                    n_genes: s.n_genes,
+                    pv: s.pv.iter().map(|&b| f32::from_bits(b)).collect(),
+                    coverage: s.coverage,
+                    converted: s.converted,
+                    control_coverage: s.control_coverage,
+                    edit_ratio: s.edit_ratio.iter().map(|&b| f32::from_bits(b)).collect(),
+                    fold: s.fold.iter().map(|&b| f32::from_bits(b)).collect(),
+                    raw_log_odds: s.raw_log_odds.iter().map(|&b| f64::from_bits(b)).collect(),
+                };
+                (t, s.n_cells)
+            })
+            .collect();
+        let mut tables = tables;
+        tables.sort_by_key(|(t, _)| SITE_MODALITIES.iter().position(|m| **m == *t.modality));
+        std::fs::create_dir_all(&out).unwrap();
+        let t = std::time::Instant::now();
+        let f = SiteFilterArgs::default_values();
+        let written = crate::qc::site_tui::redraw(&tables, &f, cells, std::path::Path::new(&out));
+        eprintln!("redrawn in {:.3} s:", t.elapsed().as_secs_f64());
+        written.iter().for_each(|p| eprintln!("  {}", p.display()));
+    }
+
+    /// `--html` goes only to a file that is not there, with --batch-process
+    /// or --dry-run: an existing one is refused before anything is read
+    /// (the input here does not exist), naming it and asking for another
+    /// path, and left as it was.
+    #[test]
+    fn html_refuses_a_file_that_exists_before_any_work() {
+        let dir = tempfile::tempdir().unwrap();
+        let taken = dir.path().join("qc.html");
+        std::fs::write(&taken, "mine").unwrap();
+        let t = taken.display();
+        for mode in ["--batch-process -o out", "--dry-run"] {
+            let args = parse(&format!("faba qc /no/such/input {mode} --html {t}"));
+            let err = run_qc(&args).unwrap_err().to_string();
+            assert!(
+                err.contains(&t.to_string()) && err.contains("another path"),
+                "{err}"
+            );
+        }
+        assert_eq!(std::fs::read_to_string(&taken).unwrap(), "mine");
+        let free = dir.path().join("new.html");
+        let view = parse(&format!("faba qc /no/such/input --html {}", free.display()));
+        assert!(html_problem(&view)
+            .unwrap_err()
+            .to_string()
+            .contains("Ctrl+E"));
+        let batch = parse(&format!("faba qc in --dry-run --html {}", free.display()));
+        assert!(html_problem(&batch).is_ok());
+        // A folder not there yet, inside a cut's output folder or not, is
+        // made when the page is written.
+        let out = dir.path().join("cut");
+        let o = out.display();
+        for page in [format!("{o}/qc.html"), format!("{o}/pages/qc.html")] {
+            let inside = parse(&format!("faba qc in --batch-process -o {o} --html {page}"));
+            assert!(html_problem(&inside).is_ok(), "{page}");
+        }
+    }
+
+    /// A dry run's figures go under -o DIR, new or empty: a DIR with files
+    /// is refused before anything is read, and one is needed.
+    #[test]
+    fn dry_run_plots_refuse_a_folder_with_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("mine.txt"), "mine").unwrap();
+        let d = dir.path().display();
+        let args = parse(&format!("faba qc /no/such/input --dry-run --plots -o {d}"));
+        let err = run_qc(&args).unwrap_err().to_string();
+        assert!(err.contains("already contains files"), "{err}");
+        let none = parse("faba qc /no/such/input --dry-run --plots");
+        assert!(dry_plots_problem(&none)
+            .unwrap_err()
+            .to_string()
+            .contains("-o DIR"));
+        let empty = tempfile::tempdir().unwrap();
+        let fresh = parse(&format!(
+            "faba qc in --dry-run --plots -o {}",
+            empty.path().display()
+        ));
+        assert!(dry_plots_problem(&fresh).is_ok());
     }
 
     #[test]

@@ -57,6 +57,7 @@ fn confirming_writes_in_the_view_and_shows_progress() {
     let mut p = picker(&t, None, start.clone());
     p.writer = Writer {
         page: crate::figure::size::OWN,
+        cells: Default::default(),
         output: "out_qc",
         progress: &progress,
         start: Some(Box::new(|f, figures| {
@@ -87,8 +88,10 @@ fn confirming_writes_in_the_view_and_shows_progress() {
     assert!(p.tick() && !p.done());
     let (f, figures) = started.borrow_mut().take().expect("the writer starts");
     assert_eq!(qc_flags(&f), qc_flags(&start));
-    // A figure per knob, named after its flag, and the view left as it was.
-    assert_eq!(figures.len(), p.view().criteria.len());
+    // A figure per knob, named after its flag, then the 2D panels, and the
+    // view left as it was.
+    assert_eq!(figures.len(), p.view().criteria.len() + 1);
+    assert!(figures.iter().any(|f| f.stem == format!("{M6A}_pairs")));
     assert!(figures.iter().any(|f| f.stem == format!("{M6A}_max-pv")));
     assert!(figures.iter().all(|f| f.svg.starts_with("<svg")));
     assert_eq!((p.modality, p.focus), (0, 0));
@@ -142,8 +145,9 @@ fn figures_cover_every_modality_and_leave_the_view_as_it_was() {
     // The filter is put back for the view, and kept out of the figures:
     // every one, of either modality, has its gene panel.
     assert_eq!(p.list.find, "ne3");
-    assert!(figures.iter().all(|f| f.svg.contains(" bp")));
-    let n: usize = p.views.iter().map(|v| v.criteria.len()).sum();
+    let knobs = || figures.iter().filter(|f| !f.stem.ends_with("_pairs"));
+    assert!(knobs().all(|f| f.svg.contains(" bp")));
+    let n: usize = p.views.iter().map(|v| v.criteria.len() + 1).sum();
     assert_eq!(figures.len(), n);
     for v in &p.views {
         let m = &*v.table.modality;
@@ -300,6 +304,7 @@ fn a_kill_lets_a_write_under_way_finish() {
     let mut p = picker(&t, None, start);
     p.writer = Writer {
         page: crate::figure::size::OWN,
+        cells: Default::default(),
         output: "out_qc",
         progress: &progress,
         start: Some(Box::new(|_, _| {})),

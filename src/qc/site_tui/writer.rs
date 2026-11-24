@@ -14,6 +14,8 @@ pub struct Writer<'a> {
     /// The page the figures are laid out for (see
     /// [`crate::figure::SizeArgs`]).
     pub page: Page,
+    /// Each batch's cell QC, for the cells figures and the report.
+    pub cells: CellsShared,
 }
 
 /// Starts the write with the applied thresholds and the view's figures.
@@ -36,6 +38,7 @@ impl Writer<'_> {
             progress: &NOTHING_TO_WRITE,
             start: None,
             page: OWN,
+            cells: CellsShared::default(),
         }
     }
 }
@@ -70,7 +73,9 @@ impl SitePicker<'_> {
         let find = std::mem::take(&mut self.list.find);
         let out = self.each_figure(page, (modality, at), &find);
         self.restore((modality, focus, at), find);
-        out
+        let mut out = out?;
+        out.extend(cell_figures(&self.cells, page));
+        Ok(out)
     }
 
     /// [`Self::figures`]' drawings, the view stepped through each modality
@@ -102,6 +107,10 @@ impl SitePicker<'_> {
                     svg: self.figure(page)?,
                 });
             }
+            out.push(Figure {
+                stem: super::pairs_view::pairs_stem(&self.view().table.modality),
+                svg: self.pairs_figure(m, page),
+            });
         }
         Ok(out)
     }

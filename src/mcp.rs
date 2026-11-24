@@ -215,7 +215,7 @@ fn tools() -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "qc",
-            "Filter a faba directory into a new one (`faba qc --batch-process`). Cells are cut on `{batch}_count` and the same cells are kept in every matrix; sites are cut on the thresholds given (marginal p-values, no FDR). Omit a threshold to keep faba's default. Try thresholds first with `dry_run`: it returns what the cell QC keeps per batch and what each threshold removes per modality, writing nothing. With `plots`, the view's figures go to `qc_plots/` and come back as images.",
+            "Filter a faba directory into a new one (`faba qc --batch-process`). Cells are cut on `{batch}_count` and the same cells are kept in every matrix; sites are cut on the thresholds given (marginal p-values, no FDR). Omit a threshold to keep faba's default. Try thresholds first with `dry_run`: it returns what the cell QC keeps per batch and what each threshold removes per modality, writing nothing. The dry run's `pairs` are the pairs of thresholds Auto picks to show two at a time: those splitting the most sites (pass one, fail the other) on axes that agree least. With `plots`, the view's figures go to `qc_plots/` and come back as images: each threshold's histogram, each modality's thresholds two at a time ({m}_pairs: kept sites against removed, the box where both pass) and each batch's cell QC ({batch}_cells). With `html`, a page to share goes to that file (dry run too); a file that exists is refused, never replaced: ask the user for another path.",
             schema(qc_properties(&dir(), &out(), &options()), &["input"]),
         ),
         ToolSpec::new(
@@ -562,7 +562,8 @@ fn qc_properties(dir: &Value, out: &Value, options: &Value) -> Value {
         "auto_cutoff": { "type": "boolean" },
         "no_cell_qc": { "type": "boolean" },
         "dry_run": { "type": "boolean", "description": "Count what the thresholds remove, per batch and modality; write nothing (`out` is ignored)" },
-        "plots": { "type": "boolean", "description": "Also draw each modality's and knob's figure under `qc_plots/` and return them as images" },
+        "plots": { "type": "boolean", "description": "Also draw each modality's and knob's figure, each modality's thresholds two at a time ({m}_pairs) and each batch's cell QC ({batch}_cells) under `qc_plots/`, and return them as images" },
+        "html": { "type": "string", "description": "Also write the view's page here, to share (with `dry_run` too): the thresholds recounted live, their pairs two at a time and each batch's cell QC, carrying each modality's strongest 50,000 sites by p-value. Must not exist: an existing file is refused, never replaced" },
         "options": options,
     })
 }
@@ -1210,23 +1211,54 @@ fn qc(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
         argv.push("--no-cell-qc".into());
     }
     argv.extend(a.options(&[])?);
-    if a.flag("dry_run")? {
-        argv.push("--dry-run".into());
-        let printed = cx.run(command(&argv)?)?;
-        return Ok(vec![Content::Json(json!({
-            "dry_run": tsv_rows(&printed),
-            "note": "nothing written; `removes` counts every site failing a threshold, `only_this` those failing it alone",
-        }))]);
+    // A page that exists is refused by `faba qc` before it reads anything.
+    let html = a.path_opt("html")?;
+    if let Some(h) = &html {
+        argv.push(format!("--html={h}"));
     }
     let plots = a.flag("plots")?;
     if plots {
         argv.push("--plots".into());
     }
+    if a.flag("dry_run")? {
+        argv.push("--dry-run".into());
+        // The figures, without cutting: under `out`, new, never a fileset.
+        let out = match plots {
+            true => {
+                let out = a.out_or(cx, (&named(&input, "qc_plots"), ""), exists)?;
+                argv.push(format!("--output={out}"));
+                Some(out)
+            }
+            false => None,
+        };
+        let printed = cx.run(command(&argv)?)?;
+        // The counts, then after a blank line Auto's pairs: two tables.
+        let (counts, pairs) = printed.split_once("\n\n").unwrap_or((&printed, ""));
+        let mut content = vec![Content::Json(json!({
+            "dry_run": tsv_rows(counts),
+            "pairs": tsv_rows(pairs),
+            "html": html,
+            "plots": out.as_ref().map(|o| format!("{o}/qc_plots")),
+            "note": "no fileset written, only `plots` and `html` when asked; `removes` counts every site failing a threshold, `only_this` those failing it alone; `pairs` are those Auto picks for the 2D panels, `split` the sites one of their thresholds keeps and the other drops",
+        }))];
+        if let Some(out) = &out {
+            content.extend(qc_images(out)?);
+        }
+        return Ok(content);
+    }
     argv.push("--batch-process".into());
     let out = a.out_or(cx, (&named(&input, "qc"), ""), exists)?;
     let what = format!("qc of {input}");
     let v = run_out(a, cx, argv, &out, &what)?;
-    let mut images: Vec<PathBuf> = std::fs::read_dir(Path::new(&out).join("qc_plots"))
+    let mut content = vec![Content::Json(v)];
+    content.extend(qc_images(&out)?);
+    Ok(content)
+}
+
+/// The figures under `out`'s `qc_plots/`, as images, in name order, at
+/// most [`QC_IMAGES`].
+fn qc_images(out: &str) -> Result<Vec<Content>> {
+    let mut images: Vec<PathBuf> = std::fs::read_dir(Path::new(out).join("qc_plots"))
         .into_iter()
         .flatten()
         .flatten()
@@ -1234,11 +1266,9 @@ fn qc(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
         .filter(|p| p.extension().is_some_and(|x| x == "png"))
         .collect();
     images.sort();
-    let mut content = vec![Content::Json(v)];
-    for p in images.iter().take(QC_IMAGES) {
-        content.push(Content::Png(std::fs::read(p)?));
-    }
-    Ok(content)
+    (images.iter().take(QC_IMAGES))
+        .map(|p| Ok(Content::Png(std::fs::read(p)?)))
+        .collect()
 }
 
 /// The tools that draw a figure, each taking its size as `width` and

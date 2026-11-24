@@ -53,6 +53,7 @@ impl SitePicker<'_> {
                 keys.extend(match self.panel {
                     Panel::Thresholds => [("↑/↓", "knob"), ("←/→", "bin")],
                     Panel::Genes => [("↑/↓", "gene"), ("/", "find")],
+                    Panel::Pairs => [("arrows", "panel"), ("x/y X/Y", "axis")],
                 });
                 // What matters most first.
                 keys.extend([apply, ("p", "print flags"), ("q", "cancel")]);
@@ -65,6 +66,8 @@ impl SitePicker<'_> {
                     ("o", "off"),
                     ("r", "reset"),
                     ("x/y", "scale"),
+                    ("d", if self.two_d { "histograms" } else { "2D" }),
+                    ("A", "auto pairs"),
                     ("a", "annotation"),
                     (REPORT_KEY, "report"),
                 ]);
@@ -137,15 +140,19 @@ impl SitePicker<'_> {
         self.hits.rows(knobs, 0, n, |j| Hit::Thresholds(Some(j)));
         self.hits.add(genes, Hit::Genes(None));
         self.render_gene_list(frame, genes);
-        let [hist, gene, meta] = Layout::vertical([
-            Constraint::Fill(3),
-            Constraint::Fill(2),
-            Constraint::Fill(2),
-        ])
-        .areas(right);
-        self.render_hist(frame, hist);
-        self.render_gene(frame, gene);
-        self.render_meta(frame, meta);
+        if self.two_d {
+            self.render_pairs(frame, right);
+        } else {
+            let [hist, gene, meta] = Layout::vertical([
+                Constraint::Fill(3),
+                Constraint::Fill(2),
+                Constraint::Fill(2),
+            ])
+            .areas(right);
+            self.render_hist(frame, hist);
+            self.render_gene(frame, gene);
+            self.render_meta(frame, meta);
+        }
 
         frame.render_widget(Paragraph::new(help), footer);
         match self.mode {

@@ -182,10 +182,12 @@ const FIGURE_KEY: [&str; 3] = [
 ];
 
 /// The count column's header, a line each.
-const COUNT_HEADER: (&str, &str) = ("sites", "filtered out");
+const COUNT_HEADER: (&str, &str) = ("sites out", "(by it alone)");
 
 /// Widths of the table's columns: marker and name, threshold, count.
-const TABLE_WIDTHS: [usize; 3] = [17, 10, 14];
+const TABLE_WIDTHS: [usize; 3] = [17, 10, 20];
+/// Cells the bracketed "by it alone" count takes, after the count.
+const ALONE_W: usize = 9;
 
 impl<'a> SitePicker<'a> {
     pub(super) fn render_gene_list(&self, frame: &mut Frame, area: Rect) {
@@ -402,10 +404,13 @@ impl<'a> SitePicker<'a> {
     pub(super) fn criteria_lines(&self) -> Vec<Line<'static>> {
         let dim = |t: String| Span::styled(t, DIM);
         let [name_w, value_w, count_w] = TABLE_WIDTHS;
-        let header = |first: &str, second: &str, count: &str| {
+        // `count` ends `right` cells short of the column: over the counts,
+        // not the bracketed ones beside them.
+        let header = |first: &str, second: &str, count: &str, right: usize| {
             Line::from(dim(format!(
-                "{first:<name_w$}{second:>value_w$} │{count:>w$}",
-                w = count_w - 1
+                "{first:<name_w$}{second:>value_w$} │{count:>w$}{:right$}",
+                "",
+                w = count_w - 1 - right
             )))
         };
         let rule = format!(
@@ -414,8 +419,8 @@ impl<'a> SitePicker<'a> {
             "─".repeat(count_w)
         );
         let mut lines = vec![
-            header("", "", COUNT_HEADER.0),
-            header("  threshold", "value", COUNT_HEADER.1),
+            header("", "", COUNT_HEADER.0, ALONE_W),
+            header("  threshold", "value", COUNT_HEADER.1, 0),
             Line::from(dim(rule)),
         ];
         for (j, &c) in self.view().criteria.iter().enumerate() {
@@ -433,9 +438,17 @@ impl<'a> SitePicker<'a> {
                 Span::styled(format!("{value:>value_w$}"), value_style),
                 dim(" │".into()),
                 Span::styled(
-                    format!("{:>w$}", self.tally.fail[c as usize], w = count_w - 1),
+                    format!(
+                        "{:>w$}",
+                        self.tally.fail[c as usize],
+                        w = count_w - 1 - ALONE_W
+                    ),
                     ACCENTED,
                 ),
+                dim(format!(
+                    "{:>ALONE_W$}",
+                    format!("({})", self.tally.alone[c as usize])
+                )),
             ]));
         }
         let n = self.view().table.len();
@@ -604,7 +617,7 @@ impl<'a> SitePicker<'a> {
             (PLAIN, format!("pass the other thresholds {front}")),
             (
                 ACCENTED,
-                format!("filtered out only by this {}", self.tally.only),
+                format!("filtered out only by this {}", self.tally.alone[c as usize]),
             ),
         ]);
         let key_rows = if key_text.width() > inner.width as usize {

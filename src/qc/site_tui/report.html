@@ -22,6 +22,15 @@
 .stat i:first-child { margin-left: 0; }
 .find .q { color: var(--accent); }
 .find .q::after { content: "▏"; }
+.pairs { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 380px), 1fr)); gap: 18px; margin: 10px 0 24px; }
+.pair { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.pair canvas { width: 100%; height: 320px; border: 1px solid var(--rule); border-radius: 6px; }
+.pair .pick { display: flex; flex-wrap: wrap; gap: 6px 12px; color: var(--dim); }
+.pair select { font: inherit; color: var(--fg); background: transparent; border: 1px solid var(--rule); border-radius: 4px; padding: 2px 4px; max-width: 100%; }
+.pair .said { color: var(--dim); font-size: 0.92em; }
+.pairbar button { font: inherit; padding: 3px 14px; border-radius: 999px; border: 1px solid var(--accent); color: var(--accent); background: transparent; cursor: pointer; }
+.sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; vertical-align: baseline; }
+.sw.kept { background: #2a78d6; } .sw.removed { background: #eb6834; } .sw.empty { background: #8a8f8b; }
 </style>
 <div class="wrap">
   <h1 id="title">site thresholds</h1>
@@ -56,6 +65,16 @@
     <span>▼ the threshold's bar</span>
   </div>
   <p class="note" id="note"></p>
+  <p class="note" id="carried"></p>
+
+  <h2>Two thresholds at a time</h2>
+  <p class="lede">Each panel puts two thresholds' values against each other: <span class="sw kept"></span> sites kept by every threshold, <span class="sw removed"></span> sites removed by at least one, deeper where there are more. The dashed box is where both drawn thresholds pass, so a site in the box but removed is removed by a threshold not drawn there. Pick each panel's axes, or let <b>Auto</b> choose the pairs that split the most sites on axes that agree least.</p>
+  <div class="pairbar"><button type="button" id="auto">Auto</button></div>
+  <div class="pairs" id="pairs"></div>
+
+  <h2>Cells</h2>
+  <p class="lede">Each batch's barcodes as the cell QC judged them: <span class="sw kept"></span> kept, <span class="sw removed"></span> a MAD outlier, <span class="sw empty"></span> near empty. The same cells are kept in every matrix.</p>
+  <div class="pairs" id="cells"></div>
 </div>
 
 <script>
@@ -94,6 +113,14 @@ const offOf = id => decode(knob(id), knob(id).off);
 const isOff = (k, v) => k.max ? v >= offOf(k.id) : v <= offOf(k.id);
 const written = new Map(DATA.criteria.map(k => [k.id, decode(k, k.now)]));
 const thr = new Map(written);
+// The page carries each modality's strongest sites by p-value; every site it
+// left off has a larger p-value than its limit, so with the p-value threshold
+// at or below the smallest limit each one fails it: kept and the p-value row
+// count every site; the rest is over the sites carried.
+const PV = DATA.criteria.find(k => k.flag === "--site-max-pv")?.id ?? -1;
+const limits = DATA.modalities.map(md => md.limit).filter(l => l !== null && l !== undefined);
+const LIMIT = limits.length ? Math.min(...limits) : null;
+if (LIMIT !== null && thr.get(PV) > LIMIT) thr.set(PV, setValue(knob(PV), LIMIT));
 
 // Each modality: its columns decoded, a bit per failed check per site, and its
 // genes' sites.
@@ -221,14 +248,16 @@ function rebuild() { const k = focusKnob(); col = column(mod(), k, scaleOf(k)); 
 // the sites passing every other.
 function tallyFocus() {
   const m = mod(), k = focusKnob(), bit = 1 << k.id, others = 0xff & ~bit, f = m.fails;
-  const t = {kept: 0, genes: 0, fail: new Array(8).fill(0), only: 0, subset: new Array(col.counts.length).fill(0)};
+  const t = {kept: 0, genes: 0, fail: new Array(8).fill(0), alone: new Array(8).fill(0), subset: new Array(col.counts.length).fill(0)};
   const seen = new Uint8Array(m.nGenes);
   for (let i = 0; i < f.length; i++) {
     const x = f[i];
     if (x === 0) { t.kept++; const g = m.gene[i]; if (!seen[g]) { seen[g] = 1; t.genes++; } }
-    else { if (x === bit) t.only++; for (let b = 0; b < 8; b++) t.fail[b] += x >> b & 1; }
+    else { if ((x & (x - 1)) === 0) t.alone[31 - Math.clz32(x)]++; for (let b = 0; b < 8; b++) t.fail[b] += x >> b & 1; }
     if ((x & others) === 0) t.subset[col.slot[i]]++;
   }
+  // The sites the page left off all fail the p-value threshold (see LIMIT).
+  t.fail[PV] += m.total - m.sites;
   tally = t;
 }
 // The counts and the genes' kept sites, after the fail bits change (or on a
@@ -255,7 +284,10 @@ function refind(keep) {
 }
 
 function setThreshold(id, raw) {
+  // The p-value threshold holds at the limit, where the counts stay exact.
+  if (id === PV && LIMIT !== null) raw = Math.min(raw, LIMIT);
   thr.set(id, setValue(knob(id), raw));
+  thresholdsSet++;
   mods.forEach(m => updateBits(m, id));
   retally();
 }
@@ -294,7 +326,7 @@ function bars(canvas, back, front, colour, ys, ticks, pointer, dividers, xTitle)
   const left = 52, right = 14, top = 16, bottom = xTitle ? 40 : 24, n = Math.max(front.length, 1);
   const pw = W - left - right, ph = H - top - bottom, bw = pw / n;
   const fg = css("--fg"), dim = css("--dim"), rule = css("--rule"), backC = getComputedStyle(document.getElementById("term")).getPropertyValue("--back").trim();
-  const peak = Math.max(1e-9, ...(back || front));
+  const peak = (back || front).reduce((a, v) => v > a ? v : a, 1e-9);
   const h = v => ph * yScaled(ys, v) / yScaled(ys, peak);
   ctx.strokeStyle = rule; ctx.lineWidth = 1;
   ctx.beginPath(); ctx.moveTo(left, top + ph + 0.5); ctx.lineTo(W - right, top + ph + 0.5); ctx.stroke();
@@ -323,19 +355,21 @@ function drawTabs() {
   document.getElementById("tabs").innerHTML = mods.map((m, i) => `<span data-m="${i}" class="${i === state.m ? "on" : ""}">${esc(m.name)}</span>`).join("");
 }
 function drawTable() {
-  const m = mod(), n = m.sites;
+  const m = mod(), n = m.total;
   const pad = (s, w) => s.padEnd(w), lpad = (s, w) => s.padStart(w);
-  const lines = [`<div class="dim">${pad("", 17)}${lpad("", 10)} │${lpad("sites", 13)}</div>`,
-    `<div class="dim">${pad("  threshold", 17)}${lpad("value", 10)} │${lpad("filtered out", 13)}</div>`,
-    `<div class="dim">${"─".repeat(28)}┼${"─".repeat(14)}</div>`];
+  const lines = [`<div class="dim">${pad("", 17)}${lpad("", 10)} │${lpad("sites out", 11)}${lpad("", 9)}</div>`,
+    `<div class="dim">${pad("  threshold", 17)}${lpad("value", 10)} │${lpad("(by it alone)", 20)}</div>`,
+    `<div class="dim">${"─".repeat(28)}┼${"─".repeat(21)}</div>`];
   m.criteria.forEach((id, j) => {
     const k = knob(id), on = j === state.j, now = shown(k, thr.get(id)), was = shown(k, written.get(id));
     const value = `<span class="${now === "off" ? "dim" : on ? "on" : ""}">${esc(lpad(now, 10))}</span>`;
     const changed = now !== was ? `<span class="dim">  was ${esc(was)}</span>` : "";
-    lines.push(`<div class="row ${on ? "on" : ""}" data-j="${j}"><span class="on">${on ? "▸ " : "  "}</span><span class="name">${esc(pad(k.label, 15))}</span>${value}<span class="dim"> │</span><span class="count">${lpad(String(tally.fail[id]), 13)}</span>${changed}</div>`);
+    const alone = id === PV && m.total > m.sites ? "" : `(${tally.alone[id]})`;
+    lines.push(`<div class="row ${on ? "on" : ""}" data-j="${j}"><span class="on">${on ? "▸ " : "  "}</span><span class="name">${esc(pad(k.label, 15))}</span>${value}<span class="dim"> │</span><span class="count">${lpad(String(tally.fail[id]), 11)}</span><span class="dim">${lpad(alone, 9)}</span>${changed}</div>`);
   });
   lines.push("<div></div>");
   lines.push(`<div><span class="dim">  kept </span><span class="on">${tally.kept}</span><span class="dim"> / ${n} sites (${pct(tally.kept, n)}%)</span></div>`);
+  if (m.total > m.sites) lines.push(`<div class="dim">  all but kept and p-value: over the ${m.sites} carried</div>`);
   lines.push(`<div><span class="dim">  in </span><b>${tally.genes}</b><span class="dim"> / ${m.nGenes} genes</span></div>`);
   lines.push("<div></div>");
   DATA.legend.forEach(l => lines.push(`<div class="dim">  ${esc(l)}</div>`));
@@ -349,7 +383,7 @@ function drawHist() {
   const inf = col.nInf > 0 ? `   ${col.nInf} infinite, drawn at the end bin` : "";
   document.getElementById("hist-stat").innerHTML = `min <b>${esc(fmtShort(k, col.lo))}</b>   max <b>${esc(fmtShort(k, col.hi))}</b>${inf}`;
   const front = tally.subset.reduce((a, b) => a + b, 0);
-  document.getElementById("hist-key").innerHTML = `<i style="background:var(--back)"></i>all sites ${mod().sites}<i style="background:var(--fg)"></i>pass the other thresholds ${front}<i style="background:var(--accent)"></i>filtered out only by this ${tally.only}`;
+  document.getElementById("hist-key").innerHTML = `<i style="background:var(--back)"></i>${mod().total > mod().sites ? `the ${mod().sites} sites carried` : `all sites ${mod().sites}`}<i style="background:var(--fg)"></i>pass the other thresholds ${front}<i style="background:var(--accent)"></i>filtered out only by this ${tally.alone[focusKnob().id]}`;
   const every = Math.max(Math.floor(nb / 6), 1), ticks = [];
   for (let b = 0; b < nb; b += every) {
     let j = b; while (j < nb && !isFinite(col.lowest[j])) j++;
@@ -439,7 +473,169 @@ function drawGenes() {
 function draw() {
   const k = focusKnob();
   document.getElementById("scales").textContent = `x ${scaleOf(k)} · y ${state.y}`;
-  drawTabs(); drawTable(); drawHist(); drawMeta(); drawGenes();
+  drawTabs(); drawTable(); drawHist(); drawMeta(); drawGenes(); drawPairs();
+}
+
+// ---- Two thresholds at a time: as `faba qc`'s 2D view draws them. ----
+const KEPT = "#2a78d6", REMOVED = "#eb6834", EMPTY = "#8a8f8b", BINS = 44;
+const AXES = new Map(DATA.axes.map(a => [a.key, a]));
+// A criterion's raw value on the axis' drawn scale, as src/qc/pairs.rs.
+const SCALED = {
+  coverage: v => Math.log10(Math.max(v, 1)), converted: v => Math.log10(v + 1), cells: v => Math.log10(v + 1),
+  edit_ratio: v => v, log_odds: v => v, fold: v => Math.log2(v),
+  pvalue: v => v <= 0 ? Infinity : -Math.log10(v),
+};
+// Each modality's axis values, read once, and its panels as written.
+mods.forEach(m => {
+  m.axisValues = new Map();
+  m.ranges = new Map(m.ranges);
+  m.panels = m.pairs.map(p => ({...p}));
+});
+function axisValues(m, key) {
+  if (!m.axisValues.has(key)) {
+    const id = AXES.get(key).criteria.find(c => m.raw.has(c)), raw = m.raw.get(id), f = SCALED[key];
+    m.axisValues.set(key, Float64Array.from(raw, f));
+  }
+  return m.axisValues.get(key);
+}
+// Where the axis' thresholds pass on its drawn scale: [lo, hi], open ends ±∞.
+function passes(m, key) {
+  let lo = -Infinity, hi = Infinity;
+  for (const id of AXES.get(key).criteria) {
+    const k = knob(id);
+    if (!m.raw.has(id) || isOff(k, thr.get(id))) continue;
+    const v = SCALED[key](thr.get(id));
+    if (k.max && key !== "pvalue") hi = v; else lo = v;
+  }
+  return [lo, hi];
+}
+// An axis' ticks as [drawn position, label], as src/qc/pairs.rs: a count's
+// log scale at 0, 10, 100…; otherwise round values, decimals by step.
+function axisTicks(key, [lo, hi]) {
+  const inside = p => p >= lo - 1e-9 && p <= hi + 1e-9;
+  if (key === "coverage" || key === "converted" || key === "cells") {
+    const at = v => key === "coverage" ? Math.log10(v) : Math.log10(v + 1);
+    const vals = key === "coverage" ? [...Array(10)].map((_, k) => 10 ** k) : [0].concat([...Array(9)].map((_, k) => 10 ** (k + 1)));
+    const all = vals.map(v => [at(v), compact(v)]).filter(([p]) => inside(p));
+    const every = Math.max(1, Math.ceil(all.length / 6));
+    return all.filter((_, k) => k % every === 0);
+  }
+  const span = hi - lo, raw = span / 4, mag = 10 ** Math.floor(Math.log10(raw));
+  const step = [1, 2, 5, 10].map(x => x * mag).find(x => x >= raw), places = Math.max(0, -Math.floor(Math.log10(step)));
+  const out = []; for (let v = Math.ceil(lo / step) * step; v <= hi + 1e-9; v += step) out.push([v, (Math.abs(v) < step * 1e-9 ? 0 : v).toFixed(places)]);
+  return out;
+}
+// Each decade of a log10 range, labelled as counts read.
+const decades = ([lo, hi]) => { const out = []; for (let k = Math.ceil(lo); k <= Math.floor(hi); k++) out.push([k, compact(10 ** k)]); return out; };
+const shadeOf = (hex, d) => { const c = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16)); return `rgb(${c.map(v => Math.round(255 + (v - 255) * d)).join(",")})`; };
+// A plot in `canvas` over ranges xr and yr: where a value falls, and its axes.
+function frame(canvas, xr, yr) {
+  const [ctx, W, H] = fit(canvas), l = 50, t = 10, pw = W - 60, ph = H - 46;
+  const at = (x, y) => [l + (x - xr[0]) / (xr[1] - xr[0]) * pw, t + ph - (y - yr[0]) / (yr[1] - yr[0]) * ph];
+  const axes = (xticks, yticks, xt, yt) => {
+    ctx.setLineDash([]); ctx.strokeStyle = css("--rule"); ctx.strokeRect(l, t, pw, ph); ctx.fillStyle = css("--dim");
+    ctx.textAlign = "center"; xticks.forEach(([v, s]) => ctx.fillText(s, at(v, yr[0])[0], t + ph + 13));
+    ctx.textAlign = "right"; yticks.forEach(([v, s]) => ctx.fillText(s, l - 5, at(xr[0], v)[1] + 4));
+    ctx.fillStyle = css("--fg"); ctx.textAlign = "center"; ctx.fillText(xt, l + pw / 2, H - 6);
+    ctx.save(); ctx.translate(12, t + ph / 2); ctx.rotate(-Math.PI / 2); ctx.fillText(yt, 0, 0); ctx.restore();
+  };
+  return {ctx, l, t, pw, ph, at, axes};
+}
+// Squares {bins, kept, other, top} over a frame: blue where most are kept,
+// orange where not, deeper as a square holds more of the busiest.
+function squares(f, sq) {
+  const n = sq.bins, cw = f.pw / n, ch = f.ph / n;
+  for (let by = 0; by < n; by++) for (let bx = 0; bx < n; bx++) {
+    const k = sq.kept[by * n + bx], o = sq.other[by * n + bx];
+    if (!(k + o)) continue;
+    f.ctx.fillStyle = shadeOf(k >= o ? KEPT : REMOVED, 0.18 + 0.82 * Math.log1p(k + o) / Math.log1p(sq.top));
+    f.ctx.fillRect(f.l + bx * cw, f.t + f.ph - (by + 1) * ch, Math.ceil(cw), Math.ceil(ch));
+  }
+}
+// Panel `p` of `m` binned, as src/qc/pairs.rs's grid(): kept and removed per
+// square, and in the box those kept and those removed by a threshold not
+// drawn there. Binned again only when the thresholds or its axes change.
+let thresholdsSet = 0;
+function binned(m, p) {
+  const key = `${thresholdsSet}|${p.x}|${p.y}`;
+  if (p.bin && p.bin.key === key) return p.bin;
+  const xs = axisValues(m, p.x), ys = axisValues(m, p.y), xr = m.ranges.get(p.x), yr = m.ranges.get(p.y);
+  const kx = BINS / (xr[1] - xr[0]), ky = BINS / (yr[1] - yr[0]), last = BINS - 1;
+  const kept = new Uint32Array(BINS * BINS), other = new Uint32Array(BINS * BINS);
+  const drawn = [...AXES.get(p.x).criteria, ...AXES.get(p.y).criteria].reduce((b, id) => b | 1 << id, 0);
+  let inK = 0, inR = 0;
+  for (let i = 0; i < xs.length; i++) {
+    const x = xs[i], y = ys[i];
+    if (x !== x || y !== y) continue;
+    const bx = Math.min(last, Math.max(0, Math.floor((x - xr[0]) * kx))), by = Math.min(last, Math.max(0, Math.floor((y - yr[0]) * ky)));
+    const ok = m.fails[i] === 0;
+    (ok ? kept : other)[by * BINS + bx]++;
+    if (ok) inK++; else if ((m.fails[i] & drawn) === 0) inR++;
+  }
+  let top = 1; for (let j = 0; j < kept.length; j++) top = Math.max(top, kept[j] + other[j]);
+  p.bin = {key, squares: {bins: BINS, kept, other, top}, inK, inR};
+  return p.bin;
+}
+// One panel of `m`: the squares, the box, the axes; its binning back.
+function drawPanel(canvas, m, p) {
+  const xr = m.ranges.get(p.x), yr = m.ranges.get(p.y), b = binned(m, p), f = frame(canvas, xr, yr);
+  squares(f, b.squares);
+  const [xlo, xhi] = passes(m, p.x), [ylo, yhi] = passes(m, p.y);
+  const [x0, y1] = f.at(Math.max(xlo, xr[0]), Math.max(ylo, yr[0])), [x1, y0] = f.at(Math.min(xhi, xr[1]), Math.min(yhi, yr[1]));
+  f.ctx.strokeStyle = css("--fg"); f.ctx.setLineDash([5, 4]); f.ctx.lineWidth = 1.2;
+  if (x1 > x0 && y1 > y0) f.ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
+  f.axes(axisTicks(p.x, xr), axisTicks(p.y, yr), AXES.get(p.x).name, AXES.get(p.y).name);
+  return b;
+}
+const options = (m, sel) => [...m.ranges.keys()].map(k => `<option value="${k}"${k === sel ? " selected" : ""}>${esc(AXES.get(k).name)}</option>`).join("");
+let pairsOf = null;
+function drawPairs() {
+  const m = mod(), box = document.getElementById("pairs");
+  if (pairsOf !== m) {
+    pairsOf = m;
+    box.innerHTML = m.panels.map((p, k) => `<div class="pair"><div class="pick"><label>x <select data-k="${k}" data-ax="x">${options(m, p.x)}</select></label><label>y <select data-k="${k}" data-ax="y">${options(m, p.y)}</select></label></div><canvas></canvas><div class="said" id="said-${k}"></div></div>`).join("");
+  }
+  [...box.querySelectorAll("canvas")].forEach((c, k) => {
+    const p = m.panels[k], b = drawPanel(c, m, p);
+    document.getElementById(`said-${k}`).textContent = `in the box: ${b.inK.toLocaleString("en-US")} kept · ${b.inR.toLocaleString("en-US")} removed by a threshold not drawn here · ${p.why}`;
+  });
+}
+document.getElementById("pairs").addEventListener("change", e => {
+  const s = e.target.closest("select"); if (!s) return;
+  const p = mod().panels[Number(s.dataset.k)];
+  p[s.dataset.ax] = s.value; p.why = "chosen by hand"; pairsOf = null; drawPairs();
+});
+document.getElementById("auto").addEventListener("click", () => { const m = mod(); m.panels = m.auto.map(p => ({...p})); pairsOf = null; drawPairs(); });
+
+// ---- Cells: each batch's knee, and genes detected by counts. ----
+function drawCells() {
+  const box = document.getElementById("cells");
+  box.innerHTML = DATA.cells.map((b, j) => {
+    const [k, o, e] = b.tally;
+    return `<div class="pair"><div class="pick"><b>${esc(b.batch)}</b> ${k} kept · ${o} MAD outliers · ${e} near empty</div><canvas data-c="${j}" data-kind="knee"></canvas><canvas data-c="${j}" data-kind="genes"></canvas></div>`;
+  }).join("");
+  box.querySelectorAll("canvas").forEach(c => {
+    const b = DATA.cells[Number(c.dataset.c)];
+    if (c.dataset.kind === "knee") {
+      const xr = [0, Math.max(b.knee_end, 1e-9)], yr = [0, Math.max(b.knee.length ? b.knee[0][1] : 1, 1)], f = frame(c, xr, yr);
+      f.ctx.lineWidth = 2;
+      for (let i = 1; i < b.knee.length; i++) {
+        const [ax, ay] = f.at(b.knee[i - 1][0], b.knee[i - 1][1]), [bx, by] = f.at(b.knee[i][0], b.knee[i][1]);
+        f.ctx.strokeStyle = [KEPT, REMOVED, EMPTY][b.knee[i][2]]; f.ctx.beginPath(); f.ctx.moveTo(ax, ay); f.ctx.lineTo(bx, by); f.ctx.stroke();
+      }
+      f.axes(decades(xr), decades(yr), "barcode rank", "counts");
+    } else {
+      const d = b.density, f = frame(c, d.xr, d.yr);
+      squares(f, d.squares);
+      f.axes(decades(d.xr), decades(d.yr), "counts", "genes detected");
+    }
+  });
+}
+{
+  const left = mods.filter(m => m.total > m.sites);
+  document.getElementById("carried").textContent = left.length
+    ? `To stay small, the page carries each modality's strongest sites by p-value (${left.map(m => `${m.name}: ${m.sites} of ${m.total}`).join(", ")}) and holds the p-value threshold at or below p = ${LIMIT.toPrecision(3)}, which every site left off fails. faba qc's view and faba mcp read every site.`
+    : "";
 }
 
 document.getElementById("title").textContent = `site thresholds · ${DATA.title}`;
@@ -498,7 +694,7 @@ document.getElementById("p-genes").addEventListener("wheel", e => { e.preventDef
 // The gene selected when written, else the top one.
 rebuild(); retally();
 if (DATA.gene !== null && DATA.gene !== undefined) state.at = Math.max(0, shownGenes().indexOf(DATA.gene));
-window.addEventListener("resize", draw);
-document.fonts.ready.then(draw);
-draw();
+window.addEventListener("resize", () => { draw(); drawCells(); });
+document.fonts.ready.then(() => { draw(); drawCells(); });
+draw(); drawCells();
 </script>

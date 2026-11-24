@@ -9,7 +9,7 @@
 use super::order::standardized;
 use super::Modules;
 use crate::figure::size::{self, Page};
-use crate::figure::{esc, svg, Anchor, Canvas, FAINT, INK, MUTED};
+use crate::figure::{esc, mix, svg, Anchor, Canvas, FAINT, INK, MUTED};
 
 /// Which figure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -129,13 +129,6 @@ const LOW: (f64, f64, f64) = (42.0, 120.0, 214.0);
 const MID: (f64, f64, f64) = (240.0, 239.0, 236.0);
 const HIGH: (f64, f64, f64) = (227.0, 73.0, 72.0);
 const DARK: (f64, f64, f64) = (26.0, 72.0, 140.0);
-
-/// `a` to `b` by `t` (0 to 1), as `#rrggbb`.
-fn mix(a: (f64, f64, f64), b: (f64, f64, f64), t: f64) -> String {
-    let t = t.clamp(0.0, 1.0);
-    let c = |x: f64, y: f64| (x + (y - x) * t).round() as u8;
-    format!("#{:02x}{:02x}{:02x}", c(a.0, b.0), c(a.1, b.1), c(a.2, b.2))
-}
 
 /// A value's fill: diverging around 0 to `top` either way, or sequential
 /// from 0 to `top`; and whether it is dark enough for light ink.

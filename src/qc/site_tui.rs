@@ -10,6 +10,7 @@
 //! kept.
 
 use crate::figure::size::OWN;
+use crate::figure::Page;
 use crate::tui::ui::{
     header, help_line, input_line, panel, Binned, Binning, HistPlot, Scale, Screen, ACCENTED, DIM,
     HIGHLIGHT, PLAIN,
@@ -37,6 +38,7 @@ use rustc_hash::FxHashSet;
 
 use super::args::SiteFilterArgs;
 use super::layout::{file_name, SITE_MODALITIES};
+use super::pairs::{self, Axis, Sites};
 use super::progress::Progress;
 use super::sites::{genomic_sites, Criterion, GeneSites, RawColumns, SiteTable};
 use crate::tui::browser::{self, is_annotation, Browser, Outcome};
@@ -52,6 +54,7 @@ mod frame;
 mod genes;
 mod keys;
 mod mouse;
+mod pairs_view;
 mod report;
 mod writer;
 
@@ -104,6 +107,13 @@ struct SiteView<'a> {
     /// Sites by gene, for the gene list, shared with a report being
     /// written; `None` for a table without the columns.
     genes: Option<std::sync::Arc<GeneSites>>,
+    /// The 2D view's panels: each pair of axes, and why it is shown.
+    pairs: Vec<(Axis, Axis, String)>,
+    /// Each axis' values, read once.
+    cache: pairs::Cache,
+    /// Bumped whenever a fail bit may have changed, so a panel binned at
+    /// an earlier one is binned again.
+    generation: u64,
 }
 
 impl<'a> SiteView<'a> {
@@ -118,6 +128,9 @@ impl<'a> SiteView<'a> {
             criteria,
             fails: vec![0; table.len()],
             genes: GeneSites::new(table).ok().map(Into::into),
+            pairs: Vec::new(),
+            cache: pairs::Cache::default(),
+            generation: 0,
         };
         for c in view.criteria.clone() {
             view.update(c, f);
@@ -125,24 +138,55 @@ impl<'a> SiteView<'a> {
         view
     }
 
+    /// The panels shown: those chosen, else Auto's at the thresholds now
+    /// (picked only when something shows them).
+    fn shown_pairs(&self) -> Vec<(Axis, Axis, String)> {
+        match self.pairs.is_empty() {
+            true => pairs::auto_panels(&self.sites(), pairs::PANELS),
+            false => self.pairs.clone(),
+        }
+    }
+
+    /// Its sites as the 2D panels read them.
+    fn sites(&self) -> Sites<'_> {
+        Sites {
+            table: self.table,
+            n_cells: self.n_cells.as_deref(),
+            fails: &self.fails,
+            criteria: &self.criteria,
+            cache: &self.cache,
+        }
+    }
+
+    /// The panels Auto picks at the thresholds as they are.
+    fn auto_pairs(&mut self) {
+        self.pairs = pairs::auto_panels(&self.sites(), pairs::PANELS);
+    }
+
     fn cells(&self, i: usize) -> Option<usize> {
         self.n_cells.as_ref().map(|c| c[i])
     }
 
-    /// Recompute `c`'s bit for every site under `f`.
+    /// Recompute `c`'s bit for every site under `f`, in parallel; one pass,
+    /// whatever the other criteria.
     fn update(&mut self, c: Criterion, f: &SiteFilterArgs) {
+        use rayon::prelude::*;
         if !self.criteria.contains(&c) {
             return;
         }
         let bit = c.bit();
-        for i in 0..self.fails.len() {
-            let failed = c.fails(f, self.table, i, self.cells(i));
-            self.fails[i] = if failed {
-                self.fails[i] | bit
-            } else {
-                self.fails[i] & !bit
-            };
-        }
+        let (table, n_cells) = (self.table, self.n_cells.as_deref());
+        let changed = (self.fails.par_iter_mut().enumerate())
+            .with_min_len(1 << 15)
+            .map(|(i, m)| {
+                let failed = c.fails(f, table, i, n_cells.map(|n| n[i]));
+                let was = *m;
+                *m = if failed { *m | bit } else { *m & !bit };
+                *m != was
+            })
+            .reduce(|| false, |a, b| a || b);
+        // A panel binned at an earlier generation is binned again.
+        self.generation += u64::from(changed);
     }
 }
 
@@ -154,9 +198,10 @@ struct Tally {
     /// Sites that fail each criterion, whatever the others say. By
     /// `c as usize`.
     fail: [usize; 8],
-    /// Sites that fail the focused criterion and no other: the dropped part
-    /// of the histogram's front, and what turning it off would keep.
-    only: usize,
+    /// Sites that fail each criterion and no other, by `c as usize`: for
+    /// the focused one, the dropped part of the histogram's front, and what
+    /// turning it off would keep.
+    alone: [usize; 8],
     /// Bin counts of the sites that pass every other criterion.
     subset: Vec<usize>,
 }
@@ -176,7 +221,9 @@ impl Tally {
                 t.genes += usize::from(!gene_seen[g]);
                 gene_seen[g] = true;
             } else {
-                t.only += usize::from(m == focus.bit());
+                if m.is_power_of_two() {
+                    t.alone[m.trailing_zeros() as usize] += 1;
+                }
                 for (b, n) in t.fail.iter_mut().enumerate() {
                     *n += usize::from(m >> b & 1 == 1);
                 }
@@ -206,11 +253,17 @@ enum Mode {
     Leave(Picked),
 }
 
+/// What a 2D panel is binned from: the modality, its axes, the fail bits'
+/// generation and the squares a side.
+type GridKey = (usize, Axis, Axis, u64, usize);
+
 /// The panel Tab moves to, which the arrow keys then drive.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Panel {
     Thresholds,
     Genes,
+    /// The 2D view's panels, when it is shown.
+    Pairs,
 }
 
 /// State of the picker, independent of the terminal so it can be tested.
@@ -239,6 +292,15 @@ struct SitePicker<'a> {
     drawn: Rect,
     controls: Controls,
     plot: PlotImage,
+    /// The 2D view in place of the histogram, gene and metagene (`d`), its
+    /// focused panel, and each panel's image.
+    two_d: bool,
+    pair_at: usize,
+    pair_plots: [PlotImage; pairs::PANELS],
+    /// What each panel's image was last drawn of, and the panels binned
+    /// lately, so a draw that changes nothing bins nothing.
+    pair_drawn: [Option<GridKey>; pairs::PANELS],
+    pair_grids: Vec<(GridKey, std::sync::Arc<pairs::Grid>)>,
     meta: Meta,
     /// Where `meta` comes from, to read another annotation in its place.
     annotation: AnnotationSource,
@@ -258,6 +320,8 @@ struct SitePicker<'a> {
     report: crate::report::Writing,
     /// A message for the footer, until the next key.
     status: Option<String>,
+    /// Each batch's cell QC, for the report.
+    cells: CellsShared,
 }
 
 impl<'a> SitePicker<'a> {
@@ -285,6 +349,11 @@ impl<'a> SitePicker<'a> {
             drawn: Rect::default(),
             controls: Controls::new("qc_sites"),
             plot: PlotImage::default(),
+            two_d: false,
+            pair_at: 0,
+            pair_plots: Default::default(),
+            pair_drawn: Default::default(),
+            pair_grids: Vec::new(),
             meta,
             annotation: AnnotationSource::default(),
             weight: Weight::Coverage,
@@ -296,6 +365,7 @@ impl<'a> SitePicker<'a> {
             report_dir: std::env::current_dir().unwrap_or_default(),
             report: Default::default(),
             status: None,
+            cells: CellsShared::default(),
         }
         .pin_genes(&[])
         .with_refreshed_meta()
@@ -626,24 +696,219 @@ fn picker<'a>(
     Ok(picker)
 }
 
-/// The figures the view writes under `qc_plots/` on apply, drawn without a
-/// terminal at `filter`: every modality and knob, the metagene once the
-/// annotation is read.
-pub fn site_figures(
-    input_dir: &str,
+/// Each batch's cell QC, shared by the view, its report and its figures.
+pub type CellsShared = std::sync::Arc<[crate::qc::cells_plot::Cells]>;
+
+/// Each batch's cell QC as a figure, laid out for `page`.
+pub(crate) fn cell_figures(cells: &[crate::qc::cells_plot::Cells], page: Page) -> Vec<Figure> {
+    let size = crate::figure::size::fill(page, || crate::qc::cells_plot::SIZE);
+    (cells.iter())
+        .map(|c| Figure {
+            stem: c.stem(),
+            svg: c.figure(size),
+        })
+        .collect()
+}
+
+/// What a run without the view takes from the site tables and the cells,
+/// built once: the dry run's counts and Auto's pairs, the figures, the
+/// page. Its picker is there when some site table is.
+pub struct Batch<'a> {
+    picker: Option<SitePicker<'a>>,
+    cells: CellsShared,
+}
+
+impl<'a> Batch<'a> {
+    /// Over `tables` (and their kept cells per site) at `filter`, the
+    /// annotation `gff` read for the metagene, `pinned` genes first, with
+    /// each batch's `cells`.
+    pub fn new(
+        input_dir: &str,
+        tables: &'a FxHashMap<Box<str>, SiteTable>,
+        site_cells: &FxHashMap<Box<str>, FxHashMap<Box<str>, usize>>,
+        filter: &SiteFilterArgs,
+        (gff, pinned): (Option<&str>, &[Box<str>]),
+        cells: CellsShared,
+    ) -> anyhow::Result<Self> {
+        let has_sites = tables.values().any(|t| !t.is_empty());
+        let picker = match has_sites {
+            true => {
+                let mut p = picker(input_dir, tables, site_cells, filter, gff, pinned)?;
+                p.cells = cells.clone();
+                Some(p)
+            }
+            false => None,
+        };
+        Ok(Self { picker, cells })
+    }
+
+    /// Every applicable threshold's counts, and Auto's pairs, modality by
+    /// modality.
+    pub fn counts(&self) -> (Vec<ThresholdCount>, Vec<(Box<str>, pairs::Pair)>) {
+        match &self.picker {
+            Some(p) => counts_of(&p.views, &p.filter),
+            None => Default::default(),
+        }
+    }
+
+    /// The figures the view writes under `qc_plots/` on apply, laid out for
+    /// `page`: every modality and knob, the metagene once the annotation is
+    /// read, the pairs, and each batch's cells.
+    pub fn figures(&mut self, page: Page) -> anyhow::Result<Vec<Figure>> {
+        match &mut self.picker {
+            Some(p) => {
+                p.meta.wait();
+                if let Meta::Unavailable(why) = &p.meta {
+                    log::warn!("qc_plots without a metagene: {why}");
+                }
+                p.figures(page)
+            }
+            None => Ok(cell_figures(&self.cells, page)),
+        }
+    }
+
+    /// The page `Ctrl+E` writes, to `path` (never over a file); false, and
+    /// nothing written, without a site table.
+    pub fn write_page(&mut self, path: &std::path::Path) -> anyhow::Result<bool> {
+        let Some(p) = &mut self.picker else {
+            log::warn!("no editing site table: --html writes no page");
+            return Ok(false);
+        };
+        p.meta.wait();
+        let title = format!("faba qc · {}", p.title);
+        crate::report::write_new(path, &title, report::FRAGMENT, &p.report_source().data())?;
+        Ok(true)
+    }
+}
+
+/// Each step of the 2D view timed on real tables (see the ignored
+/// `qc_timing` test), in seconds: building each modality's fail masks and
+/// Auto's pairs, the pairs alone, binning four panels, the view's first
+/// draw, a threshold's keypress, an axis' step, the figures and the page,
+/// written into `out`.
+#[cfg(test)]
+pub(crate) fn time_steps(
     tables: &FxHashMap<Box<str>, SiteTable>,
     site_cells: &FxHashMap<Box<str>, FxHashMap<Box<str>, usize>>,
     filter: &SiteFilterArgs,
-    gff: Option<&str>,
-    pinned: &[Box<str>],
-    page: crate::figure::Page,
-) -> anyhow::Result<Vec<Figure>> {
-    let mut picker = picker(input_dir, tables, site_cells, filter, gff, pinned)?;
-    picker.meta.wait();
-    if let Meta::Unavailable(why) = &picker.meta {
-        log::warn!("qc_plots without a metagene: {why}");
+    cells: CellsShared,
+    out: &std::path::Path,
+) -> Vec<(String, f64)> {
+    use ratatui::crossterm::event::KeyModifiers;
+    use std::time::Instant;
+    let mut said = Vec::new();
+    let mut time = |what: String, t: Instant| said.push((what, t.elapsed().as_secs_f64()));
+    let t = Instant::now();
+    let views = site_views(tables, site_cells, filter);
+    let sizes: Vec<String> = views
+        .iter()
+        .map(|v| format!("{} {}", v.table.modality, v.table.len()))
+        .collect();
+    time(
+        format!("fail masks + Auto, every modality ({})", sizes.join(", ")),
+        t,
+    );
+    let big = (0..views.len())
+        .max_by_key(|&m| views[m].table.len())
+        .unwrap_or(0);
+    let s = views[big].sites();
+    let t = Instant::now();
+    let auto = pairs::auto_pairs(&s, pairs::PANELS);
+    time(
+        format!("Auto's pairs alone, {}", views[big].table.modality),
+        t,
+    );
+    let t = Instant::now();
+    for p in &auto {
+        pairs::grid(&s, (p.x, p.y), filter, pairs::BINS);
     }
-    picker.figures(page)
+    time("binning four panels".into(), t);
+    let mut p = SitePicker::new(
+        "timing",
+        views,
+        filter.clone(),
+        Meta::Unavailable("timing".into()),
+    );
+    p.modality = big;
+    p.cells = cells;
+    let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(200, 60)).unwrap();
+    let key = |c| KeyEvent::new(c, KeyModifiers::NONE);
+    let t = Instant::now();
+    crate::tui::feed(&mut p, key(KeyCode::Char('d')));
+    term.draw(|f| p.render(f)).unwrap();
+    time("opening the 2D view (d, one draw)".into(), t);
+    while p.criterion() != Criterion::MinCoverage {
+        crate::tui::feed(&mut p, key(KeyCode::Down));
+    }
+    let t = Instant::now();
+    crate::tui::feed(&mut p, key(KeyCode::Char('+')));
+    term.draw(|f| p.render(f)).unwrap();
+    time("a threshold's keypress (+, one draw)".into(), t);
+    crate::tui::feed(&mut p, key(KeyCode::Tab));
+    crate::tui::feed(&mut p, key(KeyCode::Tab));
+    let t = Instant::now();
+    crate::tui::feed(&mut p, key(KeyCode::Char('x')));
+    term.draw(|f| p.render(f)).unwrap();
+    time("a panel's axis (x, one draw)".into(), t);
+    let t = Instant::now();
+    let figures = p.figures(crate::figure::size::OWN).unwrap();
+    time(format!("the view's {} figures, drawn", figures.len()), t);
+    let t = Instant::now();
+    let html = out.join("qc.html");
+    let title = "faba qc · timing".to_string();
+    crate::report::write(&html, &title, report::FRAGMENT, &p.report_source().data()).unwrap();
+    let size = std::fs::metadata(&html).map_or(0, |m| m.len());
+    time(
+        format!("the page, written ({:.1} MB)", size as f64 / 1e6),
+        t,
+    );
+    said
+}
+
+/// The 2D figures, the cell figures and the page of `tables` (each with
+/// its kept cells per site) and `cells`, at `filter`, written into `out`
+/// as SVG and PNG: for redrawing them quickly (see the ignored `qc_redraw`
+/// test).
+#[cfg(test)]
+pub(crate) fn redraw(
+    tables: &[(SiteTable, Option<Vec<usize>>)],
+    filter: &SiteFilterArgs,
+    cells: Vec<crate::qc::cells_plot::Cells>,
+    out: &std::path::Path,
+) -> Vec<std::path::PathBuf> {
+    let views: Vec<SiteView> = (tables.iter())
+        .map(|(t, n)| SiteView::new(t, n.clone(), filter))
+        .collect();
+    let mut p = SitePicker::new(
+        "redraw",
+        views,
+        filter.clone(),
+        Meta::Unavailable("redraw".into()),
+    );
+    let mut written = Vec::new();
+    let mut save = |stem: &str, svg: &str| {
+        let prefix = out.join(stem).to_string_lossy().into_owned();
+        written.extend(
+            crate::figure::save_with_png(svg, &prefix)
+                .unwrap()
+                .into_iter()
+                .map(Into::into),
+        );
+    };
+    for m in 0..p.views.len() {
+        let stem = pairs_view::pairs_stem(&p.views[m].table.modality);
+        save(&stem, &p.pairs_figure(m, crate::figure::size::OWN));
+    }
+    for c in &cells {
+        let svg = c.figure((720.0, 320.0));
+        save(&format!("{}_cells", c.batch), &svg);
+    }
+    p.cells = cells.into();
+    let html = out.join("qc.html");
+    let title = "faba qc · redraw".to_string();
+    crate::report::write(&html, &title, report::FRAGMENT, &p.report_source().data()).unwrap();
+    written.push(html);
+    written
 }
 
 /// What one site threshold does to one modality, for `faba qc --dry-run`.
@@ -663,18 +928,33 @@ pub struct ThresholdCount {
 }
 
 /// Every applicable threshold's counts at `filter`, modality by modality.
+#[cfg(test)]
 pub fn threshold_counts(
     tables: &FxHashMap<Box<str>, SiteTable>,
     site_cells: &FxHashMap<Box<str>, FxHashMap<Box<str>, usize>>,
     filter: &SiteFilterArgs,
 ) -> Vec<ThresholdCount> {
+    counts_of(&site_views(tables, site_cells, filter), filter).0
+}
+
+/// Every applicable threshold's counts at `filter` over `views`, and the
+/// pairs Auto picks, modality by modality (for `faba qc --dry-run`).
+fn counts_of(
+    views: &[SiteView],
+    filter: &SiteFilterArgs,
+) -> (Vec<ThresholdCount>, Vec<(Box<str>, pairs::Pair)>) {
+    let mut pairs_of = Vec::new();
     let mut out = Vec::new();
-    for v in site_views(tables, site_cells, filter) {
+    for v in views {
+        let m = &v.table.modality;
+        for p in pairs::auto_pairs(&v.sites(), pairs::PANELS) {
+            pairs_of.push((m.clone(), p));
+        }
         let kept = v.fails.iter().filter(|&&f| f == 0).count();
         for &c in &v.criteria {
             let bit = c.bit();
             out.push(ThresholdCount {
-                modality: v.table.modality.clone(),
+                modality: m.clone(),
                 flag: c.flag(),
                 threshold: c.shown(filter).unwrap_or_else(|| "off".into()),
                 removes: v.fails.iter().filter(|&&f| f & bit != 0).count(),
@@ -684,7 +964,7 @@ pub fn threshold_counts(
             });
         }
     }
-    out
+    (out, pairs_of)
 }
 
 pub fn run_site_picker(
@@ -697,6 +977,7 @@ pub fn run_site_picker(
     writer: Writer<'_>,
 ) -> anyhow::Result<(Picked, Option<Box<str>>)> {
     let mut picker = picker(input_dir, tables, site_cells, filter, gff, pinned)?;
+    picker.cells = writer.cells.clone();
     picker.writer = writer;
     picker.controls = Controls::new("qc_sites").detect();
     match run_view(&mut picker) {

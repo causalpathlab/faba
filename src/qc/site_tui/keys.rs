@@ -103,12 +103,30 @@ impl SitePicker<'_> {
         match key.code {
             _ if is_apply(&key) => self.mode = Mode::Confirm,
             KeyCode::Enter => self.enter_hint = true,
-            KeyCode::Tab | KeyCode::BackTab => {
-                self.panel = match self.panel {
-                    Panel::Thresholds => Panel::Genes,
-                    Panel::Genes => Panel::Thresholds,
+            KeyCode::Tab => {
+                self.panel = match (self.panel, self.two_d) {
+                    (Panel::Thresholds, _) => Panel::Genes,
+                    (Panel::Genes, true) => Panel::Pairs,
+                    _ => Panel::Thresholds,
                 }
             }
+            KeyCode::BackTab => {
+                self.panel = match (self.panel, self.two_d) {
+                    (Panel::Thresholds, true) => Panel::Pairs,
+                    (Panel::Thresholds, false) | (Panel::Pairs, _) => Panel::Genes,
+                    (Panel::Genes, _) => Panel::Thresholds,
+                }
+            }
+            KeyCode::Char('d') => self.toggle_two_d(),
+            KeyCode::Char('A') if self.two_d => self.auto_pairs(),
+            KeyCode::Left | KeyCode::Char('h') if self.panel == Panel::Pairs => self.step_pair(-1),
+            KeyCode::Right | KeyCode::Char('l') if self.panel == Panel::Pairs => self.step_pair(1),
+            KeyCode::Up | KeyCode::Char('k') if self.panel == Panel::Pairs => self.step_pair(-2),
+            KeyCode::Down | KeyCode::Char('j') if self.panel == Panel::Pairs => self.step_pair(2),
+            KeyCode::Char('x') if self.panel == Panel::Pairs => self.step_axis(true, 1),
+            KeyCode::Char('X') if self.panel == Panel::Pairs => self.step_axis(true, -1),
+            KeyCode::Char('y') if self.panel == Panel::Pairs => self.step_axis(false, 1),
+            KeyCode::Char('Y') if self.panel == Panel::Pairs => self.step_axis(false, -1),
             KeyCode::Char('m') => self.switch_modality(1),
             KeyCode::Char('M') => self.switch_modality(-1),
             KeyCode::Char('[') => self.step_gene(-1),

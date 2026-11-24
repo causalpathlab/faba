@@ -19,6 +19,13 @@ const FILE: (&str, &str) = ("qc_report", ".html");
 /// reads it back as one.
 const INFINITE: f64 = 1e39;
 
+/// The most sites a page carries per modality: the strongest by p-value
+/// (ties at the last included). Every site left off has a larger p-value,
+/// so with the p-value threshold held at or below the last one carried
+/// (the page's limit), each one left off fails it and every count stays
+/// exact. The view and `faba mcp` read every site.
+pub(crate) const CARRIED: usize = 50_000;
+
 /// What the page reads from `#data`.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -38,6 +45,54 @@ pub(super) struct Data {
     /// The metagene's regions, by name and colour.
     regions: [&'static str; 3],
     colours: [&'static str; 3],
+    /// The 2D panels' axes, by key.
+    axes: Vec<AxisInfo>,
+    /// Each batch's barcodes and the cell QC's verdict on each.
+    cells: Vec<CellsData>,
+}
+
+/// An axis of the 2D panels: its key, names, and the criteria it carries.
+#[derive(Serialize)]
+struct AxisInfo {
+    key: Axis,
+    name: &'static str,
+    criteria: Vec<usize>,
+}
+
+/// A panel's axes, and why it is shown.
+#[derive(Serialize)]
+struct PairInfo {
+    x: Axis,
+    y: Axis,
+    why: String,
+}
+
+/// A batch's cell QC as the page draws it, the size of a figure whatever
+/// the barcodes: the barcodes with each verdict (kept, MAD outlier, near
+/// empty), the knee as its thinned points (log10 rank, log10 counts,
+/// verdict) and the rank axis' end, and the density's grid.
+#[derive(Serialize)]
+pub(super) struct CellsData {
+    batch: String,
+    tally: [usize; 3],
+    knee: Vec<(f32, f32, u8)>,
+    knee_end: f64,
+    density: crate::qc::cells_plot::Grid,
+}
+
+impl CellsData {
+    pub(super) fn of(c: &crate::qc::cells_plot::Cells) -> Self {
+        let (points, knee_end) = c.knee_points(crate::qc::cells_plot::KNEE_STEPS);
+        Self {
+            batch: c.batch.to_string(),
+            tally: c.tally(),
+            knee: (points.iter())
+                .map(|&(x, y, v)| (x as f32, y as f32, v as u8))
+                .collect(),
+            knee_end,
+            density: c.density_grid(),
+        }
+    }
 }
 
 /// A criterion as the view shows and steps it.
@@ -68,7 +123,17 @@ struct Knob {
 #[serde(rename_all = "camelCase")]
 struct Modality {
     name: String,
+    /// The sites carried (see [`CARRIED`]), and all the table's.
     sites: usize,
+    total: usize,
+    /// The largest p-value carried when not every site is: the p-value
+    /// threshold the page holds at or below it.
+    limit: Option<f32>,
+    /// The 2D panels as the view had them, the pairs Auto picks at the
+    /// thresholds as written, and each axis' drawn range.
+    pairs: Vec<PairInfo>,
+    auto: Vec<PairInfo>,
+    ranges: Vec<(Axis, (f64, f64))>,
     n_genes: usize,
     /// The criteria that apply, by id in the view's order, and for each
     /// its raw value per site.
@@ -164,6 +229,8 @@ pub(super) struct Source {
     views: Vec<ViewSource>,
     /// The annotation, once read.
     annotation: Option<Arc<Annotation>>,
+    /// Each batch's cell QC, summarised on the report's thread.
+    cells: super::CellsShared,
 }
 
 /// One view's columns, as [`Source`] takes them.
@@ -183,6 +250,10 @@ struct ViewSource {
     /// What the bars add up.
     weight: Weight,
     fails: Vec<u8>,
+    /// The 2D panels, Auto's at the thresholds now, and the axes' ranges.
+    pairs: Vec<(Axis, Axis, String)>,
+    auto: Vec<(Axis, Axis, String)>,
+    ranges: Vec<(Axis, (f64, f64))>,
 }
 
 impl Source {
@@ -192,7 +263,9 @@ impl Source {
             mut data,
             views,
             annotation,
+            cells,
         } = self;
+        data.cells = cells.iter().map(CellsData::of).collect();
         let a = annotation.as_deref();
         data.modalities = views
             .into_iter()
@@ -216,17 +289,18 @@ impl ViewSource {
     ) -> Modality {
         let columns = self.columns.as_raw();
         let cells = |i: usize| self.n_cells.as_ref().map(|n| n[i]);
+        let (carried, limit) = self.carried(columns);
         let (raw, near) = self
             .criteria
             .iter()
             .map(|&c| {
                 let mut near = Vec::new();
-                let raw = (0..self.sites)
-                    .map(|i| {
+                let raw = (carried.iter().enumerate())
+                    .map(|(j, &i)| {
                         let x = c.raw_in(columns, i, cells(i));
                         let value = Value::of(c, x);
                         if matches!(value, Value::Real(y) if y != x as f32 && !y.is_nan()) {
-                            near.push(i as u32);
+                            near.push(j as u32);
                         }
                         value
                     })
@@ -234,26 +308,60 @@ impl ViewSource {
                 (raw, near)
             })
             .unzip();
-        let weight = (self.weight != Weight::Sites).then(|| {
+        // Every site's weight once: the metagene's, and the carried sites'.
+        let all = (self.weight != Weight::Sites).then(|| {
             (0..self.sites)
                 .map(|i| self.weight.of(columns, i) as u64)
                 .collect::<Vec<_>>()
         });
-        let meta = layout.map(|layout| self.meta(layout, weight.as_deref()));
+        let weight = (all.as_ref()).map(|w| carried.iter().map(|&i| w[i]).collect::<Vec<_>>());
+        let info = |p: &[(Axis, Axis, String)]| -> Vec<PairInfo> {
+            (p.iter())
+                .map(|(x, y, why)| PairInfo {
+                    x: *x,
+                    y: *y,
+                    why: why.clone(),
+                })
+                .collect()
+        };
+        // The metagene is drawn here, of every site, not only those carried.
+        let meta = layout.map(|layout| self.meta(layout, all.as_deref()));
         let genes = self.genes.as_deref();
         Modality {
             name: self.name,
-            sites: self.sites,
+            sites: carried.len(),
+            total: self.sites,
+            limit,
+            pairs: info(&self.pairs),
+            auto: info(&self.auto),
+            ranges: self.ranges,
             n_genes: self.n_genes,
             criteria: self.criteria.iter().map(|&c| c as usize).collect(),
             raw,
             near,
-            pos: genes.map(|g| g.pos.values().to_vec()),
+            pos: genes.map(|g| carried.iter().map(|&i| g.pos.value(i)).collect()),
             genes: genes.map(|g| genes_of(g, &self.pins, models)),
-            gene: self.gene,
+            gene: carried.iter().map(|&i| self.gene[i]).collect(),
             weight,
             meta,
         }
+    }
+
+    /// The sites the page carries, in table order, and the largest p-value
+    /// among them when not every site is (see [`CARRIED`]).
+    /// A site without a p-value (NaN) is always carried: it passes any
+    /// p-value threshold, so only sites with a larger one are left off.
+    fn carried(&self, columns: RawColumns) -> (Vec<usize>, Option<f32>) {
+        let mut by_p: Vec<f32> = columns.pv.iter().copied().filter(|p| !p.is_nan()).collect();
+        if by_p.len() <= CARRIED || !self.criteria.contains(&Criterion::MaxPv) {
+            return ((0..self.sites).collect(), None);
+        }
+        let (_, limit, _) = by_p.select_nth_unstable_by(CARRIED - 1, f32::total_cmp);
+        let limit = *limit;
+        let carried = (0..self.sites)
+            .filter(|&i| columns.pv[i].is_nan() || columns.pv[i] <= limit)
+            .collect();
+        (carried, Some(limit))
     }
 
     /// Its metagene on `layout` under the thresholds as written, each site
@@ -347,9 +455,18 @@ impl SitePicker<'_> {
             legend: LEGEND,
             regions: coding(REGION_NAMES),
             colours: coding(REGION_COLOURS),
+            axes: (Axis::ALL.iter())
+                .map(|&a| AxisInfo {
+                    key: a,
+                    name: a.name(),
+                    criteria: a.criteria().iter().map(|&c| c as usize).collect(),
+                })
+                .collect(),
+            cells: Vec::new(),
         };
         Source {
             data,
+            cells: self.cells.clone(),
             views: (0..self.views.len()).map(|m| self.view_source(m)).collect(),
             annotation: match &self.meta {
                 Meta::Ready(a) => Some(a.clone()),
@@ -362,6 +479,12 @@ impl SitePicker<'_> {
     fn view_source(&self, m: usize) -> ViewSource {
         let v = &self.views[m];
         let t = v.table;
+        // Auto's pairs once: the panels too, when none were picked.
+        let auto = pairs::auto_panels(&v.sites(), pairs::PANELS);
+        let shown = match v.pairs.is_empty() {
+            true => auto.clone(),
+            false => v.pairs.clone(),
+        };
         ViewSource {
             name: t.modality.to_string(),
             sites: t.len(),
@@ -376,6 +499,11 @@ impl SitePicker<'_> {
             }),
             weight: self.weight,
             fails: v.fails.clone(),
+            pairs: shown,
+            auto,
+            ranges: (pairs::axes(&v.sites()).into_iter())
+                .map(|a| (a, v.sites().column(a).range))
+                .collect(),
         }
     }
 
@@ -394,7 +522,7 @@ impl SitePicker<'_> {
             path.clone(),
         );
         self.report.spawn(path, move || {
-            crate::report::write(&to, &title, FRAGMENT, &source.data())
+            crate::report::write_new(&to, &title, FRAGMENT, &source.data())
         })
     }
 

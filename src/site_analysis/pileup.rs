@@ -24,6 +24,7 @@ use std::io::Write;
 use std::sync::Arc;
 
 mod ascii;
+pub(crate) use ascii::fmt_thousands;
 mod figure;
 mod read;
 mod select;
