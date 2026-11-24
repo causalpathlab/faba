@@ -102,6 +102,10 @@ impl SitePicker<'_> {
                     svg: self.figure(page)?,
                 });
             }
+            out.push(Figure {
+                stem: super::pairs_view::pairs_stem(&self.view().table.modality),
+                svg: self.pairs_figure(m, page),
+            });
         }
         Ok(out)
     }

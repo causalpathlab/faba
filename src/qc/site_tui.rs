@@ -37,6 +37,7 @@ use rustc_hash::FxHashSet;
 
 use super::args::SiteFilterArgs;
 use super::layout::{file_name, SITE_MODALITIES};
+use super::pairs::{self, Axis, Sites};
 use super::progress::Progress;
 use super::sites::{genomic_sites, Criterion, GeneSites, RawColumns, SiteTable};
 use crate::tui::browser::{self, is_annotation, Browser, Outcome};
@@ -52,6 +53,7 @@ mod frame;
 mod genes;
 mod keys;
 mod mouse;
+mod pairs_view;
 mod report;
 mod writer;
 
@@ -104,6 +106,8 @@ struct SiteView<'a> {
     /// Sites by gene, for the gene list, shared with a report being
     /// written; `None` for a table without the columns.
     genes: Option<std::sync::Arc<GeneSites>>,
+    /// The 2D view's panels: each pair of axes, and why it is shown.
+    pairs: Vec<(Axis, Axis, String)>,
 }
 
 impl<'a> SiteView<'a> {
@@ -118,11 +122,30 @@ impl<'a> SiteView<'a> {
             criteria,
             fails: vec![0; table.len()],
             genes: GeneSites::new(table).ok().map(Into::into),
+            pairs: Vec::new(),
         };
         for c in view.criteria.clone() {
             view.update(c, f);
         }
+        view.auto_pairs();
         view
+    }
+
+    /// Its sites as the 2D panels read them.
+    fn sites(&self) -> Sites<'_> {
+        Sites {
+            table: self.table,
+            n_cells: self.n_cells.as_deref(),
+            fails: &self.fails,
+            criteria: &self.criteria,
+        }
+    }
+
+    /// The panels Auto picks at the thresholds as they are.
+    fn auto_pairs(&mut self) {
+        self.pairs = (pairs::auto_pairs(&self.sites(), pairs::PANELS).into_iter())
+            .map(|p| (p.x, p.y, p.why()))
+            .collect();
     }
 
     fn cells(&self, i: usize) -> Option<usize> {
@@ -157,6 +180,8 @@ struct Tally {
     /// Sites that fail the focused criterion and no other: the dropped part
     /// of the histogram's front, and what turning it off would keep.
     only: usize,
+    /// Sites that fail each criterion and no other. By `c as usize`.
+    alone: [usize; 8],
     /// Bin counts of the sites that pass every other criterion.
     subset: Vec<usize>,
 }
@@ -177,6 +202,9 @@ impl Tally {
                 gene_seen[g] = true;
             } else {
                 t.only += usize::from(m == focus.bit());
+                if m.is_power_of_two() {
+                    t.alone[m.trailing_zeros() as usize] += 1;
+                }
                 for (b, n) in t.fail.iter_mut().enumerate() {
                     *n += usize::from(m >> b & 1 == 1);
                 }
@@ -211,6 +239,8 @@ enum Mode {
 enum Panel {
     Thresholds,
     Genes,
+    /// The 2D view's panels, when it is shown.
+    Pairs,
 }
 
 /// State of the picker, independent of the terminal so it can be tested.
@@ -239,6 +269,11 @@ struct SitePicker<'a> {
     drawn: Rect,
     controls: Controls,
     plot: PlotImage,
+    /// The 2D view in place of the histogram, gene and metagene (`d`), its
+    /// focused panel, and each panel's image.
+    two_d: bool,
+    pair_at: usize,
+    pair_plots: [PlotImage; pairs::PANELS],
     meta: Meta,
     /// Where `meta` comes from, to read another annotation in its place.
     annotation: AnnotationSource,
@@ -285,6 +320,9 @@ impl<'a> SitePicker<'a> {
             drawn: Rect::default(),
             controls: Controls::new("qc_sites"),
             plot: PlotImage::default(),
+            two_d: false,
+            pair_at: 0,
+            pair_plots: Default::default(),
             meta,
             annotation: AnnotationSource::default(),
             weight: Weight::Coverage,
@@ -544,6 +582,7 @@ impl Screen for SitePicker<'_> {
             }
         }
         self.plot.invalidate();
+        self.pair_plots.iter_mut().for_each(PlotImage::invalidate);
         match self.mode {
             Mode::Gff(_) => self.gff_key(key),
             Mode::Edit(_) => self.edit_key(key),

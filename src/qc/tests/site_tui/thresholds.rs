@@ -440,7 +440,8 @@ fn site_figures_draw_every_knob_without_a_view() {
         crate::figure::size::OWN,
     )
     .unwrap();
-    let expected = threshold_counts(&tables, &FxHashMap::default(), &f).len();
+    // A figure per modality and knob, and each modality's 2D panels.
+    let expected = threshold_counts(&tables, &FxHashMap::default(), &f).len() + tables.len();
     assert_eq!(figures.len(), expected);
     for fig in &figures {
         assert!(fig.svg.starts_with("<svg"), "{}", fig.stem);

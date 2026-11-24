@@ -182,10 +182,10 @@ const FIGURE_KEY: [&str; 3] = [
 ];
 
 /// The count column's header, a line each.
-const COUNT_HEADER: (&str, &str) = ("sites", "filtered out");
+const COUNT_HEADER: (&str, &str) = ("sites out", "(by it alone)");
 
 /// Widths of the table's columns: marker and name, threshold, count.
-const TABLE_WIDTHS: [usize; 3] = [17, 10, 14];
+const TABLE_WIDTHS: [usize; 3] = [17, 10, 20];
 
 impl<'a> SitePicker<'a> {
     pub(super) fn render_gene_list(&self, frame: &mut Frame, area: Rect) {
@@ -433,9 +433,13 @@ impl<'a> SitePicker<'a> {
                 Span::styled(format!("{value:>value_w$}"), value_style),
                 dim(" │".into()),
                 Span::styled(
-                    format!("{:>w$}", self.tally.fail[c as usize], w = count_w - 1),
+                    format!("{:>w$}", self.tally.fail[c as usize], w = count_w - 10),
                     ACCENTED,
                 ),
+                dim(format!(
+                    "{:>9}",
+                    format!("({})", self.tally.alone[c as usize])
+                )),
             ]));
         }
         let n = self.view().table.len();
