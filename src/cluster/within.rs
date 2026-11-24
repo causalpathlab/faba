@@ -103,10 +103,6 @@ pub(in crate::cluster) struct GroupFit {
     /// Its fit's run record, in that directory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub record: Option<String>,
-    /// Its chains' split R-hat: an MCMC fit's (faba before 0.19), as an
-    /// older within record keeps it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rhat: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub converged: Option<bool>,
     /// It was stopped early: its tables are from fewer epochs.
@@ -123,19 +119,15 @@ impl GroupFit {
             why: None,
             dir: None,
             record: None,
-            rhat: None,
             converged: None,
             stopped_early: false,
         }
     }
 
-    /// What became of it, in words: its status, its chains' R-hat and
-    /// verdict, and why it was skipped or failed.
+    /// What became of it, in words: its status, its verdict, and why it
+    /// was skipped or failed.
     pub(in crate::cluster) fn what(&self) -> String {
         let mut what = self.status.said().to_string();
-        if let Some(rhat) = self.rhat {
-            what.push_str(&format!(", R-hat {rhat:.2}"));
-        }
         match self.converged {
             Some(true) => what.push_str(", converged"),
             Some(false) => what.push_str(", not converged"),
@@ -215,6 +207,7 @@ impl CountCells {
         let name = path.file_name().unwrap_or_default().to_string_lossy();
         let dir = crate::run_record::default_output_dir(&path.to_string_lossy());
         let json = super::browse::read_record(&dir, &name).map_err(anyhow::Error::msg)?;
+        super::browse::refuse_mcmc(&name, &json)?;
         let modality = json.pointer("/results/tables/modality");
         anyhow::ensure!(
             json["job"].as_str() == Some("cluster")
@@ -286,46 +279,14 @@ impl CountCells {
         out
     }
 
-    /// The count fit's batch of each of the sites' batches (those of
-    /// `cells`). A batch met in several folders is named with its folder,
-    /// as typed in each round (see [`args::qualify_batches`]): the same
-    /// name, or else the one batch that is the other named with its folder,
-    /// when no other batch of the sites is that one too. A count fit of one
-    /// batch and sites of one are the same batch, whatever its names.
-    fn batches<'a>(&'a self, cells: &'a [read::Cell]) -> FxHashMap<&'a str, &'a ByBarcode> {
-        let mut ours: Vec<&str> = cells.iter().map(|c| &*c.batch).collect();
-        ours.sort_unstable();
-        ours.dedup();
-        if let ([ours], 1) = (ours.as_slice(), self.cells.len()) {
-            return self.cells.values().map(|theirs| (*ours, theirs)).collect();
-        }
-        // Each of the sites' batches with the count fit's batch it names.
-        let alike: Vec<(&str, &str)> = (ours.iter())
-            .filter_map(|&ours| {
-                if let Some((theirs, _)) = self.cells.get_key_value(ours) {
-                    return Some((ours, &**theirs));
-                }
-                let mut alike = (self.cells.keys())
-                    .filter(|theirs| qualifies(ours, theirs) || qualifies(theirs, ours));
-                let theirs = alike.next()?;
-                alike.next().is_none().then_some((ours, &**theirs))
-            })
-            .collect();
-        let mut named: FxHashMap<&str, usize> = FxHashMap::default();
-        for (_, theirs) in &alike {
-            *named.entry(theirs).or_default() += 1;
-        }
-        (alike.into_iter())
-            .filter(|(_, theirs)| named[theirs] == 1)
-            .map(|(ours, theirs)| (ours, &self.cells[theirs]))
-            .collect()
-    }
-
-    /// `cells` (the sites') by their group in the count fit. Refused when
+    /// `cells` (the sites') by their group in the count fit, their batches
+    /// paired with its as `pairing` says (see [`pairing`]). Refused when
     /// none is among the count fit's cells: the two are of other cells, or
     /// name them otherwise.
-    fn group(&self, cells: &[read::Cell]) -> anyhow::Result<Grouped> {
-        let batches = self.batches(cells);
+    fn group(&self, cells: &[read::Cell], pairing: &pairing::Pairing) -> anyhow::Result<Grouped> {
+        let batches: FxHashMap<&str, &ByBarcode> = (pairing.pairs.iter())
+            .filter_map(|p| Some((&*p.sites, self.cells.get(&*p.count)?)))
+            .collect();
         let mut out = Grouped::default();
         for (i, cell) in cells.iter().enumerate() {
             let of = (batches.get(&*cell.batch)).and_then(|b| b.get(&cell.barcode).copied());
@@ -386,6 +347,11 @@ pub(super) fn run(args: &ClusterArgs) -> anyhow::Result<Option<String>> {
         }
         super::unless_cancelled(args, error)
     };
+    // A mistyped --batch-map is refused before the sites are read.
+    let named = match named_batches(args, &count) {
+        Ok(named) => named,
+        Err(e) => return failed(record, e),
+    };
     let title = format!("reading the sites to fit within {}", count.record.display());
     let (_, all) = super::watched(args, &title, false, |p| {
         read::read_inputs(&args::inputs(args)?, p)
@@ -397,7 +363,11 @@ pub(super) fn run(args: &ClusterArgs) -> anyhow::Result<Option<String>> {
     let m = all.modality.to_ascii_lowercase();
     let name = record_name(&m);
     let mut record = record.file_name(&name);
-    let grouped = match count.group(&all.cells) {
+    let pairing = match pair_batches(args, &count, &all.cells, &named) {
+        Ok(pairing) => pairing,
+        Err(e) => return failed(record, e),
+    };
+    let grouped = match count.group(&all.cells, &pairing) {
         Ok(grouped) => grouped,
         Err(e) => return failed(record, e),
     };
@@ -516,6 +486,7 @@ pub(super) fn run(args: &ClusterArgs) -> anyhow::Result<Option<String>> {
             },
             "model": args::recorded(args),
             "table": table,
+            "batches": pairing.recorded(),
             "groups": fits,
             "halted": halted,
         }),
@@ -534,7 +505,11 @@ pub(super) fn run(args: &ClusterArgs) -> anyhow::Result<Option<String>> {
             );
             Ok(())
         });
-    super::save_command(args, &dir, &name);
+    // The pairs answered when asked are saved as named, so that the command
+    // runs again off a terminal.
+    let mut saved = args.clone();
+    (saved.batch_map).extend(pairing.answered.iter().map(|a| a.as_str().into()));
+    super::save_command(&saved, &dir, &name);
     record.finish(&outcome);
     outcome?;
     let mut lines = vec![format!(
@@ -548,6 +523,48 @@ pub(super) fn run(args: &ClusterArgs) -> anyhow::Result<Option<String>> {
     ));
     progress::spark::say(&lines, log::Level::Info);
     Ok(Some(m))
+}
+
+/// The pairs `--batch-map` names, each count batch among `count`'s: what
+/// can be checked before the sites are read.
+fn named_batches(args: &ClusterArgs, count: &CountCells) -> anyhow::Result<Vec<pairing::Named>> {
+    let named = (args.batch_map.iter())
+        .map(|s| pairing::Named::parse(s))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    for n in &named {
+        n.check(count)?;
+    }
+    Ok(named)
+}
+
+/// How the batches of `cells` (the sites') pair with `count`'s: those
+/// `named` (by `--batch-map`) first, what is still ambiguous asked in a
+/// pop-up on a terminal and refused off one (see [`pairing::resolve`]). A
+/// site batch left unmatched though it could be one of the count fit's is
+/// warned of.
+fn pair_batches(
+    args: &ClusterArgs,
+    count: &CountCells,
+    cells: &[read::Cell],
+    named: &[pairing::Named],
+) -> anyhow::Result<pairing::Pairing> {
+    // The few batches, in one pass over the cells.
+    let ours: rustc_hash::FxHashSet<&str> = cells.iter().map(|c| &*c.batch).collect();
+    let ours: Vec<&str> = ours.into_iter().collect();
+    let mut asked = pairing::ask;
+    let ask: Option<&mut pairing::Ask> = super::live(args).then_some(&mut asked);
+    let pairing = pairing::resolve(count, &ours, named, ask)?;
+    for p in pairing.pairs.iter().filter(|p| p.sites != p.count) {
+        log::info!(
+            "the sites' batch {} is the count fit's {}",
+            p.sites,
+            p.count
+        );
+    }
+    for (sites, why) in &pairing.left {
+        log::warn!("the sites' batch {sites} is left unmatched: {why}");
+    }
+    Ok(pairing)
 }
 
 /// Each cell's main role (1.., none when not kept) in the cell table at
@@ -574,6 +591,8 @@ pub(in crate::cluster) fn listed(
         groups,
     ))
 }
+
+mod pairing;
 
 #[cfg(test)]
 mod tests;

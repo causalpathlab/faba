@@ -9,7 +9,7 @@ use std::io::IsTerminal;
 /// A sparkline's cells, low to high.
 const BLOCKS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 
-/// Cells a chain's sparkline takes at most.
+/// Cells a restart's sparkline takes at most.
 const WIDTH: usize = 60;
 
 /// The lines for `traces` and their `verdict`: what the sparklines span,
@@ -59,7 +59,7 @@ fn sparkline(points: &[(usize, f64)], (lo, hi): (f64, f64), width: usize) -> Str
 
 /// Once a fit is summarised, its [`lines`] on stderr when it is a
 /// terminal, else in the log (as warnings when it has not converged);
-/// nothing when no chain was traced.
+/// nothing when no restart was traced.
 pub fn tell(progress: &Progress) {
     let traces = progress.traces();
     let Some(verdict) = progress.verdict() else {

@@ -1,9 +1,7 @@
 //! The restarts' ELBO under their bars (and, saved, in `faba cluster-view`'s
-//! trace pane, which draws the MCMC chains' log joint of older records
-//! alike): a line per restart in its label's colour, the end of its
-//! k-means start (or the chains' burn-in) marked.
+//! trace pane): a line per restart in its label's colour, the end of its
+//! k-means start marked.
 
-use crate::cluster::progress::ELBO;
 use crate::site_analysis::miami::palette::{color, Palette};
 use crate::tui::ui::DIM;
 use ratatui::layout::Rect;
@@ -17,28 +15,27 @@ use ratatui::Frame;
 const ROWS: u16 = 6;
 const COLS: u16 = 30;
 
-/// The burn-in's end down the plot: a plot's lines take a colour, not a
+/// The k-means start's end down the plot: a plot's lines take a colour, not a
 /// dim style.
 pub(super) const MARK: Color = Color::DarkGray;
 
-/// Chain `i`'s colour, its label's and its trace's: the largest table's,
-/// so that chains repeat a colour only past its 18.
-pub(in crate::cluster) fn chain_style(i: usize) -> Style {
+/// Restart `i`'s colour, its label's and its trace's: the largest table's,
+/// so that restarts repeat a colour only past its 18.
+pub(in crate::cluster) fn restart_style(i: usize) -> Style {
     let (r, g, b) = color(&Palette::Category20, i);
     Style::new().fg(Color::Rgb(r, g, b))
 }
 
-/// The chains' `traces` in `area`, over sweeps `0..=total`: a line per
-/// chain in its colour, a [`MARK`] line down at the end of the `warmup`
-/// burn-in sweeps, the log joint's range that of each chain's points past
-/// its first tenth (where it climbs from its start). Nothing when the area
+/// The restarts' `traces` in `area`, over steps `0..=total`: a line per
+/// restart in its colour, a [`MARK`] line down at the end of the `warmup`
+/// steps of its k-means start, the ELBO's range that of each restart's
+/// points past its first tenth (where it climbs from its start). Nothing when the area
 /// is too small to read or nothing is traced yet.
 pub(in crate::cluster) fn draw(
     frame: &mut Frame,
     area: Rect,
     traces: &[Vec<(usize, f64)>],
     (total, warmup): (usize, usize),
-    quantity: &str,
 ) {
     if area.height < ROWS || area.width < COLS {
         return;
@@ -72,27 +69,20 @@ pub(in crate::cluster) fn draw(
         points
             .iter()
             .enumerate()
-            .map(|(i, p)| line(p, chain_style(i))),
+            .map(|(i, p)| line(p, restart_style(i))),
     );
     let digits = usize::from(hi - lo < 10.0);
     let chart = Chart::new(sets)
         .x_axis(
             Axis::default()
-                .title(Span::styled(
-                    if quantity == ELBO {
-                        "k-means iteration, then epoch"
-                    } else {
-                        "sweep"
-                    },
-                    DIM,
-                ))
+                .title(Span::styled("k-means iteration, then epoch", DIM))
                 .style(DIM)
                 .bounds([0.0, total as f64])
                 .labels(["0".to_string(), total.to_string()]),
         )
         .y_axis(
             Axis::default()
-                .title(Span::styled(quantity.to_string(), DIM))
+                .title(Span::styled("ELBO", DIM))
                 .style(DIM)
                 .bounds([lo, hi])
                 .labels([format!("{lo:.digits$}"), format!("{hi:.digits$}")]),

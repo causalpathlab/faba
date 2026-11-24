@@ -21,13 +21,13 @@ use std::path::Path;
 use tables::{posterior_sizes, read_shifts, role_sizes, site_counts};
 use tables::{BlockSites, SiteRows};
 
-mod run;
+pub(in crate::cluster) mod run;
 pub(in crate::cluster) use run::read as read_record;
 mod sites;
 mod tables;
 mod trace;
 
-pub(super) use run::COUNT_FIT;
+pub(super) use run::Unsettled;
 pub use trace::Fit;
 
 #[cfg(test)]
@@ -266,7 +266,7 @@ pub struct Modules {
     pub stats: Option<SiteStats>,
     /// The model the tables come from, from their run record; why not
     /// when there is none (see [`run::settings`]).
-    pub run: Result<Recorded, String>,
+    pub run: Result<Recorded, Unsettled>,
     /// A count fit's settings as its run record holds them, which are not
     /// the blockmodel's [`Recorded`] (none for a site fit, or without a
     /// record).
@@ -292,6 +292,11 @@ impl Modules {
         modality: &str,
         record: Option<(String, serde_json::Value)>,
     ) -> anyhow::Result<Self> {
+        // An MCMC fit's record is refused before any table is read.
+        let record = record.map_or_else(|| run::record(dir, modality), Ok);
+        if let Ok((name, r)) = &record {
+            run::refuse_mcmc(name, r)?;
+        }
         let path = |name: &str| dir.join(format!("{modality}_{name}.parquet"));
         let table = |name: &str| {
             let path = path(name);
@@ -346,12 +351,11 @@ impl Modules {
                 path("site_stats").display()
             );
         }
-        let record = record.map_or_else(|| run::record(dir, modality), Ok);
         let main = (from.sites.iter())
             .filter_map(|s| Some((s.gene.clone(), *main.get(s.gene.as_ref())?)))
             .collect();
         // A count fit's model, and how variational inference ran (none in
-        // an older record).
+        // a record of 0.18).
         let count_settings = (record.as_ref().ok()).filter(|_| count).and_then(|(_, r)| {
             let model = r.pointer("/results/model")?.clone();
             Some(match r.pointer("/results/vi") {
@@ -378,7 +382,7 @@ impl Modules {
             stats,
             run: record
                 .as_ref()
-                .map_err(Clone::clone)
+                .map_err(|why| Unsettled::Unrecorded(why.clone()))
                 .and_then(run::settings),
             count_settings,
             main,

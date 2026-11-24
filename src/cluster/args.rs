@@ -208,6 +208,20 @@ pub struct ClusterArgs {
     )]
     pub(super) within_min_cells: usize,
 
+    #[arg(
+        long = "batch-map",
+        requires = "within",
+        value_name = "SITES=COUNT",
+        help = "With --within: the sites' batch SITES is the count fit's COUNT (repeat it; SITES= leaves it unmatched)",
+        long_help = "With --within: the sites' batch SITES is the count fit's batch COUNT, taken\n\
+                     before any pairing by name. Repeat it, once a pair; `SITES=` leaves a batch\n\
+                     unmatched. Without it a batch pairs with the count fit's of the same name, or\n\
+                     else the one that is the same batch named with its folder (`b1` and\n\
+                     `runs/a/b1`). When that is ambiguous the run asks which on a terminal, and off\n\
+                     one is refused, naming each choice. SITES=COUNT splits at the last `=`."
+    )]
+    pub(super) batch_map: Vec<Box<str>>,
+
     /// The MCMC fits' flags (faba before 0.19), refused when given (see
     /// [`refuse_removed`]); hidden, and never recorded.
     #[command(flatten)]

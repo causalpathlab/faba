@@ -53,7 +53,28 @@ fn count_fit_of(dir: &Path, matrices: &[&str]) -> PathBuf {
 
 /// The count fit's main module and group of one site cell, read alone.
 fn of(count: &CountCells, batch: &str, barcode: &str) -> Option<Group> {
-    count.group(&[cell(batch, barcode)]).ok()?.of[0]
+    group(count, &[cell(batch, barcode)]).ok()?.of[0]
+}
+
+/// `cells` grouped as a run off a terminal groups them: their batches
+/// paired by name, refused when that is ambiguous.
+fn group(count: &CountCells, cells: &[Cell]) -> anyhow::Result<Grouped> {
+    let pairing = pairing_of(count, cells, &[])?;
+    count.group(cells, &pairing)
+}
+
+/// How the batches of `cells` pair with `count`'s, `named` (as
+/// `--batch-map` gives them) first, nothing asked.
+fn pairing_of(
+    count: &CountCells,
+    cells: &[Cell],
+    named: &[&str],
+) -> anyhow::Result<pairing::Pairing> {
+    let ours: Vec<&str> = cells.iter().map(|c| &*c.batch).collect();
+    let named: Vec<pairing::Named> = (named.iter())
+        .map(|s| pairing::Named::parse(s))
+        .collect::<anyhow::Result<_>>()?;
+    pairing::resolve(count, &ours, &named, None)
 }
 
 /// A cell goes to its main cell module, numbered from 0; one the count
@@ -147,14 +168,16 @@ fn site_cells_are_matched_to_the_count_fits_by_batch_and_barcode() {
         .iter()
         .map(|b| cell("sites", b))
         .collect();
-    let grouped = count.group(&cells).unwrap();
+    let grouped = group(&count, &cells).unwrap();
     let expected: BTreeMap<Group, Vec<usize>> =
         [(Group(0), vec![1, 4]), (Group(1), vec![0, 3])].into();
     assert_eq!(grouped.groups, expected);
     assert_eq!((grouped.matched(), grouped.of.len()), (4, 6));
     assert_eq!(grouped.of[0], Some(Group(1)));
     assert_eq!(grouped.of[2], None);
-    let err = count.group(&[cell("sites", "X1")]).unwrap_err().to_string();
+    let err = group(&count, &[cell("sites", "X1")])
+        .unwrap_err()
+        .to_string();
     assert!(
         err.contains("none of the 1 cells") && err.contains("sites X1") && err.contains("b B"),
         "{err}"
@@ -184,19 +207,14 @@ fn a_count_fit_of_several_batches_matches_within_the_batch() {
     // Sites of several batches are not matched by barcode alone either.
     let record = count_fit(tmp.path());
     let count = CountCells::read(&record.to_string_lossy()).unwrap();
-    let grouped = count
-        .group(&[cell("b", "B0"), cell("other", "B0")])
-        .unwrap();
+    let grouped = group(&count, &[cell("b", "B0"), cell("other", "B0")]).unwrap();
     assert_eq!(grouped.of, [Some(Group(0)), None]);
 }
 
-/// A batch met in several folders is named with its folder, as typed in
-/// each round: `a/b` in the count fit is `/runs/a/b` of the sites. A name
-/// that could be either of two batches is neither.
-#[test]
-fn a_batch_named_with_its_folder_is_matched_however_the_folder_was_typed() {
-    let tmp = tempfile::tempdir().unwrap();
-    let record = count_fit(tmp.path());
+/// The count fit of [`count_fit`] with cells of three batches, `a/b`,
+/// `c/b` and `solo`: B0 of each, in module 1, 2 and 1.
+fn three_batches(tmp: &Path) -> CountCells {
+    let record = count_fit(tmp);
     let cells = [cell("a/b", "B0"), cell("c/b", "B0"), cell("solo", "B0")];
     let member = [[1.0f32, 0.0], [0.0, 1.0], [1.0, 0.0]];
     let rows: Vec<RoleRow> = (cells.iter().zip(&member))
@@ -206,25 +224,215 @@ fn a_batch_named_with_its_folder_is_matched_however_the_folder_was_typed() {
             level: None,
         })
         .collect();
-    write::cell_roles(&rows, 2, &tmp.path().join("count_cell_roles.parquet")).unwrap();
-    let count = CountCells::read(&record.to_string_lossy()).unwrap();
+    write::cell_roles(&rows, 2, &tmp.join("count_cell_roles.parquet")).unwrap();
+    CountCells::read(&record.to_string_lossy()).unwrap()
+}
+
+/// A batch of the same name wins over one named with its folder: `solo`
+/// is the count fit's `solo`, and `/x/solo`, which could be it too, is
+/// left unmatched, said why.
+#[test]
+fn a_batch_of_the_same_name_wins() {
+    let tmp = tempfile::tempdir().unwrap();
+    let count = three_batches(tmp.path());
+    let sites = [cell("/x/solo", "B0"), cell("solo", "B0")];
+    let p = pairing_of(&count, &sites, &[]).unwrap();
+    assert_eq!(
+        p.pairs,
+        [pairing::Pair {
+            sites: "solo".into(),
+            count: "solo".into(),
+            by: pairing::By::Same
+        }]
+    );
+    assert_eq!(p.left.len(), 1);
+    assert_eq!(&*p.left[0].0, "/x/solo");
+    assert!(
+        p.left[0]
+            .1
+            .contains("could be the count fit's solo, which another batch has"),
+        "{:?}",
+        p.left
+    );
+    assert_eq!(group(&count, &sites).unwrap().of, [None, Some(Group(0))]);
+    let recorded = p.recorded();
+    assert_eq!(recorded["pairs"][0]["by"], "same");
+    assert_eq!(recorded["unmatched"][0]["sites"], "/x/solo");
+}
+
+/// `--batch-map` pairs come before any by name: a pairing that would be
+/// ambiguous is made, a batch is left unmatched with `SITES=`, and a pair
+/// naming a batch neither side has is refused, as is one not `SITES=COUNT`.
+#[test]
+fn batch_map_pairs_come_first() {
+    let tmp = tempfile::tempdir().unwrap();
+    let count = three_batches(tmp.path());
+    let sites = [
+        cell("/x/solo", "B0"),
+        cell("/y/solo", "B0"),
+        cell("b", "B0"),
+    ];
+    let named = ["/y/solo=solo", "b=c/b"];
+    let p = pairing_of(&count, &sites, &named).unwrap();
+    let pairs: Vec<(&str, &str, pairing::By)> = (p.pairs.iter())
+        .map(|p| (&*p.sites, &*p.count, p.by))
+        .collect();
+    assert_eq!(
+        pairs,
+        [
+            ("/y/solo", "solo", pairing::By::Named),
+            ("b", "c/b", pairing::By::Named)
+        ]
+    );
+    assert!(p.ambiguous.is_empty());
+    let grouped = count.group(&sites, &p).unwrap();
+    assert_eq!(grouped.of, [None, Some(Group(0)), Some(Group(1))]);
+    // `SITES=` leaves a batch unmatched; the other then pairs alone.
+    let p = pairing_of(&count, &sites, &["/x/solo=", "b=a/b"]).unwrap();
+    let left: Vec<&str> = p.left.iter().map(|l| &*l.0).collect();
+    assert_eq!(left, ["/x/solo"]);
+    assert!(p
+        .pairs
+        .iter()
+        .any(|p| &*p.sites == "/y/solo" && p.by == pairing::By::Folder));
+    for (named, says) in [
+        ("nope=solo", "the sites have no batch nope"),
+        ("b=nope", "the count fit has no batch nope"),
+        ("b", "write SITES=COUNT"),
+    ] {
+        let err = pairing_of(&count, &sites, &[named])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains(says), "{named}: {err}");
+    }
+}
+
+/// What is still ambiguous is refused off a terminal, each choice named
+/// and how to make it, on the command line and through `faba mcp`.
+#[test]
+fn an_ambiguous_pairing_is_refused_naming_each_choice() {
+    let tmp = tempfile::tempdir().unwrap();
+    let count = three_batches(tmp.path());
+    let sites = [
+        cell("/x/solo", "B0"),
+        cell("/y/solo", "B0"),
+        cell("b", "B0"),
+    ];
+    let err = group(&count, &sites).unwrap_err().to_string();
+    for says in [
+        "pair with the count fit's in more than one way",
+        "the sites' batch `b` could be the count fit's `a/b` or `c/b`",
+        "the sites' batches `/x/solo` and `/y/solo` could each be the count fit's `solo`",
+        "--batch-map SITES=COUNT",
+        "--batch-map '/x/solo=solo'",
+        "`batch_map`, e.g. {\"/x/solo\": \"solo\"}",
+    ] {
+        assert!(err.contains(says), "{says}: {err}");
+    }
+}
+
+/// On a terminal each ambiguity is asked in turn: a choice is taken as if
+/// named, `neither` leaves its site batches unmatched, and a question
+/// cancelled cancels the run.
+#[test]
+fn an_ambiguous_pairing_is_asked_one_at_a_time() {
+    let tmp = tempfile::tempdir().unwrap();
+    let count = three_batches(tmp.path());
+    let ours = ["/x/solo", "/y/solo", "b"];
+    let mut asked: Vec<String> = Vec::new();
+    let mut answers = vec![pairing::Answer::Neither, pairing::Answer::Take(1)];
+    let mut ask = |a: &pairing::Ambiguity| {
+        asked.push(a.said());
+        Ok(answers.pop())
+    };
+    let p = pairing::resolve(&count, &ours, &[], Some(&mut ask)).unwrap();
+    assert_eq!(asked.len(), 2, "{asked:?}");
+    assert!(asked[0].contains("`/x/solo` and `/y/solo`"), "{asked:?}");
+    assert!(asked[1].contains("`b` could be"), "{asked:?}");
+    // The second choice of the first, `neither` of the second.
+    let pairs: Vec<(&str, &str)> = p.pairs.iter().map(|p| (&*p.sites, &*p.count)).collect();
+    assert_eq!(pairs, [("/y/solo", "solo")]);
+    let left: Vec<&str> = p.left.iter().map(|l| &*l.0).collect();
+    assert_eq!(left, ["b", "/x/solo"]);
+    let mut cancel = |_: &pairing::Ambiguity| Ok(None);
+    let err = pairing::resolve(&count, &ours, &[], Some(&mut cancel)).unwrap_err();
+    assert!(err.is::<progress::Cancelled>(), "{err}");
+}
+
+/// `--batch-map` is taken once a pair, with `--within` only.
+#[test]
+fn batch_map_is_repeated_with_within() {
+    let args = parse_args(&[
+        "cluster",
+        "--within",
+        "c.run.json",
+        "--batch-map",
+        "/x/solo=solo",
+        "--batch-map=b=",
+    ]);
+    assert_eq!(
+        args.batch_map,
+        ["/x/solo=solo".into(), "b=".into()] as [Box<str>; 2]
+    );
+    use clap::Args;
+    let cmd = ClusterArgs::augment_args(clap::Command::new("cluster"));
+    let err = cmd
+        .try_get_matches_from(["cluster", "d", "--batch-map", "b=c"])
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("--within"), "{err}");
+}
+
+/// The pop-up lists each pairing and `neither`; ↓ and Enter take one, the
+/// last row leaves them unmatched, Esc cancels.
+#[test]
+fn the_question_takes_a_pairing_or_neither() {
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    let a = pairing::Ambiguity {
+        choices: vec![("b".into(), "a/b".into()), ("b".into(), "c/b".into())],
+    };
+    let press = |q: &mut pairing::Question, code| {
+        crate::tui::feed(q, KeyEvent::new(code, KeyModifiers::NONE))
+    };
+    let mut q = pairing::Question::new(&a);
+    let screen = crate::tui::screen_text(&mut q, 100, 20);
+    for says in [
+        "could be the count fit's `a/b` or `c/b`",
+        "count fit's c/b",
+        "neither",
+    ] {
+        assert!(screen.contains(says), "{says}:\n{screen}");
+    }
+    press(&mut q, KeyCode::Down);
+    press(&mut q, KeyCode::Enter);
+    assert_eq!(q.decision, Some(Some(pairing::Answer::Take(1))));
+    let mut q = pairing::Question::new(&a);
+    (0..5).for_each(|_| press(&mut q, KeyCode::Down));
+    press(&mut q, KeyCode::Enter);
+    assert_eq!(q.decision, Some(Some(pairing::Answer::Neither)));
+    let mut q = pairing::Question::new(&a);
+    press(&mut q, KeyCode::Esc);
+    assert_eq!(q.decision, Some(None));
+}
+
+/// A batch met in several folders is named with its folder, as typed in
+/// each round: `a/b` in the count fit is `/runs/a/b` of the sites. A name
+/// that could be either of two batches is not taken as either.
+#[test]
+fn a_batch_named_with_its_folder_is_matched_however_the_folder_was_typed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let count = three_batches(tmp.path());
     let sites = [
         cell("/runs/a/b", "B0"),
         cell("/runs/c/b", "B0"),
         cell("/runs/a/solo", "B0"),
         cell("xa/b", "B0"),
     ];
-    let grouped = count.group(&sites).unwrap();
+    let grouped = group(&count, &sites).unwrap();
     let (first, second) = (Some(Group(0)), Some(Group(1)));
     assert_eq!(grouped.of, [first, second, first, None]);
-    // `b` alone is either folder's; two site batches of one name are none.
+    // `b` alone is either folder's: not taken as either.
     assert_eq!(of(&count, "b", "B0"), None);
-    let twice = count.group(&[
-        cell("/x/solo", "B0"),
-        cell("/y/solo", "B0"),
-        cell("a/b", "B0"),
-    ]);
-    assert_eq!(twice.unwrap().of, [None, None, first]);
 }
 
 /// The nested table has a row a cell read: its count module, its group,
@@ -278,7 +486,6 @@ fn a_groups_fit_is_listed_and_said_in_words() {
     let mut fitted = GroupFit::new(Group(2), 120, Status::Fitted);
     fitted.dir = Some("within/m6a/C3".into());
     fitted.record = Some("m6a_blockmodel.run.json".into());
-    fitted.rhat = Some(1.018);
     fitted.converged = Some(true);
     let mut early = fitted.clone();
     early.converged = Some(false);
@@ -286,15 +493,9 @@ fn a_groups_fit_is_listed_and_said_in_words() {
     let mut skipped = GroupFit::new(Group(4), 7, Status::Skipped);
     skipped.why = Some("7 cells to fit, fewer than --within-min-cells 50".into());
     let waiting = GroupFit::new(Group(3), 60, Status::NotRun);
-    assert_eq!(fitted.what(), "fitted, R-hat 1.02, converged");
-    assert_eq!(
-        fitted.line(),
-        "C3\t120 cells\tfitted, R-hat 1.02, converged"
-    );
-    assert_eq!(
-        early.what(),
-        "fitted, R-hat 1.02, not converged, stopped early"
-    );
+    assert_eq!(fitted.what(), "fitted, converged");
+    assert_eq!(fitted.line(), "C3\t120 cells\tfitted, converged");
+    assert_eq!(early.what(), "fitted, not converged, stopped early");
     assert_eq!(
         skipped.what(),
         "skipped: 7 cells to fit, fewer than --within-min-cells 50"
@@ -339,4 +540,53 @@ fn settings_within_cannot_fit_with_are_refused() {
         let err = check(words).unwrap_err();
         assert!(err.contains(says), "{words:?}: {err}");
     }
+}
+
+/// Two `--batch-map` pairs may not name one count batch: refused, not two
+/// site batches grouped against it.
+#[test]
+fn a_count_batch_named_twice_is_refused() {
+    let tmp = tempfile::tempdir().unwrap();
+    let count = three_batches(tmp.path());
+    let sites = [cell("x", "B0"), cell("y", "B0")];
+    let err = pairing_of(&count, &sites, &["x=solo", "y=solo"]).unwrap_err();
+    assert!(
+        format!("{err:#}").contains("names the count fit's batch solo twice"),
+        "{err:#}"
+    );
+}
+
+/// A site batch whose same-named count batch `--batch-map` gave to another
+/// is left unmatched and said why, not dropped without a word.
+#[test]
+fn a_same_name_taken_by_the_map_is_said() {
+    let tmp = tempfile::tempdir().unwrap();
+    let count = three_batches(tmp.path());
+    let sites = [cell("/x/solo", "B0"), cell("solo", "B0")];
+    let p = pairing_of(&count, &sites, &["/x/solo=solo"]).unwrap();
+    assert!(
+        p.left
+            .iter()
+            .any(|(s, why)| &**s == "solo" && why.contains("given to another batch")),
+        "{:?}",
+        p.left
+    );
+}
+
+/// A site batch with `=` in its name splits at the last one.
+#[test]
+fn batch_map_splits_at_the_last_equals() {
+    let n = pairing::Named::parse("run=1=b1").unwrap();
+    assert_eq!((&*n.sites, n.count.as_deref()), ("run=1", Some("b1")));
+}
+
+/// Answers given when asked are kept, as the flags that give them again.
+#[test]
+fn answers_are_kept_as_flags() {
+    let tmp = tempfile::tempdir().unwrap();
+    let count = three_batches(tmp.path());
+    let ours = ["b"];
+    let mut ask = |_: &pairing::Ambiguity| Ok(Some(pairing::Answer::Take(0)));
+    let p = pairing::resolve(&count, &ours, &[], Some(&mut ask)).unwrap();
+    assert_eq!(p.answered, ["b=a/b"]);
 }

@@ -6,7 +6,13 @@ use super::*;
 
 /// The fit's verdict, as it ends.
 fn verdict() -> advice::Verdict {
-    advice::Verdict::vi(true, false, (3, 10), 2, (0.0, "read"))
+    advice::Verdict::vi(
+        true,
+        false,
+        (3, 10),
+        2,
+        (0.0, crate::cluster::vi::Unit::Read),
+    )
 }
 
 /// Each restart counts on its own bar: a step reached is never undone by
@@ -42,8 +48,7 @@ fn the_verdict_comes_when_the_fit_ends() {
     p.begin_vi(40, 30);
     assert_eq!(p.schedule(), Some((40, 30)));
     p.optimised(verdict()).unwrap();
-    // (Its R-hat is NaN, never equal: compared by what it says.)
-    assert_eq!(p.verdict().map(|v| v.said()), Some(verdict().said()));
+    assert_eq!(p.verdict(), Some(verdict()));
 }
 
 /// A cancel or a stop asked for once the fit is writing is too late for

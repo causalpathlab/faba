@@ -53,7 +53,7 @@
 .model .legend .sw.dot { width: 9px; height: 9px; background: var(--fg); border: 0; }
 .model .legend .sw.grey { opacity: 0.45; }
 .model .legend .sw.flag { border-radius: 3px; width: 22px; height: 13px; border-color: var(--accent); }
-/* The trace under it: each chain's log joint by sweep, a crosshair tooltip, the verdict. */
+/* The trace under it: each restart's ELBO by step, a crosshair tooltip, the verdict. */
 .trace { display: flex; flex-direction: column; gap: 10px; }
 .trace[hidden] { display: none; }
 .trace-plot { position: relative; background: var(--term); border: 1px solid var(--rule); border-radius: 8px; }
@@ -125,7 +125,7 @@
       </div>
     </div>
     <div class="trace" id="trace" hidden>
-      <div class="model-head"><h2>Trace</h2><span class="note" id="trace-note">each chain's log joint by sweep as it ran; the dashed line is where the burn-in ends</span></div>
+      <div class="model-head"><h2>Trace</h2><span class="note" id="trace-note">each restart's ELBO by epoch as it ran; the dashed line is where its k-means start ends</span></div>
       <div class="trace-plot"><canvas id="c-trace"></canvas><div class="trace-tip" id="trace-tip" hidden></div></div>
       <div class="legend" id="trace-legend"></div>
       <p class="verdict" id="trace-said"></p>
@@ -205,8 +205,8 @@ if (MODEL.svg) {
   document.getElementById("model-body").hidden = false;
   document.getElementById("model-diagram").innerHTML = MODEL.svg;
   document.getElementById("model-preset").textContent = MODEL.preset ? `the ${MODEL.preset} preset` : "no preset: switches set by hand";
-  const off = "off", inf = MODEL.strength === "inf" ? "∞" : MODEL.strength;
-  const shown = [["cell roles A", MODEL.cellRoles], ["gene roles B", MODEL.geneRoles], ["strength S", inf], ["α", MODEL.alpha], ["gene α", MODEL.geneAlpha], ["σδ", MODEL.shiftSd ?? off], ["σν", MODEL.cellSd ?? "no cell level"], ["γ", MODEL.gamma ?? "symmetric"]];
+  const off = "off";
+  const shown = [["cell roles A", MODEL.cellRoles], ["gene roles B", MODEL.geneRoles], ["strength S", "∞"], ["α", MODEL.alpha], ["gene α", MODEL.geneAlpha], ["σδ", MODEL.shiftSd ?? off], ["σν", MODEL.cellSd], ["weights", "symmetric"]];
   document.getElementById("model-settings").innerHTML = shown.map(([k, v]) => `<span>${esc(k)} <b>${esc(v)}</b></span>`).join("");
 } else {
   const why = document.getElementById("model-why");
@@ -220,31 +220,31 @@ function toggleDiagram() {
 }
 document.getElementById("model-toggle").addEventListener("click", toggleDiagram);
 
-// The fit's trace, as `faba cluster` saved it: each chain's log joint by
-// sweep in its terminal colour, the burn-in's end dashed, the y range that
-// of each chain's points past its first tenth (where it climbs from its
-// start), a crosshair with each chain's value at the sweep under the
+// The fit's trace, as `faba cluster` saved it: each restart's ELBO by
+// step in its terminal colour, the k-means start's end dashed, the y range that
+// of each restart's points past its first tenth (where it climbs from its
+// start), a crosshair with each restart's value at the step under the
 // pointer; under it the verdict and its advice. Or why there is none.
 const TRACE = DATA.trace;
 const TRACE_PAD = {l: 64, r: 16, t: 12, b: 30};
-// The log joint's range over the chains' settled points, padded.
+// The ELBO's range over the restarts' settled points, padded.
 const traceRange = (() => {
-  if (!TRACE.chains) return null;
-  const vs = TRACE.chains.flatMap(c => c.points.slice(Math.floor(c.points.length / 10)).map(p => p[1]));
+  if (!TRACE.restarts) return null;
+  const vs = TRACE.restarts.flatMap(c => c.points.slice(Math.floor(c.points.length / 10)).map(p => p[1]));
   const lo = Math.min(...vs), hi = Math.max(...vs), pad = Math.max((hi - lo) * 0.05, 0.5);
   return [lo - pad, hi + pad];
 })();
-// Of `points` (by sweep), the one nearest sweep `n`.
+// Of `points` (by step), the one nearest step `n`.
 function nearest(points, n) {
   let a = 0, b = points.length - 1;
   while (a < b) { const m = (a + b) >> 1; if (points[m][0] < n) a = m + 1; else b = m; }
   return a > 0 && n - points[a - 1][0] < points[a][0] - n ? points[a - 1] : points[a];
 }
-// The trace, the crosshair at sweep `at` (none: no crosshair).
+// The trace, the crosshair at step `at` (none: no crosshair).
 function drawTrace(at) {
   const [ctx, w, h] = fit(document.getElementById("c-trace"));
   const {l, r, t, b} = TRACE_PAD, pw = w - l - r, ph = h - t - b;
-  const [lo, hi] = traceRange, total = Math.max(TRACE.sweeps, 1);
+  const [lo, hi] = traceRange, total = Math.max(TRACE.steps, 1);
   const x = n => l + n / total * pw, y = v => t + (hi - v) / (hi - lo) * ph;
   const fg = css("--fg"), dim = css("--dim"), rule = css("--rule");
   ctx.clearRect(0, 0, w, h);
@@ -253,17 +253,17 @@ function drawTrace(at) {
   ctx.fillStyle = dim; ctx.textAlign = "right";
   ctx.fillText(hi.toFixed(digits), l - 6, t + 6); ctx.fillText(lo.toFixed(digits), l - 6, t + ph - 6);
   ctx.textAlign = "left"; ctx.fillText("0", l, t + ph + 14);
-  ctx.textAlign = "right"; ctx.fillText(String(TRACE.sweeps), l + pw, t + ph + 14);
-  ctx.textAlign = "center"; ctx.fillText(TRACE.quantity === "ELBO" ? "k-means iteration, then epoch" : "sweep", l + pw / 2, t + ph + 14);
-  ctx.save(); ctx.translate(14, t + ph / 2); ctx.rotate(-Math.PI / 2); ctx.fillText(TRACE.quantity || "log joint", 0, 0); ctx.restore();
+  ctx.textAlign = "right"; ctx.fillText(String(TRACE.steps), l + pw, t + ph + 14);
+  ctx.textAlign = "center"; ctx.fillText("k-means iteration, then epoch", l + pw / 2, t + ph + 14);
+  ctx.save(); ctx.translate(14, t + ph / 2); ctx.rotate(-Math.PI / 2); ctx.fillText("ELBO", 0, 0); ctx.restore();
   ctx.save(); ctx.beginPath(); ctx.rect(l, t, pw, ph); ctx.clip();
-  if (TRACE.burnIn > 0 && TRACE.burnIn < total) {
+  if (TRACE.warmup > 0 && TRACE.warmup < total) {
     ctx.strokeStyle = dim; ctx.setLineDash([4, 4]);
-    ctx.beginPath(); ctx.moveTo(x(TRACE.burnIn), t); ctx.lineTo(x(TRACE.burnIn), t + ph); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x(TRACE.warmup), t); ctx.lineTo(x(TRACE.warmup), t + ph); ctx.stroke();
     ctx.setLineDash([]);
   }
   ctx.lineWidth = 1.5;
-  TRACE.chains.forEach(c => {
+  TRACE.restarts.forEach(c => {
     ctx.strokeStyle = c.color; ctx.beginPath();
     c.points.forEach(([n, v], i) => i ? ctx.lineTo(x(n), y(v)) : ctx.moveTo(x(n), y(v)));
     ctx.stroke();
@@ -273,27 +273,26 @@ function drawTrace(at) {
   ctx.strokeStyle = fg; ctx.lineWidth = 1; ctx.globalAlpha = 0.5;
   ctx.beginPath(); ctx.moveTo(x(at), t); ctx.lineTo(x(at), t + ph); ctx.stroke();
   ctx.globalAlpha = 1;
-  const near = TRACE.chains.map(c => ({c, p: nearest(c.points, at)}));
+  const near = TRACE.restarts.map(c => ({c, p: nearest(c.points, at)}));
   near.forEach(({c, p}) => { ctx.fillStyle = c.color; ctx.beginPath(); ctx.arc(x(p[0]), y(p[1]), 3, 0, 2 * Math.PI); ctx.fill(); });
   ctx.restore();
-  tip.innerHTML = `${TRACE.quantity === "ELBO" ? "step" : "sweep"} ${near[0].p[0]}` + near.map(({c, p}) => `<br><i style="background:${c.color}"></i>${esc(c.name)} ${p[1].toFixed(1)}`).join("");
+  tip.innerHTML = `step ${near[0].p[0]}` + near.map(({c, p}) => `<br><i style="background:${c.color}"></i>${esc(c.name)} ${p[1].toFixed(1)}`).join("");
   tip.hidden = false;
   const left = x(at) + 12, flip = left + tip.offsetWidth > w;
   tip.style.left = `${flip ? x(at) - 12 - tip.offsetWidth : left}px`;
 }
-if (TRACE.chains) {
+if (TRACE.restarts) {
   document.getElementById("model").hidden = false;
-  if (TRACE.quantity === "ELBO") document.getElementById("trace-note").textContent = "each restart's ELBO by epoch as it ran; the dashed line is where its k-means start ends";
   document.getElementById("trace").hidden = false;
-  document.getElementById("trace-legend").innerHTML = TRACE.chains.map(c => `<span class="key"><i style="background:${c.color}"></i>${esc(c.name)}</span>`).join("");
+  document.getElementById("trace-legend").innerHTML = TRACE.restarts.map(c => `<span class="key"><i style="background:${c.color}"></i>${esc(c.name)}</span>`).join("");
   const said = document.getElementById("trace-said");
   said.textContent = TRACE.said; said.classList.toggle("check", !TRACE.converged);
-  document.getElementById("trace-advice").textContent = TRACE.advice;
+  document.getElementById("trace-advice").textContent = TRACE.advice ?? "";
   const c = document.getElementById("c-trace");
-  // The crosshair at the sweep under the pointer, on the plot's span.
+  // The crosshair at the step under the pointer, on the plot's span.
   c.addEventListener("mousemove", e => {
     const {l, r} = TRACE_PAD, box = c.getBoundingClientRect(), pw = box.width - l - r;
-    const at = Math.min(Math.max((e.clientX - box.left - l) / pw, 0), 1) * Math.max(TRACE.sweeps, 1);
+    const at = Math.min(Math.max((e.clientX - box.left - l) / pw, 0), 1) * Math.max(TRACE.steps, 1);
     drawTrace(at);
   });
   c.addEventListener("mouseleave", () => drawTrace(null));

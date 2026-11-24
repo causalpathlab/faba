@@ -21,30 +21,39 @@ impl Progress {
             .map_or(0, |&(at, _)| at.saturating_sub(warmup))
     }
 
-    /// Where the fit stands, in a line: the k-means starts' iterations, or
+    /// Where the fit stands, with the numbers its line says: the k-means starts' iterations, or
     /// the restart fitting, its epochs done, its ELBO per unit and (in
     /// coordinate ascent) how much its last epoch moved it against the
     /// tolerance; then the share of every restart's steps done, the time
     /// since the first started, and the time left at the pace of the epochs
     /// run so far (at most: a restart that settles ends early). None before
     /// the fit begins.
-    pub fn standing(&self) -> Option<String> {
+    fn measured(&self) -> Option<Measured> {
         let (total, warmup) = self.schedule()?;
-        let chains = self.chains();
-        let ran = (0..chains).filter_map(|i| self.running(i)).max()?;
-        let share = 100.0 * self.sum() as f64 / (chains * total).max(1) as f64;
+        let restarts = self.restarts();
+        let ran = (0..restarts).filter_map(|i| self.running(i)).max()?;
+        let (pos, len) = (self.sum(), restarts * total);
+        let share = 100.0 * pos as f64 / len.max(1) as f64;
+        let measured = |line, eta| Measured {
+            line,
+            pos,
+            len,
+            elapsed: ran,
+            eta,
+        };
         let i = Some(self.fitting.load(Ordering::Relaxed)).filter(|&i| i != NONE);
         let fitting = (i, self.epochs_began.get(), self.aim.get());
         let (Some(i), Some(began), Some(aim)) = fitting else {
-            let least = (0..chains).map(|i| self.done(i)).min().unwrap_or(0);
-            return Some(format!(
-                "k-means starts of {chains} restarts: {least}/{warmup} iterations; {} in",
+            let least = (0..restarts).map(|i| self.done(i)).min().unwrap_or(0);
+            let line = format!(
+                "k-means starts of {restarts} restarts: {least}/{warmup} iterations; {} in",
                 clock(ran)
-            ));
+            );
+            return Some(measured(line, None));
         };
         let epochs = total - warmup;
         let epoch = self.epochs_run(i, warmup);
-        let mut line = format!("restart {}/{chains}: {epoch}/{epochs} epochs", i + 1);
+        let mut line = format!("restart {}/{restarts}: {epoch}/{epochs} epochs", i + 1);
         let per = |f: f64| f / aim.units;
         // Its last two ELBOs, newest first.
         let tail: Vec<f64> = self.trace_of(i).iter().rev().take(2).map(|p| p.1).collect();
@@ -62,32 +71,69 @@ impl Progress {
         }
         line.push_str(&format!("; {share:.0}% of the steps, {} in", clock(ran)));
         // The pace of the epochs run, not of those credited without running.
-        let run: usize = (0..chains).map(|i| self.epochs_run(i, warmup)).sum();
-        let left: usize = (0..chains)
+        let run: usize = (0..restarts).map(|i| self.epochs_run(i, warmup)).sum();
+        let left: usize = (0..restarts)
             .map(|i| total.saturating_sub(self.done(i)))
             .sum();
         let since = Instant::elapsed(began).as_secs_f64();
-        if run > 0 && since > 0.0 {
-            let eta = Duration::from_secs_f64(since / run as f64 * left as f64);
+        let eta = (run > 0 && since > 0.0)
+            .then(|| Duration::from_secs_f64(since / run as f64 * left as f64));
+        if let Some(eta) = eta {
             line.push_str(&format!(", at most about {} left", clock(eta)));
         }
-        Some(line)
+        Some(measured(line, eta))
     }
 }
 
-/// [`Progress::standing`] said on stderr every [`EVERY`] until `stopped`
-/// hangs up, each time it changed: printed, not logged, so that it shows
-/// without `-v`.
+/// Where the fit stands: its line, the steps done of all, the time since
+/// the first restart started and (at most) the time left.
+struct Measured {
+    line: String,
+    pos: usize,
+    len: usize,
+    elapsed: Duration,
+    eta: Option<Duration>,
+}
+
+/// The fit's id among a process's progress lines: clear of
+/// legume-numeric's bars, numbered from 1.
+const ID: u64 = u64::MAX;
+
+impl Measured {
+    /// As a progress line legume-mcp reads into a job's stage
+    /// ([`legume_numeric::matrix::progress::PREFIX`], then its JSON).
+    fn said(&self, done: bool) -> String {
+        let json = serde_json::json!({
+            "id": ID,
+            "label": "faba cluster",
+            "pos": self.pos,
+            "len": self.len,
+            "elapsed_s": self.elapsed.as_secs(),
+            "eta_s": self.eta.map(|d| d.as_secs()),
+            "done": done,
+        });
+        format!("{}{json}", legume_numeric::matrix::progress::PREFIX)
+    }
+}
+
+/// [`Progress::measured`] said on stderr every [`EVERY`] until `stopped`
+/// hangs up, each time it changed, with its progress line for legume-mcp
+/// (see [`Measured::said`]), the last marked done: printed, not logged, so
+/// that it shows without `-v`.
 pub(super) fn report(progress: &Progress, stopped: Receiver<()>) {
-    let mut said = None;
+    let mut said: Option<Measured> = None;
     while let Err(RecvTimeoutError::Timeout) = stopped.recv_timeout(EVERY) {
-        let Some(line) = progress.standing() else {
+        let Some(now) = progress.measured() else {
             continue;
         };
-        if said.as_ref() != Some(&line) {
-            eprintln!("faba cluster: {line}");
-            said = Some(line);
+        if said.as_ref().map(|m| &m.line) != Some(&now.line) {
+            eprintln!("faba cluster: {}", now.line);
+            eprintln!("{}", now.said(false));
+            said = Some(now);
         }
+    }
+    if let Some(last) = said {
+        eprintln!("{}", last.said(true));
     }
 }
 
@@ -98,7 +144,7 @@ mod tests {
 
     const AIM: Aim = Aim {
         units: 100.0,
-        unit: "read",
+        unit: crate::cluster::vi::Unit::Read,
         tol: 1e-5,
         svi: 2,
     };
@@ -109,11 +155,11 @@ mod tests {
     #[test]
     fn the_standing_follows_the_fit() {
         let p = Progress::new(2);
-        assert_eq!(p.standing(), None);
+        assert_eq!(p.measured().map(|m| m.line), None);
         p.begin_vi(40, 30);
         p.reach(0, 12);
         p.reach(1, 10);
-        let line = p.standing().unwrap();
+        let line = p.measured().map(|m| m.line).unwrap();
         assert!(
             line.starts_with("k-means starts of 2 restarts: 10/30 iterations"),
             "{line}"
@@ -126,7 +172,7 @@ mod tests {
         p.reach(0, 34);
         p.note(0, 33, -50.0);
         p.note(0, 34, -49.0);
-        let line = p.standing().unwrap();
+        let line = p.measured().map(|m| m.line).unwrap();
         assert!(
             line.starts_with("restart 1/2: 4/10 epochs, ELBO per read -0.49000"),
             "{line}"
@@ -145,6 +191,29 @@ mod tests {
         assert_eq!((p.epochs_run(0, 30), p.epochs_run(1, 30)), (4, 0));
     }
 
+    /// The progress line is legume-mcp's: its prefix, then the steps done
+    /// of all, the time taken and left, and whether it is the last.
+    #[test]
+    fn the_progress_line_is_legume_mcps() {
+        let p = Progress::new(1);
+        p.begin_vi(40, 30);
+        p.aim(AIM);
+        p.reach(0, 34);
+        p.fitting(0);
+        p.note(0, 34, -49.0);
+        let said = p.measured().unwrap().said(true);
+        let json = said
+            .strip_prefix(legume_numeric::matrix::progress::PREFIX)
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(json).unwrap();
+        assert_eq!((v["pos"].as_u64(), v["len"].as_u64()), (Some(34), Some(40)));
+        assert_eq!(
+            (v["label"].as_str(), v["done"].as_bool()),
+            (Some("faba cluster"), Some(true))
+        );
+        assert_eq!(v["id"].as_u64(), Some(u64::MAX));
+    }
+
     /// In the stochastic epochs no test reads the ELBO's moves.
     #[test]
     fn stochastic_epochs_are_not_tested() {
@@ -155,7 +224,7 @@ mod tests {
         p.fitting(0);
         p.note(0, 30, -50.0);
         p.note(0, 31, -49.0);
-        let line = p.standing().unwrap();
+        let line = p.measured().map(|m| m.line).unwrap();
         assert!(line.contains("(stochastic epochs: no test yet)"), "{line}");
     }
 }

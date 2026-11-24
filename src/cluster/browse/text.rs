@@ -6,7 +6,6 @@
 //! line is a row, so a reader (or a program) can take the columns apart.
 
 use super::Modules;
-use crate::cluster::progress::ELBO;
 
 /// What the printout shows instead of the modules (level 1): each level
 /// the browser opens, named on the command line. Asking for one prints it
@@ -42,7 +41,7 @@ pub struct Shown {
     #[arg(
         long = "trace",
         conflicts_with = "html",
-        help = "Print each restart's ELBO trace (an older MCMC fit's chains), the verdict and what to do about it"
+        help = "Print each restart's ELBO trace, the verdict and what to do about it"
     )]
     pub trace: bool,
 
@@ -128,8 +127,9 @@ impl Shown {
 }
 
 /// What `shown` asks for, each part under a heading, in the order the
-/// browser goes: the cell modules, a gene module, a gene, the trace, the
-/// settings; the modules (level 1) when it asks for none.
+/// browser goes: the cell modules, a gene module, a gene, the batches, the
+/// GO terms, the trace, the settings; the modules (level 1) when it asks
+/// for none.
 pub fn printed(m: &Modules, shown: &Shown) -> anyhow::Result<Vec<String>> {
     if !shown.any() {
         return Ok(modules(m));
@@ -381,27 +381,19 @@ fn batches(m: &Modules) -> Vec<String> {
     out
 }
 
-/// The fit's trace and verdict: each chain's log joint (a count fit's
-/// log-likelihood) at a few sweeps, the verdict and what to do about it.
+/// The fit's trace and verdict: each restart's ELBO at a few steps, the
+/// verdict and what to do about it.
 fn trace(m: &Modules) -> Vec<String> {
     let fit = &m.fit;
-    let mut out = vec![match &fit.trace {
-        Ok(t) if t.quantity == ELBO => format!("trace: {} steps per restart", fit.span()),
-        _ => format!("trace: {} sweeps per chain", fit.span()),
-    }];
+    let mut out = vec![format!("trace: {} steps per restart", fit.span())];
     match &fit.trace {
-        Ok(t) if t.quantity == ELBO => {
+        Ok(t) => {
             out.push(format!(
                 "k-means start {} steps, then epochs of variational inference",
-                t.burn_in
+                t.warmup
             ));
-            out.push(format!("restart\tstep\t{}", t.quantity));
-            push_points(&mut out, &t.chains);
-        }
-        Ok(t) => {
-            out.push(format!("burn-in {} sweeps", t.burn_in));
-            out.push(format!("chain\tsweep\t{}", t.quantity));
-            push_points(&mut out, &t.chains);
+            out.push("restart\tstep\tELBO".into());
+            push_points(&mut out, &t.restarts);
         }
         Err(why) => out.push(format!("no trace: {why}")),
     }
@@ -413,19 +405,19 @@ fn trace(m: &Modules) -> Vec<String> {
                 out.push(format!("advice: {advice}"));
             }
         }
-        None => out.push("verdict: none (no R-hat recorded)".into()),
+        None => out.push(format!("verdict: none ({})", fit.unjudged())),
     }
     out
 }
 
-/// About ten points of each of `chains`, the last always, a line each.
-fn push_points(out: &mut Vec<String>, chains: &[Vec<(usize, f64)>]) {
-    for (i, chain) in chains.iter().enumerate() {
-        let step = (chain.len() / 10).max(1);
+/// About ten points of each of `restarts`, the last always, a line each.
+fn push_points(out: &mut Vec<String>, restarts: &[Vec<(usize, f64)>]) {
+    for (i, trace) in restarts.iter().enumerate() {
+        let every = (trace.len() / 10).max(1);
         let picked =
-            (chain.iter().enumerate()).filter(|&(j, _)| j % step == 0 || j + 1 == chain.len());
-        for (_, (sweep, v)) in picked {
-            out.push(format!("{i}\t{sweep}\t{v:.1}"));
+            (trace.iter().enumerate()).filter(|&(j, _)| j % every == 0 || j + 1 == trace.len());
+        for (_, (step, v)) in picked {
+            out.push(format!("{i}\t{step}\t{v:.1}"));
         }
     }
 }
@@ -439,7 +431,7 @@ fn settings(m: &Modules) -> Vec<String> {
         Err(_) if m.count_settings.is_some() => {
             ("the count blockmodel".into(), m.count_settings.clone())
         }
-        Err(why) => (why.clone(), None),
+        Err(why) => (why.to_string(), None),
     };
     let mut out = vec![format!("settings: {model}")];
     if let Some(json) = json {

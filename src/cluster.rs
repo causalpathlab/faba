@@ -53,12 +53,6 @@ fn record_name(m: &str) -> String {
     format!("{m}_blockmodel.run.json")
 }
 
-/// Where faba before 0.19 kept the record of a mixture fit (`--model crp`),
-/// and before that of every site fit: `{m}_cluster.run.json`.
-fn older_record_name(m: &str) -> String {
-    format!("{m}_cluster.run.json")
-}
-
 /// Bytes the fit (not the reading) will hold at its peak, roughly: the
 /// reads (raw, a copy of the fitted ones when some are left out, and
 /// weighted); the links' copy of the reads and each link's gene; per

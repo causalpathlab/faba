@@ -307,21 +307,10 @@ fn the_site_blockmodel_is_the_blocks_preset() {
     assert_eq!(recorded(&["--gene-roles", "4"]), None);
 }
 
-/// The record of a fit is read whether faba wrote it before 0.19 (a
-/// Gibbs-sampled link fit: drawn weights, finite strength, no shift) or
-/// after (the blocks preset by variational inference).
+/// The record of a fit reads back as the settings it was run with.
 #[test]
-fn old_and_new_records_of_the_model_read() {
-    use super::settings::{Recorded, Weights};
-    let old: Recorded = serde_json::from_str(
-        r#"{"preset":"link","settings":{"cell_roles":8,"gene_roles":1,"alpha":0.5,
-            "gene_alpha":0.5,"weights":{"hdp":1.0},"shift_sd":null,"strength":5.0,
-            "cell_sd":1.0}}"#,
-    )
-    .unwrap();
-    assert_eq!(old.settings.weights, Weights::Hdp(1.0));
-    assert_eq!((old.settings.shift_sd, old.settings.strength), (None, 5.0));
-    assert_eq!(old.label(), "link preset");
+fn a_record_of_the_model_reads() {
+    use super::settings::Recorded;
     let new: Recorded = serde_json::from_str(
         r#"{"preset":"blocks","settings":{"cell_roles":8,"gene_roles":8,"alpha":0.5,
             "gene_alpha":0.5,"weights":"symmetric","shift_sd":1.0,"strength":"inf",

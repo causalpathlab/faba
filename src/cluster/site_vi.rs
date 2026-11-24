@@ -26,7 +26,7 @@
 
 use super::count::sum_parts;
 use super::links::Links;
-use super::vi::{self, Hooks, Options};
+use super::vi::{self, Hooks, Options, Unit};
 use rand::rngs::SmallRng;
 use rayon::prelude::*;
 use statrs::function::gamma::{digamma, ln_gamma};
@@ -596,7 +596,7 @@ impl vi::Steps for SiteSteps<'_, '_> {
     fn units(&self) -> f64 {
         self.fit.data.reads()
     }
-    const UNIT: &'static str = "read";
+    const UNIT: Unit = Unit::Read;
 
     fn first(&mut self) -> Option<()> {
         let (all, cancelled) = (&self.all, self.cancelled);

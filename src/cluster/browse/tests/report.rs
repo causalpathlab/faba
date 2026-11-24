@@ -69,7 +69,7 @@ fn data_json(m: &crate::cluster::browse::Modules) -> String {
 #[test]
 fn the_reports_data_is_in_column_order() {
     let head = r#"{"title":"gene modules × cell modules · m6a","modality":"m6a","on":"methylated","off":"unmethylated","perCell":false,"cellNames":"#;
-    let tail = r#","cellLabels":["1.6","1.4"],"allLabel":"3.0","diagonal":["M2","M1"],"modules":[{"name":"M2","size":1,"range":1.5,"genes":[{"name":"GENE3","chr":"chr1","lo":-40,"len":100,"exons":[],"sites":[{"pos":50,"c":[[30.0,40.0],[10.0,40.0]],"s":[40,40,12]}]}]},{"name":"M1","size":2,"range":0.2,"genes":[{"name":"GENE1","chr":"chr1","lo":50,"len":350,"exons":[[0,70],[230,351]],"sites":[{"pos":50,"c":[[8.0,10.0],[1.0,10.0]],"s":[20,20,9]},{"pos":250,"c":[[5.0,10.0],[0.0,0.0]],"s":[10,10,4]}]},{"name":"GENE2","chr":"chr1","lo":0,"len":100,"exons":[],"sites":[{"pos":50,"c":[[1.0,2.0],[0.0,0.0]],"w":[[1.0,2.0],[3.0,4.0]],"s":[4,2,3]}]}]}],"model":{"why":"no run record (m6a_blockmodel.run.json) beside the tables"},"trace":{"why":"no m6a_trace.parquet beside the tables: older fits kept no trace (fit again with `faba cluster`)"}}"#;
+    let tail = r#","cellLabels":["1.6","1.4"],"allLabel":"3.0","diagonal":["M2","M1"],"modules":[{"name":"M2","size":1,"range":1.5,"genes":[{"name":"GENE3","chr":"chr1","lo":-40,"len":100,"exons":[],"sites":[{"pos":50,"c":[[30.0,40.0],[10.0,40.0]],"s":[40,40,12]}]}]},{"name":"M1","size":2,"range":0.2,"genes":[{"name":"GENE1","chr":"chr1","lo":50,"len":350,"exons":[[0,70],[230,351]],"sites":[{"pos":50,"c":[[8.0,10.0],[1.0,10.0]],"s":[20,20,9]},{"pos":250,"c":[[5.0,10.0],[0.0,0.0]],"s":[10,10,4]}]},{"name":"GENE2","chr":"chr1","lo":0,"len":100,"exons":[],"sites":[{"pos":50,"c":[[1.0,2.0],[0.0,0.0]],"w":[[1.0,2.0],[3.0,4.0]],"s":[4,2,3]}]}]}],"model":{"why":"no run record (m6a_blockmodel.run.json) beside the tables"},"trace":{"why":"no m6a_trace.parquet beside the tables"}}"#;
     for (m, names) in [loaded(), super::swapped()]
         .iter()
         .zip([r#"["C1","C2"]"#, r#"["C2","C1"]"#])
@@ -108,18 +108,19 @@ fn the_page_holds_its_title_fragment_and_data() {
     }
 }
 
-/// The page's trace: each chain's points as saved, in its terminal colour,
-/// the burn-in and sweeps to mark, and the verdict's words and advice.
+/// The page's trace: each restart's points as saved, in its terminal
+/// colour, the k-means start and steps to mark, and the verdict's words and
+/// advice.
 #[test]
 fn the_report_draws_the_trace_with_its_verdict() {
-    let m = super::trace::load(1.31, true);
+    let m = super::trace::load(false, true);
     let data = serde_json::to_value(report::data(&m, &Default::default())).unwrap();
     let t = &data["trace"];
-    let chains = t["chains"].as_array().unwrap();
-    assert_eq!(chains.len(), 2);
-    let saved = super::trace::chains([0.0, 0.5]);
-    for (i, c) in chains.iter().enumerate() {
-        assert_eq!(c["name"], format!("chain {i}"));
+    let restarts = t["restarts"].as_array().unwrap();
+    assert_eq!(restarts.len(), 2);
+    let saved = super::trace::restarts([0.0, 0.5]);
+    for (i, c) in restarts.iter().enumerate() {
+        assert_eq!(c["name"], format!("restart {i}"));
         assert!(c["color"].as_str().unwrap().starts_with('#'), "{c}");
         let points: Vec<(usize, f64)> = serde_json::from_value(c["points"].clone()).unwrap();
         assert_eq!(points.len(), saved[i].len());
@@ -127,28 +128,30 @@ fn the_report_draws_the_trace_with_its_verdict() {
             assert!(p.0 == q.0 && (p.1 - q.1).abs() < 1e-3, "{p:?} {q:?}");
         }
     }
-    assert_ne!(chains[0]["color"], chains[1]["color"]);
+    assert_ne!(restarts[0]["color"], restarts[1]["color"]);
     assert_eq!(
-        (t["sweeps"].as_u64(), t["burnIn"].as_u64()),
+        (t["steps"].as_u64(), t["warmup"].as_u64()),
         (Some(200), Some(20))
     );
-    assert_eq!(t["rhat"].as_f64(), Some(1.31));
     assert_eq!(t["converged"], false);
-    assert_eq!(t["said"], "R-hat 1.31: chains disagree");
-    assert_eq!(
-        t["advice"],
-        super::super::super::progress::advice::advice_again()
+    assert!(
+        t["said"]
+            .as_str()
+            .unwrap()
+            .starts_with("ELBO still rising after 30 epochs"),
+        "{t}"
     );
+    assert_eq!(t["advice"], "run again with --epochs 360");
 }
 
-/// Older tables kept no trace: the section says why instead.
+/// Tables without a trace: the section says why instead.
 #[test]
 fn without_a_trace_the_report_says_why() {
-    let m = super::trace::load(1.02, false);
+    let m = super::trace::load(true, false);
     let data = serde_json::to_value(report::data(&m, &Default::default())).unwrap();
     let why = data["trace"]["why"].as_str().unwrap();
     assert!(why.contains("no m6a_trace.parquet"), "{why}");
-    assert!(data["trace"].get("chains").is_none());
+    assert!(data["trace"].get("restarts").is_none());
 }
 
 /// The Model section's own parts (heading, settings, diagram, legend) sit

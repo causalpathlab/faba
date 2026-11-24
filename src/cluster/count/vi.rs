@@ -30,7 +30,7 @@
 //! the epoch's start at no extra cost.
 
 use super::{sum_parts, Counts, Settings};
-use crate::cluster::vi::{self, Hooks, Options};
+use crate::cluster::vi::{self, Hooks, Options, Unit};
 use rand::rngs::SmallRng;
 use rayon::prelude::*;
 use special::Gamma as _;
@@ -632,7 +632,7 @@ impl vi::Steps for CountSteps<'_, '_> {
     fn units(&self) -> f64 {
         self.fit.counts.total()
     }
-    const UNIT: &'static str = "count";
+    const UNIT: Unit = Unit::Count;
 
     fn first(&mut self) -> Option<()> {
         let cache = self.globals.cache();

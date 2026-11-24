@@ -6,7 +6,7 @@ use crate::cluster::progress::advice::Verdict;
 
 /// A restart's trace: its first 10 points a climb from far below, then
 /// `level` at each of the next `n` points.
-fn chain(n: usize, level: impl Fn(usize) -> f64) -> Vec<(usize, f64)> {
+fn restart(n: usize, level: impl Fn(usize) -> f64) -> Vec<(usize, f64)> {
     (0..10)
         .map(|i| (i + 1, -1000.0))
         .chain((0..n).map(|i| (i + 11, level(i))))
@@ -21,11 +21,17 @@ fn cells(line: &str) -> String {
 #[test]
 fn each_restart_is_a_line_on_one_scale_after_its_climb() {
     let traces = [
-        chain(90, |_| 10.0),
-        chain(90, |_| 0.0),
-        chain(90, |i| i as f64 / 89.0 * 10.0),
+        restart(90, |_| 10.0),
+        restart(90, |_| 0.0),
+        restart(90, |i| i as f64 / 89.0 * 10.0),
     ];
-    let v = Verdict::vi(true, false, (90, 200), 3, (0.0, "read"));
+    let v = Verdict::vi(
+        true,
+        false,
+        (90, 200),
+        3,
+        (0.0, crate::cluster::vi::Unit::Read),
+    );
     let out = lines(&traces, &v, 30);
     assert_eq!(out.len(), 1 + 3 + 2, "{out:#?}");
     assert!(
@@ -50,8 +56,14 @@ fn each_restart_is_a_line_on_one_scale_after_its_climb() {
 /// Fewer points than cells: a cell per point.
 #[test]
 fn a_short_trace_takes_a_cell_per_point() {
-    let traces = [chain(5, |i| i as f64), chain(5, |i| 4.0 - i as f64)];
-    let v = Verdict::vi(false, false, (5, 5), 2, (0.4, "read"));
+    let traces = [restart(5, |i| i as f64), restart(5, |i| 4.0 - i as f64)];
+    let v = Verdict::vi(
+        false,
+        false,
+        (5, 5),
+        2,
+        (0.4, crate::cluster::vi::Unit::Read),
+    );
     let out = lines(&traces, &v, 30);
     // A tenth of 15 points is one: the first climbing point is left out.
     assert_eq!(cells(&out[1]).chars().count(), 14);
@@ -59,12 +71,18 @@ fn a_short_trace_takes_a_cell_per_point() {
     assert!(out[4].contains("--epochs 10"), "{out:#?}");
 }
 
-/// A flat trace (every chain at one level) draws mid-height, not a NaN.
+/// A flat trace (every restart at one level) draws mid-height, not a NaN.
 #[test]
 fn flat_traces_draw_at_mid_height() {
     let flat: Vec<(usize, f64)> = (1..=20).map(|n| (n, 3.0)).collect();
     let traces = [flat.clone(), flat];
-    let v = Verdict::vi(true, false, (20, 40), 2, (0.0, "read"));
+    let v = Verdict::vi(
+        true,
+        false,
+        (20, 40),
+        2,
+        (0.0, crate::cluster::vi::Unit::Read),
+    );
     let out = lines(&traces, &v, 10);
     assert_eq!(cells(&out[1]), "▄".repeat(10));
 }

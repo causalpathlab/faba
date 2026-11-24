@@ -13,7 +13,15 @@ use crate::cluster::FitData;
 /// makes the commit fail.
 #[test]
 fn a_cancel_and_a_commit_exclude_each_other() {
-    let verdict = || advice::Verdict::vi(true, false, (3, 10), 1, (0.0, "read"));
+    let verdict = || {
+        advice::Verdict::vi(
+            true,
+            false,
+            (3, 10),
+            1,
+            (0.0, crate::cluster::vi::Unit::Read),
+        )
+    };
     let p = Progress::new(1);
     p.optimised(verdict()).unwrap();
     assert!(!p.cancel() && !p.cancelled());

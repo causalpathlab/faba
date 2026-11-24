@@ -137,3 +137,23 @@ fn the_saved_command_carries_no_removed_flag() {
     let argv = command(&parse_cluster(&["faba", "/x.zarr", "--model", "blocks"]));
     assert_eq!(argv, vec!["cluster".to_string(), "/x.zarr".to_string()]);
 }
+
+/// Each `--batch-map` pair, given or answered when asked, is in the saved
+/// command, so that it runs again off a terminal.
+#[test]
+fn the_saved_command_keeps_each_batch_map() {
+    let mut args = parse_cluster(&[
+        "faba",
+        "--within",
+        "/c/count_blockmodel.run.json",
+        "--batch-map",
+        "a=x",
+    ]);
+    args.batch_map.push("b=y".into());
+    let argv = command(&args);
+    let maps: Vec<&str> = (argv.windows(2))
+        .filter(|w| w[0] == "--batch-map")
+        .map(|w| w[1].as_str())
+        .collect();
+    assert_eq!(maps, ["a=x", "b=y"], "{argv:?}");
+}
