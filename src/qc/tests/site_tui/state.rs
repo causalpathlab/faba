@@ -122,6 +122,24 @@ fn a_state_sets_what_it_names_and_refuses_what_it_cannot() {
     assert!(e.contains("cluster_view's, not qc_view's"), "{e}");
 }
 
+/// A set is all or nothing: a state with a bad key, after keys that
+/// would change the view, leaves the view as it was (state and figure).
+#[test]
+fn a_refused_state_changes_nothing() {
+    let t = table(M6A, 300);
+    let mut p = viewer(&t);
+    let (state, figure) = (p.view_state(), saved(&p));
+    let bad = json!({
+        "thresholds": { "site_min_coverage": 25 },
+        "titles": { "x": { "pv": "TITLE1" } },
+        "focus": "site_min_nothing",
+    });
+    let e = format!("{:#}", crate::tui::live::set_all(&mut p, &bad).unwrap_err());
+    assert!(e.contains("no knob site_min_nothing"), "{e}");
+    assert_eq!(p.view_state(), state);
+    assert_eq!(saved(&p), figure);
+}
+
 /// A view `s` draws in the view style with `args` over it, both
 /// marginals on.
 fn styled(t: &SiteTable, args: PanelArgs) -> SitePicker<'_> {

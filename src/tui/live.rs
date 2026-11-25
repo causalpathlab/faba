@@ -227,13 +227,24 @@ impl Drop for Control {
     }
 }
 
+/// Arrange `view` as `state` says, all or nothing: when a key is refused,
+/// the view is put back as it was before (and drawn again), and the
+/// refusal returned.
+pub fn set_all(view: &mut (impl Live + ?Sized), state: &Value) -> anyhow::Result<()> {
+    let before = view.view_state();
+    view.set_view_state(state).inspect_err(|_| {
+        // What the view itself wrote sets again; nothing is lost if not.
+        let _ = view.set_view_state(&before);
+    })
+}
+
 /// What the view says to `request`.
 fn answer(view: &mut (impl Live + ?Sized), request: Request) -> anyhow::Result<Value> {
     match request {
         Request::State => Ok(snapshot(view)),
         Request::Set { state } => {
             check_view(&state, view.view_name())?;
-            view.set_view_state(&state)?;
+            set_all(view, &state)?;
             Ok(snapshot(view))
         }
         Request::Export {
