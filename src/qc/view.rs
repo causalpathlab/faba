@@ -25,7 +25,7 @@ use super::layout::{scan_input_dir, InputLayout, SITE_MODALITIES};
 use super::matrix::{open_matrix, row_nnz_over_columns, select_columns};
 use super::run::{cell_rule, counts_table, write_dry_plots, write_html};
 use super::site_plot::PanelArgs;
-use super::site_tui::{qc_flags, run_site_viewer, Batch, CellsShared};
+use super::site_tui::{qc_flags, run_site_viewer, write_view_figure, Batch, CellsShared};
 use super::sites::{accumulate_site_cells, site_table_of, Criterion, SiteCells, SiteTable};
 use crate::common::{read_lines, Args};
 use crate::figure::style::{Sheet, StyleArgs};
@@ -113,12 +113,57 @@ pub struct QcViewArgs {
         help = "Genes to list first in the view's gene list (symbols or gene keys)"
     )]
     pub genes: Vec<Box<str>>,
+
+    #[arg(
+        long = "view-state",
+        value_name = "FILE",
+        value_hint = clap::ValueHint::FilePath,
+        help = "Arrange the view as FILE says: a state a live view's export kept beside its figure ({prefix}.view.json)",
+        long_help = "Arrange the view as FILE says: the JSON state a live view's export kept\n\
+                     beside its figure ({prefix}.view.json), or one an agent read from a live\n\
+                     view: the modality, the knob in focus, each threshold, each knob's scale,\n\
+                     each count scale, the 2D panels and the one in focus, the arms' look, the\n\
+                     key and where it goes, the axis titles, the panel style and marginals. A\n\
+                     key left out stays as the view opens. With --figure, the figure is drawn from\n\
+                     it without the view."
+    )]
+    pub view_state: Option<Box<str>>,
+
+    #[arg(
+        long = "figure",
+        value_name = "PREFIX",
+        value_hint = clap::ValueHint::FilePath,
+        help = "Write the panel `s` saves (as --view-state arranges the view) to PREFIX.pdf and PREFIX.png, instead of opening the view",
+        long_help = "Write the panel the view's `s` saves, as --view-state arranges the view\n\
+                     (else as it opens), to PREFIX.{format} for each --format (default pdf and\n\
+                     png; none may exist), at --fig-width, --fig-height and the style asked\n\
+                     for, instead of opening the view."
+    )]
+    pub figure: Option<Box<str>>,
+
+    #[arg(
+        long = "format",
+        value_enum,
+        value_delimiter = ',',
+        requires = "figure",
+        help = "With --figure: the files it writes, of svg, pdf and png (default pdf,png)"
+    )]
+    pub format: Vec<crate::figure::Format>,
 }
 
 impl QcViewArgs {
     /// Whether it writes or prints instead of opening the view.
     fn batch(&self) -> bool {
-        self.html.is_some() || self.plots || self.batch_process
+        self.html.is_some() || self.plots || self.batch_process || self.figure.is_some()
+    }
+
+    /// What --figure writes: --format, else a PDF and a PNG.
+    fn formats(&self) -> Vec<crate::figure::Format> {
+        use crate::figure::Format;
+        match self.format.is_empty() {
+            true => vec![Format::Pdf, Format::Png],
+            false => self.format.clone(),
+        }
     }
 
     /// The session the view runs in; none when it writes or prints
@@ -192,15 +237,20 @@ fn reasons(dropped: &RecordBatch) -> anyhow::Result<Vec<Box<str>>> {
     Ok((0..r.len()).map(|i| r.value(i).into()).collect())
 }
 
+/// Each batch's cells, by name.
+type Names = FxHashMap<Box<str>, FxHashSet<Box<str>>>;
+
 /// Per modality with a table, the cells of `layout`'s `_site` matrices
 /// with a converted read at each site: of each batch, those `keep` names
-/// (every cell with a read where it names none).
+/// (every cell with a read where it names none); and the same over the
+/// `controls` batches alone, the control arm's.
 fn count_site_cells(
     layout: &InputLayout,
     tables: &FxHashMap<Box<str>, SiteTable>,
-    keep: &FxHashMap<Box<str>, FxHashSet<Box<str>>>,
-) -> anyhow::Result<SiteCells> {
+    (keep, controls): (&Names, &FxHashSet<Box<str>>),
+) -> anyhow::Result<(SiteCells, SiteCells)> {
     let mut out: SiteCells = FxHashMap::default();
+    let mut control: SiteCells = FxHashMap::default();
     for m in &layout.matrices {
         let Some(t) = m.site_modality().and_then(|s| tables.get(s)) else {
             continue;
@@ -208,10 +258,15 @@ fn count_site_cells(
         let data = open_matrix(&m.path)?;
         let cols = select_columns(data.as_ref(), &data.column_names()?, keep.get(&m.batch));
         let nnz = row_nnz_over_columns(data.as_ref(), &cols)?;
+        let rows = data.row_names()?;
         let acc = out.entry(t.modality.clone()).or_default();
-        accumulate_site_cells(&data.row_names()?, &nnz, t.converted_channel(), acc);
+        accumulate_site_cells(&rows, &nnz, t.converted_channel(), acc);
+        if controls.contains(&m.batch) {
+            let acc = control.entry(t.modality.clone()).or_default();
+            accumulate_site_cells(&rows, &nnz, t.converted_channel(), acc);
+        }
     }
-    Ok(out)
+    Ok((out, control))
 }
 
 /// The batch a file in a qc output is the `suffix` of, when it is.
@@ -333,13 +388,17 @@ pub fn open(input: &str, gff: Option<&str>) -> anyhow::Result<Opened> {
         }
         tables.insert(Box::from(*m), site_table_of(batch, m)?);
     }
-    let site_cells = match record
+    let controls = super::sites::control_batches(&dir);
+    let (site_cells, control_cells) = match record
         .as_ref()
-        .map(|_| site_cells_of_run(&dir, &layout, &tables))
+        .map(|_| site_cells_of_run(&dir, &layout, &tables, &controls))
     {
         Some(counted) => counted?,
-        None => count_site_cells(&layout, &tables, &FxHashMap::default())?,
+        None => count_site_cells(&layout, &tables, (&FxHashMap::default(), &controls))?,
     };
+    for (m, t) in tables.iter_mut() {
+        super::sites::set_control_cells(t, control_cells.get(m));
+    }
     for (m, (n_kept, why)) in &dropped {
         let t = &tables[m];
         let n = site_cells.get(m).map(|acc| t.cells_per_site(acc));
@@ -383,7 +442,8 @@ fn site_cells_of_run(
     dir: &Path,
     layout: &InputLayout,
     tables: &FxHashMap<Box<str>, SiteTable>,
-) -> anyhow::Result<SiteCells> {
+    controls: &FxHashSet<Box<str>>,
+) -> anyhow::Result<(SiteCells, SiteCells)> {
     let input = crate::run_record::input_of(&dir.join(RECORD), "fileset")
         .map(|p| PathBuf::from(&*p))
         .filter(|p| p.is_dir());
@@ -392,10 +452,10 @@ fn site_cells_of_run(
         .map(|p| scan_input_dir(&p.to_string_lossy()))
         .transpose()?;
     match read {
-        Some(input) => count_site_cells(&input, tables, &kept_cells(layout)?),
+        Some(input) => count_site_cells(&input, tables, (&kept_cells(layout)?, controls)),
         None => {
-            let own = count_site_cells(layout, tables, &FxHashMap::default())?;
-            if !own.is_empty() {
+            let own = count_site_cells(layout, tables, (&FxHashMap::default(), controls))?;
+            if !own.0.is_empty() {
                 log::warn!(
                     "{}: the directory qc read is not on this machine; cells per site are \
                      counted off this one's `_site` matrices, so every dropped site reads 0",
@@ -429,6 +489,15 @@ fn problems(args: &QcViewArgs, sheet: &Sheet) -> anyhow::Result<()> {
         use super::site_tui::{knob_least, knob_room};
         knob_room(sheet, knob_least(sheet, None), "a qc figure")?;
     }
+    if let Some(prefix) = args.figure.as_deref() {
+        for f in args.formats() {
+            let path = format!("{prefix}.{}", f.extension());
+            anyhow::ensure!(
+                !Path::new(&path).exists(),
+                "--figure: {path} exists; faba qc-view never overwrites a file; name another prefix"
+            );
+        }
+    }
     Ok(())
 }
 
@@ -436,6 +505,9 @@ pub fn run_qc_view(args: &QcViewArgs) -> anyhow::Result<()> {
     let plan = args.panels.plan()?;
     let sheet = Sheet::new(crate::figure::size::Figure::Qc, &args.size, &args.style)?;
     problems(args, &sheet)?;
+    let state = (args.view_state.as_deref())
+        .map(crate::tui::live::read_state)
+        .transpose()?;
     let o = open(&args.input_dir, args.gff.as_deref())?;
     if !o.applied {
         log::info!("{}: no qc run here; no thresholds, every site kept", o.dir);
@@ -446,11 +518,22 @@ pub fn run_qc_view(args: &QcViewArgs) -> anyhow::Result<()> {
     }
     let genes = (o.gff.as_deref(), &args.genes[..]);
     let tables = (&o.tables, &o.site_cells);
+    if let Some(prefix) = args.figure.as_deref() {
+        let viewed = (plan.clone(), sheet);
+        let to = (prefix, &args.formats()[..]);
+        let written =
+            write_view_figure(&o.dir, tables, &o.filter, genes, viewed, state.as_ref(), to)?;
+        log::info!("--figure: wrote {}", written.join(", "));
+        if args.html.is_none() && !args.plots && !args.batch_process {
+            return Ok(());
+        }
+    }
     // Without a terminal, the table is printed as with --batch-process.
     let writes = args.html.is_some() || args.plots;
     if !writes && !crate::tui::batch(args.batch_process, "faba qc-view") {
         let viewed = (plan, sheet);
-        return run_site_viewer(&o.dir, tables, &o.filter, genes, viewed, o.cells.clone());
+        let cells = (o.cells.clone(), state.as_ref());
+        return run_site_viewer(&o.dir, tables, &o.filter, genes, viewed, cells);
     }
     let scales = (plan.scales, plan.bins_on(&sheet));
     let mut batch = Batch::new(

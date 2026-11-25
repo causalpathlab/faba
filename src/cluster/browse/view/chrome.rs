@@ -113,7 +113,7 @@ impl ModulesView<'_> {
                     keys.push(("Del", "unpin"));
                 }
                 keys.extend([
-                    ("Alt-drag", "pin onto genes"),
+                    ("Ctrl-drag", "pin onto genes"),
                     ("PgUp/PgDn", "page"),
                     if self.sort == Sort::Module {
                         ("o", "sort")
@@ -132,7 +132,7 @@ impl ModulesView<'_> {
                     keys.push(("↑/↓", "pinned gene"));
                 }
                 if !self.pins.is_empty() {
-                    keys.extend([("Del", "unpin"), ("Alt-drag", "move, off to unpin")]);
+                    keys.extend([("Del", "unpin"), ("Ctrl-drag", "move, off to unpin")]);
                 }
                 keys
             }
@@ -153,7 +153,7 @@ impl ModulesView<'_> {
         if self.col_fit < self.shown.len() {
             keys.push(("[/]", "cell modules"));
         }
-        keys.extend([("Tab", "pane"), ("/", "find gene")]);
+        keys.extend([("Tab", "pane"), ("/", "find gene"), ("s", "save")]);
         if self.report.is_some() {
             keys.push((crate::tui::REPORT_KEY, "export report"));
         }
@@ -170,7 +170,7 @@ impl ModulesView<'_> {
 
     /// Every key where the focus is, for the `?` pop-up: a full pane's
     /// own, or the panes'.
-    pub(super) fn help_keys(&self) -> Vec<(&'static str, &'static str)> {
+    pub(in crate::cluster::browse) fn help_keys(&self) -> Vec<(&'static str, &'static str)> {
         let close = [("Esc", "close"), ("q", "quit"), ("?", "these keys")];
         match self.full {
             Some(Full::Trace) => return [&[("t", "close the trace")][..], &close].concat(),
@@ -238,7 +238,11 @@ impl ModulesView<'_> {
         if self.col_fit < self.shown.len() {
             keys.push(("[ ]", "scroll the cell modules"));
         }
-        keys.extend([("/", "find a gene"), ("t", "trace")]);
+        keys.extend([
+            ("/", "find a gene"),
+            ("t", "trace"),
+            ("s", "save the screen as a figure (PDF)"),
+        ]);
         if self.report.is_some() {
             keys.push((crate::tui::REPORT_KEY, "export the report"));
         }

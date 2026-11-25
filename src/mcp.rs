@@ -29,6 +29,7 @@ use crate::mcp::tools::docs::docs;
 use crate::mcp::tools::producers::{apa, atoi, count, dartseq, depth, run, snp};
 use crate::mcp::tools::qc::{qc, qc_view, site_plot};
 use crate::mcp::tools::sites::{metagene, pileup, pwm};
+use crate::mcp::tools::views::{view_export, view_list, view_open, view_state};
 use anyhow::{bail, Result};
 use clap::Args;
 use legume_mcp::{Call, Content, Handler, ServerInfo, ToolSpec};
@@ -75,6 +76,11 @@ modules by gene counts (it writes count_blockmodel.run.json); then, with \
 `within` naming that record, m6a or atoi within each of its cell modules. \
 The second round writes {m}_within.run.json, which cluster_view opens: the \
 list of its fits, and with `group` the fit within one cell module.
+6. When the user wants to arrange a figure by eye: view_open (qc_view or \
+cluster_view) returns an `attach` line such as `faba attach faba-qc-view-1`; \
+give it to the user to run in their terminal. When they say they are done, \
+view_state reads what they chose and view_export draws that figure. \
+view_list lists the live views.
 
 The producers (count, depth, atoi, dartseq, apa, snp, run, qc, cluster) take \
 `background`: on large BAMs set it, and the call returns a job id at once.
@@ -144,6 +150,10 @@ impl Handler for Faba {
             "pileup" => return pileup(&a, cx),
             "metagene" => return metagene(&a, cx),
             "pwm" => return pwm(&a, cx),
+            "view_open" => return view_open(&a, cx),
+            "view_list" => return view_list(&a, cx),
+            "view_state" => return view_state(&a, cx),
+            "view_export" => return view_export(&a, cx),
             _ => bail!("no tool {name}"),
         };
         Ok(vec![Content::Json(v)])

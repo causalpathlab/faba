@@ -10,7 +10,7 @@
 //! every cell: no cell QC), and writes figures only.
 
 use super::args::SiteFilterArgs;
-use super::arms::{ArmLook, Front, PAxis};
+use super::arms::{ArmLook, CountScale, Front, KeyAt, PAxis, YScales};
 use super::layout::{scan_input_dir, InputLayout, SITE_MODALITIES};
 use super::matrix::{open_matrix, row_nnz_over_columns, select_columns};
 use super::pairs::{self, Axis as Quantity, Cache, Sites};
@@ -95,6 +95,38 @@ pub struct PanelArgs {
         help = "With --style view, keep each histogram's key (its series and their colours) under --panel-only, which drops it otherwise"
     )]
     pub key: bool,
+
+    #[arg(
+        long = "key-at",
+        value_enum,
+        value_name = "right|top|inside|alone",
+        help = "With --style view, where each histogram's key goes: right (beside the plot, which narrows by its width; a key that would leave the plot under 60% of the panel's width is drawn smaller, else at the top), top (in a row above the plot, two rows or shorter names where one does not fit; the plot keeps its width, losing that row's height), inside (over the plot's top right corner, the plot keeping its width) or alone (none in the panel; {stem}_key, one key for a row of panels) (default: right)"
+    )]
+    pub key_at: Option<KeyAt>,
+
+    #[arg(
+        long = "yscale",
+        value_name = "Q=linear|sqrt|log1p,...",
+        value_delimiter = ',',
+        help = "With --style view, a histogram's count axis, per quantity (pv=sqrt) or one for all (log1p), e.g. pv=sqrt,cells=log1p (default: sqrt)"
+    )]
+    pub yscale: Vec<String>,
+
+    #[arg(
+        long = "marginal-scale",
+        value_enum,
+        value_name = "linear|sqrt|log1p",
+        help = "With --style view, how deep a marginal's bar is for its sites, its axis ticked at a round count over its busiest bar (default: log1p)"
+    )]
+    pub marginal_scale: Option<CountScale>,
+
+    #[arg(
+        long = "count-scale",
+        value_enum,
+        value_name = "linear|sqrt|log1p",
+        help = "With --style view, how dark a 2D square is for its sites (default: log1p)"
+    )]
+    pub count_scale: Option<CountScale>,
 
     #[arg(
         long = "scale",
@@ -220,7 +252,17 @@ impl Titles {
 }
 
 /// How the site panels are drawn (`--style`).
-#[derive(clap::ValueEnum, Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+#[derive(
+    clap::ValueEnum,
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum PanelStyle {
     /// The paper panel: kept and removed stacked, the thresholds as edges.
@@ -333,10 +375,19 @@ impl PanelArgs {
         view_only(self.p_axis.is_some(), "--p-axis")?;
         view_only(self.front.is_some(), "--front")?;
         view_only(self.key, "--key")?;
+        view_only(self.key_at.is_some(), "--key-at")?;
+        view_only(!self.yscale.is_empty(), "--yscale")?;
+        view_only(self.marginal_scale.is_some(), "--marginal-scale")?;
+        view_only(self.count_scale.is_some(), "--count-scale")?;
+        let own = ArmLook::default();
         let look = ArmLook {
             front: self.front.unwrap_or_default(),
             p_axis: self.p_axis.unwrap_or_default(),
             key: self.key,
+            key_at: self.key_at.unwrap_or_default(),
+            y: YScales::parse(&self.yscale)?,
+            marginal: self.marginal_scale.unwrap_or(own.marginal),
+            count: self.count_scale.unwrap_or(own.count),
         };
         Ok(Plan {
             hist,
@@ -547,15 +598,20 @@ fn view_figures(
     let (hist, pair) = (sheet.fill(|| HIST_OWN), sheet.fill(|| PAIR_OWN));
     let (hist_style, pair_style) = (sheet.style(hist), sheet.style(pair));
     let bins = plan.bins.unwrap_or(pairs::BINS);
-    let hists = (hists.par_iter()).map(|&q| Figure {
-        stem: hist_stem(modality, q),
-        svg: super::site_tui::view_hist(
+    let hists = (hists.par_iter()).flat_map_iter(|&q| {
+        let stem = hist_stem(modality, q);
+        let (svg, key) = super::site_tui::view_hist(
             s,
             (f, q),
             (plan.bins, kept_cells),
             (hist, &hist_style),
             (plan.look, &plan.titles),
-        ),
+        );
+        let key = key.map(|svg| Figure {
+            stem: format!("{stem}_key"),
+            svg,
+        });
+        std::iter::once(Figure { stem, svg }).chain(key)
     });
     let marginals = (plan.marginals, plan.marginal_size);
     let how = pairs::PairLook {
@@ -890,17 +946,30 @@ fn auto_ranked(s: &Sites) -> Vec<(Quantity, Quantity)> {
 
 /// Cells per site of `t`, aligned to it: every cell with a converted read
 /// at the site, over every cell of every batch's `_site` matrix (no cell
-/// QC); none without such a matrix.
-pub fn site_cells(layout: &InputLayout, t: &SiteTable) -> anyhow::Result<Option<Vec<usize>>> {
-    let mut acc = FxHashMap::default();
-    let mut any = false;
+/// QC); none without such a matrix. The control arm's batches of `dir`
+/// ([`super::sites::control_batches`]) counted alone are set on `t`, to
+/// draw that arm beside the signal's.
+pub fn site_cells(
+    layout: &InputLayout,
+    t: &mut SiteTable,
+    dir: &str,
+) -> anyhow::Result<Option<Vec<usize>>> {
+    let controls = super::sites::control_batches(std::path::Path::new(dir));
+    let (mut acc, mut control) = (FxHashMap::default(), FxHashMap::default());
+    let (mut any, mut any_control) = (false, false);
     for m in (layout.matrices.iter()).filter(|m| m.site_modality() == Some(&*t.modality)) {
         any = true;
         let data = open_matrix(&m.path)?;
         let cols = select_columns(data.as_ref(), &data.column_names()?, None);
         let nnz = row_nnz_over_columns(data.as_ref(), &cols)?;
-        accumulate_site_cells(&data.row_names()?, &nnz, t.converted_channel(), &mut acc);
+        let rows = data.row_names()?;
+        accumulate_site_cells(&rows, &nnz, t.converted_channel(), &mut acc);
+        if controls.contains(&m.batch) {
+            any_control = true;
+            accumulate_site_cells(&rows, &nnz, t.converted_channel(), &mut control);
+        }
     }
+    super::sites::set_control_cells(t, any_control.then_some(&control));
     Ok(any.then(|| t.cells_per_site(&acc)))
 }
 
@@ -986,7 +1055,14 @@ pub fn run_site_plot(args: &SitePlotArgs) -> anyhow::Result<()> {
     let record = crate::run_record::RunRecord::start("site-plot", out)
         .input("fileset", Some(input))
         .options(args);
-    let outcome = draw(&layout, modality, &args.site.cut(), &plan, sheet, out);
+    let outcome = draw(
+        (&layout, input),
+        modality,
+        &args.site.cut(),
+        &plan,
+        sheet,
+        out,
+    );
     record.finish(&outcome);
     for path in outcome? {
         println!("{path}");
@@ -997,7 +1073,7 @@ pub fn run_site_plot(args: &SitePlotArgs) -> anyhow::Result<()> {
 /// The figures of `modality` in `layout`, saved under `out` in parallel;
 /// the paths, in the figures' order.
 fn draw(
-    layout: &InputLayout,
+    (layout, dir): (&InputLayout, &str),
     modality: &str,
     cut: &Cut,
     plan: &Plan,
@@ -1005,12 +1081,12 @@ fn draw(
     out: &str,
 ) -> anyhow::Result<Vec<String>> {
     use rayon::prelude::*;
-    let t = read_site_table(&layout.site_tables[modality], modality)?;
+    let mut t = read_site_table(&layout.site_tables[modality], modality)?;
     anyhow::ensure!(
         !t.is_empty(),
         "{modality}_sites.parquet has no sites to draw"
     );
-    let n_cells = site_cells(layout, &t)?;
+    let n_cells = site_cells(layout, &mut t, dir)?;
     let figures = Panels::new(&t, n_cells.as_deref(), cut, plan, sheet, true)?.figures();
     anyhow::ensure!(
         !figures.is_empty(),

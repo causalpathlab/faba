@@ -6,3 +6,4 @@ pub(super) mod docs;
 pub(super) mod producers;
 pub(super) mod qc;
 pub(super) mod sites;
+pub(super) mod views;

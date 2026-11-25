@@ -20,7 +20,7 @@ pub enum Scale {
 }
 
 impl Scale {
-    fn parse(s: &str) -> anyhow::Result<Self> {
+    pub fn parse(s: &str) -> anyhow::Result<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
             "linear" => Ok(Scale::Linear),
             "log" => Ok(Scale::Log),
@@ -29,19 +29,25 @@ impl Scale {
     }
 }
 
-/// Each quantity's [`Scale`], by `Quantity as usize`.
+/// Each quantity's [`Scale`], by `Quantity as usize`, and whether
+/// `--scale` asked for it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
-pub struct Scales([Scale; 7]);
+pub struct Scales([Scale; 7], #[serde(skip)] [bool; 7]);
 
 impl Default for Scales {
     fn default() -> Self {
-        Self(Quantity::ALL.map(Quantity::default_scale))
+        Self(Quantity::ALL.map(Quantity::default_scale), [false; 7])
     }
 }
 
 impl Scales {
     pub fn of(&self, q: Quantity) -> Scale {
         self.0[q as usize]
+    }
+
+    /// Whether `--scale` named `q`'s scale, not left it to its default.
+    pub fn asked(&self, q: Quantity) -> bool {
+        self.1[q as usize]
     }
 
     /// The defaults with `items` (`q=linear|log`, as `--scale` takes them)
@@ -54,14 +60,23 @@ impl Scales {
                 anyhow::bail!("--scale {item}: write it as QUANTITY=linear|log, e.g. pv=log");
             };
             let (q, s) = (Quantity::parse(q)?, Scale::parse(s)?);
-            anyhow::ensure!(
-                s == Scale::Linear || q.can_log(),
-                "--scale {item}: {} is signed and has no log scale; use linear",
-                q.key()
-            );
-            out.0[q as usize] = s;
+            out.set(q, s)
+                .map_err(|e| anyhow::anyhow!("--scale {item}: {e}"))?;
         }
         Ok(out)
+    }
+
+    /// `q` read on `s`, as asked for. Log is refused where it cannot
+    /// apply (signed log odds).
+    pub fn set(&mut self, q: Quantity, s: Scale) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            s == Scale::Linear || q.can_log(),
+            "{} is signed and has no log scale; use linear",
+            q.key()
+        );
+        self.0[q as usize] = s;
+        self.1[q as usize] = true;
+        Ok(())
     }
 }
 

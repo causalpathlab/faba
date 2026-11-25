@@ -7,7 +7,9 @@ use super::size::{self, Page, SizeArgs};
 use clap::{Args, ValueEnum};
 
 /// The colours kept and removed sites are drawn in.
-#[derive(ValueEnum, Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+#[derive(
+    ValueEnum, Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Palette {
     /// Kept (or the plot's own colours) in blue, removed in orange.

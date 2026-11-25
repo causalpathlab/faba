@@ -58,16 +58,18 @@ mod keys;
 mod mouse;
 mod pairs_view;
 mod report;
+mod state;
 mod writer;
 
 use annotation::*;
 use arm_hist::*;
 use column::*;
 pub(crate) use draw::{knob_least, knob_room, view_hist};
-use draw::{render_gff, render_leave, KNOB_Y_SCALE, LEGEND};
+use draw::{render_gff, render_leave, LEGEND};
 use genes::*;
 use keys::*;
 use mouse::*;
+pub use state::write_view_figure;
 pub use writer::{Figure, Writer};
 
 /// Width of HistPlot's y gutter.
@@ -288,7 +290,6 @@ struct SitePicker<'a> {
     focus: usize,
     /// x scale per criterion (`c as usize`), an index into its scales.
     x_scale: [usize; 8],
-    y_scale: Scale,
     column: Column,
     tally: Tally,
     /// The focused knob's histogram on both arms, at the thresholds now.
@@ -363,7 +364,6 @@ impl<'a> SitePicker<'a> {
             modality: 0,
             focus: 0,
             x_scale,
-            y_scale: KNOB_Y_SCALE,
             column,
             tally,
             arm_hist,
@@ -418,6 +418,11 @@ impl<'a> SitePicker<'a> {
 
     fn criterion(&self) -> Criterion {
         self.view().criteria[self.focus]
+    }
+
+    /// The focused knob's histogram's y scale (`y` steps it).
+    fn y_scale(&self) -> crate::qc::arms::CountScale {
+        self.arm_look.y.of(Axis::of(self.criterion()))
     }
 
     fn scale(&self) -> Scale {
@@ -576,10 +581,7 @@ impl<'a> SitePicker<'a> {
             style: plan.style,
             marginal_size: plan.marginal_size,
             // The arms as the view shows them now (`f`, `u`).
-            look: ArmLook {
-                key: plan.look.key,
-                ..self.arm_look
-            },
+            look: self.arm_look,
             scales: v.cache.scales,
             // The view style draws on the view's own bins unless asked.
             bins: match plan.style {
@@ -1161,21 +1163,27 @@ pub fn run_site_picker(
 /// tables at `filter`, as [`run_site_picker`] opens it but with nothing to
 /// apply: its knobs and 2D axes on `plan`'s scales, `s` saving the panel
 /// on screen as `plan` and `sheet` lay it out, each batch's `cells` on its
-/// page. Needs a terminal and at least one non-empty site table.
+/// page, arranged as `state` says (a `--view-state` file's, see
+/// [`state`]). Needs a terminal and at least one non-empty site table. In
+/// a named session its state is read, and its figure drawn, from outside
+/// ([`crate::tui::live`]).
 pub fn run_site_viewer(
     input_dir: &str,
     (tables, site_cells): (&FxHashMap<Box<str>, SiteTable>, &super::sites::SiteCells),
     filter: &SiteFilterArgs,
     genes: (Option<&str>, &[Box<str>]),
     (plan, sheet): (crate::qc::site_plot::Plan, Sheet),
-    cells: CellsShared,
+    (cells, state): (CellsShared, Option<&serde_json::Value>),
 ) -> anyhow::Result<()> {
     let scales = (plan.scales, plan.bins_on(&sheet));
     let mut picker = picker(input_dir, tables, site_cells, filter, genes, Some(scales))?;
     picker.cells = cells;
     picker.view_only(plan, sheet);
+    if let Some(state) = state {
+        state::set_from_file(&mut picker, state)?;
+    }
     picker.controls = Controls::new("qc_view").detect();
-    run_view(&mut picker)
+    crate::tui::run_live_view(&mut picker)
 }
 
 #[cfg(test)]

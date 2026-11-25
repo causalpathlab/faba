@@ -105,12 +105,31 @@ pub(in crate::mcp) fn qc_view(a: &Arguments, cx: &Call) -> Result<Vec<Content>> 
         true => Some(a.out_or(cx, (&named(&input, "qc_view"), ""), exists)?),
         false => None,
     };
-    // Neither the page nor the figures' folder is ever replaced.
-    let made: Vec<PathBuf> = html.iter().chain(&out).map(PathBuf::from).collect();
-    for p in html.iter().chain(&out) {
+    // The panel `s` saves, as a state arranges the view.
+    let figure = a.path_opt("figure")?;
+    let figures: Vec<String> = match &figure {
+        Some(prefix) => {
+            let formats: Vec<String> = a.strings("format")?;
+            let formats = match formats.is_empty() {
+                true => vec!["pdf".to_string(), "png".to_string()],
+                false => formats,
+            };
+            formats.iter().map(|f| format!("{prefix}.{f}")).collect()
+        }
+        None => Vec::new(),
+    };
+    // Neither the page, the figures' folder nor a figure is ever replaced.
+    let made: Vec<PathBuf> = (html.iter().chain(&out).chain(&figures))
+        .map(PathBuf::from)
+        .collect();
+    for p in html.iter().chain(&out).chain(&figures) {
         fresh(p)?;
     }
-    let cmd = command(&qc_view_argv(a, out.as_deref())?)?;
+    let mut argv = qc_view_argv(a, out.as_deref())?;
+    if let Some(prefix) = &figure {
+        argv.insert(2, format!("--figure={prefix}"));
+    }
+    let cmd = command(&argv)?;
     let printed = match made.is_empty() {
         true => cx.run_reading(cmd)?,
         false => cx.run_making(cmd, &made, &format!("the qc view of {input}"))?,
@@ -122,8 +141,12 @@ pub(in crate::mcp) fn qc_view(a: &Arguments, cx: &Call) -> Result<Vec<Content>> 
         "pairs": tsv_rows(pairs),
         "html": html.as_deref().map(absolute),
         "plots": out.as_ref().map(|o| absolute(&format!("{o}/qc_plots"))),
-        "note": "nothing cut or written but `plots` and `html` when asked; the counts are at the thresholds the qc run applied (none for a directory no qc run wrote): `removes` counts every site failing a threshold, `only_this` those failing it alone",
+        "figure": figures.iter().map(|f| absolute(f)).collect::<Vec<_>>(),
+        "note": "nothing cut or written but `plots`, `html` and `figure` when asked; the counts are at the thresholds the qc run applied (none for a directory no qc run wrote): `removes` counts every site failing a threshold, `only_this` those failing it alone",
     }))];
+    if let Some(png) = figures.iter().find(|f| f.ends_with(".png")) {
+        content.push(Content::Png(std::fs::read(png)?));
+    }
     if let Some(out) = &out {
         content.extend(qc_images(out)?);
     }

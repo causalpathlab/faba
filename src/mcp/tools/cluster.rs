@@ -6,7 +6,7 @@ use crate::mcp::run::{absolute, command, exists, figure_prefix, fresh, named, ru
 use anyhow::{bail, ensure, Context, Result};
 use legume_mcp::{Call, Content};
 use serde_json::{json, Value};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// `cluster`'s `batch_map`, as `--batch-map` takes each pair: from an
 /// object of `SITES: COUNT`, or a list of `SITES=COUNT`.
@@ -53,6 +53,14 @@ pub(in crate::mcp) fn cluster(a: &Arguments, cx: &Call) -> Result<Value> {
 
 pub(in crate::mcp) fn cluster_view(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
     let data = a.path("data")?;
+    // The screen, of one fit or many (`data` a sweep's folder with
+    // `each_fit`): its options are among the typed ones.
+    if let Some(screen) = a.path_opt("screen")? {
+        let mut argv = vec!["cluster-view".into(), data.clone()];
+        argv.extend(a.options("cluster_view")?);
+        argv.push("--batch-process".into());
+        return draw_screens(a, cx, argv, &data, &screen);
+    }
     let html = a.path_opt("html")?;
     if html.is_some() {
         no_levels_with_html(a)?;
@@ -206,6 +214,71 @@ fn draw_figures(
     Ok(std::iter::once(listed).chain(images).collect())
 }
 
+/// The most screens a call returns as images; the rest are listed.
+const SCREEN_IMAGES: usize = 12;
+
+/// Whether `a` asks for a screen each of several fits, groups or modules.
+fn many_screens(a: &Arguments) -> bool {
+    ["each_fit", "each_group", "each_module"]
+        .into_iter()
+        .any(|k| a.0.get(k).and_then(Value::as_bool) == Some(true))
+}
+
+/// The files one screen under `prefix` is written as: each `format`
+/// (default the PDF and the PNG).
+fn screen_files(a: &Arguments, prefix: &str) -> Result<Vec<PathBuf>> {
+    let formats = match a.strings("format")? {
+        f if f.is_empty() => vec!["pdf".to_string(), "png".to_string()],
+        f => f,
+    };
+    let bare = [".pdf", ".svg", ".png"]
+        .iter()
+        .find_map(|e| prefix.strip_suffix(e))
+        .unwrap_or(prefix);
+    Ok(formats
+        .iter()
+        .map(|f| PathBuf::from(format!("{bare}.{f}")))
+        .collect())
+}
+
+/// The screens `a` asks for of `data`, written by `argv` with its
+/// `--screen`: one under the prefix `screen`, or a file each in the new
+/// directory `screen` (see [`many_screens`]); the paths written, and the
+/// PNGs as images, the first [`SCREEN_IMAGES`].
+fn draw_screens(
+    a: &Arguments,
+    cx: &Call,
+    argv: Vec<String>,
+    data: &str,
+    screen: &str,
+) -> Result<Vec<Content>> {
+    let made = match many_screens(a) {
+        true => vec![PathBuf::from(screen)],
+        false => screen_files(a, screen)?,
+    };
+    for path in &made {
+        fresh(&path.to_string_lossy())?;
+    }
+    // `--screen` is among the typed options already.
+    let what = format!("the cluster-view screen of {data}");
+    let printed = cx.run_making(command(&argv)?, &made, &what)?;
+    let written: Vec<String> = (printed.lines())
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(absolute)
+        .collect();
+    let pngs: Vec<&String> = written.iter().filter(|p| p.ends_with(".png")).collect();
+    let mut out = vec![Content::Json(json!({
+        "written": written,
+        "images": pngs.len().min(SCREEN_IMAGES),
+    }))];
+    for png in pngs.into_iter().take(SCREEN_IMAGES) {
+        let image = std::fs::read(png).with_context(|| format!("reading {png}"))?;
+        out.push(Content::Png(image));
+    }
+    Ok(out)
+}
+
 /// Whether a file a figure saved under `prefix` writes is there.
 fn drawn(prefix: &str) -> bool {
     crate::figure::saved_paths(prefix).iter().any(|p| exists(p))
@@ -217,7 +290,7 @@ mod tests {
 
     use crate::mcp::schema::tools;
 
-    use super::{batch_map, figures, levels, no_levels_with_html};
+    use super::{batch_map, figures, levels, many_screens, no_levels_with_html, screen_files};
     use crate::mcp::schema::properties;
     use serde_json::json;
     use std::path::{Path, PathBuf};
@@ -592,5 +665,42 @@ mod tests {
             panic!("not cluster-view");
         };
         assert_eq!(args.shown.go_ask().q, 0.1);
+    }
+
+    /// The screen's arguments are made from its flags and reach `faba
+    /// cluster-view` as it parses them; the files one screen is written
+    /// as are each `format`'s (the PDF and the PNG by default), and any
+    /// `each_` switch writes a directory instead.
+    #[test]
+    fn cluster_view_takes_the_screen_and_its_state() {
+        let args = json!({
+            "screen": "s", "region": "side", "side": "go", "pin": ["GENE1", "GENE2"],
+            "preset": "blocks", "cell_order": ["C2", "C1"], "format": ["svg"],
+            "each_module": true, "module": "M1",
+        });
+        let flags = typed_flags("cluster_view", &Arguments(args.clone())).unwrap();
+        let argv = ["faba", "cluster-view", "fit.run.json"]
+            .into_iter()
+            .map(String::from)
+            .chain(flags);
+        let cli = <crate::Cli as clap::Parser>::try_parse_from(argv).unwrap();
+        let crate::Commands::ClusterView(parsed) = cli.commands else {
+            panic!("not cluster-view");
+        };
+        let s = parsed.screen;
+        assert_eq!(s.screen.as_deref(), Some("s"));
+        assert_eq!(s.pin, ["GENE1", "GENE2"]);
+        assert_eq!(s.cell_order, ["C2", "C1"]);
+        assert!(s.each_module && !s.each_fit && !s.each_group);
+        assert!(many_screens(&Arguments(args)));
+        let one = Arguments(json!({ "screen": "out/s.pdf" }));
+        assert!(!many_screens(&one));
+        let files = screen_files(&one, "out/s.pdf").unwrap();
+        assert_eq!(
+            files,
+            [PathBuf::from("out/s.pdf"), PathBuf::from("out/s.png")]
+        );
+        let svg = Arguments(json!({ "format": ["svg"] }));
+        assert_eq!(screen_files(&svg, "s").unwrap(), [PathBuf::from("s.svg")]);
     }
 }

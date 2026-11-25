@@ -159,7 +159,8 @@ fn block_bars_over_hinton_keep_the_square_behind() {
                 let (cx, cy) = (at.cols[j], at.rows[i]);
                 let (k, _) = (all.iter().enumerate())
                     .find(|(_, b)| {
-                        (b.w - side).abs() < 0.02
+                        b.fill != "none"
+                            && (b.w - side).abs() < 0.02
                             && (b.h - side).abs() < 0.02
                             && (b.x + b.w / 2.0 - cx).abs() < 0.05
                             && (b.y + b.h / 2.0 - cy).abs() < 0.05

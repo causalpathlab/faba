@@ -1,5 +1,10 @@
 use statrs::function::gamma::ln_gamma;
 
+/// The editing null's sequencing-error rate ε, unless asked otherwise.
+pub const ERROR_RATE: f64 = 0.01;
+/// The editing null's beta-binomial overdispersion ρ, unless asked otherwise.
+pub const OVERDISPERSION: f64 = 0.1;
+
 /// Upper-tail beta-binomial p-value for single-sample editing detection.
 ///
 /// Models the alt-allele (edited) read count `k` out of `n` ref+alt reads at a

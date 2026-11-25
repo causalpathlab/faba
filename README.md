@@ -11,9 +11,9 @@ RNA modifications (DART-seq m6A, A-to-I editing), alternative polyadenylation
 Run in a terminal, `run`, `qc`, `qc-view`, `pileup`, `metagene`, `pwm` and `cluster-view` open full-screen
 views; `--batch-process` skips them for scripts and clusters.
 
-Each view runs as a detachable session: Ctrl+Alt+D leaves it running (as does a dropped
+Each view runs as a detachable session: Ctrl+] leaves it running (as does a dropped
 connection), and starting the command again with nothing named, or `faba attach`, returns
-to it; Ctrl+Alt+S switches to another session. `faba sessions` lists them, `faba kill`
+to it; Ctrl+\ switches to another session. `faba sessions` lists them, `faba kill`
 stops one as its quit key does (a write under way finishes first) and `faba rename`
 labels one. `--no-detach` runs a view in the terminal only.
 
@@ -225,6 +225,7 @@ Producers write every candidate and apply no p-value cutoff. qc is where cells, 
 3. qc filters a directory into a new one, with the site thresholds given. It does not edit the input. With `dry_run` it writes nothing and returns what the cell QC keeps and what each threshold removes: try thresholds that way first. qc_view reads back a qc output: the same counts at the thresholds it applied, its dropped sites with its kept, and with `plots` or `html` its figures and page.
 4. pileup, metagene and pwm read a directory's sites. metagene and pwm return their table and its figure as an image. site_plot draws a directory's site statistics as paper panels (histograms, pairs, marginals), thresholds optional, and returns them as images. pileup returns a binned table for a gene or region (and, with `figure`, the browser's figure as SVG, as an image too). cluster_view shows a cluster fit level by level, from its run record ({m}_blockmodel.run.json) or the directory holding its tables, each level as JSON rows: by default an overview (the ELBO verdict, the modules' sizes, each gene module's top genes), then the modules grid, a gene module, a gene, the cell modules, the batches, the trace, the settings, and GO terms only with `go`; with `plots`, several figures as images.
 5. cluster fits cells by their own site reads (a blockmodel of cell and gene modules, by variational inference) and writes its tables to `out`. In two rounds: first `modality` count, cell modules by gene counts (it writes count_blockmodel.run.json); then, with `within` naming that record, m6a or atoi within each of its cell modules. The second round writes {m}_within.run.json, which cluster_view opens: the list of its fits, and with `group` the fit within one cell module.
+6. When the user wants to arrange a figure by eye: view_open (qc_view or cluster_view) returns an `attach` line such as `faba attach faba-qc-view-1`; give it to the user to run in their terminal. When they say they are done, view_state reads what they chose and view_export draws that figure. view_list lists the live views.
 
 The producers (count, depth, atoi, dartseq, apa, snp, run, qc, cluster) take `background`: on large BAMs set it, and the call returns a job id at once.
 
@@ -244,6 +245,8 @@ legume-mcp adds where the records are and the background jobs below. The project
 | `pileup`, `metagene`, `pwm` | read a directory's sites; `metagene` and `pwm` return their figure as an image, `pileup` with `figure` |
 | `cluster_view` | reads a fit as JSON levels, the overview when none is named; GO terms only with `go`; several figures per call with `plots` |
 | `site_plot` | draws a directory's site statistics as paper panels into a new directory, returned as images |
+| `view_open`, `view_list` | put a view in front of the user as a detached session they attach to with the returned `attach` line (`open_window` also tries a Terminal window on macOS, giving up after a few seconds with a note), and list the live ones |
+| `view_state`, `view_export` | read what the user arranged in a live view (or arrange it, with `set`), and draw the figure its `s` saves from that, its state kept beside it (`{out}.view.json`, which `qc-view --view-state` and `cluster-view --screen --state` read back); qc_view and cluster_view |
 | `job_status`, `job_wait`, `job_cancel` | from legume-mcp |
 
 Each tool's arguments are made from its command's own flags, so a new flag is a new typed
@@ -262,7 +265,7 @@ Each tool runs the server's own `faba` path as a child. When that file is replac
 
 ### Records and watching
 
-Every write goes to an `out` that must not exist yet: no tool replaces a directory or a file, and no tool opens a view. The server keeps the project's records the way legume-mcp lays them out, after [Noble (2009), *A quick guide to organizing computational biology projects*, PLoS Comput Biol 5(7):e1000424](https://doi.org/10.1371/journal.pcbi.1000424): every step that writes goes into the day's `results/<date>/runall.sh`, which replays the session, and into `results/INDEX.tsv`; outputs the agent does not name go in `results/<date>/`. `LEGUME_MCP_RECORDS=off` turns the records off. While an agent works, the server also writes a live feed a person can follow and steer (stop a call or a job, leave the agent a note) with legume-mcp's `watch`; `LEGUME_MCP_WATCH=off` writes none.
+Every write goes to an `out` that must not exist yet: no tool replaces a directory or a file, and no tool but `view_open` opens a view (detached, for the user to attach to; the server never waits on a terminal). A figure `view_export` draws from a live view is not in `runall.sh`; its `replay` is the command that draws it again from the state kept beside it. The server keeps the project's records the way legume-mcp lays them out, after [Noble (2009), *A quick guide to organizing computational biology projects*, PLoS Comput Biol 5(7):e1000424](https://doi.org/10.1371/journal.pcbi.1000424): every step that writes goes into the day's `results/<date>/runall.sh`, which replays the session, and into `results/INDEX.tsv`; outputs the agent does not name go in `results/<date>/`. `LEGUME_MCP_RECORDS=off` turns the records off. While an agent works, the server also writes a live feed a person can follow and steer (stop a call or a job, leave the agent a note) with legume-mcp's `watch`; `LEGUME_MCP_WATCH=off` writes none.
 
 ## Clustering on real data
 
@@ -493,17 +496,36 @@ take `xlab` and `ylab`. MCP's `cluster_view` draws several of its figures in one
 two at a time (default: the pairs `qc` picks), `--marginals top,right` (or `both`) on the pair's
 own axes, and `--bins` along each axis. `--style view` draws each panel as the `qc` view draws it,
 the control arm (MUT) against the signal arm (WT): a histogram as its knob's (MUT's sites light gray
-behind, WT's filtered out by any threshold white and outlined over its kept by every one, dark; each
-threshold dashed orange-red at the cut between bars, its bin split there, with the words for either
-side, e.g. `p > 0.05 | p <= 0.05`; ticks at the bins' edges; a key at the right; on log y and the
-view's bins unless `--bins` is given), a pair as its 2D panel (MUT's squares behind WT's, its
+behind, WT's filtered out by any threshold white and outlined over its retained by every one, dark;
+each threshold dashed orange-red at the cut between bars, its bin split there, with the words for
+either side, e.g. `p > 0.05 | p <= 0.05`, each on its own side where it fits; ticks at the bins'
+edges spread evenly, at least four where they fit; a key at the right; the counts on a square-root
+axis ending at a round count over the tallest bar, and the view's bins unless `--bins` is given), a pair as its 2D panel (MUT's squares behind WT's, its
 marginals alike), with marginals `--marginal-size` of the plot's shorter side deep (0.2 unless
 given; the default panel style keeps its own). MUT is drawn where a quantity has a value on each arm:
-the coverage, the converted reads (each arm's own) and the edit ratio; the p-value, the fold and the
-log odds compare the arms and the cells are counted on WT's `_site` matrices, so those draw WT alone
-and the key says so (the coverage's threshold adds both arms' reads, as its words say). `--front
-mut` draws MUT in front, `--p-axis neglog10` labels the p-value's ticks as -log10 p (p itself
-unless asked; the bars stay), and `--panel-only` drops the title and the key, which `--key` keeps. The cells per site
+the coverage, the converted reads (each arm's own) and the edit ratio; in a histogram also the
+p-value, WT on the WT-vs-MUT p its threshold reads (so its line splits filtered out from retained)
+and MUT on its own reads tested alone against sequencing error (the beta-binomial test the A-to-I
+sites are called by, at its default error rate and overdispersion; its title and key say so), and
+the cells, counted on the control batches' `_site` matrices (the batches a run
+record names as `control_bam`; the cells threshold still reads the cells pooled over every batch).
+The fold and the log odds compare the arms, so those draw WT alone and the key says so (the
+coverage's threshold adds both arms' reads, as its words say). The p-value's bars sit on log-spaced p
+(unless `--scale pv=...` asks otherwise), ticked at round p, the last bar holding every p at or below
+a round cap (`<= 1e-30`, from where the WT-vs-MUT p reach), at which the 2D panels' p axis ends too. `--front mut` draws MUT in front, `--p-axis neglog10` labels the p-value's
+ticks as -log10 p (p itself unless asked; the bars stay), and `--panel-only` drops the title and the
+key, which `--key` keeps; `--key-at right|top|inside|alone` puts it beside the plot (which narrows by its
+width; a key that would leave the plot under 60% of the panel's width is drawn smaller, else at the
+top, as on a panel under about 4 inches at 7 points), in a row above the plot (two rows, or the short
+names `MUT`, `WT filtered`, `WT kept`, where one row does not fit; the plot keeps its width and loses
+only that row's height, and no threshold's words give way to it), over the plot's top right corner
+(the plot keeping its width), or in a figure of its own,
+`{stem}_key`, one key for a row of panels. `--yscale pv=sqrt,cells=log1p` (or one scale for every
+quantity) sets a histogram's count axis, linear, sqrt or log1p (sqrt unless asked; `y` steps the
+focused one in the view); `--marginal-scale` a marginal's (log1p unless asked, so one busy bar leaves
+the others a depth that reads; its axis drawn beside it at the panel's type and ticked at a round
+count over its busiest bar) and `--count-scale` a 2D square's shade (log1p unless asked; in gray
+from half the ink to all of it, clearly darker than MUT's light gray). The cells per site
 are read off the `{batch}_{modality}_site` matrices, over every cell, with no cell QC. Each quantity is read on one scale, range and set of bins in
 every figure (`--scale pv=log,fold=linear` to change one), so ticks line up across panels.
 Thresholds, the `--site-*` flags named as `qc`'s, are optional: given ones are drawn as dashed

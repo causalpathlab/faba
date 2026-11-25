@@ -23,6 +23,7 @@ mod margins;
 mod model;
 mod posterior;
 mod report;
+mod screen;
 mod strip;
 mod text;
 mod trace;

@@ -121,7 +121,7 @@ impl SitePicker<'_> {
             said,
         );
         if !images {
-            draw_cells(frame, plot, &g, self.arm_look.front);
+            draw_cells(frame, plot, &g, (self.arm_look.front, self.arm_look.count));
             return;
         }
         // Its image is drawn again only when what it shows changed.
@@ -188,7 +188,12 @@ impl SitePicker<'_> {
 /// a cell, the arm in front first (see [`pairs::Grid::front_tone`]): the
 /// signal arm's kept solid in its colour, its removed shaded, the control
 /// arm's solid gray, each deeper as it holds more.
-fn draw_cells(frame: &mut Frame, area: Rect, g: &pairs::Grid, front: crate::qc::arms::Front) {
+fn draw_cells(
+    frame: &mut Frame,
+    area: Rect,
+    g: &pairs::Grid,
+    front: (crate::qc::arms::Front, crate::qc::arms::CountScale),
+) {
     let (w, h) = (area.width as usize, area.height as usize);
     if w < 4 || h < 2 {
         return;

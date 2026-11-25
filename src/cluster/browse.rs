@@ -21,6 +21,7 @@ use clap::Args;
 use std::path::{Path, PathBuf};
 
 mod data;
+mod export;
 mod figure;
 mod gene;
 mod go;
@@ -40,19 +41,22 @@ pub use view::ModulesView;
 
 #[derive(Args, Debug, Clone)]
 // The figure's size (0.19.0 named it --width and --height) and look, only
-// with --figure.
+// with --figure or --screen.
 #[command(
-    mut_arg("fig_width", |a| a.visible_alias("width").requires("figure")),
-    mut_arg("fig_height", |a| a.visible_alias("height").requires("figure")),
-    mut_arg("font_size", |a| a.requires("figure")),
-    mut_arg("panel_only", |a| a.requires("figure")),
+    group(clap::ArgGroup::new("drawn").args(["figure", "screen"])),
+    // GO on the grid's rows: `--go-labels`, or beside the screen's grid.
+    group(clap::ArgGroup::new("go_shown").args(["go_labels", "side"]).multiple(true)),
+    mut_arg("fig_width", |a| a.visible_alias("width").requires("drawn")),
+    mut_arg("fig_height", |a| a.visible_alias("height").requires("drawn")),
+    mut_arg("font_size", |a| a.requires("drawn")),
+    mut_arg("panel_only", |a| a.requires("drawn")),
     mut_arg("xlab", |a| a.requires("figure").help(
         "The trace's x axis title (default: its own); the modules grid and the batches have none"
     )),
     mut_arg("ylab", |a| a.requires("figure").help(
         "The trace's y axis title (default: its own); the modules grid and the batches have none"
     )),
-    mut_arg("palette", |a| a.requires("figure").help(
+    mut_arg("palette", |a| a.requires("drawn").help(
         "The figure's colours: as on screen (colour), or grays alone (gray), a block darker as its value is further from 0"
     ))
 )]
@@ -166,6 +170,10 @@ pub struct ModulesArgs {
     #[command(flatten)]
     pub grid: figure::GridArgs,
 
+    /// The browser's screen as a figure, of one fit or many.
+    #[command(flatten)]
+    pub screen: export::ScreenArgs,
+
     #[arg(
         long = "batch-process",
         visible_alias = "batch-mode",
@@ -210,7 +218,11 @@ impl ModulesArgs {
     /// Whether this writes or prints instead of browsing (--batch-process,
     /// --json, --html, --figure): no session, no input browser.
     fn writes(&self) -> bool {
-        self.batch_process || self.shown.json || self.html.is_some() || self.figure.is_some()
+        self.batch_process
+            || self.shown.json
+            || self.html.is_some()
+            || self.figure.is_some()
+            || self.screen.screen.is_some()
     }
 
     /// The session the browser runs in; none when it writes or prints
@@ -409,6 +421,10 @@ pub fn run_modules(args: &ModulesArgs) -> anyhow::Result<()> {
         }
         args.grid.check()?;
     }
+    // Screens of every fit under a folder: the folder is no fit.
+    if args.screen.screen.is_some() && args.screen.each_fit {
+        return export::run(args, &args.data_files);
+    }
     // No inputs named: browse for them, as `faba pileup` does.
     let batch = args.writes();
     let offered = (
@@ -418,6 +434,9 @@ pub fn run_modules(args: &ModulesArgs) -> anyhow::Result<()> {
     let Some(inputs) = super::with_inputs(&args.data_files, "cluster-view", batch, offered)? else {
         return Ok(());
     };
+    if args.screen.screen.is_some() {
+        return export::run(args, &inputs);
+    }
     let (modality, output) = (args.modality.as_deref(), args.output.as_deref());
     let recorded = |dir: &Path| {
         let near = dir.to_string_lossy();
@@ -472,15 +491,7 @@ fn target(
 /// the paths written, printed. Refused when it has none to draw, or a side
 /// is too small.
 fn write_figure(m: &Modules, args: &ModulesArgs, dir: &Path, prefix: &str) -> anyhow::Result<()> {
-    let fit = dir
-        .file_name()
-        .map_or(dir.display().to_string(), |n| n.to_string_lossy().into());
-    let title = format!(
-        "{fit} · {} · {} gene modules × {} cell modules",
-        m.modality,
-        m.diagonal.len(),
-        m.cell_roles,
-    );
+    let title = figure_title(dir, m, None);
     // A figure never replaces a file, as a page does not.
     for path in crate::figure::saved_paths(prefix) {
         anyhow::ensure!(
@@ -635,6 +646,31 @@ fn open_tables(dir: &Path, modality: Option<&str>) -> anyhow::Result<String> {
     })
 }
 
+/// A figure's title: the fit's folder name (and its group), the modality,
+/// and how many modules.
+fn figure_title(dir: &Path, m: &Modules, group: Option<&str>) -> String {
+    let fit = dir
+        .file_name()
+        .map_or(dir.display().to_string(), |n| n.to_string_lossy().into());
+    let fit = match group {
+        Some(g) => format!("{fit} · {g}"),
+        None => fit,
+    };
+    format!(
+        "{fit} · {} · {} gene modules × {} cell modules",
+        m.modality,
+        m.order.len(),
+        m.cell_roles
+    )
+}
+
+/// The browser of the fit in `dir`: headed by its path and model, its
+/// saved screens titled as its figures are.
+fn opened_view<'a>(dir: &Path, modules: &'a Modules) -> ModulesView<'a> {
+    ModulesView::new(&title(dir, modules), modules)
+        .with_figure_title(figure_title(dir, modules, None))
+}
+
 /// The browser's header: the directory, the modality, and the model the
 /// tables come from (its preset, custom settings, or a count fit).
 fn title(dir: &Path, modules: &Modules) -> String {
@@ -683,8 +719,7 @@ fn browse(
     models: Option<SharedModels>,
     go: go::Ask,
 ) -> anyhow::Result<()> {
-    let title = title(dir, modules);
-    let mut view = ModulesView::new(&title, modules)
+    let mut view = opened_view(dir, modules)
         .with_genes(models.clone())
         .with_go(go)
         .with_report(
@@ -693,7 +728,7 @@ fn browse(
         );
     let mut settings = Default::default();
     loop {
-        crate::tui::run_view(&mut view)?;
+        crate::tui::run_live_view(&mut view)?;
         let Some(key) = view.take_open() else {
             return Ok(());
         };

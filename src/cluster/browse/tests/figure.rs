@@ -88,7 +88,7 @@ fn the_hinton_figure_sizes_each_square_by_its_magnitude() {
     };
     // Every square, by the row it centres on, left to right.
     let mut squares: Vec<(f64, f64, f64)> = (svg.lines())
-        .filter(|l| l.starts_with("<rect"))
+        .filter(|l| l.starts_with("<rect") && !l.contains(r#"fill="none""#))
         .map(|r| (num(r, "x"), num(r, "y"), num(r, "width"), num(r, "height")))
         .filter(|&(.., w, h)| (w - h).abs() < 1e-9)
         .map(|(x, y, w, _)| ((y + w / 2.0).round(), x + w / 2.0, w))
@@ -117,6 +117,112 @@ fn the_hinton_figure_sizes_each_square_by_its_magnitude() {
         "{row:?}"
     );
     assert!(svg.contains("square area by |z|"), "{svg}");
+}
+
+/// The Hinton figure colours each square as the browser's Hinton look
+/// does: red above the row's mean and blue below, never paler than the
+/// browser's floor, full red or blue at its top |z|; not the other looks'
+/// pale palette.
+#[test]
+fn the_hinton_figure_colours_each_square_as_the_browser_does() {
+    use super::super::view::{Ramp, Stretch};
+    use ratatui::style::Color;
+    let m = super::wide();
+    let svg = draw(
+        &m,
+        Plot::Modules,
+        Look::Hinton,
+        "a fit",
+        Sheet::OWN,
+        &AxisTitles::default(),
+    )
+    .unwrap();
+    let stretch = Stretch::of(m.order.iter().map(|&g| m.block(g)), Ramp::Sqrt);
+    let hex = |c: Color| match c {
+        Color::Rgb(r, g, b) => format!("#{r:02x}{g:02x}{b:02x}"),
+        c => panic!("{c:?}"),
+    };
+    let browser: Vec<String> = (m.diagonal.iter())
+        .flat_map(|&g| super::super::standardized(m.block(g)))
+        .flatten()
+        .map(|z| hex(stretch.hinton(z).0))
+        .collect();
+    let squares: Vec<String> = (super::margins::rects(&svg).into_iter())
+        .filter(|b| (b.w - b.h).abs() < 1e-9 && b.w > 0.0 && b.fill != "none")
+        .map(|b| b.fill)
+        .collect();
+    assert_eq!(squares.len(), browser.len(), "{svg}");
+    for fill in &squares {
+        assert!(browser.contains(fill), "{fill} not the browser's");
+    }
+    assert!(squares.iter().any(|f| f == "#ff0000") && squares.iter().any(|f| f == "#0000ff"));
+}
+
+/// Under the Hinton look the colour scale beside the grid runs through the
+/// squares' own colours: full red at its top, full blue at its bottom.
+#[test]
+fn the_hinton_scale_is_the_squares_colours() {
+    let m = super::wide();
+    let svg = draw(
+        &m,
+        Plot::Modules,
+        Look::Hinton,
+        "a fit",
+        Sheet::OWN,
+        &AxisTitles::default(),
+    )
+    .unwrap();
+    // The scale's steps: narrow, non-square rects, top to bottom.
+    let steps: Vec<_> = (super::margins::rects(&svg).into_iter())
+        .filter(|b| b.fill != "none" && b.h < b.w && b.h < 5.0)
+        .collect();
+    assert!(steps.len() >= 20, "{svg}");
+    // Saturated as the squares are, not the pastel ramp: one channel full,
+    // the other two near zero.
+    let rgb = |h: &str| {
+        let v = |a: usize| u8::from_str_radix(&h[a..a + 2], 16).unwrap();
+        (v(1), v(3), v(5))
+    };
+    let (r, g, b) = rgb(&steps.first().unwrap().fill);
+    assert!(r == 255 && g < 16 && b < 16, "top step full red");
+    let (r, g, b) = rgb(&steps.last().unwrap().fill);
+    assert!(b == 255 && r < 16 && g < 16, "bottom step full blue");
+}
+
+/// Under the Hinton look each square is outlined in gray90 at 0.1 pt;
+/// the grid's cells are not.
+#[test]
+fn each_hinton_square_is_outlined_thin_in_gray90() {
+    let m = super::wide();
+    let svg = draw(
+        &m,
+        Plot::Modules,
+        Look::Hinton,
+        "a fit",
+        Sheet::OWN,
+        &AxisTitles::default(),
+    )
+    .unwrap();
+    assert!(!svg.contains(r#"fill="none""#), "no cell outlines\n{svg}");
+    let squares: Vec<&str> = (svg.lines())
+        .filter(|l| l.starts_with("<rect") && (l.contains("#ff") || l.contains("#00")))
+        .filter(|l| {
+            let w = super::margins::rects(l)[0].w;
+            let h = super::margins::rects(l)[0].h;
+            (w - h).abs() < 1e-9 && w > 0.0
+        })
+        .collect();
+    assert!(!squares.is_empty(), "{svg}");
+    for sq in &squares {
+        assert!(sq.contains(r##"stroke="#e5e5e5""##), "{sq}");
+        let w: f64 = (sq.split(r#"stroke-width=""#).nth(1).unwrap())
+            .split('"')
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!((w - 0.1).abs() < 1e-9, "{sq}");
+    }
 }
 
 /// `--fig-width` and `--fig-height` (0.19.0's `--width` and `--height`

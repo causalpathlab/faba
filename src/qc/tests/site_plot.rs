@@ -721,12 +721,30 @@ fn cells_per_site_count_every_cell_with_a_converted_read() {
         &cols,
         &[(0, 1, 1.0), (1, 1, 1.0)],
     );
-    let layout = crate::qc::layout::scan_input_dir(&dir.path().to_string_lossy()).unwrap();
-    let t = table(&[(0.01, 10, 3, 10, 0), (0.5, 10, 1, 10, 1), (0.5, 5, 1, 5, 1)]);
-    let n = site_cells(&layout, &t).unwrap().expect("site matrices");
+    let at = dir.path().to_string_lossy().into_owned();
+    let layout = crate::qc::layout::scan_input_dir(&at).unwrap();
+    let mut t = table(&[(0.01, 10, 3, 10, 0), (0.5, 10, 1, 10, 1), (0.5, 5, 1, 5, 1)]);
+    let n = site_cells(&layout, &mut t, &at)
+        .unwrap()
+        .expect("site matrices");
     assert_eq!(n, vec![4, 1, 0]);
+    assert_eq!(t.control_cells, None, "no record names a control arm");
+    // A record naming b2 the control arm: its cells alone are the control's;
+    // the cells the threshold reads stay pooled over both.
+    let record = serde_json::json!({"inputs": {
+        "bam": [{"path": "/in/b1.bam"}],
+        "control_bam": [{"path": "/in/b2.bam"}],
+    }});
+    std::fs::write(dir.path().join("dartseq.run.json"), record.to_string()).unwrap();
+    let n = site_cells(&layout, &mut t, &at)
+        .unwrap()
+        .expect("site matrices");
+    assert_eq!(n, vec![4, 1, 0]);
+    assert_eq!(t.control_cells, Some(vec![1, 0, 0]));
     let none = tempfile::tempdir().unwrap();
     std::fs::write(none.path().join("m6a_sites.parquet"), b"").unwrap();
-    let layout = crate::qc::layout::scan_input_dir(&none.path().to_string_lossy()).unwrap();
-    assert_eq!(site_cells(&layout, &t).unwrap(), None);
+    let at = none.path().to_string_lossy().into_owned();
+    let layout = crate::qc::layout::scan_input_dir(&at).unwrap();
+    assert_eq!(site_cells(&layout, &mut t, &at).unwrap(), None);
+    assert_eq!(t.control_cells, None);
 }

@@ -7,6 +7,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 use ratatui::text::{Line, Span};
 use ratatui::Frame;
 
+use super::live::Control;
 use super::ui::{DIM, HIGHLIGHT, PLAIN};
 use super::{is_click_or_wheel, Screen, View};
 
@@ -31,11 +32,29 @@ pub fn is_help(key: &KeyEvent) -> bool {
 pub struct Helped<'v, V> {
     view: &'v mut V,
     open: bool,
+    /// Asked of the view at each tick, from outside it (see
+    /// [`super::live`]): whether that changed it.
+    served: Option<Served<'v, V>>,
 }
+
+/// What a view is asked at each tick, and how it answers: whether it
+/// changed.
+type Served<'v, V> = (&'v Control, fn(&Control, &mut V) -> bool);
 
 impl<'v, V: View> Helped<'v, V> {
     pub fn new(view: &'v mut V) -> Self {
-        Self { view, open: false }
+        Self {
+            view,
+            open: false,
+            served: None,
+        }
+    }
+
+    /// The view asked what `control` is asked at each tick too, answered
+    /// by `serve` (see [`super::live`]).
+    pub fn serving(mut self, control: &'v Control, serve: fn(&Control, &mut V) -> bool) -> Self {
+        self.served = Some((control, serve));
+        self
     }
 
     /// Whether the pop-up is showing.
@@ -106,7 +125,9 @@ impl<V: View> Screen for Helped<'_, V> {
     }
 
     fn tick(&mut self) -> bool {
-        self.view.tick()
+        let ticked = self.view.tick();
+        let served = (self.served).is_some_and(|(control, serve)| serve(control, self.view));
+        ticked || served
     }
 
     fn takes_mouse(&self) -> bool {
@@ -201,7 +222,7 @@ pub fn shown<V: View>(view: &mut V, w: u16, h: u16) -> Option<String> {
 
 /// The keys `label` names as a pop-up writes them: words apart, keys in a
 /// word apart by `/` (`↑/↓ k/j`, `Tab/Shift+Tab`, `[ ]`), a range of
-/// digits (`0-9`), a chord (`Ctrl+E`). `click`, `Alt-drag` and `type`
+/// digits (`0-9`), a chord (`Ctrl+E`). `click`, `Ctrl-drag` and `type`
 /// name no key; `arrows` the four.
 #[cfg(test)]
 pub fn named(label: &str) -> Vec<KeyEvent> {
@@ -215,7 +236,7 @@ pub fn named(label: &str) -> Vec<KeyEvent> {
         };
         for part in parts {
             let code = match part {
-                "click" | "type" | "Alt-drag" => continue,
+                "click" | "type" | "Ctrl-drag" => continue,
                 "arrows" => {
                     let arrows = [KeyCode::Up, KeyCode::Down, KeyCode::Left, KeyCode::Right];
                     out.extend(arrows.map(plain));

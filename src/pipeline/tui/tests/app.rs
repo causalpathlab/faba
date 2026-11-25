@@ -1233,8 +1233,8 @@ fn the_mark_stands_clear_of_the_session_keys() {
     let tmp = tempfile::Builder::new().tempdir_in("/tmp").unwrap();
     let mut a = app_in(tmp.path());
     let keys = vec![
-        ("ctrl+alt+d".to_string(), "detach".to_string()),
-        ("ctrl+alt+s".to_string(), "switch".to_string()),
+        (legume_tui::detach_key(), "detach".to_string()),
+        (legume_tui::switch_key(), "switch".to_string()),
     ];
     let mut framed = legume_tui::view::Framed {
         screen: &mut a,
@@ -1244,7 +1244,10 @@ fn the_mark_stands_clear_of_the_session_keys() {
     let screen = crate::tui::screen_text(&mut framed, 160, 40);
     let rows: Vec<&str> = screen.lines().collect();
     let top = rows[0].trim_end();
-    assert!(top.ends_with("ctrl+alt+s switch"), "{top:?}");
+    assert!(
+        top.ends_with(&format!("{} switch", legume_tui::switch_key())),
+        "{top:?}"
+    );
     assert!(
         top.contains("▟▛█▜▙ ▟▛█▜▙ ▟▛█▜▙ ▟▛█▜▙"),
         "the mark's top row whole: {top:?}"

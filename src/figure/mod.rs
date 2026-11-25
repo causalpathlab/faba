@@ -519,14 +519,39 @@ pub fn text_width(s: &str, size: f64) -> f64 {
     data_beans::figure::text_width(s, size)
 }
 
-/// About how wide a position label `s` (digits and a point) sets at
-/// `size` points: a point or comma half a digit's width.
+/// How wide a position label `s` (digits and a point) sets at `size`
+/// points: [`set_width`], a point or comma half a digit's width.
 pub fn tick_width(s: &str, size: f64) -> f64 {
-    let em = |ch: char| match ch {
-        '.' | ',' => 0.278,
-        _ => 0.55,
+    set_width(s, size)
+}
+
+/// A character's width at `size` points, Helvetica's advance rounded up
+/// (a name in capitals sets wider than one in lower case, so one width
+/// for all would leave the one short and the other running over).
+pub fn glyph_width(c: char, size: f64) -> f64 {
+    let em = match c {
+        'i' | 'j' | 'l' | 'I' | '.' | ',' | ':' | ';' | '\'' | '!' | '|' | ' ' => 0.28,
+        'f' | 't' | 'r' | '(' | ')' | '[' | ']' | '-' | '/' => 0.34,
+        'c' | 'k' | 's' | 'v' | 'x' | 'y' | 'z' | 'J' => 0.5,
+        'm' | 'M' => 0.84,
+        'w' => 0.73,
+        'W' => 0.95,
+        'L' => 0.56,
+        'F' | 'T' | 'Z' => 0.62,
+        'C' | 'D' | 'H' | 'N' | 'R' | 'U' => 0.73,
+        'G' | 'O' | 'Q' => 0.78,
+        '…' => 1.0,
+        c if c.is_uppercase() => 0.67,
+        _ => 0.56,
     };
-    s.chars().map(em).sum::<f64>() * size
+    em * size
+}
+
+/// How wide `s` sets at `size` points, character by character (see
+/// [`glyph_width`]): closer than [`text_width`] where texts sit side by
+/// side.
+pub fn set_width(s: &str, size: f64) -> f64 {
+    s.chars().map(|c| glyph_width(c, size)).sum()
 }
 
 /// `s` as it fits `room` points across at `size`: as it is, else without
@@ -1396,6 +1421,55 @@ pub fn save_with_png(svg: &str, prefix: &str) -> anyhow::Result<Vec<String>> {
     let pdf = write_pdf(&tree, prefix)?;
     std::fs::write(&png_path, png_of(&tree, 2.0)?)?;
     Ok(vec![pdf, png_path])
+}
+
+/// A file a figure is written as (`--format`; MCP's `formats`).
+#[derive(
+    clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum Format {
+    /// The drawing itself.
+    Svg,
+    /// Vector, its labels as text: what `s` saves.
+    Pdf,
+    /// Two pixels per point, on white.
+    Png,
+}
+
+impl Format {
+    /// What its files end in.
+    pub fn extension(self) -> &'static str {
+        match self {
+            Format::Svg => "svg",
+            Format::Pdf => "pdf",
+            Format::Png => "png",
+        }
+    }
+}
+
+/// `svg` as `{prefix}.{format}` for each of `formats`, the PDF as `s`
+/// saves it; refused, nothing written, when one of them is there. The
+/// paths written, in `formats`' order.
+pub fn save_as(svg: &str, prefix: &str, formats: &[Format]) -> anyhow::Result<Vec<String>> {
+    let prefix = strip_extension(prefix);
+    let paths: Vec<String> = (formats.iter())
+        .map(|f| format!("{prefix}.{}", f.extension()))
+        .collect();
+    if let Some(p) = paths.iter().find(|p| std::path::Path::new(p).exists()) {
+        anyhow::bail!("{p} exists; not replacing it");
+    }
+    let tree = usvg::Tree::from_str(svg, &options())?;
+    for (f, path) in formats.iter().zip(&paths) {
+        match f {
+            Format::Svg => std::fs::write(path, svg)?,
+            Format::Pdf => {
+                write_pdf(&tree, prefix)?;
+            }
+            Format::Png => std::fs::write(path, png_of(&tree, 2.0)?)?,
+        }
+    }
+    Ok(paths)
 }
 
 /// The PDF of `tree` under `prefix`.
