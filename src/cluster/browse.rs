@@ -158,9 +158,9 @@ pub struct ModulesArgs {
         value_enum,
         default_value_t = figure::Look::Shift,
         requires = "figure",
-        help = "What colours a block in --figure: its fitted shift (a count fit's log rate), its methylated % (UMIs per cell), that standardized across the cell modules, or that as a Hinton diagram (squares sized by |z|)"
+        help = "What colours a block in --figure: its fitted shift (a count fit's log rate), its methylated % (UMIs per cell), that standardized across the cell modules, that as a Hinton diagram (squares sized by |z|), or its reads as the browser's mirror bars (converted up, unconverted down, one scale; rows by shift range)"
     )]
-    look: figure::Look,
+    pub look: figure::Look,
 
     /// The modules grid's margins, GO terms, key and values.
     #[command(flatten)]
