@@ -31,6 +31,16 @@ impl Criterion {
         }
     }
 
+    /// [`Criterion::axis`] where the cells were counted: over the cells
+    /// the cell QC kept (`faba qc`, `faba qc-view`), else over every cell
+    /// (`faba site-plot`).
+    pub(super) fn axis_counted(self, kept_cells: bool) -> &'static str {
+        match self {
+            Criterion::MinCells if !kept_cells => "cells with a converted read",
+            _ => self.axis(),
+        }
+    }
+
     /// Whether the site keeps the high end of the displayed axis (all but
     /// the upper edit-ratio bound: a p-value is shown as -log10 p).
     pub(super) fn keeps_high(self) -> bool {
@@ -151,10 +161,17 @@ pub(super) struct Column {
     pub(super) stops: Vec<(i32, f64)>,
     /// The smallest display value in each bin, for tick labels.
     pub(super) lowest: Vec<f64>,
+    /// About how many bins it spans, `None` for the view's own.
+    count: Option<usize>,
 }
 
 impl Column {
-    pub(super) fn new(view: &SiteView, c: Criterion, scale: Scale) -> Self {
+    pub(super) fn new(view: &Sites, c: Criterion, scale: Scale) -> Self {
+        Self::binned(view, c, scale, None)
+    }
+
+    /// [`Column::new`] in about `count` bins, `None` for the view's own.
+    pub(super) fn binned(view: &Sites, c: Criterion, scale: Scale, count: Option<usize>) -> Self {
         let mut display: Vec<f32> = (0..view.table.len())
             .map(|i| c.display(c.raw(view.table, i, view.cells(i))) as f32)
             .collect();
@@ -173,7 +190,7 @@ impl Column {
         display
             .iter_mut()
             .for_each(|d| *d = d.clamp(lo as f32, hi as f32));
-        let (hist, slot, stops, lowest) = bin(view, c, scale, &display, lo, hi);
+        let (hist, slot, stops, lowest) = bin(view, (c, scale, count), &display, lo, hi);
         Self {
             display,
             n_inf,
@@ -183,12 +200,18 @@ impl Column {
             slot,
             stops,
             lowest,
+            count,
         }
     }
 
-    pub(super) fn rebin(&mut self, view: &SiteView, c: Criterion, scale: Scale) {
-        (self.hist, self.slot, self.stops, self.lowest) =
-            bin(view, c, scale, &self.display, self.lo, self.hi);
+    pub(super) fn rebin(&mut self, view: &Sites, c: Criterion, scale: Scale) {
+        (self.hist, self.slot, self.stops, self.lowest) = bin(
+            view,
+            (c, scale, self.count),
+            &self.display,
+            self.lo,
+            self.hi,
+        );
     }
 
     /// Bin key of a raw threshold, clamped to the histogram.
@@ -196,6 +219,11 @@ impl Column {
         let d = c.display(raw).clamp(self.lo, self.hi);
         let kmax = self.hist.kmax();
         self.hist.bins.key(d).clamp(self.hist.kmin, kmax)
+    }
+
+    /// The bin holding `c`'s threshold in `f`, `None` when it is off.
+    pub(super) fn pointer(&self, c: Criterion, f: &SiteFilterArgs) -> Option<i32> {
+        (!c.is_off(f)).then(|| self.key_of(c, c.get(f)))
     }
 }
 
@@ -205,14 +233,31 @@ const KNOB_BINS: f64 = 50.0;
 /// A knob's bins spanning `0..=max`, as [`Binning::new`] lays them, but on
 /// log always `ln(1 + v)`, the line the site panels' ruler reads (see
 /// [`crate::qc::scale::along`]), where [`Binning::new`] would shift reals
-/// under 20 by a thousandth of `max`.
-fn binning(scale: Scale, max: f64, integer: bool) -> Binning {
-    let width = crate::qc::scale::along(crate::qc::scale::Scale::Log, max) / KNOB_BINS;
-    match scale {
-        Scale::Log if !integer && width.is_finite() && width > 0.0 => {
+/// under 20 by a thousandth of `max`. With a `count`, about that many
+/// bins in place of [`KNOB_BINS`], laid out alike.
+fn binning(scale: Scale, max: f64, integer: bool, count: Option<usize>) -> Binning {
+    let n = count.map_or(KNOB_BINS, |n| n as f64);
+    let width = crate::qc::scale::along(crate::qc::scale::Scale::Log, max) / n;
+    match (scale, count) {
+        (Scale::Log, _) if !integer && width.is_finite() && width > 0.0 => {
             Binning::with_width(Scale::Log, width)
         }
-        _ => Binning::new(scale, max, integer),
+        (_, None) => Binning::new(scale, max, integer),
+        (_, Some(_)) => {
+            // As [`Binning::new`] spans `0..=max`, a count's bins taking
+            // in `max` itself, the log shifted by 1.
+            let top = if integer { max + 1.0 } else { max }.max(0.0);
+            let width = match scale {
+                Scale::Linear if integer => (top / n).ceil().max(1.0),
+                Scale::Linear => top / n,
+                Scale::Sqrt => top.sqrt() / n,
+                Scale::Log => top.ln_1p() / n,
+            };
+            match width.is_finite() && width > 0.0 {
+                true => Binning::with_width(scale, width),
+                false => Binning::new(scale, max, integer),
+            }
+        }
     }
 }
 
@@ -222,9 +267,8 @@ type ColumnBins = (Binned, Vec<u16>, Vec<(i32, f64)>, Vec<f64>);
 
 /// Bin `display` on `scale`: the histogram, each site's slot, and the stops.
 pub(super) fn bin(
-    view: &SiteView,
-    c: Criterion,
-    scale: Scale,
+    view: &Sites,
+    (c, scale, count): (Criterion, Scale, Option<usize>),
     display: &[f32],
     lo: f64,
     hi: f64,
@@ -235,7 +279,7 @@ pub(super) fn bin(
     } else {
         hi
     };
-    let bins = binning(scale, max, c.is_integer());
+    let bins = binning(scale, max, c.is_integer(), count);
     let kmin = bins.key(lo);
     let n = (bins.key(hi) - kmin + 1).clamp(1, MAX_BINS) as usize;
     let mut counts = vec![0; n];

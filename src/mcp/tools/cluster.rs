@@ -262,6 +262,8 @@ mod tests {
             "grid",
             "plots",
             "font_size",
+            "xlab",
+            "ylab",
             "panel_only",
             "palette",
             "width",

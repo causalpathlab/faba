@@ -46,6 +46,12 @@ pub use view::ModulesView;
     mut_arg("fig_height", |a| a.visible_alias("height").requires("figure")),
     mut_arg("font_size", |a| a.requires("figure")),
     mut_arg("panel_only", |a| a.requires("figure")),
+    mut_arg("xlab", |a| a.requires("figure").help(
+        "The trace's x axis title (default: its own); the modules grid and the batches have none"
+    )),
+    mut_arg("ylab", |a| a.requires("figure").help(
+        "The trace's y axis title (default: its own); the modules grid and the batches have none"
+    )),
     mut_arg("palette", |a| a.requires("figure").help(
         "The figure's colours: as on screen (colour), or grays alone (gray), a block darker as its value is further from 0"
     ))
@@ -142,6 +148,10 @@ pub struct ModulesArgs {
     /// The figure's font, panel and palette (only with --figure).
     #[command(flatten)]
     style: crate::figure::style::StyleArgs,
+
+    /// The trace's axis titles (only with --figure).
+    #[command(flatten)]
+    titles: crate::figure::style::AxisTitles,
 
     #[arg(
         long = "look",
@@ -394,6 +404,9 @@ pub fn run_modules(args: &ModulesArgs) -> anyhow::Result<()> {
     if args.figure.is_some() {
         figure::page(args.plot, &args.size)?;
         args.style.check()?;
+        if let Some(note) = figure::unused_titles(args.plot, &args.titles) {
+            log::warn!("{note}");
+        }
         args.grid.check()?;
     }
     // No inputs named: browse for them, as `faba pileup` does.
@@ -484,7 +497,7 @@ fn write_figure(m: &Modules, args: &ModulesArgs, dir: &Path, prefix: &str) -> an
             let go = figure::go_table(m, args.grid.go_labels, &args.shown.go_ask())?;
             figure::draw_with(m, args.look, &args.grid, go.as_ref(), &title, sheet)
         }
-        plot => figure::draw(m, plot, args.look, &title, sheet),
+        plot => figure::draw(m, plot, args.look, &title, sheet, &args.titles),
     }
     .map_err(anyhow::Error::msg)?;
     for path in crate::figure::save_with_png(&drawn, prefix)? {

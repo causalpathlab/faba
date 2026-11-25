@@ -420,22 +420,34 @@ The figures but `pileup`'s take the same look: `--font-size` sets every label in
 the text is fit to the page; a font above 8 points needs a page grown alike, and a page too small
 for it is refused, naming the size it needs), `--panel-only` draws the plot, its axes and their
 titles only (no title, file name, key or notes), and `--palette colour|gray` draws kept and removed
-(or a grid's blocks) in colour or in grays. Each is written as PDF, its labels as text, and PNG.
+(or a grid's blocks) in colour or in grays; in gray, `pwm`'s letters and `metagene`'s regions
+each take a shade of their own. Each is written as PDF, its labels as text, and PNG.
 `pileup` writes SVG and PDF (`--png` for a PNG too) and takes its own `--palette` for the cell
 types. Over MCP, each figure tool takes `width` and `height`, and all but `pileup` take `font_size`,
-`panel_only` and `palette`. MCP's `cluster_view` draws several of its figures in one call
+`panel_only` and `palette`; `site_plot`, `qc`, `qc_view`, `pwm`, `metagene` and `cluster_view`
+take `xlab` and `ylab`. MCP's `cluster_view` draws several of its figures in one call
 (`plots`: modules, trace, batches), each returned as an image at the `width` and `height` given.
 
 `faba site-plot DIR -o OUT` draws one modality's site statistics as panels and nothing else:
 `--hist` quantities (pv, fold, log_odds, coverage, converted, edit_ratio, cells), `--pairs x:y,...`
-two at a time (default: the pairs `qc` picks), `--marginals top,right` on the pair's own axes, and
-`--bins` along each axis. The cells per site are read off the `{batch}_{modality}_site` matrices,
-over every cell, with no cell QC. Each quantity is read on one scale, range and set of bins in
+two at a time (default: the pairs `qc` picks), `--marginals top,right` (or `both`) on the pair's
+own axes, and `--bins` along each axis. `--style view` draws each panel as the `qc` view draws it:
+a histogram as its knob's (every site faint, those passing every other threshold in front, what the
+threshold drops apart, its bin dashed, on log y and the view's bins unless `--bins` is given), a
+pair as its 2D panel, with marginals `--marginal-size` of the plot's shorter side deep (0.2 unless
+given; the default panel style keeps its own); `--panel-only` drops the title. The cells per site
+are read off the `{batch}_{modality}_site` matrices, over every cell, with no cell QC. Each quantity is read on one scale, range and set of bins in
 every figure (`--scale pv=log,fold=linear` to change one), so ticks line up across panels.
 Thresholds, the `--site-*` flags named as `qc`'s, are optional: given ones are drawn as dashed
 lines, and the sites they remove are shaded apart from those kept; with none, every site is kept.
-`qc --plots` takes the same options and writes the same panels, at its thresholds, under
-`qc_plots/panels/`; in `qc-view`, `s` saves the panel on screen.
+`--xlab q=TEXT` and `--ylab q=TEXT` (a quantity each, repeated for more) retitle a quantity's axis in
+every panel of it, on either axis unless given for both; `--ylab sites=TEXT` retitles the
+histograms' counts. `qc --plots` takes the same options and writes the same panels, at its
+thresholds, under `qc_plots/panels/`; in `qc-view`, `s` saves the panel on screen. `pwm --figure`
+and `metagene --figure` take `--xlab TEXT` and `--ylab TEXT` for their one panel's axes, and
+`cluster-view --figure` for `--plot trace`'s (the modules grid and the batches have no axis titles:
+there they are unused, and a note says so); the
+logo's position labels thin (every 5, then 10, 0 always shown) when they would run together.
 
 `pileup --track LABEL=PATTERN,...` groups its input files into tracks, and the figure draws a
 panel each (per cell type with `--cell-membership`), each with its read depth from the BAMs its
@@ -448,6 +460,14 @@ faba pwm out/ -f genome.fa --batch-process --figure logo --fig-width 7
 # Panels 1.8 inches square, text at 6 points, plot and axes only, in gray
 faba site-plot out/ -o panels/ --hist pv,cells --pairs pv:cells --marginals top,right \
   --fig-width 1.8 --fig-height 1.8 --font-size 6 --panel-only --palette gray --site-max-pv 0.05
+# Panels drawn as the qc view draws them, 2.4 by 1.8 inches at 7 points, short marginals
+faba site-plot out/ -o panels/ --style view --hist pv,cells --pairs pv:cells --marginals both \
+  --marginal-size 0.1 --fig-width 2.4 --fig-height 1.8 --font-size 7 --site-max-pv 0.05
+# Axis titles of their own, a quantity each
+faba site-plot out/ -o panels/ --hist none --pairs pv:cells --panel-only \
+  --xlab pv="-log10 p (wt vs. mut)" --ylab cells="cells with a converted read"
+faba pwm out/ -f genome.fa --batch-process --figure logo --fig-width 2 --font-size 7 --panel-only \
+  --palette gray --xlab "position relative to the site (nt)" --ylab "information (bits)"
 # The same panels from a qc output, at the thresholds it applied
 faba qc-view out_qc/ --plots -o figures/ --hist pv,cells --panel-only
 # A Miami plot with a panel per condition

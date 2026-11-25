@@ -25,6 +25,7 @@ pub struct Writer<'a> {
 pub type StartWrite<'a> = Box<dyn FnOnce(SiteFilterArgs, Vec<Figure>) + 'a>;
 
 /// A figure of the view to save with the fileset: a file stem and its SVG.
+#[derive(Clone)]
 pub struct Figure {
     pub stem: String,
     pub svg: String,

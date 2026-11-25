@@ -539,6 +539,7 @@ fn values_are_printed_in_each_block() {
         Look::Hinton,
         "t",
         paper(Palette::Colour),
+        &Default::default(),
     )
     .unwrap();
     assert!(!texts(&svg).iter().any(|t| t.s.starts_with('+')), "{svg}");
@@ -584,7 +585,8 @@ fn a_refusal_names_a_size_that_is_drawn() {
                         ..Default::default()
                     },
                 };
-                let e = draw(m, plot, Look::Shift, "t", sheet(page)).unwrap_err();
+                let e =
+                    draw(m, plot, Look::Shift, "t", sheet(page), &Default::default()).unwrap_err();
                 assert!(e.contains("needs at least"), "{e}");
                 let said: Vec<f64> = numbers(&e).into_iter().map(|v| v * 72.0).collect();
                 let least = match page {
@@ -592,7 +594,7 @@ fn a_refusal_names_a_size_that_is_drawn() {
                     (Some(_), None) => (Some(said[0]), None),
                     _ => (None, Some(said[0])),
                 };
-                let drawn = draw(m, plot, Look::Shift, "t", sheet(least));
+                let drawn = draw(m, plot, Look::Shift, "t", sheet(least), &Default::default());
                 assert!(
                     drawn.is_ok(),
                     "{plot:?} {font_size:?} {page:?}: {e}, then {drawn:?}"
@@ -601,7 +603,7 @@ fn a_refusal_names_a_size_that_is_drawn() {
                 // asked for is refused.
                 let less = |s: Option<f64>| s.map(|s| s - 3.6);
                 let under = (less(least.0), less(least.1));
-                let refused = draw(m, plot, Look::Shift, "t", sheet(under));
+                let refused = draw(m, plot, Look::Shift, "t", sheet(under), &Default::default());
                 assert!(
                     refused.is_err(),
                     "{plot:?} {page:?}: {e}, yet {under:?} drawn"

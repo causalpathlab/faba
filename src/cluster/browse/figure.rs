@@ -7,14 +7,16 @@
 //! size when one is given (inches), its text at a size that reads in print,
 //! and drawn in the panel look asked for (see [`crate::figure::style`]):
 //! the text at `--font-size`, the plot alone with `--panel-only` (no title,
-//! key or notes), in grays with `--palette gray`.
+//! key or notes), in grays with `--palette gray`. `--xlab` and `--ylab`
+//! title the trace's axes; the modules grid and the batches have no axis
+//! titles and leave them unused (see [`unused_titles`]).
 
 use super::order::standardized;
 use super::Modules;
 
 mod grid;
 use crate::figure::size::{self, Page};
-use crate::figure::style::{Palette, Sheet};
+use crate::figure::style::{AxisTitles, Palette, Sheet};
 use crate::figure::{esc, mix, svg, Anchor, Canvas, FAINT, INK, MUTED};
 
 /// Which figure.
@@ -299,22 +301,38 @@ pub fn go_table(
 }
 
 /// The figure `plot` of `m` under `look`, titled `title`, laid out for
-/// the sheet's page (see [`crate::figure::SizeArgs`]) in its look; why
-/// there is none (no trace, one batch).
+/// the sheet's page (see [`crate::figure::SizeArgs`]) in its look, the
+/// trace's axes titled as `titles` asks; why there is none (no trace, one
+/// batch).
 pub fn draw(
     m: &Modules,
     plot: Plot,
     look: Look,
     title: &str,
     sheet: Sheet,
+    titles: &AxisTitles,
 ) -> Result<String, String> {
     match plot {
         Plot::Modules => draw_with(m, look, &GridArgs::default(), None, title, sheet),
-        Plot::Trace => trace(m, title, sheet.page, Ink::of(&sheet)),
+        Plot::Trace => trace(m, title, sheet.page, Ink::of(&sheet), titles),
         Plot::Batches => drawn(sheet, |sheet| {
             batches(m, title, sheet.page, Ink::of(&sheet))
         }),
     }
+}
+
+/// The note `--xlab` or `--ylab` given to a figure with no axis titles
+/// (the modules grid, the batches) is told: they are unused there.
+pub fn unused_titles(plot: Plot, titles: &AxisTitles) -> Option<String> {
+    let given = titles.xlab.is_some() || titles.ylab.is_some();
+    let what = match plot {
+        Plot::Trace => return None,
+        Plot::Modules => "the modules grid",
+        Plot::Batches => "the batches figure",
+    };
+    given.then(|| {
+        format!("--xlab and --ylab title the trace's axes; {what} has none, so they are unused")
+    })
 }
 
 /// The modules grid of `m` under `look` with `grid`'s extras, `go` the
@@ -512,7 +530,13 @@ const TICK: f64 = 4.5;
 
 /// The trace: each restart's ELBO over its steps, in a colour of its own,
 /// the end of its k-means start marked.
-fn trace(m: &Modules, title: &str, size: Page, ink: Ink) -> Result<String, String> {
+fn trace(
+    m: &Modules,
+    title: &str,
+    size: Page,
+    ink: Ink,
+    titles: &AxisTitles,
+) -> Result<String, String> {
     let t = m.fit.trace.as_ref().map_err(Clone::clone)?;
     let points: Vec<(f64, f64)> = t
         .restarts
@@ -549,7 +573,8 @@ fn trace(m: &Modules, title: &str, size: Page, ink: Ink) -> Result<String, Strin
     };
     Ok(svg(w, h, |c: &mut Canvas| {
         ink.heading(c, title, w);
-        let names = ("k-means iteration, then epoch", "ELBO");
+        let names = (titles.x("k-means iteration, then epoch"), titles.y("ELBO"));
+        let names = (names.0.as_str(), names.1.as_str());
         axes(c, (left, top, pw, ph), (x0, x1), (y0, y1), names, f);
         if t.warmup as f64 > x0 && (t.warmup as f64) < x1 {
             let x = sx(t.warmup as f64);

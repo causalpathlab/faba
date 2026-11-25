@@ -28,7 +28,9 @@ pub enum PwmSource {
     mut_arg("fig_height", |a| a.requires("figure")),
     mut_arg("font_size", |a| a.requires("figure")),
     mut_arg("panel_only", |a| a.requires("figure")),
-    mut_arg("palette", |a| a.requires("figure"))
+    mut_arg("palette", |a| a.requires("figure")),
+    mut_arg("xlab", |a| a.requires("figure")),
+    mut_arg("ylab", |a| a.requires("figure"))
 )]
 pub struct ScanPwmArgs {
     #[arg(
@@ -119,6 +121,10 @@ pub struct ScanPwmArgs {
     /// The figure's font, panel and palette (only with --figure).
     #[command(flatten)]
     style: crate::figure::style::StyleArgs,
+
+    /// The figure's axis titles (only with --figure).
+    #[command(flatten)]
+    titles: crate::figure::style::AxisTitles,
 
     #[arg(
         long = "batch-process",
@@ -449,7 +455,7 @@ pub fn run_scan_pwm(args: &ScanPwmArgs) -> anyhow::Result<()> {
     }
     let title = output_dir::title(&site_files);
     if let Some(prefix) = &args.figure {
-        let drawn = tui::figure(&title, &pwm, args.window, sheet);
+        let drawn = tui::figure(&title, &pwm, args.window, sheet, &args.titles);
         let paths = crate::figure::save_with_png(&drawn, prefix)?;
         info!("wrote sequence logo to {}", paths.join(", "));
     }

@@ -70,6 +70,29 @@ fn a_panel_bins_every_site_and_counts_its_box() {
     );
 }
 
+/// The marginals add the squares up along each axis: a column's sums
+/// are the x axis' alone (the same against any y, and a row's when the
+/// axes swap), a row's the y axis', each holding every site.
+#[test]
+fn the_marginals_sum_the_squares_columns_and_rows() {
+    let t = table("m6a", 1500);
+    let f = SiteFilterArgs::default_values();
+    let v = SiteView::new(&t, Some(cells(1500)), &f);
+    let s = v.sites();
+    let margins = |x, y| pairs::grid(&s, (x, y), &f, pairs::BINS).margins();
+    let (cols, rows) = margins(Axis::Coverage, Axis::Pvalue);
+    assert_eq!(cols, margins(Axis::Coverage, Axis::Fold).0);
+    assert_eq!(cols, margins(Axis::Pvalue, Axis::Coverage).1);
+    assert_eq!(rows, margins(Axis::Fold, Axis::Pvalue).1);
+    assert_eq!(rows, margins(Axis::Pvalue, Axis::Coverage).0);
+    assert_ne!(cols, rows);
+    let kept = v.fails.iter().filter(|&&m| m == 0).count() as f64;
+    for m in [&cols, &rows] {
+        assert_eq!(m.iter().map(|p| p.0).sum::<f64>(), kept);
+        assert_eq!(m.iter().map(|p| p.0 + p.1).sum::<f64>(), t.len() as f64);
+    }
+}
+
 /// A p-value's upper bound is the box's lower end on -log10 p; an edit
 /// ratio holds both ends; an off threshold leaves its end open.
 #[test]

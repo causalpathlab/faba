@@ -547,44 +547,6 @@ fn a_knob_starts_on_its_quantitys_scale() {
     assert_ne!(p.scale(), Scale::Linear);
 }
 
-/// Each `<text>` of `svg` as the box it takes, left, top, right, bottom,
-/// with what it says: about 0.55 of its size a character across, 0.75
-/// above its baseline and 0.25 below; a turned one centred on its anchor.
-fn text_boxes(svg: &str) -> Vec<((f64, f64, f64, f64), String)> {
-    let attr = |l: &str, name: &str| -> Option<String> {
-        let key = format!(" {name}=\"");
-        let start = l.find(&key)? + key.len();
-        Some(l[start..start + l[start..].find('"')?].to_string())
-    };
-    let num = |l: &str, name: &str| attr(l, name).unwrap().parse::<f64>().unwrap();
-    (svg.lines().filter(|l| l.starts_with("<text")))
-        .map(|l| {
-            let s = l[l.find('>').unwrap() + 1..l.rfind("</text>").unwrap()].to_string();
-            let size = num(l, "font-size");
-            let w = s.chars().count() as f64 * size * 0.55;
-            let (up, down) = (0.75 * size, 0.25 * size);
-            let b = match attr(l, "transform") {
-                Some(t) => {
-                    let inner = &t["translate(".len()..t.find(')').unwrap()];
-                    let mut it = inner.split([' ', ',']).map(|v| v.parse::<f64>().unwrap());
-                    let (x, y) = (it.next().unwrap(), it.next().unwrap());
-                    (x - up, y - w / 2.0, x + down, y + w / 2.0)
-                }
-                None => {
-                    let (x, y) = (num(l, "x"), num(l, "y"));
-                    let left = match attr(l, "text-anchor").as_deref() {
-                        Some("middle") => x - w / 2.0,
-                        Some("end") => x - w,
-                        _ => x,
-                    };
-                    (left, y - up, left + w, y + down)
-                }
-            };
-            (b, s)
-        })
-        .collect()
-}
-
 /// A knob's figure alone at a paper panel's size (1.8 by 1.6 inches, 6
 /// point text) keeps its labels apart: no tick label runs into another,
 /// none into a title, and every one is on the page.
@@ -606,7 +568,7 @@ fn a_knob_panel_keeps_its_labels_apart() {
     for c in p.view().criteria.clone() {
         focus_on(&mut p, c);
         let svg = p.figure(sheet).unwrap();
-        let boxes = text_boxes(&svg);
+        let boxes = crate::figure::text_boxes(&svg);
         assert!(boxes.len() >= 4, "{c:?}: {boxes:?}");
         for (i, (a, s)) in boxes.iter().enumerate() {
             let on = a.0 >= -0.01 && a.1 >= -0.01 && a.2 <= w + 0.01 && a.3 <= h + 0.01;

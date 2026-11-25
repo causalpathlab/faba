@@ -36,7 +36,9 @@ pub enum IsoformPolicy {
     mut_arg("fig_height", |a| a.requires("figure")),
     mut_arg("font_size", |a| a.requires("figure")),
     mut_arg("panel_only", |a| a.requires("figure")),
-    mut_arg("palette", |a| a.requires("figure"))
+    mut_arg("palette", |a| a.requires("figure")),
+    mut_arg("xlab", |a| a.requires("figure")),
+    mut_arg("ylab", |a| a.requires("figure"))
 )]
 pub struct MetageneArgs {
     #[arg(
@@ -169,6 +171,10 @@ pub struct MetageneArgs {
     #[command(flatten)]
     style: crate::figure::style::StyleArgs,
 
+    /// The figure's axis titles (only with --figure).
+    #[command(flatten)]
+    titles: crate::figure::style::AxisTitles,
+
     #[arg(long = "print", help = "Print ASCII histogram to stderr")]
     print_histogram: bool,
 
@@ -205,6 +211,18 @@ pub(crate) const REGION_NAMES: [&str; 4] = ["5'UTR", "CDS", "3'UTR", "ncRNA"];
 /// Bar colour per region, Okabe-Ito so they stay apart under colour
 /// blindness, and clear of the orange accent the cursor and drops use.
 pub(crate) const REGION_COLOURS: [&str; 4] = ["#56b4e9", "#0072b2", "#009e73", crate::figure::BAR];
+
+/// Bar shade per region for `--palette gray`: each its own, 5'UTR the
+/// lightest and CDS the darkest, all darker than the faint bars behind.
+const REGION_GRAYS: [&str; 4] = ["#8c8c8c", "#262626", "#5c5c5c", "#404040"];
+
+/// Region `region`'s bars in `palette`: its colour, or its gray.
+pub(crate) fn region_fill(region: usize, palette: crate::figure::style::Palette) -> &'static str {
+    match palette {
+        crate::figure::style::Palette::Colour => REGION_COLOURS[region],
+        crate::figure::style::Palette::Gray => REGION_GRAYS[region],
+    }
+}
 
 /// [`REGION_COLOURS`] as a terminal style, for the glyph plots.
 pub(crate) fn region_style(region: usize) -> ratatui::style::Style {
@@ -1001,7 +1019,7 @@ pub fn run_metagene(args: &MetageneArgs) -> anyhow::Result<()> {
     }
     let title = output_dir::title(&site_files);
     if let Some(prefix) = &args.figure {
-        let drawn = tui::figure(&title, &histogram, sheet);
+        let drawn = tui::figure(&title, &histogram, sheet, &args.titles);
         let paths = crate::figure::save_with_png(&drawn, prefix)?;
         info!("wrote metagene figure to {}", paths.join(", "));
     }
