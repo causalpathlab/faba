@@ -57,7 +57,7 @@ data-beans = { version = "0.14.2", default-features = false, features = ["aux", 
 # Detachable sessions for the views, the image protocol of the attached
 # terminal, the runner of the child `faba run` follows, and the file
 # browser, flag form and command scripts the views share.
-legume-tui = { version = "0.4", features = ["browse", "form", "hist", "save", "view", "widgets", "work"] }
+legume-tui = { version = "0.5", features = ["browse", "form", "hist", "save", "view", "widgets", "work"] }
 # `faba mcp`.
 legume-mcp = { version = "0.6.6", optional = true }
 ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
@@ -103,7 +103,7 @@ serde_json = "1.0"
 
 [dev-dependencies]
 # Drives the real binary through pseudo-terminals in the session tests.
-legume-tui = { version = "0.4", default-features = false, features = ["testing"] }
+legume-tui = { version = "0.5", default-features = false, features = ["testing"] }
 tempfile = "3.2"
 
 [target."cfg(unix)".dependencies.rustix]
