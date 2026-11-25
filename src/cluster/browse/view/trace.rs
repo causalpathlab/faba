@@ -40,7 +40,7 @@ impl ModulesView<'_> {
     /// the steps run, then the restarts' names, where the k-means start
     /// ends, and (with a record of the fit) the verdict and its advice.
     pub(super) fn draw_trace(&self, frame: &mut Frame, area: Rect, foot: Rect) {
-        let help = help_line(&[("t/Esc", "close"), ("q", "quit")]);
+        let help = help_line(&[("t/Esc", "close"), ("q", "quit"), ("?", "keys")]);
         frame.render_widget(Paragraph::new(help), foot);
         let Ok(t) = &self.m.fit.trace else {
             return;

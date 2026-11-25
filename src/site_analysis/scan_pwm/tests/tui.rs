@@ -226,22 +226,48 @@ fn every_footer_key_shows_at_60_columns() {
         "←/→ position",
         "Home/End ends",
         "0 site",
-        "b bits/frequency",
+        "v bits/frequency",
         "s save",
-        "q/Esc quit",
+        "q quit",
+        "? keys",
     ] {
         assert!(s.contains(key), "{key}\n{s}");
     }
+    assert!(!s.contains("b bits"), "b is an alias, not shown:\n{s}");
 }
 
 #[test]
-fn enter_stays_and_esc_leaves() {
+fn enter_and_esc_stay_q_leaves() {
     let mut v = PwmView::new("x", &pwm(), 2);
     screen(&mut v, 60, 20);
     press(&mut v, KeyCode::Enter);
     assert!(!v.done(), "Enter never quits");
     press(&mut v, KeyCode::Esc);
+    assert!(!v.done(), "Esc never quits a top-level view");
+    press(&mut v, KeyCode::Char('q'));
     assert!(v.done());
+}
+
+#[test]
+fn v_switches_bits_and_frequency_as_b_still_does() {
+    let mut v = PwmView::new("x", &pwm(), 2);
+    press(&mut v, KeyCode::Char('v'));
+    assert_eq!(v.mode, Mode::Freq);
+    press(&mut v, KeyCode::Char('v'));
+    assert_eq!(v.mode, Mode::Bits);
+    press(&mut v, KeyCode::Char('b'));
+    assert_eq!(v.mode, Mode::Freq);
+}
+
+#[test]
+fn question_mark_lists_every_key_but_types_in_the_save_prompt() {
+    let mut v = PwmView::new("x", &pwm(), 2);
+    let text = crate::tui::help::shown(&mut v, 80, 24).expect("? opens the keys");
+    for key in ["←/→ h/l", "Home", "End", "0", "v b", "s", "q"] {
+        assert!(text.contains(key), "{key}:\n{text}");
+    }
+    press(&mut v, KeyCode::Char('s'));
+    assert!(crate::tui::help::shown(&mut v, 80, 24).is_none(), "? types");
 }
 
 #[test]

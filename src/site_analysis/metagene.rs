@@ -213,16 +213,21 @@ pub(crate) fn region_style(region: usize) -> ratatui::style::Style {
 }
 
 /// The colour key under a metagene: what the bars count (`unit`), each of
-/// `regions` in its colour, and what `c` switches to, when anything.
-pub(crate) fn region_key(unit: &str, regions: &[usize], next: Option<&str>) -> Line<'static> {
+/// `regions` in its colour, and the key and what it switches to, when
+/// anything.
+pub(crate) fn region_key(
+    unit: &str,
+    regions: &[usize],
+    next: Option<(char, &str)>,
+) -> Line<'static> {
     use crate::tui::ui::DIM;
     let mut spans = vec![Span::styled(format!(" {unit}:  "), DIM)];
     for &r in regions {
         spans.push(Span::styled("█ ", region_style(r)));
         spans.push(Span::styled(format!("{}   ", REGION_NAMES[r]), DIM));
     }
-    if let Some(next) = next {
-        spans.push(Span::styled(format!("c: {next}"), DIM));
+    if let Some((key, next)) = next {
+        spans.push(Span::styled(format!("{key}: {next}"), DIM));
     }
     Line::from(spans)
 }

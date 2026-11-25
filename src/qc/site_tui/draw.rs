@@ -158,7 +158,7 @@ fn key_line(items: &[(Style, String)]) -> Line<'static> {
 /// what they add up.
 fn kept_key(weight: Weight) -> Line<'static> {
     let mut line = key_line(&[(PLAIN, format!("kept {}", weight.unit()))]);
-    line.push_span(Span::styled(format!("c: {}", weight.next().unit()), DIM));
+    line.push_span(Span::styled(format!("w: {}", weight.next().unit()), DIM));
     line
 }
 
@@ -166,7 +166,7 @@ fn kept_key(weight: Weight) -> Line<'static> {
 /// that switches what they add up.
 fn meta_key(weight: Weight) -> Line<'static> {
     let unit = format!("kept {}", weight.unit());
-    region_key(&unit, &[0, 1, 2], Some(weight.next().unit()))
+    region_key(&unit, &[0, 1, 2], Some(('w', weight.next().unit())))
 }
 
 /// Bars of the `kept` sites, in the box `(x, y, w, h)`, each in `colour`.

@@ -8,7 +8,7 @@
 //! cell module, the sites of the module in focus, the genes pinned side by
 //! side (each in its main gene module), and one gene's full pileup over
 //! every gene role (see [`gene`]).
-//! `--html` (or `e`) writes the same as one page (see [`report`]).
+//! `--html` (or Ctrl+E) writes the same as one page (see [`report`]).
 //! A within record (`faba cluster --within`) opens as the count fit and
 //! the fit within each of its cell modules (see [`within`]).
 
@@ -108,7 +108,7 @@ pub struct ModulesArgs {
         long_help = "Write the modules as one self-contained HTML page instead of browsing: the\n\
                      browser's levels and keys, its data embedded, nothing loaded from anywhere,\n\
                      so it can be posted (a GitHub page) or sent as it is. Gene models from\n\
-                     --gtf or the recorded GFF, when there is one. In the browser, `e` writes it."
+                     --gtf or the recorded GFF, when there is one. In the browser, Ctrl+E writes it."
     )]
     html: Option<Box<str>>,
 
@@ -473,7 +473,7 @@ fn show(
     (dir, modality, record): Opened,
     gtf: Option<Box<str>>,
 ) -> anyhow::Result<()> {
-    // Shared with the thread that writes the report on `e`.
+    // Shared with the thread that writes the report on Ctrl+E.
     let mut modules = Modules::load(&dir, &modality, record)?;
     modules.regroup(&args.batch_groups()?)?;
     if let Some(prefix) = &args.figure {

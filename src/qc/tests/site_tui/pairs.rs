@@ -219,20 +219,20 @@ fn drawn(p: &mut SitePicker, (w, h): (u16, u16)) -> String {
         .join("\n")
 }
 
-/// `d` puts the four panels in place of the histogram, each with its box's
-/// counts and why it is shown; `d` again brings the histogram back.
+/// `v` puts the four panels in place of the histogram, each with its box's
+/// counts and why it is shown; `v` again brings the histogram back.
 #[test]
-fn d_shows_the_pairs_in_place_of_the_histogram() {
+fn v_shows_the_pairs_in_place_of_the_histogram() {
     let t = table("m6a", 600);
     let mut p = picker(&t, Some(cells(600)), SiteFilterArgs::default_values());
     let before = drawn(&mut p, (160, 50));
     assert!(!before.contains("in the box"), "{before}");
-    press(&mut p, KeyCode::Char('d'));
+    press(&mut p, KeyCode::Char('v'));
     let s = drawn(&mut p, (160, 50));
     assert_eq!(s.matches("in the box").count(), 4, "{s}");
     assert!(s.contains("auto: "), "{s}");
     assert!(s.contains("(by it alone)"), "the table's counts: {s}");
-    press(&mut p, KeyCode::Char('d'));
+    press(&mut p, KeyCode::Char('v'));
     assert!(!drawn(&mut p, (160, 50)).contains("in the box"));
 }
 
@@ -243,7 +243,7 @@ fn d_shows_the_pairs_in_place_of_the_histogram() {
 fn the_panels_axes_step_and_auto_puts_them_back() {
     let t = table("m6a", 900);
     let mut p = picker(&t, Some(cells(900)), SiteFilterArgs::default_values());
-    press(&mut p, KeyCode::Char('d'));
+    press(&mut p, KeyCode::Char('v'));
     let auto = p.view().pairs.clone();
     press(&mut p, KeyCode::Tab);
     press(&mut p, KeyCode::Tab);

@@ -1,7 +1,7 @@
 //! What frames the grids and the strip: the panes' titles, the levels, the
 //! site in focus's numbers and the footer's keys.
 
-use super::{Look, ModulesView, Pane, Spot};
+use super::{Full, Look, ModulesView, Pane, Sort, Spot};
 use crate::site_analysis::pileup::query_symbol;
 use crate::tui::hidden_marks;
 use crate::tui::ui::{compact, help_line, panel, DIM, HIGHLIGHT};
@@ -90,7 +90,11 @@ impl ModulesView<'_> {
                     ("Del", "unpin"),
                     ("Alt-drag", "pin onto genes"),
                     ("PgUp/PgDn", "page"),
-                    ("o/O", "sort/reverse"),
+                    if self.sort == Sort::Module {
+                        ("o", "sort")
+                    } else {
+                        ("o/O", "sort/reverse")
+                    },
                 ],
                 grid(self.looks[1]),
             ]
@@ -99,10 +103,12 @@ impl ModulesView<'_> {
                 ("←/→ n/N", "site"),
                 ("↑/↓", "pinned gene"),
                 ("Del", "unpin"),
-                ("X", "clear"),
                 ("Alt-drag", "move, off to unpin"),
             ],
         };
+        if !self.pins.is_empty() {
+            keys.push(("X", "clear pins"));
+        }
         keys.push((
             "Enter",
             match self.pane {
@@ -119,7 +125,7 @@ impl ModulesView<'_> {
         }
         keys.extend([("Tab", "pane"), ("/", "find gene")]);
         if self.report.is_some() {
-            keys.push(("e", "export report"));
+            keys.push((crate::tui::REPORT_KEY, "export report"));
         }
         if self.m.batches.is_some() {
             keys.extend([("b", "batches"), ("B", "filter")]);
@@ -127,8 +133,72 @@ impl ModulesView<'_> {
         if self.go_ask.is_some() {
             keys.push(("a", "GO terms"));
         }
-        keys.extend([("t", "trace"), ("q", "quit")]);
+        keys.extend([("t", "trace"), ("q", "quit"), ("?", "keys")]);
         crate::tui::wrap_help(help_line(&keys), width)
+    }
+
+    /// Every key where the focus is, for the `?` pop-up: a full pane's
+    /// own, or the panes'.
+    pub(super) fn help_keys(&self) -> Vec<(&'static str, &'static str)> {
+        let close = [("Esc", "close"), ("q", "quit"), ("?", "these keys")];
+        match self.full {
+            Some(Full::Trace) => return [&[("t", "close the trace")][..], &close].concat(),
+            Some(Full::Batches) => {
+                return [
+                    &[
+                        ("↑/↓ k/j", "scroll the cell modules"),
+                        ("B", "batch filter"),
+                        ("b", "close the batches"),
+                    ][..],
+                    &close,
+                ]
+                .concat()
+            }
+            Some(Full::Go) => {
+                return [&[("↑/↓ k/j", "gene module"), ("a", "close GO")][..], &close].concat()
+            }
+            None => {}
+        }
+        let mut keys = vec![
+            ("Tab/Shift+Tab", "next/previous pane"),
+            ("Enter", "into the next pane; open a pinned gene"),
+            ("Esc", "back a pane"),
+            ("↑/↓ k/j", "module, site or pinned gene"),
+        ];
+        match self.pane {
+            Pane::Modules => {}
+            Pane::Sites => keys.extend([
+                ("PgUp/PgDn", "a page of sites"),
+                ("Home/End", "first/last site"),
+                ("Space", "pin the site's gene"),
+                ("Del/Backspace", "unpin it"),
+                ("o", "sort by the next column, reads, cells"),
+                ("O", "reverse the sort"),
+            ]),
+            Pane::Genes => keys.extend([
+                ("←/→ h/l n/N", "previous/next site"),
+                ("Del/Backspace", "unpin the gene"),
+            ]),
+        }
+        keys.extend([
+            ("X", "clear every pin (asks)"),
+            ("v", "bars, % or z"),
+            ("y", "% scale, under the % look"),
+            ("[ ]", "scroll the cell modules"),
+            ("/", "find a gene"),
+            ("t", "trace"),
+        ]);
+        if self.report.is_some() {
+            keys.push((crate::tui::REPORT_KEY, "export the report"));
+        }
+        if self.m.batches.is_some() {
+            keys.extend([("b", "batches"), ("B", "batch filter")]);
+        }
+        if self.go_ask.is_some() {
+            keys.push(("a", "GO terms"));
+        }
+        keys.extend([("q", "quit"), ("?", "these keys")]);
+        keys
     }
 
     /// How grid `k` draws, for its title.

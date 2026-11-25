@@ -291,7 +291,7 @@ struct SitePicker<'a> {
     drawn: Rect,
     controls: Controls,
     plot: PlotImage,
-    /// The 2D view in place of the histogram, gene and metagene (`d`), its
+    /// The 2D view in place of the histogram, gene and metagene (`v`), its
     /// focused panel, and each panel's image.
     two_d: bool,
     pair_at: usize,
@@ -514,6 +514,27 @@ impl View for SitePicker<'_> {
     /// so it types nothing.
     fn takes_chord(&self, key: &KeyEvent) -> bool {
         is_report(key) && self.browsing()
+    }
+
+    /// None while a threshold, a gene or a name is typed, an annotation is
+    /// browsed for, or the fileset is written.
+    fn help(&self) -> Option<crate::tui::KeyList> {
+        if self.controls.prompting() {
+            return None;
+        }
+        let keys: Vec<(&str, &str)> = match &self.mode {
+            Mode::Confirm => vec![(APPLY_KEYS, "apply and write"), ("Esc/n", "back")],
+            Mode::Leave(picked) => vec![
+                match picked {
+                    Picked::PrintOnly(_) => ("p", "print the flags and leave"),
+                    _ => ("q", "leave without writing"),
+                },
+                ("Esc/n", "back"),
+            ],
+            Mode::Browse => self.browse_help(),
+            Mode::Edit(_) | Mode::Find | Mode::Gff(_) | Mode::Writing => return None,
+        };
+        Some(crate::tui::keys(&keys))
     }
 }
 
@@ -998,7 +1019,7 @@ fn counts_of(
 /// axes on `scales`, see [`site_views`]), in [`SITE_MODALITIES`]
 /// order, with each modality's kept cells per site where `_site` matrices
 /// gave them. Needs a terminal and at least one non-empty site table.
-/// Returns how it ended and the annotation it ended on, which `g` may have
+/// Returns how it ended and the annotation it ended on, which `a` may have
 /// changed from `gff`.
 pub fn run_site_picker(
     input_dir: &str,

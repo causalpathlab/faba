@@ -178,3 +178,12 @@ fn esc_clears_the_search_then_the_marks_then_quits() {
     press(&mut p, KeyCode::Esc);
     assert_eq!(p.decision, Some(Choice::Quit));
 }
+
+/// Letters find here, so `?` is one of them, not the keys' pop-up.
+#[test]
+fn question_mark_is_typed_into_the_find() {
+    let c = catalog_from_rows(rows());
+    let mut p = GenePicker::new(&c);
+    assert!(crate::tui::help::shown(&mut p, 100, 30).is_none());
+    assert_eq!(p.filter, "?");
+}

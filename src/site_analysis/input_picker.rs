@@ -378,11 +378,11 @@ impl Screen for ReferencePicker {
                 }
                 return;
             }
-            // As in `faba run`: s stops it, keeping what came for the next
+            // As in `faba run`: S stops it, keeping what came for the next
             // try; Esc hides it, and it carries on.
             Fetching::Downloading(f, shown @ true) => {
                 match key.code {
-                    KeyCode::Char('s') => {
+                    KeyCode::Char('S') => {
                         f.stop();
                         self.fetching = Fetching::No;
                         self.note = Some("download stopped; Tab picks up where it left".into());
@@ -455,7 +455,7 @@ impl Screen for ReferencePicker {
                 ("←", "up"),
             ]),
             help_line(&[
-                ("Enter", "choose"),
+                ("Enter", "choose / open folder"),
                 (
                     "Tab",
                     if matches!(self.fetching, Fetching::Downloading(..)) {

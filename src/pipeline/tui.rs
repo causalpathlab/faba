@@ -449,7 +449,7 @@ impl App {
     /// `q` or Ctrl-C: leave, unless a run is going.
     fn leave(&mut self) {
         if self.running() {
-            self.note = Some("a run is going: stop it with s first".into());
+            self.note = Some("a run is going: stop it with S first".into());
         } else {
             self.quit = true;
         }
@@ -552,6 +552,16 @@ impl View for App {
         if self.preview || !self.popped() {
             self.enter_hint();
         }
+    }
+
+    /// None while a line is typed, a file or reference is picked, or the
+    /// BAM list (where letters find) has the keys.
+    fn help(&self) -> Option<crate::tui::KeyList> {
+        let typing = self.editing.is_some()
+            || self.picking.is_some()
+            || self.catalogue.is_some()
+            || (self.page == Page::Inputs && self.inputs.focus == inputs::InputsFocus::Bams);
+        (!typing).then(|| crate::tui::keys(&draw::help_keys(self)))
     }
 }
 

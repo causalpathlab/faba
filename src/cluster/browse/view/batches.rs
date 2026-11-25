@@ -129,6 +129,7 @@ impl ModulesView<'_> {
                 ("B", "filter"),
                 ("↑/↓", "scroll"),
                 ("q", "quit"),
+                ("?", "keys"),
             ]),
         };
         frame.render_widget(Paragraph::new(help), foot);

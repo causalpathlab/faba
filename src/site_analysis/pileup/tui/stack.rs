@@ -120,11 +120,11 @@ impl<'a> StackView<'a> {
             ("Tab/click", "next gene"),
             ("|", self.arrange.next().name()),
             ("←/→", "bar"),
+            ("PgUp/PgDn", "half a view"),
             ("n/N", "next/prev site"),
-            ("=/-", "zoom"),
-            ("+/_", "zoom all"),
+            ("+/-", "zoom"),
             ("0", "whole"),
-            (")", "all whole"),
+            ("Z/W", "zoom all/all whole"),
             ("y", "scale"),
             (
                 "Y",
@@ -135,14 +135,13 @@ impl<'a> StackView<'a> {
                 },
             ),
         ];
-        if v.tracks.iter().any(|t| t.is_reads()) {
-            keys.push(("c", v.show.next().short()));
-        }
-        if hidden {
-            keys.push(("[/]", "tracks"));
-        }
+        keys.extend(
+            v.optional_keys(hidden)
+                .into_iter()
+                .filter(|&(k, _)| k != "m"),
+        );
         self.controls.help_keys(&mut keys);
-        keys.extend([("g/Esc", "gene list"), ("q", "quit")]);
+        keys.extend([("g/Esc", "gene list"), ("q", "quit"), ("?", "keys")]);
         help_line(&keys)
     }
 }
@@ -151,6 +150,36 @@ impl crate::tui::View for StackView<'_> {
     /// The apply key submits the save name being typed.
     fn takes_apply(&self) -> bool {
         self.controls.prompting()
+    }
+
+    fn help(&self) -> Option<crate::tui::KeyList> {
+        if self.controls.prompting() {
+            return None;
+        }
+        let v = &self.views[self.focus];
+        let mut keys = vec![
+            ("Tab/Shift+Tab", "next/previous gene takes the keys"),
+            ("click", "the gene clicked takes them"),
+            ("|", "genes one under another, side by side, a grid"),
+            ("←/→ h/l", "previous/next bar"),
+            ("PgUp/PgDn", "half a view left/right"),
+            ("n/N", "next/previous site"),
+            ("+/=", "zoom the gene in"),
+            ("-", "zoom it out"),
+            ("0", "it whole"),
+            ("Z", "zoom every gene in"),
+            ("W", "every gene whole"),
+            ("y", "y scale"),
+            ("Y", "lock y to the tallest gene, or unlock"),
+        ];
+        keys.extend(
+            v.optional_keys(v.rows_hidden())
+                .into_iter()
+                .filter(|&(k, _)| k != "m"),
+        );
+        self.controls.help_keys(&mut keys);
+        keys.extend([("g/Esc", "gene list"), ("q", "quit"), ("?", "these keys")]);
+        Some(crate::tui::keys(&keys))
     }
 }
 
@@ -229,21 +258,12 @@ impl Screen for StackView<'_> {
             KeyCode::Char('g') | KeyCode::Esc => self.exit = Some(Exit::Genes),
             // A search or the other modality opens one gene, not a stack.
             KeyCode::Char('/' | 'm' | 'M') => self.status = Some(ONE_GENE.into()),
-            // Shifted, the zoom keys act on every gene: `+` (Shift+=) in,
-            // `_` (Shift+-) out, `)` (Shift+0) each whole.
-            KeyCode::Char(c @ ('+' | '_' | ')')) => {
-                let one = match c {
-                    '+' => '=',
-                    '_' => '-',
-                    _ => '0',
-                };
+            // Every gene at once: `Z` zooms each in, `W` shows each whole.
+            KeyCode::Char(c @ ('Z' | 'W')) => {
+                let one = if c == 'Z' { '=' } else { '0' };
                 let key = KeyEvent::new(KeyCode::Char(one), key.modifiers);
                 for v in &mut self.views {
                     v.handle_key(key);
-                    // Out past a gene would reload one gene's span alone.
-                    if v.exit.take().is_some() {
-                        self.status = Some(ONE_GENE.into());
-                    }
                 }
             }
             // One y axis for every gene: the tallest of them, as a locked

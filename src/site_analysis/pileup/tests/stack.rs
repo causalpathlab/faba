@@ -200,27 +200,78 @@ fn a_click_gives_the_gene_the_keys_and_moves_its_cursor() {
 }
 
 #[test]
-fn shifted_zoom_keys_zoom_every_gene() {
+fn zoom_keys_zoom_the_gene_with_the_keys_and_z_or_w_every_gene() {
     let (a, b) = (positions(1.0), positions(3.0));
     let mut s = stack(&a, &b);
     screen(&mut s, 100, 40);
     let whole: Vec<_> = s.views.iter().map(|v| v.window).collect();
-    press(&mut s, KeyCode::Char('='));
-    assert_ne!(
-        s.views[0].window, whole[0],
-        "= zooms the gene with the keys"
+    for key in ['=', '+'] {
+        press(&mut s, KeyCode::Char(key));
+        assert_ne!(
+            s.views[0].window, whole[0],
+            "{key} zooms the gene with the keys"
+        );
+        assert_eq!(s.views[1].window, whole[1], "{key}: and only it");
+        press(&mut s, KeyCode::Char('0'));
+        assert_eq!(s.views[0].window, whole[0], "0: it whole");
+    }
+    press(&mut s, KeyCode::Char('Z'));
+    assert!(
+        s.views.iter().zip(&whole).all(|(v, w)| v.window != *w),
+        "Z zooms every gene"
     );
-    assert_eq!(s.views[1].window, whole[1], "and only it");
-    press(&mut s, KeyCode::Char('+'));
-    assert_ne!(s.views[1].window, whole[1], "+ zooms every gene");
-    press(&mut s, KeyCode::Char(')'));
+    press(&mut s, KeyCode::Char('-'));
+    assert_eq!(s.views[0].window, whole[0], "- the gene with the keys out");
+    assert_ne!(s.views[1].window, whole[1], "and only it");
+    // The layout-bound keys are gone.
+    for gone in ['_', ')'] {
+        press(&mut s, KeyCode::Char(gone));
+        assert_ne!(s.views[1].window, whole[1], "{gone} does nothing");
+    }
+    press(&mut s, KeyCode::Char('W'));
     let now: Vec<_> = s.views.iter().map(|v| v.window).collect();
-    assert_eq!(now, whole, ") shows every gene whole");
-    press(&mut s, KeyCode::Char('+'));
-    press(&mut s, KeyCode::Char('_'));
-    let now: Vec<_> = s.views.iter().map(|v| v.window).collect();
-    assert_eq!(now, whole, "_ zooms every gene back out");
+    assert_eq!(now, whole, "W shows every gene whole");
     assert!(s.exit.is_none());
+}
+
+/// Two genes, each with two alike read tracks with totals: the difference
+/// and the mirror both there.
+fn paired<'a>(m: &'a [(i64, f64)], half: &'a [(i64, f64)]) -> StackView<'a> {
+    let one = |name: &str| {
+        let mut a = Track::single("wt", "sum", m, false).with_total(half);
+        a.mirror_with_next = true;
+        let b = Track::single("mut", "sum", half, false).with_total(half);
+        PileupView::new(name, "chr1", vec![a, b], EXTENT)
+    };
+    StackView::new(vec![one("GENE1"), one("GENE2")])
+}
+
+#[test]
+fn the_footer_names_paging_the_difference_and_the_mirror_where_they_work() {
+    let (m, half) = (positions(1.0), positions(2.0));
+    let mut s = paired(&m, &half);
+    let said = s.footer_line(false).to_string();
+    for key in [
+        "PgUp/PgDn half a view",
+        "+/- zoom",
+        "Z/W zoom all/all whole",
+        "d difference/fold",
+        "v split",
+        "? keys",
+    ] {
+        assert!(said.contains(key), "{key}: {said}");
+    }
+    assert!(!said.contains("+/_") && !said.contains(") all"), "{said}");
+    let (a, b) = (positions(1.0), positions(3.0));
+    let plain = stack(&a, &b).footer_line(false).to_string();
+    assert!(
+        !plain.contains("d difference") && !plain.contains("v split"),
+        "{plain}"
+    );
+    let keys = crate::tui::help::shown(&mut s, 120, 50).expect("? opens the keys");
+    for key in ["Tab/Shift+Tab", "←/→ h/l", "PgUp/PgDn", "Z", "W", "|", "q"] {
+        assert!(keys.contains(key), "{key}:\n{keys}");
+    }
 }
 
 #[test]
@@ -229,9 +280,9 @@ fn a_drag_or_the_wheel_pans_the_gene_under_the_pointer() {
     let (a, b) = (positions(1.0), positions(3.0));
     let mut s = stack(&a, &b);
     screen(&mut s, 100, 40);
-    // Zoomed in, so there is room to pan.
-    press(&mut s, KeyCode::Char('+'));
-    press(&mut s, KeyCode::Char('+'));
+    // Zoomed in, every gene, so there is room to pan.
+    press(&mut s, KeyCode::Char('Z'));
+    press(&mut s, KeyCode::Char('Z'));
     screen(&mut s, 100, 40);
     let at = |kind, column, row| MouseEvent {
         kind,

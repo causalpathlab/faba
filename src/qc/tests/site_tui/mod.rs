@@ -14,6 +14,7 @@ use std::sync::Arc;
 
 mod confirm;
 mod genes;
+mod keys;
 mod metagene;
 mod pairs;
 mod report;

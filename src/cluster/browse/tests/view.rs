@@ -4,6 +4,7 @@ use super::{cell_of, heads, loaded, mouse, press, screen, typed, wide};
 use crate::cluster::browse::view::{Look, Pane, Pin, Ramp, Sort};
 use crate::cluster::browse::{Modules, ModulesView};
 use crate::tui::ui::Screen;
+use ratatui::crossterm::event::KeyEvent;
 use ratatui::crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 
 #[test]
@@ -75,6 +76,7 @@ fn space_pins_or_selects_delete_unpins_and_x_clears() {
     // Delete unpins the gene in focus.
     press(&mut v, KeyCode::Delete);
     assert_eq!(v.pins, vec![gene1, Pin { role: 1, gene: 0 }]);
+    press(&mut v, KeyCode::Char('X'));
     press(&mut v, KeyCode::Char('X'));
     assert!(v.pins.is_empty());
 }
@@ -455,7 +457,7 @@ fn cell_modules_in_the_other_order_keep_their_own_reads_names_and_sizes() {
     press(&mut v, KeyCode::Char('o'));
     assert_eq!(v.sort, Sort::Column(0));
     // Wide enough that the footer keeps to one line.
-    let s = screen(&mut v, 200, 40);
+    let s = screen(&mut v, 240, 40);
     let line = |text: &str| -> String {
         let l = s.lines().find(|l| l.contains(text)).unwrap();
         l.trim_end().to_string()
@@ -480,15 +482,15 @@ fn cell_modules_in_the_other_order_keep_their_own_reads_names_and_sizes() {
 }
 
 #[test]
-fn e_again_while_writing_writes_the_report_anew_after() {
+fn ctrl_e_again_while_writing_writes_the_report_anew_after() {
     let m = std::sync::Arc::new(loaded());
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("r.html");
     let mut v = ModulesView::new("test", &m).with_report(path.clone(), m.clone());
     let done = |v: &mut ModulesView| crate::test_util::wait_for(|| v.tick());
-    press(&mut v, KeyCode::Char('e'));
+    export(&mut v);
     // Not taken until a tick: the first is still being written.
-    press(&mut v, KeyCode::Char('e'));
+    export(&mut v);
     assert!(screen(&mut v, 180, 40).contains("then again"));
     done(&mut v);
     let s = screen(&mut v, 180, 40);
@@ -507,12 +509,12 @@ fn e_again_while_writing_writes_the_report_anew_after() {
 }
 
 #[test]
-fn e_writes_the_report_off_the_ui_thread_and_says_so_when_done() {
+fn ctrl_e_writes_the_report_off_the_ui_thread_and_says_so_when_done() {
     let m = std::sync::Arc::new(loaded());
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("r.html");
     let mut v = ModulesView::new("test", &m).with_report(path.clone(), m.clone());
-    press(&mut v, KeyCode::Char('e'));
+    export(&mut v);
     let s = screen(&mut v, 180, 40);
     assert!(
         s.contains(&format!("writing {}", crate::tui::tilde(&path))),
@@ -530,12 +532,117 @@ fn e_writes_the_report_off_the_ui_thread_and_says_so_when_done() {
     // Where it cannot be written, why not.
     let path = tmp.path().join("missing").join("r.html");
     let mut v = ModulesView::new("test", &m).with_report(path.clone(), m.clone());
-    press(&mut v, KeyCode::Char('e'));
+    export(&mut v);
     crate::test_util::wait_for(|| v.tick());
     let s = screen(&mut v, 180, 40);
     assert!(
         s.contains(&path.display().to_string()) && !s.contains("wrote"),
         "{s}"
+    );
+}
+
+/// Ctrl+E, as the screen loop hands it on.
+fn export(v: &mut ModulesView) {
+    crate::tui::feed(v, KeyEvent::new(KeyCode::Char('e'), KeyModifiers::CONTROL));
+}
+
+#[test]
+fn plain_e_writes_nothing_and_ctrl_e_types_nothing_into_a_find() {
+    let m = std::sync::Arc::new(loaded());
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("r.html");
+    let mut v = ModulesView::new("test", &m).with_report(path.clone(), m.clone());
+    press(&mut v, KeyCode::Char('e'));
+    assert!(
+        !screen(&mut v, 180, 40).contains("writing"),
+        "e is not the report"
+    );
+    assert!(screen(&mut v, 180, 40).contains("Ctrl+E export report"));
+    press(&mut v, KeyCode::Char('/'));
+    export(&mut v);
+    let s = screen(&mut v, 180, 40);
+    assert!(!s.contains("writing"), "not while finding: {s}");
+    assert!(!s.contains("find gene: e"), "and no e typed: {s}");
+    assert!(!path.exists());
+}
+
+/// Two genes pinned from the first gene module's sites, the focus back on
+/// the modules.
+fn two_pinned(m: &Modules) -> ModulesView<'_> {
+    let mut v = ModulesView::new("test", m);
+    press(&mut v, KeyCode::Down);
+    press(&mut v, KeyCode::Enter);
+    press(&mut v, KeyCode::Char(' '));
+    press(&mut v, KeyCode::End);
+    press(&mut v, KeyCode::Char(' '));
+    press(&mut v, KeyCode::Esc);
+    assert_eq!((v.pins.len(), v.pane), (2, Pane::Modules));
+    v
+}
+
+#[test]
+fn x_asks_once_before_clearing_every_pin_in_any_pane() {
+    let m = loaded();
+    let mut v = two_pinned(&m);
+    assert!(screen(&mut v, 180, 40).contains("X clear pins"));
+    press(&mut v, KeyCode::Char('X'));
+    assert_eq!(v.pins.len(), 2, "the first X only asks");
+    assert!(screen(&mut v, 180, 40).contains("X again clears every pinned gene"));
+    // Another key between them, and the next X asks again.
+    press(&mut v, KeyCode::Down);
+    press(&mut v, KeyCode::Char('X'));
+    assert_eq!(v.pins.len(), 2);
+    press(&mut v, KeyCode::Char('X'));
+    assert!(v.pins.is_empty());
+    assert!(
+        !screen(&mut v, 180, 40).contains("X clear"),
+        "nothing to clear"
+    );
+}
+
+#[test]
+fn o_reverses_only_once_sorted_and_g_is_kept_free() {
+    let m = loaded();
+    let mut v = ModulesView::new("test", &m);
+    press(&mut v, KeyCode::Down);
+    press(&mut v, KeyCode::Enter);
+    let s = screen(&mut v, 200, 40);
+    assert!(s.contains("o sort") && !s.contains("o/O"), "{s}");
+    press(&mut v, KeyCode::Char('o'));
+    assert!(screen(&mut v, 200, 40).contains("o/O sort/reverse"));
+    // G is GO's full pane to come: nothing yet, in any pane.
+    for _ in 0..3 {
+        let was = (v.pane, v.module, v.site, v.pins.len());
+        press(&mut v, KeyCode::Char('G'));
+        assert_eq!((v.pane, v.module, v.site, v.pins.len()), was);
+        assert!(!v.done());
+        press(&mut v, KeyCode::Tab);
+    }
+}
+
+#[test]
+fn y_is_named_only_under_the_percent_look() {
+    let m = loaded();
+    let mut v = ModulesView::new("test", &m);
+    assert!(!screen(&mut v, 200, 40).contains("y % scale"));
+    press(&mut v, KeyCode::Char('v'));
+    assert_eq!(v.looks[0], Look::Percent);
+    assert!(screen(&mut v, 200, 40).contains("y % scale"));
+}
+
+#[test]
+fn question_mark_lists_the_keys_but_types_in_a_find() {
+    let m = loaded();
+    let mut v = two_pinned(&m);
+    let keys = crate::tui::help::shown(&mut v, 160, 50).expect("? opens the keys");
+    for key in ["Tab/Shift+Tab", "↑/↓ k/j", "Enter", "X", "v", "/", "t", "q"] {
+        assert!(keys.contains(key), "{key}:\n{keys}");
+    }
+    press(&mut v, KeyCode::Char('/'));
+    assert!(crate::tui::help::shown(&mut v, 160, 50).is_none());
+    assert!(
+        screen(&mut v, 160, 40).contains("find gene: ?"),
+        "? is typed"
     );
 }
 

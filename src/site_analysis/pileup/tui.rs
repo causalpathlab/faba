@@ -54,6 +54,9 @@ pub struct View<'a> {
     pub cursor: Option<i64>,
     /// Whether `M` switches to the other modality's sites.
     pub switchable: bool,
+    /// Opened from cluster-view, which `g` and Esc go back to, and where
+    /// a search is not answered.
+    pub from_cluster: bool,
     /// The track whose row to show first under those on top when not all
     /// fit (`[` and `]` scroll them); 0 for the first.
     pub track_from: usize,
@@ -137,6 +140,8 @@ pub struct PileupView<'a> {
     pending_genes: Option<SharedModels>,
     /// Whether `M` switches to the other modality's sites.
     switchable: bool,
+    /// Opened from cluster-view (see [`View::from_cluster`]).
+    pub(super) from_cluster: bool,
     /// The y-axis maximum `Y` locked, kept for every gene opened after.
     y_lock: Option<f64>,
     /// The header's badge: `pileup`, or in a stack, which gene has the keys.
@@ -214,6 +219,7 @@ impl<'a> PileupView<'a> {
             genes: Vec::new(),
             pending_genes: None,
             switchable: false,
+            from_cluster: false,
             y_lock: None,
             badge: "pileup",
             drawn: Rect::default(),
@@ -339,6 +345,33 @@ impl crate::tui::View for PileupView<'_> {
     fn takes_apply(&self) -> bool {
         self.search.active() || self.controls.prompting()
     }
+
+    fn help(&self) -> Option<crate::tui::KeyList> {
+        if self.search.active() || self.controls.prompting() {
+            return None;
+        }
+        let mut keys = vec![
+            ("←/→ h/l", "previous/next bar"),
+            ("PgUp/PgDn", "half a view left/right"),
+            ("n/N", "next/previous site"),
+            ("+/=", "zoom in"),
+            ("-", "zoom out"),
+            ("0", "the whole gene"),
+            ("y", "y scale"),
+            ("Y", "lock y for the genes after, or unlock"),
+        ];
+        keys.extend(self.optional_keys(self.rows_hidden()));
+        if !self.from_cluster {
+            keys.push(("/", "search a gene or chr:start-end"));
+        }
+        self.controls.help_keys(&mut keys);
+        keys.extend([
+            ("g/Esc", self.back_to()),
+            ("q", "quit"),
+            ("?", "these keys"),
+        ]);
+        Some(crate::tui::keys(&keys))
+    }
 }
 
 impl Screen for PileupView<'_> {
@@ -382,7 +415,8 @@ impl Screen for PileupView<'_> {
             Key::Save(prefix) => return self.controls.save(&self.figure(), &prefix),
         }
         match key.code {
-            KeyCode::Char('/') => self.search.open(""),
+            // From cluster-view the search is its own: `/` there.
+            KeyCode::Char('/') if !self.from_cluster => self.search.open(""),
             KeyCode::Char('c') => self.show = self.show.next(),
             KeyCode::Char('d') => {
                 self.contrast = self.contrast.map(|c| Contrast {
@@ -467,6 +501,7 @@ fn browser<'a>(view: View<'a>, tracks: Vec<Track<'a>>, status: Option<String>) -
     browser.pending_genes = view.genes;
     browser.take_genes();
     browser.switchable = view.switchable;
+    browser.from_cluster = view.from_cluster;
     browser.track_from = view.track_from;
     if let Some(at) = view.cursor {
         browser.cursor = at.clamp(browser.extent.0, browser.extent.1);

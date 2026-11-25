@@ -172,7 +172,7 @@ fn the_gene_panel_draws_its_model_once_the_annotation_arrives() {
     )));
     assert!(text.contains("genes: kept / all sites"));
     assert!(text.contains("[ ] move  / find"));
-    assert!(text.contains("█ kept read coverage   c: converted reads"));
+    assert!(text.contains("█ kept read coverage   w: converted reads"));
     assert!(text.contains("▬"));
     assert!(p
         .figure(crate::figure::style::Sheet::OWN)

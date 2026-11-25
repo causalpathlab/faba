@@ -34,7 +34,7 @@ impl Weight {
         }
     }
 
-    /// The one `c` switches to.
+    /// The one `w` switches to.
     pub(super) fn next(self) -> Self {
         match self {
             Weight::Coverage => Weight::Converted,
