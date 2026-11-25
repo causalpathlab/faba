@@ -407,3 +407,28 @@ fn the_first_frame_names_the_scroll_keys() {
     assert!(first.contains("[/]"), "{first}");
     assert_eq!(screen(&mut s, 200, 60), first, "as every frame after");
 }
+
+/// `s` as the check draws it, the gene with the keys zoomed in on a site
+/// mid-gene, so that every move, zoom and jump moves.
+fn mid_gene(mut s: StackView) -> StackView {
+    screen(&mut s, 160, 50);
+    press(&mut s, KeyCode::Char('+'));
+    press(&mut s, KeyCode::Char('n'));
+    press(&mut s, KeyCode::Char('n'));
+    s
+}
+
+/// `/`, `m` and `M` are listed too: they say the key needs one gene.
+#[test]
+fn the_keys_listed_are_the_keys_bound() {
+    use crate::tui::help::assert_lists_its_keys;
+    let (a, b) = (positions(1.0), positions(3.0));
+    assert_lists_its_keys("two genes", || mid_gene(stack(&a, &b)));
+    let half = positions(0.5);
+    assert_lists_its_keys("compared and mirrored", || mid_gene(paired(&a, &half)));
+    assert_lists_its_keys("rows hidden", || {
+        let mut s = mid_gene(group_stack(&a, 0));
+        press(&mut s, KeyCode::Char(']'));
+        s
+    });
+}

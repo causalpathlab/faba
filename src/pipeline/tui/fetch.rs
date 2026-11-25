@@ -158,6 +158,15 @@ fn read_on_thread(mut r: impl Read + Send + 'static) -> JoinHandle<String> {
 /// A listing being read on a thread: its names, or why not.
 type Listing = JoinHandle<Result<Vec<String>, String>>;
 
+/// The keys of a [`Catalogue`]'s sources, for the `?` pop-up: `faba
+/// run`'s and a reference picker's. Past them, letters narrow the list.
+pub const SOURCE_KEYS: [(&str, &str); 4] = [
+    ("↑/↓", "source"),
+    ("Enter/→", "list its releases or species"),
+    ("Esc/←", "close"),
+    ("?", "these keys"),
+];
+
 /// The download pop-up: a source, then one of its releases or species,
 /// narrowed by typing.
 pub struct Catalogue {

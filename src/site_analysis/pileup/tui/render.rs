@@ -150,11 +150,12 @@ impl PileupView<'_> {
         } else if let Some(msg) = &self.status {
             status_line(msg)
         } else {
-            self.controls.footer().unwrap_or_else(|| self.help(hidden))
+            (self.controls.footer()).unwrap_or_else(|| help_line(&self.footer_pairs(hidden)))
         }
     }
 
-    pub(super) fn help(&self, hidden: bool) -> Line<'static> {
+    /// The footer's keys, `[/]` among them when rows are `hidden`.
+    pub(super) fn footer_pairs(&self, hidden: bool) -> Vec<(&'static str, &'static str)> {
         let mut keys = vec![
             ("←/→", "bar"),
             ("PgUp/PgDn", "half a view"),
@@ -180,7 +181,7 @@ impl PileupView<'_> {
         keys.extend(self.optional_keys(hidden));
         self.controls.help_keys(&mut keys);
         keys.extend([("q", "quit"), ("?", "keys")]);
-        help_line(&keys)
+        keys
     }
 
     /// What `g` and Esc go back to.
@@ -194,7 +195,7 @@ impl PileupView<'_> {
 
     /// The keys that work only on some genes' tracks: `c` with reads, `d`
     /// with two to compare, `v` with tracks to mirror, `[/]` with rows
-    /// `hidden`, `m` with another modality.
+    /// `hidden`, `m` (or `M`) with another modality.
     pub(super) fn optional_keys(&self, hidden: bool) -> Vec<(&'static str, &'static str)> {
         let mut keys = Vec::new();
         if self.tracks.iter().any(|t| t.is_reads()) {
@@ -210,7 +211,7 @@ impl PileupView<'_> {
             keys.push(("[/]", "tracks"));
         }
         if self.switchable {
-            keys.push(("m", "m6A/A-to-I"));
+            keys.push(("m/M", "m6A/A-to-I"));
         }
         keys
     }

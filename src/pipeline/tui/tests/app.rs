@@ -1,4 +1,5 @@
 use super::*;
+use form::Kind;
 use inputs::InputsFocus;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -10,23 +11,29 @@ fn press(a: &mut App, code: KeyCode) {
 
 fn app_with_bams() -> (tempfile::TempDir, App) {
     let tmp = tempfile::tempdir().unwrap();
+    let a = app_in(tmp.path());
+    (tmp, a)
+}
+
+/// [`app_with_bams`] in `dir`, its files written there.
+fn app_in(dir: &std::path::Path) -> App {
     for f in ["sample_A.bam", "control_A.bam", "genes.gff", "genome.fa"] {
-        std::fs::write(tmp.path().join(f), b"").unwrap();
+        std::fs::write(dir.join(f), b"").unwrap();
     }
-    let mut a = App::new(run_cmd(), tmp.path().to_path_buf());
+    let mut a = App::new(run_cmd(), dir.to_path_buf());
     for n in ["control_A.bam", "sample_A.bam"] {
         assert!(a.inputs.bams.select(n));
         press(&mut a, KeyCode::Char(' '));
     }
     assert!(a.inputs.bams.select("control_A.bam"));
     press(&mut a, KeyCode::Char(' '));
-    a.inputs.gff = Some(tmp.path().join("genes.gff"));
-    a.inputs.genome = Some(tmp.path().join("genome.fa"));
-    a.inputs.output = tmp.path().join("faba_out").to_string_lossy().into_owned();
+    a.inputs.gff = Some(dir.join("genes.gff"));
+    a.inputs.genome = Some(dir.join("genome.fa"));
+    a.inputs.output = dir.join("faba_out").to_string_lossy().into_owned();
     // Off the BAM list, where letters type into its find.
     a.inputs.focus = InputsFocus::Rows;
     a.refresh();
-    (tmp, a)
+    a
 }
 
 #[test]
@@ -322,7 +329,8 @@ fn esc_on_the_rows_stays_and_h_goes_to_the_bams() {
 #[test]
 fn the_footer_names_the_screens_by_number_and_the_flags_paging() {
     let (_t, mut a) = app_with_bams();
-    assert!(screen(&mut a, 220, 20).contains("1-4 screen"));
+    // The Run screen is there once a run is.
+    assert!(screen(&mut a, 220, 20).contains("1-3 screen"));
     press(&mut a, KeyCode::Char('3'));
     let s = screen(&mut a, 220, 20);
     assert!(
@@ -337,7 +345,7 @@ fn question_mark_lists_the_keys_but_types_where_typing() {
     let keys = crate::tui::help::shown(&mut a, 120, 40).expect("? opens the keys");
     for key in [
         "Tab/Shift+Tab",
-        "1-4",
+        "1-3",
         "↑/↓ k/j",
         "h",
         "d",
@@ -736,6 +744,149 @@ fn one_bam_under_two_spellings_is_one_pick() {
     assert_eq!(a.inputs.picked.len(), 1);
 }
 
+/// [`app_in`] `dir`, after `keys`; a run it starts runs no program (there
+/// is none by its name), so the apply key can be tried in the preview.
+fn app_after(dir: &std::path::Path, keys: &[KeyCode]) -> App {
+    let mut a = app_in(dir);
+    a.program = dir.join("no-such-program");
+    for &k in keys {
+        press(&mut a, k);
+    }
+    a
+}
+
+/// Whether a flag is of some kind.
+type IsKind = fn(&Kind) -> bool;
+
+/// The flag of `kind` shown, between the first and the last, highlighted
+/// and changed from its default.
+fn on_flag(a: &mut App, kind: IsKind) {
+    let shown = a.visible_flags();
+    let at = (1..shown.len() - 1)
+        .find(|&k| kind(&a.form.fields[shown[k]].kind))
+        .expect("a flag of that kind");
+    a.flags_at = at;
+    let f = &mut a.form.fields[shown[at]];
+    match f.kind {
+        Kind::Flag { .. } => f.toggle(),
+        Kind::Choice(_) => f.cycle(1),
+        Kind::Text => f.set_text("7"),
+    }
+}
+
+/// A run's job, its log long enough to scroll and scrolled up some: still
+/// going (its thread parked for good), or ended.
+fn job(going: bool) -> Job {
+    let log = Log {
+        lines: (0..200).map(|i| format!("line {i}")).collect(),
+        ended: (!going).then_some(Ok(())),
+        ..Log::default()
+    };
+    Job {
+        log: Arc::new(Mutex::new(log)),
+        stopper: Arc::default(),
+        handle: going.then(|| std::thread::spawn(std::thread::park)),
+        started: Instant::now(),
+        out: PathBuf::from("."),
+        scroll: 20,
+        asking: false,
+        rows: std::cell::Cell::new(0),
+        took: (!going).then_some(std::time::Duration::from_secs(1)),
+    }
+}
+
+/// What a key changed on the Run screen, which a clock would change by
+/// itself: where it is, what it says and asks, and the run's stop.
+fn run_state(a: &mut App) -> String {
+    let job = a.job.as_ref().unwrap();
+    format!(
+        "{:?} {:?} {} {} {} {} {:?} {}",
+        a.page,
+        a.note,
+        a.preview,
+        a.quit,
+        job.scroll,
+        job.asking,
+        job.stopper.is_stopped(),
+        a.leaving,
+    )
+}
+
+#[test]
+fn the_keys_listed_are_the_keys_bound_on_each_screen() {
+    use crate::tui::help::{agree, disagree_by};
+    use KeyCode::{Char, Down};
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    let shown = crate::tui::help::seen::<App>;
+    // The digit of the screen it is on takes it nowhere new.
+    for (what, here, keys) in [
+        ("the inputs", "1", vec![Down]),
+        ("a step", "2", vec![Char('2'), Down]),
+        ("the depth step", "2", vec![Char('2'), Down, Down]),
+        ("the flags, none changed", "3", vec![Char('3'), Down]),
+    ] {
+        agree(what, here, disagree_by(|| app_after(dir, &keys), shown, ""));
+    }
+    let kinds: [(&str, IsKind); 3] = [
+        ("a switch", |k| matches!(k, Kind::Flag { .. })),
+        ("a choice", |k| matches!(k, Kind::Choice(_))),
+        ("a value", |k| matches!(k, Kind::Text)),
+    ];
+    for (what, kind) in kinds {
+        let make = || {
+            let mut a = app_after(dir, &[Char('3')]);
+            on_flag(&mut a, kind);
+            a
+        };
+        agree(what, "3", disagree_by(make, shown, ""));
+    }
+    let preview = || {
+        let mut a = app_after(dir, &[]);
+        crate::tui::feed(&mut a, crate::tui::apply_key());
+        a
+    };
+    agree("the preview", "", disagree_by(preview, shown, ""));
+    // On the middle source; Enter and → read its FTP listing: not pressed.
+    let sources = || app_after(dir, &[Char('d'), Down]);
+    agree("the sources", "", disagree_by(sources, shown, "Enter/→"));
+    let download = || {
+        let mut a = app_after(dir, &[]);
+        a.fetch = Some(fetch::Fetch::idle("a reference", dir.join("ref")));
+        a.fetch_shown = true;
+        a
+    };
+    // An idle download shows no stop: its thread would.
+    let stopped = |a: &mut App| {
+        let stopped = a.fetch.as_ref().is_some_and(|f| f.stopped());
+        format!("{} {stopped}", shown(a))
+    };
+    agree("the download", "", disagree_by(download, stopped, ""));
+    let told = || {
+        let mut a = app_after(dir, &[]);
+        a.job = Some(job(false));
+        (a.page, a.end_drawn, a.ended_shown) = (Page::Run, true, true);
+        a
+    };
+    agree("the run's end told", "", disagree_by(told, shown, ""));
+    for (what, going, asking) in [
+        ("a run going", true, false),
+        ("a run going, asking", true, true),
+        ("a run ended", false, false),
+    ] {
+        let make = || {
+            let mut a = app_after(dir, &[]);
+            let mut j = job(going);
+            j.asking = asking;
+            a.job = Some(j);
+            a.page = Page::Run;
+            a.end_drawn = true;
+            a
+        };
+        agree(what, "4", disagree_by(make, run_state, ""));
+    }
+}
+
 /// The screen as text, drawn at `w` x `h`.
 fn screen(a: &mut App, w: u16, h: u16) -> String {
     let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
@@ -1097,4 +1248,56 @@ fn the_mark_stands_clear_of_the_session_keys() {
     let plain = crate::tui::screen_text(framed.screen, 160, 40);
     let top = plain.lines().next().unwrap().trim_end();
     assert!(top.ends_with("▟▛█▜▙ ▟▛█▜▙ ▟▛█▜▙ ▟▛█▜▙"), "{top:?}");
+}
+
+/// A pop-up over the BAM list (where letters find) lists the pop-up's
+/// keys: the preview's, the download's, the run's end.
+#[test]
+fn over_the_bam_list_a_pop_up_lists_its_own_keys() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    let bams = |a: &mut App| a.inputs.focus = InputsFocus::Bams;
+    let mut a = app_after(dir, &[]);
+    bams(&mut a);
+    assert!(a.help().is_none(), "the BAM list types");
+    let has = |a: &App, k: &str| a.help().is_some_and(|l| l.iter().any(|(key, _)| key == k));
+    let mut preview = app_after(dir, &[]);
+    bams(&mut preview);
+    preview.preview = true;
+    assert!(has(&preview, "Esc") && has(&preview, crate::tui::APPLY_KEYS));
+    let mut fetching = app_after(dir, &[]);
+    bams(&mut fetching);
+    fetching.fetch = Some(fetch::Fetch::idle("a reference", dir.join("ref")));
+    fetching.fetch_shown = true;
+    assert!(has(&fetching, "S"));
+    let mut told = app_after(dir, &[]);
+    bams(&mut told);
+    told.job = Some(job(false));
+    (told.end_drawn, told.ended_shown) = (true, true);
+    assert!(has(&told, "Enter/Esc"));
+}
+
+/// The preview while a run goes on: a print would leave it, so the
+/// footer names no `p`, and each key it names acts. The run's thread is
+/// parked, its program one that does not exist.
+#[test]
+fn the_preview_over_a_run_going_names_no_print() {
+    use crate::tui::help::{agree, disagree_by, seen};
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    let make = || {
+        let mut a = app_after(dir, &[]);
+        a.job = Some(job(true));
+        a.preview = true;
+        a
+    };
+    let keys = draw::footer_keys(&make()).expect("the preview names its keys");
+    assert!(keys.iter().all(|&(k, _)| k != "p"), "{keys:?}");
+    assert!(keys.iter().any(|&(k, _)| k == "Esc"), "{keys:?}");
+    // The apply key would start a second run: not pressed.
+    agree(
+        "the preview, a run going",
+        "",
+        disagree_by(make, seen, "Ctrl+R"),
+    );
 }

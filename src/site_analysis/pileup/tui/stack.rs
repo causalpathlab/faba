@@ -115,6 +115,12 @@ impl<'a> StackView<'a> {
         if let Some(line) = self.controls.footer() {
             return line;
         }
+        help_line(&self.footer_pairs(hidden))
+    }
+
+    /// The footer's keys, `[/]` among them when the gene with the keys
+    /// has rows `hidden`.
+    pub(super) fn footer_pairs(&self, hidden: bool) -> Vec<(&'static str, &'static str)> {
         let v = &self.views[self.focus];
         let mut keys = vec![
             ("Tab/click", "next gene"),
@@ -138,15 +144,23 @@ impl<'a> StackView<'a> {
         keys.extend(
             v.optional_keys(hidden)
                 .into_iter()
-                .filter(|&(k, _)| k != "m"),
+                .filter(|&(k, _)| k != "m/M"),
         );
         self.controls.help_keys(&mut keys);
         keys.extend([("g/Esc", "gene list"), ("q", "quit"), ("?", "keys")]);
-        help_line(&keys)
+        keys
     }
 }
 
 impl crate::tui::View for StackView<'_> {
+    /// Past a status, the save prompt or its outcome, which name none.
+    #[cfg(test)]
+    fn footer_keys(&self) -> Option<crate::tui::KeyList> {
+        let hidden = self.views[self.focus].rows_hidden();
+        (self.status.is_none() && self.controls.footer().is_none())
+            .then(|| crate::tui::keys(&self.footer_pairs(hidden)))
+    }
+
     /// The apply key submits the save name being typed.
     fn takes_apply(&self) -> bool {
         self.controls.prompting()
@@ -175,10 +189,15 @@ impl crate::tui::View for StackView<'_> {
         keys.extend(
             v.optional_keys(v.rows_hidden())
                 .into_iter()
-                .filter(|&(k, _)| k != "m"),
+                .filter(|&(k, _)| k != "m/M"),
         );
         self.controls.help_keys(&mut keys);
-        keys.extend([("g/Esc", "gene list"), ("q", "quit"), ("?", "these keys")]);
+        keys.extend([
+            ("/ m/M", "search, modality: one gene only"),
+            ("g/Esc", "gene list"),
+            ("q", "quit"),
+            ("?", "these keys"),
+        ]);
         Some(crate::tui::keys(&keys))
     }
 }

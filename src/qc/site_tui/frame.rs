@@ -5,87 +5,120 @@ use super::*;
 impl SitePicker<'_> {
     /// The footer: a prompt, a hint, or the keys of the mode.
     pub(super) fn footer_line(&self) -> Line<'static> {
-        // A report's outcome shows while browsing, past a save's outcome
-        // but not its prompt, until the next key.
-        if let Some(said) = self
-            .status
-            .as_ref()
-            .filter(|_| self.browsing() && !self.enter_hint)
-        {
+        if let Some(keys) = self.footer_pairs() {
+            return help_line(&keys);
+        }
+        if let Some(said) = self.said() {
             return figure::status_line(said);
         }
-        match (&self.mode, self.controls.footer()) {
-            (_, Some(line)) => line,
-            (Mode::Edit(buf), None) => input_line(
+        if let Some(line) = self.controls.footer() {
+            return line;
+        }
+        match &self.mode {
+            Mode::Edit(buf) => input_line(
                 &format!("{} {}: ", self.criterion().label(), self.criterion().flag()),
                 buf,
                 &[("Enter", "set"), ("Esc", "back")],
             ),
-            (Mode::Confirm, None) => {
-                help_line(&[(APPLY_KEYS, "apply and write"), ("Esc/n", "back")])
-            }
-            (Mode::Writing, None) => help_line(&[("", "writing; the view closes when done")]),
-            (Mode::Leave(picked), None) => help_line(&[
+            Mode::Writing => help_line(&[("", "writing; the view closes when done")]),
+            Mode::Find => input_line(
+                "gene: ",
+                &self.list.find,
+                &[("↑/↓", "move"), ("Enter", "focus"), ("Esc", "cancel")],
+            ),
+            // Browsing, past the Enter that did nothing.
+            _ => Line::styled(format!(" {}", enter_hint("applies")), DIM),
+        }
+    }
+
+    /// A report's outcome, which shows while browsing, past a save's
+    /// outcome but not its prompt, until the next key.
+    fn said(&self) -> Option<&String> {
+        self.status
+            .as_ref()
+            .filter(|_| self.browsing() && !self.enter_hint)
+    }
+
+    /// The keys the footer names, where it names keys: none while a
+    /// report's or a save's outcome, a prompt or the Enter hint shows.
+    pub(super) fn footer_pairs(&self) -> Option<Vec<(&'static str, &'static str)>> {
+        let hint = self.enter_hint && matches!(self.mode, Mode::Browse);
+        if self.said().is_some() || self.controls.footer().is_some() || hint {
+            return None;
+        }
+        self.mode_keys()
+    }
+
+    /// The keys of a mode that is no prompt, as the footer names them.
+    pub(super) fn mode_keys(&self) -> Option<Vec<(&'static str, &'static str)>> {
+        Some(match &self.mode {
+            Mode::Confirm => vec![(APPLY_KEYS, "apply and write"), ("Esc/n", "back")],
+            Mode::Leave(picked) => vec![
                 match picked {
                     Picked::PrintOnly(_) => ("p", "print the flags and leave"),
                     _ => ("q", "leave without writing"),
                 },
                 ("Esc/n", "back"),
-            ]),
-            (Mode::Gff(_), None) => help_line(&[
+            ],
+            Mode::Gff(_) => vec![
                 ("type", "find"),
                 ("↑/↓", "move"),
                 ("Enter", "open / read"),
                 ("←", "up"),
                 ("Esc", "clear find / back"),
-            ]),
-            (Mode::Find, None) => input_line(
-                "gene: ",
-                &self.list.find,
-                &[("↑/↓", "move"), ("Enter", "focus"), ("Esc", "cancel")],
-            ),
-            (Mode::Browse, None) => {
-                let apply = (APPLY_KEYS, "apply");
-                if self.enter_hint {
-                    return Line::styled(format!(" {}", enter_hint("applies")), DIM);
+            ],
+            Mode::Browse => self.browse_footer(),
+            Mode::Edit(_) | Mode::Find | Mode::Writing => return None,
+        })
+    }
+
+    /// The footer's keys while browsing: those that act on the panel
+    /// focused, as [`SitePicker::browse_help`] has them, put short.
+    fn browse_footer(&self) -> Vec<(&'static str, &'static str)> {
+        let mut keys = vec![("Tab/Shift+Tab", "panel")];
+        match self.panel {
+            Panel::Thresholds => keys.extend([("↑/↓", "knob"), ("←/→", "bin")]),
+            Panel::Genes => keys.extend([("↑/↓", "gene"), ("PgUp/PgDn", "page"), ("/", "find")]),
+            Panel::Pairs => {
+                // The arrows step from panel to panel, where there are two.
+                if self.view().pairs.len() > 1 {
+                    keys.push(("arrows", "panel"));
                 }
-                let mut keys = vec![("Tab/Shift+Tab", "panel")];
-                keys.extend_from_slice(match self.panel {
-                    Panel::Thresholds => &[("↑/↓", "knob"), ("←/→", "bin")][..],
-                    Panel::Genes => &[("↑/↓", "gene"), ("PgUp/PgDn", "page"), ("/", "find")],
-                    Panel::Pairs => &[("arrows", "panel"), ("x/y X/Y", "axis")],
-                });
-                // What matters most first.
-                match self.read_only() {
-                    true => keys.push(("q", "quit")),
-                    false => keys.extend([apply, ("p", "print flags"), ("q", "cancel")]),
-                }
-                self.controls.help_keys(&mut keys);
-                keys.extend([
-                    ("m/M", "modality"),
-                    ("[ ]", "gene"),
-                    ("-/+", "±1"),
-                    ("0-9/e", "type"),
-                    ("o", "off"),
-                    ("r", "reset"),
-                ]);
-                // On the panels `x` and `y` step the axes instead.
-                if self.panel != Panel::Pairs {
-                    keys.push(("x/y", "scale"));
-                }
-                keys.push(("v", if self.two_d { "histograms" } else { "2D" }));
-                if self.two_d {
-                    keys.push(("A", "auto pairs"));
-                }
-                keys.extend([
-                    ("w", "weight"),
-                    ("a", "annotation"),
-                    (REPORT_KEY, "report"),
-                    ("?", "keys"),
-                ]);
-                help_line(&keys)
+                keys.push(("x/y X/Y", "axis"));
             }
         }
+        // What matters most first.
+        match self.read_only() {
+            true => keys.push(("q", "quit")),
+            false => keys.extend([(APPLY_KEYS, "apply"), ("p", "print flags"), ("q", "cancel")]),
+        }
+        self.controls.help_keys(&mut keys);
+        if self.views.len() > 1 {
+            keys.push(("m/M", "modality"));
+        }
+        keys.extend([
+            ("[ ]", "gene"),
+            ("-/+", "±1"),
+            ("0-9/e", "type"),
+            ("o", "off"),
+            ("r", "reset"),
+        ]);
+        // On the panels `x` and `y` step the axes instead; `x` steps the
+        // knob's scale only where it has more than one.
+        if self.panel != Panel::Pairs {
+            keys.push(match self.criterion().scales().len() > 1 {
+                true => ("x/y", "scale"),
+                false => ("y", "scale"),
+            });
+        }
+        keys.push(("v", if self.two_d { "histograms" } else { "2D" }));
+        // In 2D the weight's plots are hidden: `w` changes nothing seen.
+        match self.two_d {
+            true => keys.push(("A", "auto pairs")),
+            false => keys.push(("w", "weight")),
+        }
+        keys.extend([("a", "annotation"), (REPORT_KEY, "report"), ("?", "keys")]);
+        keys
     }
 
     /// Draw the whole screen: header, tabs, panels, footer, and the

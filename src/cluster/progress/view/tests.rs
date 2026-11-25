@@ -462,3 +462,21 @@ fn question_mark_lists_the_keys_while_fitting() {
     }
     assert!(!f.done());
 }
+
+/// Seen by what a key changes, not the screen, whose clocks tick: each
+/// view on a fit of its own, as `q` cancels it.
+#[test]
+fn the_keys_listed_are_the_keys_bound_while_fitting() {
+    let found = crate::tui::help::disagree_by(
+        || {
+            let p: &Progress = Box::leak(Box::new(midway()));
+            let (tx, rx) = channel_u8();
+            // The fit still going: its sender kept.
+            Box::leak(Box::new(tx));
+            fitting(p, Box::leak(Box::new(rx)))
+        },
+        |f| format!("{:?} {} {}", f.status, f.skip, f.progress.cancelled()),
+        "",
+    );
+    crate::tui::help::agree("fitting", "", found);
+}

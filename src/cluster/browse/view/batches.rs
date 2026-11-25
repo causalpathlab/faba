@@ -124,13 +124,7 @@ impl ModulesView<'_> {
     pub(super) fn draw_batches(&self, frame: &mut Frame, area: Rect, foot: Rect) {
         let help = match &self.status {
             Some(said) => Line::from(Span::styled(format!(" {said}"), HIGHLIGHT)),
-            None => help_line(&[
-                ("b/Esc", "close"),
-                ("B", "filter"),
-                ("↑/↓", "scroll"),
-                ("q", "quit"),
-                ("?", "keys"),
-            ]),
+            None => help_line(&self.footer_pairs().unwrap_or_default()),
         };
         frame.render_widget(Paragraph::new(help), foot);
         let Some(batches) = &self.m.batches else {

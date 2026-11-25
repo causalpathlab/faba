@@ -102,10 +102,45 @@ impl InputPicker {
     }
 }
 
+impl InputPicker {
+    /// The footer's three lines of keys: getting about, marking, and
+    /// finishing.
+    fn footer_rows(&self) -> [Vec<(&'static str, &'static str)>; 3] {
+        let apply = if self.browser.marks.is_empty() {
+            "choose this folder"
+        } else {
+            "read the marked"
+        };
+        let mut mark = vec![
+            ("Space", "mark file / choose folder"),
+            ("Enter", "read the marked, or this file"),
+        ];
+        if let Some((_, tab)) = self.track_mode() {
+            mark.push(("Tab", tab));
+        }
+        let mut about = vec![("type", "find"), ("↑/↓", "move")];
+        // A file is read, not opened.
+        if on_folder(&self.browser) {
+            about.push(("Enter/→", "open"));
+        }
+        about.push(("←", "up"));
+        [
+            about,
+            mark,
+            vec![(APPLY_KEYS, apply), ("Esc", "clear find / cancel")],
+        ]
+    }
+}
+
 impl View for InputPicker {
     /// The apply key takes the marked files, or the folder shown.
     fn takes_apply(&self) -> bool {
         true
+    }
+
+    #[cfg(test)]
+    fn footer_keys(&self) -> Option<crate::tui::KeyList> {
+        Some(crate::tui::keys(&self.footer_rows().concat()))
     }
 }
 
@@ -192,29 +227,7 @@ impl Screen for InputPicker {
             self.what,
             browser::place(&self.browser)
         );
-        let apply = if n_marked == 0 {
-            "choose this folder"
-        } else {
-            "read the marked"
-        };
-        // Three lines: getting about, marking, and finishing.
-        let mut mark = vec![
-            ("Space", "mark file / choose folder"),
-            ("Enter", "read the marked, or this file"),
-        ];
-        if let Some((_, tab)) = self.track_mode() {
-            mark.push(("Tab", tab));
-        }
-        let help = [
-            help_line(&[
-                ("type", "find"),
-                ("↑/↓", "move"),
-                ("Enter/→", "open"),
-                ("←", "up"),
-            ]),
-            help_line(&mark),
-            help_line(&[(APPLY_KEYS, apply), ("Esc", "clear find / cancel")]),
-        ];
+        let help = self.footer_rows().map(|row| help_line(&row));
         // Header, border and the error line, besides the list and the help.
         let help_rows = help.len() as u16;
         let rows = area.height.saturating_sub(7 + help_rows).clamp(3, 24);
@@ -337,10 +350,77 @@ impl ReferencePicker {
     }
 }
 
+/// Whether the browser is on a folder (or the one up), which `→` opens.
+fn on_folder(b: &Browser) -> bool {
+    (b.current()).is_some_and(|e| matches!(e, Entry::Up) || e.is_dir())
+}
+
+/// The keys of the pop-up where the download's folder is typed.
+const TARGET_KEYS: [(&str, &str); 2] = [(APPLY_KEYS, "start"), ("Esc", "back")];
+
+impl ReferencePicker {
+    /// The browser's two lines of keys; blank under a pop-up, which takes
+    /// the keys.
+    fn footer_rows(&self) -> [Vec<(&'static str, &'static str)>; 2] {
+        let tab = match self.fetching {
+            Fetching::No => "download one",
+            Fetching::Downloading(_, false) => "show the download",
+            _ => return [vec![], vec![]],
+        };
+        let mut about = vec![("type", "find"), ("↑/↓", "move")];
+        // A file is chosen, not opened.
+        if on_folder(&self.browser) {
+            about.push(("→", "open"));
+        }
+        about.push(("←", "up"));
+        [
+            about,
+            vec![
+                ("Enter", "choose / open folder"),
+                ("Tab", tab),
+                ("Esc", "clear find / cancel"),
+            ],
+        ]
+    }
+}
+
 impl View for ReferencePicker {
+    /// The browser's, or the pop-up's: the folder typed, the download
+    /// under way ([`Fetch::draw`]'s); the sources name none.
+    #[cfg(test)]
+    fn footer_keys(&self) -> Option<crate::tui::KeyList> {
+        let keys = match self.fetching {
+            Fetching::No | Fetching::Downloading(_, false) => self.footer_rows().concat(),
+            Fetching::Target(..) => TARGET_KEYS.to_vec(),
+            Fetching::Downloading(_, true) => vec![("S", "stop"), ("Esc", "hide")],
+            Fetching::Choosing(_) => return None,
+        };
+        Some(crate::tui::keys(&keys))
+    }
+
     /// The apply key chooses the file, or confirms the folder typed.
     fn takes_apply(&self) -> bool {
         true
+    }
+
+    /// The download's sources and the download under way, where letters
+    /// do nothing; none where they type (a find, the folder, a source's
+    /// releases or species narrowed).
+    fn help(&self) -> Option<crate::tui::KeyList> {
+        match &self.fetching {
+            Fetching::Choosing(c) if c.source.is_none() => {
+                let mut keys = crate::pipeline::tui::fetch::SOURCE_KEYS.to_vec();
+                // The apply key is Enter everywhere in the picker.
+                keys.insert(keys.len() - 1, (APPLY_KEYS, "as Enter"));
+                Some(crate::tui::keys(&keys))
+            }
+            Fetching::Downloading(_, true) => Some(crate::tui::keys(&[
+                ("Esc", "hide; it goes on (Tab shows it)"),
+                ("S", "stop, keeping what came"),
+                ("?", "these keys"),
+            ])),
+            _ => None,
+        }
     }
 }
 
@@ -447,26 +527,7 @@ impl Screen for ReferencePicker {
         let choose = format!("choose the {}", self.kind.what());
         frame.render_widget(header(self.command, &choose, ""), area);
         let w = area.width.saturating_sub(4).clamp(20, 90);
-        let help = [
-            help_line(&[
-                ("type", "find"),
-                ("↑/↓", "move"),
-                ("→", "open"),
-                ("←", "up"),
-            ]),
-            help_line(&[
-                ("Enter", "choose / open folder"),
-                (
-                    "Tab",
-                    if matches!(self.fetching, Fetching::Downloading(..)) {
-                        "show the download"
-                    } else {
-                        "download one"
-                    },
-                ),
-                ("Esc", "clear find / cancel"),
-            ]),
-        ];
+        let help = self.footer_rows().map(|row| help_line(&row));
         // Header, border and the note line, besides the list and the help.
         let help_rows = help.len() as u16;
         let rows = area.height.saturating_sub(7 + help_rows).clamp(3, 24);
@@ -498,7 +559,7 @@ impl Screen for ReferencePicker {
                     Line::from(""),
                     input_line("download into: ", line.text().unwrap_or(""), &[]),
                     Line::from(""),
-                    help_line(&[(APPLY_KEYS, "start"), ("Esc", "back")]),
+                    help_line(&TARGET_KEYS),
                 ];
                 crate::tui::popup(frame, area, " download a reference ", lines);
             }

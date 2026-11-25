@@ -594,29 +594,38 @@ pub(super) fn footer_line(app: &App) -> Line<'static> {
         };
         return input_line(&prompt, line.text().unwrap_or(""), keys);
     }
-    if let Some(note) = &app.note {
-        return Line::styled(format!(" {note}"), HIGHLIGHT);
+    match footer_keys(app) {
+        Some(keys) => help_line(&keys),
+        None => Line::styled(format!(" {}", app.note.as_deref().unwrap_or("")), HIGHLIGHT),
+    }
+}
+
+/// The keys the footer names, those that act on the screen up as it is
+/// now: none while a line is typed or a note shows.
+pub(super) fn footer_keys(app: &App) -> Option<Vec<(&'static str, &'static str)>> {
+    if app.editing.is_some() || app.note.is_some() {
+        return None;
     }
     if app.ended_shown {
-        return help_line(&[("Enter/Esc", "close, onto the log")]);
+        return Some(vec![("Enter/Esc", "close, onto the log")]);
     }
     if app.fetch_shown && app.fetch.is_some() {
-        return help_line(&[
+        return Some(vec![
             ("Esc", "hide; it goes on (d shows it)"),
             ("S", "stop, keeping what came"),
         ]);
     }
     if let Some(c) = &app.catalogue {
-        return if c.source.is_none() {
-            help_line(&[("↑/↓", "move"), ("Enter", "list it"), ("Esc", "back")])
+        return Some(if c.source.is_none() {
+            vec![("↑/↓", "move"), ("Enter", "list it"), ("Esc", "back")]
         } else {
-            help_line(&[
+            vec![
                 ("type", "find"),
                 ("↑/↓", "move"),
                 ("Enter", "download"),
                 ("Esc", "back"),
-            ])
-        };
+            ]
+        });
     }
     if let Some((_, b)) = &app.picking {
         let esc = if b.filter.is_empty() {
@@ -624,7 +633,7 @@ pub(super) fn footer_line(app: &App) -> Line<'static> {
         } else {
             "clear find"
         };
-        return help_line(&[
+        return Some(vec![
             ("type", "find"),
             ("↑/↓", "move"),
             ("Enter", "pick/open"),
@@ -632,21 +641,29 @@ pub(super) fn footer_line(app: &App) -> Line<'static> {
             ("Esc", esc),
         ]);
     }
+    // A run going is never left by a print.
+    let print = (!app.running()).then_some(("p", "print it and leave"));
     if app.preview {
-        return help_line(&[
+        let mut keys = vec![
             (APPLY_KEYS, "save the script and start"),
             ("c", "copy the command"),
-            ("p", "print it and leave"),
-            ("Esc", "back"),
-        ]);
+        ];
+        keys.extend(print);
+        keys.push(("Esc", "back"));
+        return Some(keys);
     }
     let mut common = vec![
         ("Tab", "screen"),
-        ("1-4", "screen"),
+        // The Run screen is there once a run is.
+        if app.job.is_some() {
+            ("1-4", "screen")
+        } else {
+            ("1-3", "screen")
+        },
         (APPLY_KEYS, "preview"),
         ("c", "copy the command"),
     ];
-    if !app.running() {
+    if print.is_some() {
         common.extend([("p", "print the command and leave"), ("q", "quit")]);
     }
     common.push(("?", "keys"));
@@ -664,7 +681,7 @@ pub(super) fn footer_line(app: &App) -> Line<'static> {
             ("Esc", "clear find")
         });
         keys.extend([("Tab", "inputs"), (APPLY_KEYS, "preview")]);
-        return help_line(&keys);
+        return Some(keys);
     }
     let mut keys: Vec<(&str, &str)> = match app.page {
         Page::Inputs => vec![
@@ -674,26 +691,35 @@ pub(super) fn footer_line(app: &App) -> Line<'static> {
             ("h", "BAMs"),
         ],
         Page::Steps => vec![("Space", "toggle"), ("↑/↓", "move")],
-        Page::Flags => vec![
-            ("↑/↓", "move"),
-            ("PgUp/PgDn", "page"),
-            ("Home/End", "first/last"),
-            ("Space", "on/off"),
-            ("←/→", "choice"),
-            ("Enter", "type"),
-            ("/", "find"),
-            ("a", "advanced"),
-            ("r/R", "reset"),
-        ],
+        Page::Flags => {
+            let mut keys = vec![
+                ("↑/↓", "move"),
+                ("PgUp/PgDn", "page"),
+                ("Home/End", "first/last"),
+            ];
+            // As the flag highlighted takes them.
+            if let Some(f) = app.flag_row().and_then(|i| app.form.fields.get(i)) {
+                keys.extend_from_slice(match f.kind {
+                    Kind::Flag { .. } => &[("Space", "on/off")][..],
+                    Kind::Choice(_) => &[("←/→", "choice"), ("Enter", "type")],
+                    Kind::Text => &[("Enter", "type")],
+                });
+                if !f.is_default() {
+                    keys.push(("r", "reset"));
+                }
+            }
+            keys.extend([("/", "find"), ("a", "advanced"), ("R", "reset all")]);
+            keys
+        }
         Page::Run => {
             let Some(job) = &app.job else {
-                return help_line(&common);
+                return Some(common);
             };
             if job.running() {
                 if job.asking {
-                    return help_line(&[("S", "again stops the run"), ("Esc", "keep it going")]);
+                    return Some(vec![("S", "again stops the run"), ("Esc", "keep it going")]);
                 }
-                return help_line(&[
+                return Some(vec![
                     ("↑/↓", "scroll"),
                     ("End", "follow"),
                     ("S", "stop (asks; again to kill)"),
@@ -704,15 +730,19 @@ pub(super) fn footer_line(app: &App) -> Line<'static> {
         }
     };
     keys.extend(common);
-    help_line(&keys)
+    Some(keys)
 }
 
-/// Every key of the screen up, for the `?` pop-up: the footer's, and those
-/// it leaves out.
+/// Every key of the screen up as it is now, for the `?` pop-up: the
+/// footer's, and those it leaves out.
 pub(super) fn help_keys(app: &App) -> Vec<(&'static str, &'static str)> {
     let close = ("?", "these keys");
     if app.ended_shown {
         return vec![("Enter/Esc", "close, onto the log"), close];
+    }
+    // Only the sources' list: past it, letters narrow the listing.
+    if app.catalogue.is_some() {
+        return super::fetch::SOURCE_KEYS.to_vec();
     }
     if app.fetch_shown && app.fetch.is_some() {
         return vec![
@@ -721,14 +751,16 @@ pub(super) fn help_keys(app: &App) -> Vec<(&'static str, &'static str)> {
             close,
         ];
     }
+    // A run going is never left by a print.
+    let print = (!app.running()).then_some(("p", "print the command and leave"));
     if app.preview {
-        return vec![
+        let mut keys = vec![
             (APPLY_KEYS, "save the script and start"),
             ("c", "copy the command"),
-            ("p", "print it and leave"),
-            ("Esc", "back"),
-            close,
         ];
+        keys.extend(print);
+        keys.extend([("Esc", "back"), close]);
+        return keys;
     }
     let mut keys = match app.page {
         Page::Inputs => vec![
@@ -737,39 +769,74 @@ pub(super) fn help_keys(app: &App) -> Vec<(&'static str, &'static str)> {
             ("d", "download a GFF and genome"),
             ("h", "the BAM list"),
         ],
-        Page::Steps => vec![
-            ("↑/↓ k/j", "move"),
-            ("Space", "step on/off"),
-            ("Enter", "type the depth resolution"),
-        ],
-        Page::Flags => vec![
-            ("↑/↓ k/j", "move"),
-            ("PgUp/PgDn", "ten up/down"),
-            ("Home/End", "first/last"),
-            ("Space", "on/off"),
-            ("←/→", "choice"),
-            ("Enter", "type a value"),
-            ("/", "find a flag"),
-            ("a", "advanced flags"),
-            ("r", "reset the flag"),
-            ("R", "reset every flag (asks)"),
-        ],
-        Page::Run => vec![
-            ("↑/↓ k/j", "scroll the log"),
-            ("PgUp/PgDn", "ten lines up/down"),
-            ("End", "follow"),
-            ("S", "stop the run (asks; again to kill)"),
-            ("Esc", "keep it going, when asked"),
-        ],
+        Page::Steps => {
+            let mut keys = vec![("↑/↓ k/j", "move"), ("Space", "step on/off")];
+            if Step::ALL.get(app.steps.at) == Some(&Step::Depth) {
+                keys.push(("Enter", "type the depth resolution"));
+            }
+            keys
+        }
+        Page::Flags => flag_keys(app),
+        Page::Run => {
+            let mut keys = vec![
+                ("↑/↓ k/j", "scroll the log"),
+                ("PgUp/PgDn", "ten lines up/down"),
+                ("End", "follow"),
+            ];
+            if let Some(job) = app.job.as_ref().filter(|j| j.running()) {
+                keys.push(("S", "stop the run (asks; again to kill)"));
+                if job.asking {
+                    keys.push(("Esc", "keep it going"));
+                }
+            }
+            keys
+        }
     };
     keys.extend([
         ("Tab/Shift+Tab", "next/previous screen"),
-        ("1-4", "screen by number"),
+        // The Run screen is there once a run is.
+        if app.job.is_some() {
+            ("1-4", "screen by number")
+        } else {
+            ("1-3", "screen by number")
+        },
         (APPLY_KEYS, "preview, then start"),
         ("c", "copy the command"),
-        ("p", "print the command and leave"),
+    ]);
+    keys.extend(print);
+    keys.extend([
         ("q", "quit (asks with a setup; refused while running)"),
         close,
+    ]);
+    keys
+}
+
+/// The Flags screen's keys, as the flag highlighted takes them: Space
+/// and ←/→ by its kind, `r` once it is set.
+fn flag_keys(app: &App) -> Vec<(&'static str, &'static str)> {
+    let mut keys = vec![
+        ("↑/↓ k/j", "move"),
+        ("PgUp/PgDn", "ten up/down"),
+        ("Home/End", "first/last"),
+    ];
+    if let Some(f) = app.flag_row().and_then(|i| app.form.fields.get(i)) {
+        keys.extend_from_slice(match f.kind {
+            Kind::Flag { .. } => &[("Space/Enter", "on/off")][..],
+            Kind::Choice(_) => &[
+                ("Space/→", "next choice"),
+                ("←", "previous choice"),
+                ("Enter", "type a value"),
+            ],
+            Kind::Text => &[("Enter", "type a value")],
+        });
+        if !f.is_default() {
+            keys.push(("r", "reset the flag"));
+        }
+    }
+    keys.extend([
+        ("/", "find a flag"),
+        ("a", "advanced flags"),
+        ("R", "reset every flag (asks)"),
     ]);
     keys
 }

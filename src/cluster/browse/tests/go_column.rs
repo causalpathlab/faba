@@ -190,3 +190,22 @@ fn each_a_without_room_says_so() {
     press(&mut v, KeyCode::Char('G'));
     assert!(screen(&mut v, 96, 30).contains("GO · gene module"));
 }
+
+/// With GO, on the gene modules and in the full pane, the terms read.
+#[test]
+fn with_go_the_keys_listed_are_the_keys_bound() {
+    use crate::tui::help::assert_lists_its_keys_at_an_end as check;
+    let tmp = tempfile::tempdir().unwrap();
+    let (m, ask) = with_go(tmp.path());
+    let view = |keys: &[KeyCode]| {
+        let mut v = ModulesView::new("test", &m).with_go(ask.clone());
+        for &k in keys {
+            press(&mut v, k);
+        }
+        read(&mut v, 160, 50);
+        v
+    };
+    let ends = super::view::ENDS;
+    check("gene modules", ends, || view(&[KeyCode::Char('a')]));
+    check("GO", ends, || view(&[KeyCode::Char('G')]));
+}

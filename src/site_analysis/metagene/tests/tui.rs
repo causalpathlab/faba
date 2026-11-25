@@ -399,3 +399,21 @@ fn the_default_profile_is_unchanged() {
     let svg = super::figure("sites", &h, crate::figure::style::Sheet::OWN);
     assert_eq!(crate::figure::fingerprint(&svg), 6676292108214670719);
 }
+
+/// Each with a bar mid-track at a merge of its own, so every move moves.
+#[test]
+fn the_keys_listed_are_the_keys_bound() {
+    for (what, h) in [
+        ("sites and an ncRNA track", hist(true)),
+        ("reads", hist_with_reads()),
+    ] {
+        crate::tui::help::assert_lists_its_keys(what, || {
+            let mut v = MetageneView::new("x", &h);
+            screen(&mut v, 160, 50);
+            press(&mut v, KeyCode::Char('-'));
+            press(&mut v, KeyCode::Char('-'));
+            press(&mut v, KeyCode::Right);
+            v
+        });
+    }
+}

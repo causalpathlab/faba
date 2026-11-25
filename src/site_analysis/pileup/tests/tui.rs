@@ -594,13 +594,13 @@ fn enter_stays_esc_goes_back_to_the_genes_and_q_quits() {
 fn from_cluster_view_esc_names_it_and_no_search_is_offered() {
     let (m, s) = (positions(), sites());
     let mut v = view(&m, &s);
-    let said = v.help(false).to_string();
+    let said = help_line(&v.footer_pairs(false)).to_string();
     assert!(
         said.contains("g/Esc gene list") && said.contains("/ search"),
         "{said}"
     );
     v.from_cluster = true;
-    let said = v.help(false).to_string();
+    let said = help_line(&v.footer_pairs(false)).to_string();
     assert!(said.contains("g/Esc cluster-view"), "{said}");
     assert!(!said.contains("/ search"), "{said}");
     // Nor is it bound: the search is cluster-view's.
@@ -983,4 +983,45 @@ fn the_last_rows_are_reached_at_every_height() {
             assert_eq!(v.shown_rows(&rows).last(), rows.last(), "{w}x{h}");
         }
     }
+}
+
+/// `v` as the check draws it, zoomed in on a site mid-gene, so that
+/// every move, zoom and jump moves.
+fn mid_gene(mut v: PileupView) -> PileupView {
+    screen(&mut v, 160, 50);
+    press(&mut v, KeyCode::Char('+'));
+    press(&mut v, KeyCode::Char('n'));
+    press(&mut v, KeyCode::Char('n'));
+    v
+}
+
+#[test]
+fn the_keys_listed_are_the_keys_bound() {
+    use crate::tui::help::assert_lists_its_keys;
+    let (m, s) = (positions(), sites());
+    assert_lists_its_keys("two tracks", || mid_gene(view(&m, &s)));
+    assert_lists_its_keys("from cluster-view", || {
+        let mut v = view(&m, &s);
+        v.from_cluster = true;
+        mid_gene(v)
+    });
+    // Reads to show, two alike tracks to compare and mirror, and another
+    // modality to switch to.
+    let half: Vec<(i64, f64)> = m.iter().map(|&(p, v)| (p, v * 2.0)).collect();
+    assert_lists_its_keys("reads, compared, switchable", || {
+        let mut a = Track::single("wt", "sum", &m, false).with_total(&half);
+        a.mirror_with_next = true;
+        let b = Track::single("mut", "sum", &half, false).with_total(&half);
+        let mut v = PileupView::new("GENE1", "chr1", vec![a, b], EXTENT);
+        v.switchable = true;
+        mid_gene(v)
+    });
+    // Rows hidden, scrolled down one so `[` and `]` both scroll.
+    let labels = group_labels(12);
+    assert_lists_its_keys("rows hidden", || {
+        let tracks = group_tracks(&labels, &m);
+        let mut v = mid_gene(PileupView::new("GENE1", "chr1", tracks, EXTENT));
+        press(&mut v, KeyCode::Char(']'));
+        v
+    });
 }

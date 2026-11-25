@@ -307,3 +307,15 @@ fn the_list_footer_names_every_way_in_and_esc_never_quits() {
         assert!(keys.contains(key), "{key}:\n{keys}");
     }
 }
+
+#[test]
+fn the_list_lists_the_keys_it_takes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let nested = read(&nested(tmp.path()));
+    // On a row between the ends, so that every move moves.
+    crate::tui::help::assert_lists_its_keys("the list", || {
+        let mut list = List::new(&nested);
+        press(&mut list, KeyCode::Down);
+        list
+    });
+}

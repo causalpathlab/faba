@@ -419,6 +419,13 @@ fn the_question_takes_a_pairing_or_neither() {
         assert!(keys.contains(key), "{key}:\n{keys}");
     }
     assert_eq!(q.decision, None, "? chooses nothing");
+    // On the middle of its three rows, so that every move moves; a page
+    // of three reaches an end.
+    crate::tui::help::assert_lists_its_keys("the question", || {
+        let mut q = pairing::Question::new(&a);
+        press(&mut q, KeyCode::Down);
+        q
+    });
 }
 
 /// A batch met in several folders is named with its folder, as typed in

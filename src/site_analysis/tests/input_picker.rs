@@ -274,3 +274,74 @@ fn a_reference_download_stops_on_capital_s_only() {
     assert!(matches!(p.fetching, Fetching::No));
     assert!(p.note.as_deref().is_some_and(|n| n.contains("stopped")));
 }
+
+/// `?` lists the keys over the download's sources and the download under
+/// way, where letters do nothing, and types where they find.
+#[test]
+fn the_reference_pickers_pop_ups_list_the_keys_they_take() {
+    use crate::tui::help::{agree, disagree_by, seen};
+    let tmp = tempfile::tempdir().unwrap();
+    let picker = || ReferencePicker::new(tmp.path().to_path_buf(), "pwm", Reference::Genome, None);
+    assert!(
+        crate::tui::help::shown(&mut picker(), 100, 30).is_none(),
+        "? finds"
+    );
+    // On the middle source; Enter, → and the apply key read its FTP
+    // listing: not pressed.
+    let sources = || {
+        let mut p = picker();
+        press(&mut p, KeyCode::Tab);
+        press(&mut p, KeyCode::Down);
+        p
+    };
+    agree(
+        "the sources",
+        "",
+        disagree_by(sources, seen, "Enter/→ Ctrl+R"),
+    );
+    let download = || {
+        let mut p = picker();
+        let f = Fetch::idle("a reference", tmp.path().join("ref"));
+        p.fetching = Fetching::Downloading(f, true);
+        p
+    };
+    agree("the download", "", disagree_by(download, seen, ""));
+}
+
+/// Where letters find, each key the footer names acts: the input
+/// picker's, and the reference picker's browser and download folder.
+#[test]
+fn each_key_a_pickers_footer_names_acts() {
+    use crate::tui::help::{agree, disagree_by, seen};
+    let tmp = tree();
+    let out = tmp.path().join("out");
+    let input = || {
+        let mut p = picker(out.clone(), None);
+        assert!(p.browser.select("a_m6a_site.zarr.zip"));
+        p
+    };
+    agree("the input picker", "", disagree_by(input, seen, ""));
+    let reference = || {
+        let mut p = ReferencePicker::new(tmp.path().to_path_buf(), "pwm", Reference::Genome, None);
+        assert!(p.browser.select("out"));
+        p
+    };
+    agree("the reference picker", "", disagree_by(reference, seen, ""));
+    let target = || {
+        let mut p = ReferencePicker::new(tmp.path().to_path_buf(), "pwm", Reference::Genome, None);
+        let mut line = LineInput::new(64);
+        line.open("ref");
+        let pick = Pick {
+            source: crate::pipeline::tui::fetch::Source::Ensembl,
+            item: "SPECIES1".into(),
+        };
+        p.fetching = Fetching::Target(pick, line);
+        p
+    };
+    // The apply key would start a download: not pressed.
+    agree(
+        "the download folder",
+        "",
+        disagree_by(target, seen, "Ctrl+R"),
+    );
+}
