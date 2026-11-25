@@ -143,3 +143,54 @@ fn with_genes(mut t: SiteTable) -> SiteTable {
     t.batch = RecordBatch::try_new(Arc::new(schema), columns).unwrap();
     t
 }
+
+/// The README's picture of the threshold picker: two modalities of
+/// made-up sites over forty genes, cells per site, the metagene and the
+/// first gene's model drawn. Written where `FABA_SCREENSHOTS_DIR` names.
+#[test]
+#[ignore = "writes the README's screenshot; run by hand"]
+fn readme_screenshots_qc() {
+    let tables = |modality: &str, n: usize, shift: usize| {
+        let rows: Vec<Row> = (0..n)
+            .map(|i| {
+                let j = i + shift;
+                let coverage = 2 + (j * 37 % 120 + j * 13 % 50) as u64;
+                let converted = (j * 7 % 23) as u64 % (coverage + 1);
+                let control_cov = 10 + (j * 11 % 40) as u64;
+                let control_conv = u64::from(j.is_multiple_of(9)) * (j % 4) as u64;
+                // Most sites near-uniform, one in three far below.
+                let spread = (j * 7919 % 1000) as f32 / 1000.0;
+                let pv = if j.is_multiple_of(3) {
+                    10f32.powf(-2.0 - 28.0 * spread * spread)
+                } else {
+                    spread.max(1e-3)
+                };
+                (pv, coverage, converted, control_cov, control_conv)
+            })
+            .collect();
+        with_genes(site_table(modality, 40, &rows, |i| 1000 + i * 3))
+    };
+    let (m6a, atoi) = (tables(M6A, 3000, 0), tables(ATOI, 1800, 17));
+    let start = SiteFilterArgs::default_values();
+    let views = vec![
+        SiteView::new(&m6a, Some(cells(m6a.len())), &start),
+        SiteView::new(&atoi, Some(cells(atoi.len())), &start),
+    ];
+    let mut p = SitePicker::new("out", views, start, Meta::Unavailable(String::new()));
+    let g = p.gene().unwrap();
+    let key = p.view().genes.as_ref().unwrap().keys[g].clone();
+    let model = GeneModel {
+        chr: "chr1".into(),
+        lo: 900,
+        hi: 3100,
+        forward: true,
+        exons: vec![(900, 1250), (1700, 1850), (2300, 3100)],
+        symbol: key.split_once('_').unwrap().1.into(),
+        key,
+    };
+    let layouts = vec![Some(meta_layout(m6a.len())), Some(meta_layout(atoi.len()))];
+    p.set_meta(Meta::ready(layouts, vec![model]));
+    let mut term = Terminal::new(TestBackend::new(160, 44)).unwrap();
+    term.draw(|f| p.render(f)).unwrap();
+    crate::tui::screenshot::save("qc", term.backend().buffer());
+}

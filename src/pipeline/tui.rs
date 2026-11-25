@@ -699,3 +699,7 @@ pub(crate) fn run_cmd() -> clap::Command {
 #[cfg(test)]
 #[path = "tui/tests/app.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tui/tests/screenshot.rs"]
+mod screenshot;

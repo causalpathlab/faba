@@ -10,7 +10,7 @@ use clap::{Args, ValueEnum};
 #[derive(ValueEnum, Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Palette {
-    /// Kept in blue, removed in orange.
+    /// Kept (or the plot's own colours) in blue, removed in orange.
     #[default]
     Colour,
     /// Kept in dark gray, removed in light gray.

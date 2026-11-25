@@ -670,8 +670,8 @@ bars whole, its axis raised to fit. In the gene list, Space marks genes and Ctrl
 ones stacked top to bottom, each with its tracks: Tab (or a click on a gene) moves the keys from
 gene to gene, a click on the bars moves that gene's cursor there, a drag (press, move, let go)
 pans it as if grabbed, the wheel or a sideways swipe pans the gene under the pointer, how the bars are drawn applies to
-all of them, `=`/`-` zoom the gene with the keys while their shifted keys `+`/`_` zoom every
-gene (and `)` shows every gene whole, as `0` does one), `Y` locks every gene to the tallest one's
+all of them, `+`/`=`/`-` zoom the gene with the keys and `0` shows it whole, as in the one-gene view, while
+`Z` zooms every gene in and `W` shows every gene whole, `Y` locks every gene to the tallest one's
 axis, `|` lays them out one under another,
 side by side, or in a grid, and `s` saves them as one PDF laid out as on screen. Esc in the list
 clears the search, then every mark, then leaves. A search, the other modality or zooming out past a
@@ -679,10 +679,10 @@ gene needs one gene on its own: `g` (or Esc) goes back to the list, where the ma
 
 Every view keeps the same key rules. Enter opens or chooses, and never quits or applies; Ctrl+R
 applies, starts, or submits whatever line is open. Esc goes back one level (out of a pop-up, a
-find, or from the `pileup` browser to its gene list) and quits a view that has nothing above it;
-`q` quits. Where leaving would lose work (`faba run`'s setup, `qc`'s changed thresholds), `q` and
-Ctrl-C both ask first. `s` saves the figure (and on `faba run`'s Run screen, stops the run, asking
-first). `+`/`-` make the view finer and coarser (`pileup`'s zoom, `metagene`'s bins), `0` resets
+find, or from the `pileup` browser to its gene list) and never quits a view that has nothing
+above it; `q` quits, and `?` lists every key the view takes where it is. Where leaving would lose work (`faba run`'s setup, `qc`'s changed thresholds), `q` and
+Ctrl-C both ask first. `s` saves the figure; on `faba run`'s Run screen `S` stops the run, asking
+first. Ctrl+E writes a view's page. `+`/`-` make the view finer and coarser (`pileup`'s zoom, `metagene`'s bins), `0` resets
 it, `y` cycles the y scale, `c` what the bars count, `i` images and text, and `m`/`M` the
 modality (`pileup` mirrors its first two tracks with `v`; `n`/`N` step through its sites).
 Every footer wraps onto further lines rather than cut a key off, and while slow work runs, a key

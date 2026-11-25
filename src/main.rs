@@ -346,7 +346,7 @@ Example:\n  \
             shows each restart's ELBO as it ran ({modality}_trace), with what to do\n\
             about it. The records of the MCMC fits of faba before 0.19 are refused: fit\n\
             again with `faba cluster`. Without a terminal (or with --batch-process) the modules are printed\n\
-            instead; --html writes them as one self-contained page instead (`e` in the\n\
+            instead; --html writes them as one self-contained page instead (Ctrl+E in the\n\
             browser), the trace drawn in its Model section."),
         after_long_help = "Example:\n  faba cluster-view out/m6a_blockmodel.run.json\n  faba cluster-view out/\n  faba cluster-view out/ --modality atoi\n  faba cluster-view out/ --html cluster.html"
     )]
