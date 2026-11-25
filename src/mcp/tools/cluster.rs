@@ -2,10 +2,8 @@
 //! viewing a fit.
 
 use crate::mcp::args::{push_flag, push_opt, Arguments};
-use crate::mcp::run::{
-    absolute, command, exists, figure_prefix, fresh, named, run_out, with_figure,
-};
-use anyhow::{bail, Result};
+use crate::mcp::run::{absolute, command, exists, figure_prefix, fresh, named, run_out};
+use anyhow::{bail, ensure, Context, Result};
 use legume_mcp::{Call, Content};
 use serde_json::{json, Value};
 use std::path::Path;
@@ -70,12 +68,13 @@ pub(in crate::mcp) fn cluster_view(a: &Arguments, cx: &Call) -> Result<Vec<Conte
     let html = a.path_opt("html")?;
     // What cannot be opened as it is is refused before the command runs;
     // the pages are those `html` writes, a within record's one a fit.
-    let pages = crate::cluster::opens(
+    let opens = crate::cluster::opens(
         &[data.as_str().into()],
         a.str("modality"),
         a.str("group"),
         html.as_deref().map(Path::new),
     )?;
+    let pages = opens.pages;
     let mut argv = vec!["cluster-view".into(), data.clone()];
     push_opt(&mut argv, "--modality", a.str("modality"));
     push_opt(&mut argv, "--group", a.str("group"));
@@ -92,23 +91,17 @@ pub(in crate::mcp) fn cluster_view(a: &Arguments, cx: &Call) -> Result<Vec<Conte
     // A fitting option is refused by the command itself, naming `faba cluster`.
     argv.extend(a.options("cluster_view")?);
     argv.push("--batch-process".into());
-    push_opt(&mut argv, "--module", a.str("module"));
-    push_opt(&mut argv, "--gene", a.str("gene"));
-    for level in ["cells", "batches", "go", "trace", "settings"] {
-        if a.flag(level)? {
-            argv.push(format!("--{level}"));
+    // Several figures may be asked for without a prefix: today's results
+    // folder has one.
+    let figure = match a.path_opt("figure")? {
+        None if a.0.get("plots").is_some_and(|p| !p.is_null()) => {
+            let taken = |p: &str| (figures(a, p).into_iter().flatten()).any(|(_, f)| drawn(&f));
+            Some(a.out_or(cx, (&named(&data, "cluster_view"), ""), taken)?)
         }
-    }
-    if let Some(figure) = a.path_opt("figure")? {
-        let mut outputs = Vec::new();
-        // The prefix checked is the one written under.
-        let (prefix, png) = figure_prefix(&figure, &mut outputs)?;
-        push_flag(&mut argv, "--figure", &prefix);
-        push_opt(&mut argv, "--plot", a.str("plot"));
-        push_opt(&mut argv, "--look", a.str("look"));
-        let what = format!("a figure of {data}");
-        cx.run_making(command(&argv)?, &outputs, &what)?;
-        return with_figure(json!({}), Some(&png));
+        figure => figure,
+    };
+    if let Some(figure) = figure {
+        return draw_figures(a, cx, &argv, &data, &figure);
     }
     if let Some(html) = html {
         for page in &pages {
@@ -126,8 +119,100 @@ pub(in crate::mcp) fn cluster_view(a: &Arguments, cx: &Call) -> Result<Vec<Conte
             pages => json!({ "written": pages[0], "pages": pages }),
         })]);
     }
-    let text = cx.run_reading(command(&argv)?)?;
-    Ok(vec![Content::Text(text)])
+    argv.extend(levels(a, opens.whole)?);
+    let printed = cx.run_reading(command(&argv)?)?;
+    let v: Value = serde_json::from_str(&printed)
+        .with_context(|| format!("`faba cluster-view --json` printed no JSON: {printed}"))?;
+    Ok(vec![Content::Json(v)])
+}
+
+/// The levels `cluster_view` takes as switches, in the order the command
+/// prints them.
+const LEVELS: [&str; 7] = [
+    "overview", "grid", "cells", "batches", "go", "trace", "settings",
+];
+
+/// The levels asked for, as `faba cluster-view`'s flags, printed as JSON;
+/// when none is, the overview of one fit, or a within record's listing
+/// when it is opened `whole`. GO is read only for `go`.
+fn levels(a: &Arguments, whole: bool) -> Result<Vec<String>> {
+    let mut argv = vec!["--json".to_string()];
+    push_opt(&mut argv, "--module", a.str("module"));
+    push_opt(&mut argv, "--gene", a.str("gene"));
+    for level in LEVELS {
+        if a.flag(level)? {
+            argv.push(format!("--{level}"));
+        }
+    }
+    if argv.len() == 1 && !whole {
+        argv.push("--overview".into());
+    }
+    Ok(argv)
+}
+
+/// The figures asked for (`plots`, else `plot`, else the modules grid),
+/// each with the prefix it is written under: `figure` for one, and
+/// `{figure}.{plot}` each for several. `plot` and `plots` together, or a
+/// plot named twice, are refused.
+fn figures(a: &Arguments, figure: &str) -> Result<Vec<(String, String)>> {
+    let plots = a.strings("plots")?;
+    ensure!(
+        plots.is_empty() || a.str("plot").is_none(),
+        "give `plot` or `plots`, not both"
+    );
+    let plots = match (plots.is_empty(), a.str("plot")) {
+        (false, _) => plots,
+        (true, plot) => vec![plot.unwrap_or("modules").to_string()],
+    };
+    for (i, p) in plots.iter().enumerate() {
+        ensure!(!plots[..i].contains(p), "`plots` names {p} twice");
+    }
+    Ok(match &plots[..] {
+        [one] => vec![(one.clone(), figure.to_string())],
+        several => (several.iter())
+            .map(|p| (p.clone(), format!("{figure}.{p}")))
+            .collect(),
+    })
+}
+
+/// Each figure `a` asks for of `data` under `figure` (see [`figures`]),
+/// drawn by `argv` with its `--figure` and `--plot`: the paths written,
+/// and each as an image. Every file is checked new before the first is
+/// drawn.
+fn draw_figures(
+    a: &Arguments,
+    cx: &Call,
+    argv: &[String],
+    data: &str,
+    figure: &str,
+) -> Result<Vec<Content>> {
+    let mut plans = Vec::new();
+    for (plot, prefix) in figures(a, figure)? {
+        // The prefix checked is the one written under.
+        let mut made = Vec::new();
+        let (prefix, png) = figure_prefix(&prefix, &mut made)?;
+        plans.push((plot, prefix, png, made));
+    }
+    let (mut written, mut images) = (Vec::new(), Vec::new());
+    for (plot, prefix, png, made) in plans {
+        let mut argv = argv.to_vec();
+        push_flag(&mut argv, "--figure", &prefix);
+        push_flag(&mut argv, "--plot", &plot);
+        push_opt(&mut argv, "--look", a.str("look"));
+        let what = format!("the {plot} figure of {data}");
+        cx.run_making(command(&argv)?, &made, &what)?;
+        let pdf = absolute(&made[0].to_string_lossy());
+        written.push(json!({ "plot": plot, "pdf": pdf, "png": absolute(&png) }));
+        let image = std::fs::read(&png).with_context(|| format!("reading {png}"))?;
+        images.push(Content::Png(image));
+    }
+    let listed = Content::Json(json!({ "figures": written }));
+    Ok(std::iter::once(listed).chain(images).collect())
+}
+
+/// Whether a file a figure saved under `prefix` writes is there.
+fn drawn(prefix: &str) -> bool {
+    crate::figure::saved_paths(prefix).iter().any(|p| exists(p))
 }
 
 #[cfg(test)]
@@ -136,9 +221,87 @@ mod tests {
 
     use crate::mcp::schema::tools;
 
-    use super::{batch_map, GO_NUMBERS};
+    use super::{batch_map, figures, levels, GO_NUMBERS};
+    use crate::mcp::schema::properties;
     use serde_json::json;
     use std::path::{Path, PathBuf};
+
+    /// `cluster_view` has `faba cluster-view` print JSON, the overview
+    /// when no level is named (a within record opened whole: its listing,
+    /// no level at all); `json` is the tool's, not offered and refused in
+    /// `options`. Every level and the figures' look are arguments; what the
+    /// tool asks for parses as the command does.
+    #[test]
+    fn cluster_view_asks_for_json_and_the_overview_unless_a_level_is_named() {
+        let argv = |args| levels(&Arguments(args), false).unwrap();
+        let whole = |args| levels(&Arguments(args), true).unwrap();
+        assert_eq!(argv(json!({})), ["--json", "--overview"]);
+        assert_eq!(whole(json!({})), ["--json"]);
+        assert_eq!(whole(json!({ "cells": true })), ["--json", "--cells"]);
+        assert_eq!(
+            argv(json!({ "module": "M2" })),
+            ["--json", "--module", "M2"]
+        );
+        assert_eq!(
+            argv(json!({ "go": true, "grid": true, "overview": true })),
+            ["--json", "--overview", "--grid", "--go"]
+        );
+        for args in [
+            json!({}),
+            json!({ "gene": "GENE1", "trace": true, "settings": true }),
+        ] {
+            let line = ["faba", "cluster-view", "out/", "--batch-process"];
+            let all = line.iter().copied().map(String::from).chain(argv(args));
+            assert!(crate::matches(&mut crate::faba_command(), all).is_ok());
+        }
+        let props = properties("cluster_view").unwrap();
+        assert!(props.get("json").is_none(), "the tool sets --json itself");
+        for key in [
+            "overview",
+            "grid",
+            "plots",
+            "font_size",
+            "panel_only",
+            "palette",
+            "width",
+            "height",
+        ] {
+            assert!(props.contains_key(key), "cluster_view: no `{key}`");
+        }
+        let a = Arguments(json!({ "options": ["--json"] }));
+        let err = a.options("cluster_view").unwrap_err().to_string();
+        assert!(err.contains("adds it itself"), "{err}");
+    }
+
+    /// One figure is written under `figure`, several each under
+    /// `{figure}.{plot}`; `plot` and `plots` together, or a plot twice,
+    /// are refused.
+    #[test]
+    fn several_plots_are_written_each_under_its_own_prefix() {
+        let plans = |args| figures(&Arguments(args), "out/fig").map_err(|e| e.to_string());
+        let plan = |pairs: &[(&str, &str)]| -> Vec<(String, String)> {
+            (pairs.iter())
+                .map(|(p, f)| (p.to_string(), f.to_string()))
+                .collect()
+        };
+        assert_eq!(plans(json!({})).unwrap(), plan(&[("modules", "out/fig")]));
+        assert_eq!(
+            plans(json!({ "plot": "trace" })).unwrap(),
+            plan(&[("trace", "out/fig")])
+        );
+        assert_eq!(
+            plans(json!({ "plots": ["modules", "trace", "batches"] })).unwrap(),
+            plan(&[
+                ("modules", "out/fig.modules"),
+                ("trace", "out/fig.trace"),
+                ("batches", "out/fig.batches"),
+            ])
+        );
+        let both = plans(json!({ "plot": "trace", "plots": ["modules"] }));
+        assert!(both.unwrap_err().contains("not both"));
+        let twice = plans(json!({ "plots": ["trace", "trace"] }));
+        assert!(twice.unwrap_err().contains("twice"));
+    }
     /// Every blockmodel option, under any of its flags, passes through
     /// `options` to `faba cluster-view`, which refuses it as clap does,
     /// saying to run `faba cluster` with it (a viewer never fits), or, for
@@ -201,12 +364,11 @@ mod tests {
             assert!(err.contains("run `faba cluster` first"), "{refused}: {err}");
         }
         std::fs::write(at("m6a_block_sites.parquet"), "").unwrap();
-        assert!(opens(at(""), None).unwrap().is_empty());
+        assert!(opens(at(""), None).unwrap().pages.is_empty());
         let fit = r#"{"job":"cluster","results":{"model":{},"tables":{"modality":"m6a"}}}"#;
         std::fs::write(at("m6a_blockmodel.run.json"), fit).unwrap();
-        assert!(opens(at("m6a_blockmodel.run.json"), None)
-            .unwrap()
-            .is_empty());
+        let one = opens(at("m6a_blockmodel.run.json"), None).unwrap();
+        assert!(one.pages.is_empty() && !one.whole, "{one:?}");
         // One fit has no groups to name.
         let err = opens(at("m6a_blockmodel.run.json"), Some("C1")).unwrap_err();
         assert!(err.to_string().contains("within record"), "{err}");
@@ -236,11 +398,15 @@ mod tests {
         std::fs::write(&path, record.to_string()).unwrap();
         let html = Path::new("out/fit.html");
         let opens = |group| crate::cluster::opens(&[path.as_str().into()], None, group, Some(html));
+        let whole = opens(None).unwrap();
+        assert!(whole.whole);
         assert_eq!(
-            opens(None).unwrap(),
+            whole.pages,
             [PathBuf::from("out/fit.html"), "out/fit.C1.html".into()]
         );
-        assert_eq!(opens(Some("c1")).unwrap(), [html]);
+        let one = opens(Some("c1")).unwrap();
+        assert!(!one.whole);
+        assert_eq!(one.pages, [html]);
         let err = opens(Some("C2")).unwrap_err().to_string();
         assert!(err.contains("C2 has no fit to open"), "{err}");
         let err = opens(Some("C9")).unwrap_err().to_string();

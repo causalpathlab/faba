@@ -214,7 +214,7 @@ Producers write every candidate and apply no p-value cutoff. qc is where cells, 
 1. docs lists the method write-ups. With `query` it prints the sections named (a topic such as profiling, a command such as qc, or a section number).
 2. count, atoi, dartseq, apa, depth and snp each write one modality. run writes the pipeline (SNP, then count, A-to-I, m6A, APA) into one directory. dartseq needs control BAMs; without them, run skips m6A.
 3. qc filters a directory into a new one, with the site thresholds given. It does not edit the input. With `dry_run` it writes nothing and returns what the cell QC keeps and what each threshold removes: try thresholds that way first. qc_view reads back a qc output: the same counts at the thresholds it applied, its dropped sites with its kept, and with `plots` or `html` its figures and page.
-4. pileup, metagene and pwm read a directory's sites. metagene and pwm return their table and its figure as an image. site_plot draws a directory's site statistics as paper panels (histograms, pairs, marginals), thresholds optional, and returns them as images. pileup returns a binned table for a gene or region (and, with `figure`, a Miami SVG, as an image too). cluster_view shows a cluster fit level by level, from its run record ({m}_blockmodel.run.json) or the directory holding its tables: the modules, then a gene module, a gene, the cell modules, the trace and verdict, the settings.
+4. pileup, metagene and pwm read a directory's sites. metagene and pwm return their table and its figure as an image. site_plot draws a directory's site statistics as paper panels (histograms, pairs, marginals), thresholds optional, and returns them as images. pileup returns a binned table for a gene or region (and, with `figure`, a Miami SVG, as an image too). cluster_view shows a cluster fit level by level, from its run record ({m}_blockmodel.run.json) or the directory holding its tables, each level as JSON rows: by default an overview (the ELBO verdict, the modules' sizes, each gene module's top genes), then the modules grid, a gene module, a gene, the cell modules, the batches, the trace, the settings, and GO terms only with `go`; with `plots`, several figures as images.
 5. cluster fits cells by their own site reads (a blockmodel of cell and gene modules, by variational inference) and writes its tables to `out`. In two rounds: first `modality` count, cell modules by gene counts (it writes count_blockmodel.run.json); then, with `within` naming that record, m6a or atoi within each of its cell modules. The second round writes {m}_within.run.json, which cluster_view opens: the list of its fits, and with `group` the fit within one cell module.
 
 The producers (count, depth, atoi, dartseq, apa, snp, run, qc, cluster) take `background`: on large BAMs set it, and the call returns a job id at once.
@@ -326,6 +326,21 @@ full (↑/↓ steps the module, `G` or Esc closes it). MCP's `cluster_view` take
 faba cluster-view out/m6a_blockmodel.run.json --go
 ```
 
+**The levels for a program.** `--overview` prints the fit at a glance: the verdict, how many gene
+and cell modules, each cell module's size, and each gene module's genes and top genes by weight. It
+reads no GO; `--go` beside it does. `--grid` prints the modules grid beside the levels named (it is
+what no level prints). `--json` prints the levels asked for as one JSON object, a key a level
+(`overview`, `modules`, `cells`, `module`, `gene`, `batches`, `go`, `trace`, `settings`), each
+with its rows as objects: a value and reads (a count fit's cells) in each cell module, a site's
+counts, a batch's share, a restart's ELBO points, and for GO each module's terms (id, name,
+namespace, k, n, K, N, odds, p, q, genes) or why it has none, with the q a term needs (`go_q`) and
+the weight a gene needs. A within record prints its count fit's grid, its groups and each group's
+grid. MCP's `cluster_view` returns every level this way, the overview when none is named.
+
+```bash
+faba cluster-view out/m6a_blockmodel.run.json --batch-process --overview --json
+```
+
 **Watching the restarts.** On a terminal `faba cluster` draws each restart's ELBO live while it
 fits (`q` cancels, Ctrl+C stops the restarts early and writes what they reached). When it is done
 it prints the same traces as one sparkline per restart on one scale, then a verdict and one line
@@ -353,7 +368,10 @@ plots: 10 inches across, and a height that grows with the gene and metagene boxe
 `--panel-only` draws the plot alone, `pileup`'s Miami plot, and `cluster-view`'s `--plot trace`
 and `--plot batches` (2 by 1.5 inches, their margins fixed). The others lay out their text and
 margins to fit the size given; `cluster-view`'s modules grid still says so when its cells cannot
-fit.
+fit. `cluster-view --figure` takes the panel look too: `--font-size`, `--panel-only` (no title,
+colour scale, restarts' names or conditions) and `--palette gray` (blocks and lines in grays). MCP's
+`cluster_view` draws several of its figures in one call (`plots`: modules, trace, batches), each
+returned as an image at the `width` and `height` given.
 
 `faba site-plot DIR -o OUT` draws one modality's site statistics as panels and nothing else:
 `--hist` quantities (pv, fold, log_odds, coverage, converted, edit_ratio, cells), `--pairs x:y,...`

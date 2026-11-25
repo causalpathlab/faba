@@ -89,6 +89,34 @@ fn the_cell_modules_and_settings_print_in_order() {
     );
 }
 
+/// `--grid` prints the modules (level 1) beside the levels named, in the
+/// browser's order: after the overview, before the cell modules, a blank
+/// line between parts.
+#[test]
+fn the_grid_prints_beside_the_levels_named() {
+    let m = loaded();
+    let only = |f: fn(&mut Shown)| printed(&m, &shown(f)).unwrap();
+    let overview = only(|s| s.overview = true);
+    let cells = only(|s| s.cells = true);
+    assert_eq!(only(|s| s.grid = true), modules(&m));
+    let joined = |parts: &[&[String]]| parts.join(&[String::new()][..]);
+    assert_eq!(
+        only(|s| {
+            s.grid = true;
+            s.cells = true;
+        }),
+        joined(&[&modules(&m), &cells])
+    );
+    assert_eq!(
+        only(|s| {
+            s.overview = true;
+            s.grid = true;
+            s.cells = true;
+        }),
+        joined(&[&overview, &modules(&m), &cells])
+    );
+}
+
 /// `--go-q` sets the q a GO term needs to be listed, 0.05 when not given,
 /// and reaches what `--go` and the browser ask; a cutoff outside (0, 1] is
 /// refused.

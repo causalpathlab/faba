@@ -63,9 +63,11 @@ directory's site statistics as paper panels (histograms, pairs, \
 marginals), thresholds optional, and returns them as images. pileup returns a binned table \
 for a gene or region (and, with `figure`, a Miami SVG, as an image too). \
 cluster_view shows a cluster fit level by level, from its run record \
-({m}_blockmodel.run.json) or the directory holding its tables: the modules, \
-then a gene module, a gene, the cell modules, the trace and verdict, the \
-settings.
+({m}_blockmodel.run.json) or the directory holding its tables, each level \
+as JSON rows: by default an overview (the ELBO verdict, the modules' sizes, \
+each gene module's top genes), then the modules grid, a gene module, a gene, \
+the cell modules, the batches, the trace, the settings, and GO terms only \
+with `go`; with `plots`, several figures as images.
 5. cluster fits cells by their own site reads (a blockmodel of cell and \
 gene modules, by variational inference) and writes its tables to `out`. In two rounds: first `modality` count, cell \
 modules by gene counts (it writes count_blockmodel.run.json); then, with \

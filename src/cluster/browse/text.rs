@@ -1,9 +1,10 @@
-//! The browser's levels as text, for `--batch-process` and the MCP tool:
-//! the modules (level 1, see [`modules`]), one gene module's genes
-//! and sites (level 2), one gene's sites in every cell module and over
-//! every gene module (levels 3 and 4), the cell modules, the fit's trace and
-//! verdict, and its settings. Each a list of lines, tab-separated where a
-//! line is a row, so a reader (or a program) can take the columns apart.
+//! The browser's levels as text, for `--batch-process`: the fit at a
+//! glance (see [`overview`]), the modules (level 1, see [`modules`]), one
+//! gene module's genes and sites (level 2), one gene's sites in every cell
+//! module and over every gene module (levels 3 and 4), the cell modules,
+//! the fit's trace and verdict, and its settings. Each a list of lines,
+//! tab-separated where a line is a row, so a reader can take the columns
+//! apart; `--json` prints the same levels as JSON (see [`super::json`]).
 
 use super::Modules;
 
@@ -13,6 +14,27 @@ use super::Modules;
 /// every level, it is refused.
 #[derive(clap::Args, Debug, Clone, PartialEq)]
 pub struct Shown {
+    #[arg(
+        long = "overview",
+        conflicts_with = "html",
+        help = "Print the fit at a glance: its verdict, its gene and cell modules' sizes and each gene module's top genes by weight (GO only with --go)"
+    )]
+    pub overview: bool,
+
+    #[arg(
+        long = "grid",
+        conflicts_with = "html",
+        help = "Print the modules (level 1), as no level asked for does, beside the levels named"
+    )]
+    pub grid: bool,
+
+    #[arg(
+        long = "json",
+        conflicts_with = "html",
+        help = "Print the levels as one JSON object, a key a level, its rows objects with named fields, instead of tab-separated text"
+    )]
+    pub json: bool,
+
     /// A gene module's genes and sites (`M3` or `3`).
     #[arg(
         long = "module",
@@ -138,7 +160,9 @@ impl Default for Shown {
 impl Shown {
     /// Whether any level beside the modules is asked for.
     pub fn any(&self) -> bool {
-        self.module.is_some()
+        self.overview
+            || self.grid
+            || self.module.is_some()
             || self.gene.is_some()
             || self.cells
             || self.batches
@@ -149,9 +173,9 @@ impl Shown {
 }
 
 /// What `shown` asks for, each part under a heading, in the order the
-/// browser goes: the cell modules, a gene module, a gene, the batches, the
-/// GO terms, the trace, the settings; the modules (level 1) when it asks
-/// for none.
+/// browser goes: the overview, the modules, the cell modules, a gene
+/// module, a gene, the batches, the GO terms, the trace, the settings; the
+/// modules (level 1) when it asks for none.
 pub fn printed(m: &Modules, shown: &Shown) -> anyhow::Result<Vec<String>> {
     if !shown.any() {
         return Ok(modules(m));
@@ -163,6 +187,12 @@ pub fn printed(m: &Modules, shown: &Shown) -> anyhow::Result<Vec<String>> {
         }
         out.extend(lines);
     };
+    if shown.overview {
+        part(overview(m));
+    }
+    if shown.grid {
+        part(modules(m));
+    }
     if shown.cells {
         part(cells(m));
     }
@@ -247,8 +277,58 @@ fn values(reads: &[super::Count]) -> Vec<String> {
         .collect()
 }
 
+/// The fit at a glance: its verdict, its gene and cell modules, each cell
+/// module's size, and each gene module's genes with its top ones by
+/// weight. GO is not read.
+fn overview(m: &Modules) -> Vec<String> {
+    let verdict = match m.fit.verdict() {
+        Some(v) => format!("{}: {}", v.badge(), v.said()),
+        None => format!("no verdict ({})", m.fit.unjudged()),
+    };
+    let mut out = vec![
+        format!(
+            "overview: {} fit, {verdict}; {} gene modules, {} cell modules",
+            m.modality, m.gene_roles, m.cell_roles
+        ),
+        "module\tcells".into(),
+    ];
+    for &c in &m.columns {
+        out.push(format!("C{}\t{}", c + 1, m.cells_label(m.cell_sizes[c])));
+    }
+    out.push("module\tgenes\ttop genes by weight".into());
+    for g in 0..m.gene_roles {
+        let top: Vec<String> = (top_genes(m, g).iter())
+            .map(|(gene, w)| format!("{gene} ({w:.2})"))
+            .collect();
+        out.push(format!(
+            "M{}\t{}\t{}",
+            g + 1,
+            m.gene_sizes[g],
+            top.join(", ")
+        ));
+    }
+    out
+}
+
+/// Genes the overview names a gene module by, at most.
+const TOP_GENES: usize = 5;
+
+/// Gene module `g`'s main genes with the most weight there, the most first
+/// (by key on a tie), at most [`TOP_GENES`]: each its symbol and weight.
+pub(super) fn top_genes(m: &Modules, g: usize) -> Vec<(Box<str>, f32)> {
+    let mut genes: Vec<&(Box<str>, usize, f32)> = m
+        .gene_main
+        .iter()
+        .filter(|(_, role, _)| *role == g)
+        .collect();
+    genes.sort_by(|a, b| b.2.total_cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
+    (genes.into_iter().take(TOP_GENES))
+        .map(|(key, _, w)| (crate::site_analysis::pileup::query_symbol(key), *w))
+        .collect()
+}
+
 /// Gene module `name` (`M3`, `m3` or `3`) as an index, when there is one.
-fn gene_module(m: &Modules, name: &str) -> anyhow::Result<usize> {
+pub(super) fn gene_module(m: &Modules, name: &str) -> anyhow::Result<usize> {
     let n: usize = name
         .trim_start_matches(['M', 'm'])
         .parse()
@@ -303,7 +383,7 @@ fn module(m: &Modules, g: usize) -> Vec<String> {
 }
 
 /// A site's place, `chr:pos`; `-` for a count fit's gene, which has none.
-fn place(site: &crate::cluster::read::Site) -> String {
+pub(super) fn place(site: &crate::cluster::read::Site) -> String {
     if site.chr.is_empty() {
         "-".into()
     } else {
@@ -436,30 +516,42 @@ fn trace(m: &Modules) -> Vec<String> {
 /// About ten points of each of `restarts`, the last always, a line each.
 fn push_points(out: &mut Vec<String>, restarts: &[Vec<(usize, f64)>]) {
     for (i, trace) in restarts.iter().enumerate() {
-        let every = (trace.len() / 10).max(1);
-        let picked =
-            (trace.iter().enumerate()).filter(|&(j, _)| j % every == 0 || j + 1 == trace.len());
-        for (_, (step, v)) in picked {
+        for (step, v) in sampled(trace) {
             out.push(format!("{i}\t{step}\t{v:.1}"));
         }
     }
 }
 
+/// About ten points of `trace`, the last always.
+pub(super) fn sampled(trace: &[(usize, f64)]) -> impl Iterator<Item = (usize, f64)> + '_ {
+    let every = (trace.len() / 10).max(1);
+    (trace.iter().enumerate())
+        .filter(move |&(j, _)| j % every == 0 || j + 1 == trace.len())
+        .map(|(_, &p)| p)
+}
+
 /// The settings the fit ran with, as its run record holds them (named by
 /// their preset, or as a count fit's), or that there is no record.
 fn settings(m: &Modules) -> Vec<String> {
-    let (model, json) = match &m.run {
-        Ok(r) => (format!("the {}", r.label()), serde_json::to_value(r).ok()),
-        // A count fit's settings are not the blockmodel's: kept as recorded.
-        Err(_) if m.count_settings.is_some() => {
-            ("the count blockmodel".into(), m.count_settings.clone())
-        }
-        Err(why) => (why.to_string(), None),
-    };
+    let (model, json) = recorded(m);
     let mut out = vec![format!("settings: {model}")];
     if let Some(json) = json {
         let json = serde_json::to_string_pretty(&json).unwrap_or_default();
         out.extend(json.lines().map(String::from));
     }
     out
+}
+
+/// The model the fit ran with, named (by its preset, or as a count fit's),
+/// and its settings as its run record holds them; why not, and none,
+/// without a record.
+pub(super) fn recorded(m: &Modules) -> (String, Option<serde_json::Value>) {
+    match &m.run {
+        Ok(r) => (format!("the {}", r.label()), serde_json::to_value(r).ok()),
+        // A count fit's settings are not the blockmodel's: kept as recorded.
+        Err(_) if m.count_settings.is_some() => {
+            ("the count blockmodel".into(), m.count_settings.clone())
+        }
+        Err(why) => (why.to_string(), None),
+    }
 }
