@@ -40,7 +40,7 @@ fn gmt(dir: &std::path::Path) -> PathBuf {
 fn a_modules_genes_are_tested_against_the_fits_annotated_genes() {
     let tmp = tempfile::tempdir().unwrap();
     let source = Source::Gmt(gmt(tmp.path()));
-    let t = terms(&genes(), 2, &source, 0.5).unwrap();
+    let t = terms(&genes(), 2, &source, 0.5, DEFAULT_Q).unwrap();
     // The universe: genes some set holds (UP, FLAT, TINY, FILL): 0..17,
     // 25..40 and 1..3 among them.
     assert_eq!(t.universe, 17 + 15);
@@ -53,7 +53,7 @@ fn a_modules_genes_are_tested_against_the_fits_annotated_genes() {
         (up.id.as_str(), up.k, up.n, up.big_k, up.big_n),
         ("UP", 12, 17, 14, 32)
     );
-    assert!(up.q <= Q && up.odds > 1.0);
+    assert!(up.q <= DEFAULT_Q && up.odds > 1.0);
     assert_eq!(up.genes.len(), 5);
     // Module 1 (M2): FILL, all its own genes; FLAT, even, in neither.
     let m1 = t.of(1).unwrap();
@@ -75,11 +75,60 @@ fn a_modules_genes_are_tested_against_the_fits_annotated_genes() {
         "{lines:?}"
     );
     // A module with too few genes says so.
-    let few = terms(&genes(), 3, &source, 0.5).unwrap();
+    let few = terms(&genes(), 3, &source, 0.5, DEFAULT_Q).unwrap();
     assert!(few
         .lines()
         .iter()
         .any(|l| l.starts_with("M3\t0/0\t-\t(fewer than")));
+}
+
+/// A GMT whose `MID` holds 7 of module 0's genes and 2 of module 1's, and
+/// `REST` the fit's other genes: `MID` in module 0, and `REST` in module 1,
+/// at a q of about 0.086 (BH over the four tests), between 0.05 and 0.1.
+fn borderline(dir: &std::path::Path) -> PathBuf {
+    let set = |name: &str, g: &[usize]| {
+        let genes: Vec<String> = g.iter().map(|i| format!("G{i}")).collect();
+        format!("{name}\t-\t{}", genes.join("\t"))
+    };
+    let mid: Vec<usize> = (0..7).chain(20..22).collect();
+    let rest: Vec<usize> = (7..18).chain(22..40).collect();
+    let path = dir.join("borderline.gmt");
+    std::fs::write(&path, [set("MID", &mid), set("REST", &rest)].join("\n")).unwrap();
+    path
+}
+
+/// The q cutoff is a setting: a set at a q between 0.05 and 0.1 is listed
+/// at 0.1 and not at the default, and a module that lists no term says
+/// which cutoff it was held to.
+#[test]
+fn the_q_cutoff_decides_which_terms_are_listed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = Source::Gmt(borderline(tmp.path()));
+    let at = |q: f64| terms(&genes(), 2, &source, 0.5, q).unwrap();
+    let mid = |t: &Table| {
+        (t.of(0).unwrap().hits.iter())
+            .find(|h| h.id == "MID")
+            .cloned()
+    };
+    let hit = mid(&at(0.1)).expect("MID is listed at q <= 0.1");
+    assert!(hit.q > 0.05 && hit.q <= 0.1, "q {}", hit.q);
+    let says = |t: &Table, text: &str| t.lines().iter().any(|l| l.contains(text));
+    let default = at(DEFAULT_Q);
+    assert_eq!(mid(&default), None, "not at the default 0.05");
+    assert!(
+        says(&default, "(no term at q <= 0.05 "),
+        "{:?}",
+        default.lines()
+    );
+    // Just under MID's q: nothing listed, and the message names 0.08.
+    let under = at(0.08);
+    assert_eq!(mid(&under), None);
+    assert!(
+        says(&under, "(no term at q <= 0.08 "),
+        "{:?}",
+        under.lines()
+    );
+    assert!(!says(&under, "0.05"), "{:?}", under.lines());
 }
 
 /// A gene matched by its symbol keeps its row; an alias another gene has,
