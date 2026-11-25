@@ -77,9 +77,7 @@ cargo install faba --features hdf5
 
 ### Install from GitHub
 
-The current work is on `main`, ahead of the crates.io release: `site-plot`, `qc-view`, the
-figure options below, the shared keys and the MCP arguments made from each command's flags. To
-get it:
+`main` can run ahead of the latest crates.io release. To get what is on it:
 
 ```sh
 cargo install --git https://github.com/causalpathlab/faba
