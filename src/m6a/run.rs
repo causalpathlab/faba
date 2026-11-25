@@ -120,7 +120,7 @@ pub struct DartSeqCountArgs {
     #[arg(
         long,
         value_enum,
-        help = "Gene type (protein_coding, pseudogene, lncRNA)",
+        help = "Keep genes of this biotype only (default: every biotype)",
         long_help = "Filter analysis by gene type. Options include protein_coding, pseudogene,\n\
                      or lncRNA."
     )]

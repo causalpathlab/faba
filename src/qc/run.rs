@@ -282,7 +282,8 @@ pub(super) fn write_dry_plots(
 /// drawn), unless --panel-only draws the plot alone.
 fn figure_sheet(args: &QcArgs) -> anyhow::Result<crate::figure::style::Sheet> {
     use crate::qc::site_tui::{knob_least, knob_room};
-    let sheet = crate::figure::style::Sheet::new(&args.size, &args.style)?;
+    let sheet =
+        crate::figure::style::Sheet::new(crate::figure::size::Figure::Qc, &args.size, &args.style)?;
     knob_room(&sheet, knob_least(&sheet, None), "a qc figure")?;
     Ok(sheet)
 }

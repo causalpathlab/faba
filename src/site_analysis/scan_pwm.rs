@@ -390,7 +390,11 @@ pub fn run_scan_pwm(args: &ScanPwmArgs) -> anyhow::Result<()> {
         return Ok(());
     };
     // The logo's page and look, checked before the reads.
-    let sheet = crate::figure::style::Sheet::new(&args.size, &args.style)?;
+    let sheet = crate::figure::style::Sheet::new(
+        crate::figure::size::Figure::Logo,
+        &args.size,
+        &args.style,
+    )?;
     if !bam_files.is_empty() && matches!(args.source, PwmSource::Reference) {
         log::warn!(
             "{} read only with --source reads; the reference gives the bases",

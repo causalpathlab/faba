@@ -269,7 +269,7 @@ pub struct PileupArgs {
         long = "cell-membership",
         visible_alias = "membership",
         value_hint = clap::ValueHint::FilePath,
-        help = "Cell barcode -> cell type membership (TSV/CSV/Parquet)",
+        help = "Cell barcode -> cell type membership (TSV/CSV/Parquet): one panel per cell type",
         long_help = "Cell barcode -> cell type membership (TSV/CSV/Parquet).\n\
                      Panels are faceted by cell type;\n\
                      without it the figure is a single \"all cells\" panel."
@@ -1081,10 +1081,9 @@ impl PileupArgs {
 
 pub fn run_pileup(args: &PileupArgs) -> anyhow::Result<()> {
     // The figure's size, refused before anything is read: its margins do
-    // not shrink with its text (see `FIXED_MIN`); its tracks' floor, which
-    // depends on the panels, is checked as it is drawn.
-    let fixed = crate::figure::size::FIXED_LEAST;
-    args.size.page_at_least(fixed, "a pileup figure")?;
+    // not shrink with its text (see `Figure::least`); its tracks' floor,
+    // which depends on the panels, is checked as it is drawn.
+    crate::figure::size::Figure::Pileup.page(&args.size)?;
     let mut base = args.clone();
     if base.data_files.is_empty() {
         let ask = crate::site_analysis::input_picker::ask_inputs(
