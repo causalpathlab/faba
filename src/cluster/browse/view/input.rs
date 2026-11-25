@@ -175,7 +175,8 @@ impl ModulesView<'_> {
             _ if crate::tui::is_report(&key) => self.export(),
             KeyCode::Char('t') => self.open_trace(),
             KeyCode::Char('b') => self.open_batches(),
-            KeyCode::Char('a') => self.open_go(),
+            KeyCode::Char('a') => self.toggle_go_column(),
+            KeyCode::Char('G') => self.open_go(),
             KeyCode::Char('B') => self.next_filter(),
             KeyCode::Char('/') => self.open_find(),
             KeyCode::Tab => self.pane = self.pane.cycled(1),
@@ -218,6 +219,7 @@ impl ModulesView<'_> {
             KeyCode::Char('v') => {
                 if let Some(k) = grid {
                     self.looks[k] = self.looks[k].next();
+                    self.look_set |= k == 0;
                 }
             }
             KeyCode::Char('y') if grid.is_some_and(|k| self.looks[k] == Look::Percent) => {

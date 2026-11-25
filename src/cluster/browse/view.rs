@@ -8,12 +8,13 @@
 //! every gene module (`super::gene`).
 //!
 //! Reads are drawn as the pileup draws them, mirror bars (see [`bars`]). A
-//! grid can show its blocks as bars, a % heatmap or a z heatmap (see
-//! [`grid`]); the strip is in [`strip`]. The sites list is in [`list`], the
-//! pins in [`pins`], the cell modules shown in [`columns`], the `/` search
-//! in [`find`], keys and the mouse in [`input`], the panes' titles and the
-//! footer in [`chrome`], and the fit's trace, full pane on `t`, in
-//! [`trace`].
+//! grid can show its blocks as bars, a % heatmap, a z heatmap or a Hinton
+//! diagram (see [`grid`]); the strip is in [`strip`]. The sites list is in
+//! [`list`], the pins in [`pins`], the cell modules shown in [`columns`],
+//! the `/` search in [`find`], keys and the mouse in [`input`], the panes'
+//! titles and the footer in [`chrome`], the fit's trace, full pane on `t`,
+//! in [`trace`], and the gene modules' GO terms, a column beside their grid
+//! on `a` and full pane on `G`, in [`go`].
 
 use super::Modules;
 use crate::site_analysis::miami::genemodel::GeneModel;
@@ -44,7 +45,7 @@ mod trace;
 #[cfg(test)]
 pub use bars::{eighths, hanging};
 #[cfg(test)]
-pub use grid::{box_size, Stretch};
+pub use grid::{box_size, square, Stretch};
 pub use grid::{Look, Ramp};
 #[cfg(test)]
 pub use strip::{columns, pack, segment_width};
@@ -155,6 +156,9 @@ pub struct ModulesView<'a> {
     col_fit: usize,
     /// How the modules grid and the sites grid draw.
     pub(super) looks: [Look; 2],
+    /// Whether `v` has chosen the modules grid's look; until it has, each
+    /// frame does (Hinton when every cell module fits, else bars).
+    pub(super) look_set: bool,
     pub(super) ramp: Ramp,
     pub(super) sort: Sort,
     /// Sorted high to low (the module's order: as it is).
@@ -197,6 +201,11 @@ pub struct ModulesView<'a> {
     go_ask: Option<super::go::Ask>,
     go: Option<go::Pending>,
     go_table: Option<Result<super::go::Table, String>>,
+    /// The GO column asked for (`a`), its width this frame (none when it
+    /// is hidden or has no room), and whether the footer said it has none.
+    go_column: bool,
+    go_w: u16,
+    go_no_room: bool,
     done: bool,
 }
 
@@ -221,6 +230,7 @@ impl<'a> ModulesView<'a> {
             cell_w: CELL,
             col_fit: m.cell_roles,
             looks: [Look::Bars; 2],
+            look_set: false,
             ramp: Ramp::Sqrt,
             sort: Sort::Module,
             descending: false,
@@ -243,6 +253,9 @@ impl<'a> ModulesView<'a> {
             go_ask: None,
             go: None,
             go_table: None,
+            go_column: false,
+            go_w: 0,
+            go_no_room: false,
             done: false,
         };
         view.relist();
@@ -453,7 +466,15 @@ impl Screen for ModulesView<'_> {
                 Full::Go => self.draw_go(frame, body, foot),
             };
         }
-        self.fit_columns(area.width);
+        // The GO column's room comes first, out of the grids'.
+        let go_w = self.fit_go_column(area.width);
+        self.fit_columns(area.width - go_w);
+        if !self.look_set {
+            self.looks[0] = match self.col_fit >= self.shown.len() {
+                true => Look::Hinton,
+                false => Look::Bars,
+            };
+        }
         let help = self.footer(area.width);
         // Half the screen for the grids, more when the modules need it,
         // and room left for the strip.
@@ -471,7 +492,7 @@ impl Screen for ModulesView<'_> {
         ])
         .areas(area);
         let [modules, sites] = Layout::horizontal([
-            Constraint::Length(self.split(top.width)),
+            Constraint::Length(self.split(top.width - go_w) + go_w),
             Constraint::Fill(1),
         ])
         .areas(top);

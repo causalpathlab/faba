@@ -317,8 +317,10 @@ sharing 2 or more genes, for terms of 5 to 500 annotated genes, propagated up th
 `part_of`) with NAS and ND evidence left out. A module's terms are listed by p, a parent left out
 when it holds the same genes. The annotations default to lupin's cached GO Consortium file for the
 genes' species (human or mouse); `--gaf` and `--obo` name others, `--gmt` any gene sets. In the
-browser, `a` opens the gene module in focus's terms (↑/↓ steps the module); MCP's `cluster_view`
-takes `go`.
+browser, nothing reads GO until `a`: it reads the terms, then shows a column beside the gene
+modules, each module's strongest terms with their q on its own row (`a` again hides or shows it;
+on a screen too narrow for it the footer says so); `G` opens the gene module in focus's terms in
+full (↑/↓ steps the module, `G` or Esc closes it). MCP's `cluster_view` takes `go`.
 
 ```bash
 faba cluster-view out/m6a_blockmodel.run.json --go

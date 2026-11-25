@@ -15,6 +15,7 @@ mod batches;
 mod data;
 mod figure;
 mod gene;
+mod go_column;
 mod json;
 mod model;
 mod posterior;
@@ -295,6 +296,13 @@ fn swapped() -> Modules {
 
 fn count(on: f64, total: f64) -> Count {
     Count::reads(on, total)
+}
+
+/// `v` with its modules grid as bars, settled as `v` settles it, so its
+/// first frame keeps them.
+fn bars(v: &mut ModulesView) {
+    v.looks[0] = super::view::Look::Bars;
+    v.look_set = true;
 }
 
 fn press(v: &mut ModulesView, code: KeyCode) {

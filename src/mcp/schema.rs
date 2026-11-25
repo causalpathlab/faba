@@ -248,7 +248,7 @@ fn hand_written() -> Vec<ToolSpec> {
                     "figure": { "type": "string", "description": "Write a figure as {figure}.pdf and {figure}.png, or with several `plots` each as {figure}.{plot}.pdf and .png (none may exist), and return each as an image. Omitted with `plots`, in today's results folder" },
                     "plot": { "type": "string", "enum": ["modules", "trace", "batches"], "description": "Which figure: the modules grid (gene modules against cell modules; default), the fit's trace, or the cell modules against the batches" },
                     "plots": { "type": "array", "items": { "type": "string", "enum": ["modules", "trace", "batches"] }, "minItems": 1, "uniqueItems": true, "description": "Several figures in one call, as `plot` names them, each drawn at `width` by `height` in the look asked for and returned as an image" },
-                    "look": { "type": "string", "enum": ["shift", "percent", "z"], "description": "What colours the modules grid's blocks: the fitted shift (a count fit's log rate; default), the methylated % (UMIs per cell), or that standardized across the cell modules" },
+                    "look": { "type": "string", "enum": ["shift", "percent", "z", "hinton"], "description": "What colours the modules grid's blocks: the fitted shift (a count fit's log rate; default), the methylated % (UMIs per cell), that standardized across the cell modules, or that as a Hinton diagram (a square per block, its area by |z|)" },
                     "options": options(),
                 }),
                 &["data"],
