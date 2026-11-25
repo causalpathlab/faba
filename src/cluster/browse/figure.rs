@@ -13,6 +13,8 @@
 
 use super::order::standardized;
 use super::Modules;
+
+mod grid;
 use crate::figure::size::{self, Page};
 use crate::figure::style::{AxisTitles, Palette, Sheet};
 use crate::figure::{esc, mix, svg, Anchor, Canvas, FAINT, INK, MUTED};
@@ -45,18 +47,34 @@ fn font(page: Page) -> f64 {
 /// the room.
 const CELL_LEAST: f64 = 12.0;
 
-/// Square cells, `cols` by `rows`, beside `fixed` points across and down,
-/// `own` points each at the grid's own size: a side not asked for follows
-/// the grid's own proportions, and the cells are as large as the page
-/// allows. The cell's side and the figure's size; refused when the cells
-/// would be too small to read (under [`CELL_LEAST`]).
+/// Why a figure is not drawn: its page too small for its cells (the
+/// least it needs, in points, on the sides asked for, at the font it was
+/// laid out in), or another reason.
+#[derive(Debug)]
+enum Refused {
+    Small(Page),
+    Said(String),
+}
+
+impl From<String> for Refused {
+    fn from(said: String) -> Self {
+        Refused::Said(said)
+    }
+}
+
+/// Square cells, `cols` by `rows` (in cells, a margin's share too),
+/// beside `fixed` points across and down, `own` points each at the grid's
+/// own size: a side not asked for follows the grid's own proportions, and
+/// the cells are as large as the page allows. The cell's side and the
+/// figure's size; refused when the cells would be too small to read
+/// (under [`CELL_LEAST`]), with the least the sides asked for need.
 fn cells(
     page: Page,
     own: f64,
     (fw, fh): (f64, f64),
-    (cols, rows): (usize, usize),
-) -> Result<(f64, (f64, f64)), String> {
-    let (cols, rows) = (cols.max(1) as f64, rows.max(1) as f64);
+    (cols, rows): (f64, f64),
+) -> Result<(f64, (f64, f64)), Refused> {
+    let (cols, rows) = (cols.max(1.0), rows.max(1.0));
     let (ow, oh) = (fw + own * cols, fh + own * rows);
     let (w, h) = match page {
         (None, None) => return Ok((own, (ow, oh))),
@@ -65,14 +83,57 @@ fn cells(
         (Some(w), Some(h)) => (w, h),
     };
     let cell = ((w - fw) / cols).min((h - fh) / rows);
-    if cell < CELL_LEAST {
-        return Err(format!(
-            "the grid needs at least {:.1} by {:.1} inches for its labels and cells",
-            (fw + CELL_LEAST * cols) / size::PT,
-            (fh + CELL_LEAST * rows) / size::PT
-        ));
+    // A size read back from its inches is not refused for a rounding.
+    if cell < CELL_LEAST - 1e-9 {
+        let (nw, nh) = (fw + CELL_LEAST * cols, fh + CELL_LEAST * rows);
+        return Err(Refused::Small(match page {
+            (Some(_), None) => (Some(nw.max(nh * ow / oh)), None),
+            (None, Some(_)) => (None, Some(nh.max(nw * oh / ow))),
+            _ => (Some(nw), Some(nh)),
+        }));
     }
     Ok((cell, (w, h)))
+}
+
+/// A figure drawn on `sheet` by `one`; refused as too small, saying the
+/// least page it is drawn on (see [`least`]).
+fn drawn(sheet: Sheet, one: impl Fn(Sheet) -> Result<String, Refused>) -> Result<String, String> {
+    match one(sheet) {
+        Ok(drawn) => Ok(drawn),
+        Err(Refused::Said(why)) => Err(why),
+        Err(Refused::Small(need)) => Err(least(sheet, need, one)),
+    }
+}
+
+/// The least page, on the sides `sheet` asks for, that `one` draws, from
+/// the `need` it said: each side grown to what it needs, in twentieths
+/// of an inch, and tried again (a larger page may set larger text, which
+/// needs more), so the size said is one that is drawn.
+fn least(sheet: Sheet, mut need: Page, one: impl Fn(Sheet) -> Result<String, Refused>) -> String {
+    let step = size::PT / 20.0;
+    let up = |v: f64| (v / step - 1e-6).ceil() * step;
+    let mut page = sheet.page;
+    for _ in 0..400 {
+        let grown =
+            |side: Option<f64>, need: Option<f64>| side.map(|s| up(s.max(need.unwrap_or(s))));
+        let next = (grown(page.0, need.0), grown(page.1, need.1));
+        // Nothing grew (a need rounded to the side): a step more each.
+        page = match next == page {
+            true => (page.0.map(|s| up(s + step)), page.1.map(|s| up(s + step))),
+            false => next,
+        };
+        match one(Sheet { page, ..sheet }) {
+            Err(Refused::Small(more)) => need = more,
+            _ => break,
+        }
+    }
+    let inches = |p: f64| format!("{:.2}", p / size::PT);
+    let least = match page {
+        (Some(w), Some(h)) => format!("{} by {} inches", inches(w), inches(h)),
+        (Some(w), None) => format!("{} inches across", inches(w)),
+        (_, h) => format!("{} inches tall", inches(h.unwrap_or_default())),
+    };
+    format!("the grid needs at least {least} for its labels and cells")
 }
 
 /// The width of `s` in `f`-point text, about.
@@ -100,6 +161,145 @@ fn title_text(title: &str, f: f64, room: f64) -> String {
     }
 }
 
+/// A side of the modules grid a margin's bars go on: the gene modules'
+/// on the left, by the rows; the cell modules' on top or at the bottom,
+/// by the columns. The right is the GO terms'.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum Side {
+    Left,
+    Top,
+    Bottom,
+}
+
+/// What the modules grid draws besides its blocks (only with `--figure`
+/// and `--plot modules`): the modules' sizes and reads on its margins,
+/// GO terms on its right, the key under `--panel-only`, the blocks'
+/// values.
+#[derive(clap::Args, Debug, Clone, PartialEq)]
+pub struct GridArgs {
+    #[arg(
+        long = "size-bars",
+        value_enum,
+        value_name = "SIDES",
+        value_delimiter = ',',
+        num_args = 0..=1,
+        default_missing_value = "left,top",
+        requires = "figure",
+        help = "The modules grid's margins: each gene module's size in genes as a bar by its row (left), each cell module's in cells by its column (top or bottom); bare: left,top"
+    )]
+    pub size_bars: Vec<Side>,
+
+    #[arg(
+        long = "read-bars",
+        value_enum,
+        value_name = "SIDES",
+        value_delimiter = ',',
+        num_args = 0..=1,
+        default_missing_value = "left,top",
+        requires = "figure",
+        help = "The modules grid's margins: each module's reads summed over its blocks as the browser's mirror bars (converted out or up, unconverted the other way, one scale a side), sides as --size-bars"
+    )]
+    pub read_bars: Vec<Side>,
+
+    #[arg(
+        long = "marginal-size",
+        value_name = "FRACTION",
+        default_value_t = MARGINAL,
+        value_parser = fraction,
+        requires = "figure",
+        help = "The depth of the grid's margin bars, a fraction of its shorter side, in (0, 1]"
+    )]
+    pub marginal_size: f64,
+
+    #[arg(
+        long = "key",
+        requires = "figure",
+        help = "Keep the grid's key under --panel-only, small, under the grid (for --look hinton, squares at reference |z| too)"
+    )]
+    pub key: bool,
+
+    #[arg(
+        long = "values",
+        requires = "figure",
+        help = "Print each block's value in its cell at the font size (z for --look z and hinton, the shift, the %), left out where it does not fit"
+    )]
+    pub values: bool,
+
+    #[arg(
+        long = "go-labels",
+        value_name = "N",
+        value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..=10),
+        requires = "figure",
+        help = "Label each gene module's row, right of the grid, with its top N GO terms (or --gmt sets) and their q, as the browser's GO column lists them (--gaf, --obo, --gmt, --go-q, --go-min-weight)"
+    )]
+    pub go_labels: Option<usize>,
+}
+
+/// The margin bars' depth when `--marginal-size` is not given.
+const MARGINAL: f64 = 0.15;
+
+impl Default for GridArgs {
+    fn default() -> Self {
+        Self {
+            size_bars: Vec::new(),
+            read_bars: Vec::new(),
+            marginal_size: MARGINAL,
+            key: false,
+            values: false,
+            go_labels: None,
+        }
+    }
+}
+
+impl GridArgs {
+    /// Refused: the cell modules' bars both on top and at the bottom.
+    pub fn check(&self) -> anyhow::Result<()> {
+        for (flag, sides) in [
+            ("--size-bars", &self.size_bars),
+            ("--read-bars", &self.read_bars),
+        ] {
+            anyhow::ensure!(
+                !(sides.contains(&Side::Top) && sides.contains(&Side::Bottom)),
+                "{flag}: the cell modules' bars go top or bottom, not both"
+            );
+        }
+        Ok(())
+    }
+}
+
+/// A fraction in (0, 1].
+fn fraction(s: &str) -> Result<f64, String> {
+    let v: f64 = s.parse().map_err(|_| format!("{s} is not a number"))?;
+    match v > 0.0 && v <= 1.0 {
+        true => Ok(v),
+        false => Err(format!("{s} is not in (0, 1]")),
+    }
+}
+
+/// The size bars' fill, in either palette.
+pub const SIZE_BAR: &str = "#8c8c8c";
+/// The read bars' fills: converted reads in the accent, unconverted in the
+/// plain tone, as the browser's mirror bars are.
+pub const READ_UP: &str = crate::figure::ACCENT;
+pub const READ_OFF: &str = MUTED;
+/// The same in grays: dark, and light.
+const READ_UP_GRAY: &str = "#262626";
+const READ_OFF_GRAY: &str = "#b3b3b3";
+
+/// The GO terms `--go-labels` puts on the grid, read as `ask` says; none
+/// read without it.
+pub fn go_table(
+    m: &Modules,
+    go_labels: Option<usize>,
+    ask: &super::go::Ask,
+) -> anyhow::Result<Option<super::go::Table>> {
+    if go_labels.is_none() {
+        return Ok(None);
+    }
+    let source = ask.source(m).map_err(anyhow::Error::msg)?;
+    super::go::table(m, &source, ask.min_weight, ask.q).map(Some)
+}
+
 /// The figure `plot` of `m` under `look`, titled `title`, laid out for
 /// the sheet's page (see [`crate::figure::SizeArgs`]) in its look, the
 /// trace's axes titled as `titles` asks; why there is none (no trace, one
@@ -112,11 +312,12 @@ pub fn draw(
     sheet: Sheet,
     titles: &AxisTitles,
 ) -> Result<String, String> {
-    let ink = Ink::of(&sheet);
     match plot {
-        Plot::Modules => heatmap(m, look, title, sheet.page, ink),
-        Plot::Trace => trace(m, title, sheet.page, ink, titles),
-        Plot::Batches => batches(m, title, sheet.page, ink),
+        Plot::Modules => draw_with(m, look, &GridArgs::default(), None, title, sheet),
+        Plot::Trace => trace(m, title, sheet.page, Ink::of(&sheet), titles),
+        Plot::Batches => drawn(sheet, |sheet| {
+            batches(m, title, sheet.page, Ink::of(&sheet))
+        }),
     }
 }
 
@@ -131,6 +332,21 @@ pub fn unused_titles(plot: Plot, titles: &AxisTitles) -> Option<String> {
     };
     given.then(|| {
         format!("--xlab and --ylab title the trace's axes; {what} has none, so they are unused")
+    })
+}
+
+/// The modules grid of `m` under `look` with `grid`'s extras, `go` the
+/// terms for `--go-labels`.
+pub fn draw_with(
+    m: &Modules,
+    look: Look,
+    grid: &GridArgs,
+    go: Option<&super::go::Table>,
+    title: &str,
+    sheet: Sheet,
+) -> Result<String, String> {
+    drawn(sheet, |sheet| {
+        grid::heatmap(m, look, grid, go, title, sheet.page, Ink::of(&sheet))
     })
 }
 
@@ -261,134 +477,6 @@ fn values(m: &Modules, look: Look) -> (Vec<usize>, Vec<Vec<Option<f64>>>) {
     (rows, values)
 }
 
-/// The figure of `m` under `look`, titled `title`: a box per block with its
-/// value, the gene modules' names and sizes on the left, the cell modules'
-/// on top, and the colour scale on the right.
-fn heatmap(m: &Modules, look: Look, title: &str, size: Page, ink: Ink) -> Result<String, String> {
-    let (rows, values) = values(m, look);
-    let all: Vec<f64> = values.iter().flatten().flatten().copied().collect();
-    let diverging = look != Look::Percent;
-    let top = match diverging {
-        true => all.iter().fold(0.0f64, |a, v| a.max(v.abs())),
-        false => all.iter().fold(0.0f64, |a, &v| a.max(v)),
-    };
-    let what = match (look, m.per_cell()) {
-        (Look::Shift, true) => "log rate",
-        (Look::Shift, false) => "shift (logit, over each site's baseline)",
-        (Look::Percent, true) => "UMIs per cell",
-        (Look::Percent, false) => "methylated %",
-        (Look::Z, _) => "z across the cell modules",
-        (Look::Hinton, _) => "z across the cell modules; square area by |z|",
-    };
-    let f = ink.f;
-    let names: Vec<String> = (rows.iter())
-        .map(|&g| format!("M{} ({} genes)", g + 1, m.gene_sizes[g]))
-        .collect();
-    let label = names.iter().map(|n| width(n, f)).fold(0.0, f64::max) + f;
-    // The plot alone: no title over it, no scale beside it, no note under.
-    let (head, scale, foot) = (
-        2.0 * f + ink.room(2.0 * f),
-        ink.room(6.0 * f),
-        f + ink.room(2.0 * f),
-    );
-    let (cols, n) = (m.columns.len(), rows.len());
-    // Square boxes as large as the page allows (44 points without one).
-    let (cell, (w, h)) = cells(size, 44.0, (label + scale, head + foot), (cols, n))?;
-    let font = (cell * 0.28).min(f);
-    Ok(svg(w, h, |c: &mut Canvas| {
-        ink.heading(c, title, w);
-        for (j, &role) in m.columns.iter().enumerate() {
-            let x = label + cell * (j as f64 + 0.5);
-            c.text(
-                x,
-                head - f * 0.6,
-                &format!("C{}", role + 1),
-                f,
-                Anchor::Middle,
-                INK,
-            );
-        }
-        for (i, (row, name)) in values.iter().zip(&names).enumerate() {
-            let y = head + cell * i as f64;
-            c.text(
-                label - f * 0.6,
-                y + cell / 2.0 + f / 2.5,
-                name,
-                f,
-                Anchor::End,
-                INK,
-            );
-            for (j, v) in row.iter().enumerate() {
-                let x = label + cell * j as f64;
-                if look == Look::Hinton {
-                    // A true square, centred, none for a block without reads.
-                    if let Some(v) = v {
-                        let side = (cell - 2.0) * (v.abs() / top.max(1e-12)).min(1.0).sqrt();
-                        let (cx, cy) = (x + cell / 2.0, y + cell / 2.0);
-                        let colour = fill(*v, top, diverging).0;
-                        c.rect(cx - side / 2.0, cy - side / 2.0, side, side, &colour);
-                    }
-                    continue;
-                }
-                let Some(v) = v else {
-                    c.rect(x + 1.0, y + 1.0, cell - 2.0, cell - 2.0, "#ffffff");
-                    continue;
-                };
-                let (colour, dark) = ink.fill(*v, top, diverging);
-                c.rect(x + 1.0, y + 1.0, cell - 2.0, cell - 2.0, &colour);
-                let text = match look {
-                    Look::Shift | Look::Z | Look::Hinton => format!("{v:+.2}"),
-                    // As the grid writes it: a whole %, or UMIs per cell.
-                    Look::Percent => m.block(rows[i])[j].number().unwrap_or_default(),
-                };
-                let text_ink = if dark { "#ffffff" } else { INK };
-                c.text(
-                    x + cell / 2.0,
-                    y + cell / 2.0 + font / 2.5,
-                    &text,
-                    font,
-                    Anchor::Middle,
-                    text_ink,
-                );
-            }
-        }
-        if ink.panel_only {
-            return;
-        }
-        // The scale: a column of steps from the top value down to its other
-        // end, labelled at both ends and the middle.
-        let (sx, sy, sh, steps) = (label + cell * cols as f64 + f, head, cell * n as f64, 40);
-        let low = if diverging { -top } else { 0.0 };
-        for k in 0..steps {
-            let v = top - (top - low) * (k as f64 + 0.5) / steps as f64;
-            let y = sy + sh * k as f64 / steps as f64;
-            c.rect(
-                sx,
-                y,
-                f * 1.2,
-                sh / steps as f64 + 0.5,
-                &ink.fill(v, top, diverging).0,
-            );
-        }
-        let mid = (top + low) / 2.0;
-        for (v, y) in [
-            (top, sy + f * 0.4),
-            (mid, sy + sh / 2.0 + f * 0.35),
-            (low, sy + sh),
-        ] {
-            c.text(
-                sx + f * 1.6,
-                y,
-                &format!("{v:.2}"),
-                f * 0.9,
-                Anchor::Start,
-                MUTED,
-            );
-        }
-        c.text(label, h - f, what, f, Anchor::Start, MUTED);
-    }))
-}
-
 /// A plot's frame: its y range ticked at the ends and the middle on the
 /// left of `(x, y, w, h)`, its x range under it, and their labels.
 fn axes(
@@ -517,8 +605,8 @@ fn trace(
 
 /// The cell modules against the batches, by condition: each module's share
 /// in each batch (its cells by batch size), its evenness and label.
-fn batches(m: &Modules, title: &str, size: Page, ink: Ink) -> Result<String, String> {
-    let b = m.batches.as_ref().ok_or("the cells are of one batch")?;
+fn batches(m: &Modules, title: &str, size: Page, ink: Ink) -> Result<String, Refused> {
+    let b = (m.batches.as_ref()).ok_or_else(|| String::from("the cells are of one batch"))?;
     let d = &b.design;
     let order = d.order();
     let f = ink.f;
@@ -537,7 +625,8 @@ fn batches(m: &Modules, title: &str, size: Page, ink: Ink) -> Result<String, Str
     let (label, head) = (3.5 * f, ink.room(2.6 * f) + names);
     let (right, foot) = (longest(&mut said.iter()) + 2.0 * f, f + ink.room(2.0 * f));
     let (cols, n) = (order.len(), m.columns.len());
-    let (cell, (w, h)) = cells(size, 40.0, (label + right, head + foot), (cols, n))?;
+    let counts = (cols as f64, n as f64);
+    let (cell, (w, h)) = cells(size, 40.0, (label + right, head + foot), counts)?;
     let font = (cell * 0.28).min(f);
     Ok(svg(w, h, |c: &mut Canvas| {
         ink.heading(c, title, w);

@@ -162,6 +162,10 @@ pub struct ModulesArgs {
     )]
     look: figure::Look,
 
+    /// The modules grid's margins, GO terms, key and values.
+    #[command(flatten)]
+    pub grid: figure::GridArgs,
+
     #[arg(
         long = "batch-process",
         visible_alias = "batch-mode",
@@ -403,6 +407,7 @@ pub fn run_modules(args: &ModulesArgs) -> anyhow::Result<()> {
         if let Some(note) = figure::unused_titles(args.plot, &args.titles) {
             log::warn!("{note}");
         }
+        args.grid.check()?;
     }
     // No inputs named: browse for them, as `faba pileup` does.
     let batch = args.writes();
@@ -487,8 +492,14 @@ fn write_figure(m: &Modules, args: &ModulesArgs, dir: &Path, prefix: &str) -> an
         page: figure::page(args.plot, &args.size)?,
         look: args.style,
     };
-    let drawn = figure::draw(m, args.plot, args.look, &title, sheet, &args.titles)
-        .map_err(anyhow::Error::msg)?;
+    let drawn = match args.plot {
+        figure::Plot::Modules => {
+            let go = figure::go_table(m, args.grid.go_labels, &args.shown.go_ask())?;
+            figure::draw_with(m, args.look, &args.grid, go.as_ref(), &title, sheet)
+        }
+        plot => figure::draw(m, plot, args.look, &title, sheet, &args.titles),
+    }
+    .map_err(anyhow::Error::msg)?;
     for path in crate::figure::save_with_png(&drawn, prefix)? {
         println!("{path}");
     }

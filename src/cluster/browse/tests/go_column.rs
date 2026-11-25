@@ -9,7 +9,7 @@ use super::*;
 /// the next 4, 3 the rest; and a GMT whose `TERM1_SET_OF_GENES` to `TERM8_...` each hold 12 of
 /// gene module 1's (each a different 12) and `OTHER` gene module 3's, so
 /// gene module 1 has eight terms and 2 none (none of its genes annotated).
-fn with_go(dir: &std::path::Path) -> (Modules, Ask) {
+pub(super) fn with_go(dir: &std::path::Path) -> (Modules, Ask) {
     let mut m = loaded();
     m.gene_main = (0..40)
         .map(|i| {

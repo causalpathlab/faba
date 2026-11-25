@@ -355,6 +355,26 @@ block, its area by |z| against the largest). `--figure` takes the same as `--loo
 faba cluster-view out/m6a_blockmodel.run.json --figure grid --look hinton --fig-width 3.5
 ```
 
+The grid's figure takes more, each off by default. `--size-bars left,top` (or `left,bottom`; bare:
+`left,top`) draws each gene module's size in genes as a bar by its row and each cell module's size
+in cells (as `--cells` prints it) by its column; `--read-bars` takes the same sides and draws each
+module's reads, summed over its blocks, as the browser's mirror bars (converted out or up,
+unconverted the other way, one scale a side). `--marginal-size` sets their depth as a fraction of
+the grid's shorter side (default 0.15); the largest of each is labelled. `--go-labels N` lists each
+gene module's top N GO terms (or `--gmt` sets) and their q on its right, as the browser's GO column
+does (read only with this flag; `--gaf`, `--obo`, `--go-q`, `--go-min-weight` apply), shortened to
+fit, as many as its row holds. `--key` keeps a small key under the grid with `--panel-only` (for
+`--look hinton`, squares at reference |z| beside the colours). `--values` prints each block's value
+(z to a tenth, the shift to a hundredth, the %) at the font size, left out where it does not fit
+in its cell. A figure asked for smaller than it can be drawn is refused, naming the least size it
+is drawn at.
+
+```bash
+faba cluster-view out/m6a_blockmodel.run.json --figure grid --look hinton --fig-width 4.6 \
+  --fig-height 2.6 --font-size 7 --panel-only --size-bars left,top --read-bars left,top \
+  --go-labels 2 --key --values
+```
+
 **The levels for a program.** `--overview` prints the fit at a glance: the verdict, how many gene
 and cell modules, each cell module's size, and each gene module's genes and top genes by weight. It
 reads no GO; `--go` beside it does. `--grid` prints the modules grid beside the levels named (it is

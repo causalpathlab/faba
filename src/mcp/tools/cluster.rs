@@ -276,6 +276,35 @@ mod tests {
         assert!(err.contains("adds it itself"), "{err}");
     }
 
+    /// The modules grid's extras are arguments made from their flags, and
+    /// reach `faba cluster-view` as it parses them.
+    #[test]
+    fn cluster_view_takes_the_grids_margins_go_labels_key_and_values() {
+        let args = json!({
+            "size_bars": ["left", "bottom"], "read_bars": ["left"], "marginal_size": 0.2,
+            "key": true, "values": true, "go_labels": 2, "figure": "f",
+        });
+        let flags = typed_flags("cluster_view", &Arguments(args)).unwrap();
+        let argv = ["faba", "cluster-view", "fit.run.json", "--figure", "f"]
+            .into_iter()
+            .map(String::from)
+            .chain(flags);
+        let cli = <crate::Cli as clap::Parser>::try_parse_from(argv).unwrap();
+        let crate::Commands::ClusterView(args) = cli.commands else {
+            panic!("not cluster-view");
+        };
+        let g = args.grid;
+        let sides = format!("{:?} {:?}", g.size_bars, g.read_bars);
+        assert_eq!(sides, "[Left, Bottom] [Left]");
+        assert_eq!((g.marginal_size, g.key, g.values), (0.2, true, true));
+        assert_eq!(g.go_labels, Some(2));
+        let props = properties("cluster_view").unwrap();
+        assert_eq!(
+            props["size_bars"]["items"]["enum"],
+            json!(["left", "top", "bottom"])
+        );
+    }
+
     /// With `html` every level asked for is refused by name, saying the
     /// page shows them all; a level switched off or null is not asked for.
     #[test]
