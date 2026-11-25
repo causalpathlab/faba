@@ -237,6 +237,7 @@ fn hand_written() -> Vec<ToolSpec> {
                     "obo": { "type": "string", "description": "The GO graph for `gaf` (default: lupin's cached go-basic.obo)" },
                     "gmt": { "type": "string", "description": "Gene sets to test for `go` instead of GO, a GMT file" },
                     "go_min_weight": { "type": "number", "minimum": 0, "maximum": 1, "description": "A gene counts in its main gene module for `go` at this weight or more (default 0.5)" },
+                    "go_q": { "type": "number", "exclusiveMinimum": 0, "maximum": 1, "description": "A term (or `gmt` set) is listed for `go` at this BH q or less (default 0.05)" },
                     "batch_groups": { "type": "string", "description": "Which condition each batch is a replicate of, as rep1_mut=mut,rep2_mut=mut; the rest are read off their names" },
                     "trace": { "type": "boolean", "description": "Print each restart's trace, the verdict and its advice" },
                     "settings": { "type": "boolean", "description": "Print the settings the fit ran with" },

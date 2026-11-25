@@ -30,9 +30,10 @@ use std::path::{Path, PathBuf};
 const SIZES: std::ops::RangeInclusive<usize> = 5..=500;
 /// A module tested has at least this many genes in the universe.
 const LEAST_MODULE: usize = 5;
-/// Terms listed per module at most, and the q they need.
+/// Terms listed per module at most.
 const TOP: usize = 10;
-pub(super) const Q: f64 = 0.05;
+/// The q a term needs to be listed when `--go-q` is not given.
+pub const DEFAULT_Q: f64 = 0.05;
 
 /// Where the gene sets come from: GO annotations with the GO graph, or a
 /// GMT.
@@ -119,13 +120,15 @@ fn species_gaf(genes: &[(Box<str>, usize, f32)]) -> Option<&'static str> {
 }
 
 /// What a call asks GO of: the files named (none: found, see
-/// [`Source::of`]) and the weight a gene needs in its main module.
+/// [`Source::of`]), the weight a gene needs in its main module and the q a
+/// term needs to be listed.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Ask {
     pub gaf: Option<String>,
     pub gmt: Option<String>,
     pub obo: Option<String>,
     pub min_weight: f64,
+    pub q: f64,
 }
 
 impl Ask {
@@ -178,6 +181,8 @@ pub struct Table {
     pub genes: usize,
     pub universe: usize,
     pub min_weight: f64,
+    /// The q a term needed to be listed.
+    pub q: f64,
     /// Every gene module, by its number from 0.
     pub modules: Vec<ModuleTerms>,
 }
@@ -306,9 +311,10 @@ fn matched(
 }
 
 /// The terms of `m`'s gene modules from `source`, each module's genes those
-/// whose main role it is at a weight of at least `min_weight`.
-pub fn table(m: &Modules, source: &Source, min_weight: f64) -> anyhow::Result<Table> {
-    terms(&m.gene_main, m.gene_roles, source, min_weight)
+/// whose main role it is at a weight of at least `min_weight`, a term
+/// listed at a q of at most `q`.
+pub fn table(m: &Modules, source: &Source, min_weight: f64, q: f64) -> anyhow::Result<Table> {
+    terms(&m.gene_main, m.gene_roles, source, min_weight, q)
 }
 
 /// [`table`] of the genes `genes` (key, main role, its weight) over
@@ -318,6 +324,7 @@ pub fn terms(
     roles: usize,
     source: &Source,
     min_weight: f64,
+    cutoff: f64,
 ) -> anyhow::Result<Table> {
     let Loaded {
         sets,
@@ -390,7 +397,7 @@ pub fn terms(
         })
         .collect();
     let mut order: Vec<usize> = (0..all.len())
-        .filter(|&i| q[i] <= Q && all[i].2 >= 2)
+        .filter(|&i| q[i] <= cutoff && all[i].2 >= 2)
         .collect();
     order.sort_by(|&a, &b| all[a].3.total_cmp(&all[b].3).then(all[a].1.cmp(&all[b].1)));
     // Each module's terms by p, a term whose overlap one listed has left out.
@@ -441,6 +448,7 @@ pub fn terms(
         genes: genes.len(),
         universe: big_n,
         min_weight,
+        q: cutoff,
         modules: out,
     })
 }
@@ -477,20 +485,21 @@ impl Table {
             format!(
                 "go: {}; {} of the fit's {} genes annotated (the universe); a module's genes \
                  are those of main role weight at least {}; terms of {}..={} genes; q: BH over \
-                 every (module, term) tested",
+                 every (module, term) tested; listed at q <= {}",
                 self.source,
                 self.universe,
                 self.genes,
                 self.min_weight,
                 SIZES.start(),
-                SIZES.end()
+                SIZES.end(),
+                self.q
             ),
             "module\tgenes\trank\tterm\tnamespace\tname\tk\tK\todds\tp\tq\toverlap".into(),
         ];
         for (role, m) in self.modules.iter().enumerate() {
             let head = format!("M{}\t{}/{}", role + 1, m.n, m.all);
             if m.hits.is_empty() {
-                out.push(format!("{head}\t-\t({})", m.why_none()));
+                out.push(format!("{head}\t-\t({})", m.why_none(self.q)));
             }
             for (r, h) in m.hits.iter().enumerate() {
                 out.push(format!(
@@ -518,11 +527,13 @@ impl Table {
 }
 
 impl ModuleTerms {
-    /// Why it lists no term.
-    pub fn why_none(&self) -> String {
+    /// Why it lists no term, held to the cutoff `q`.
+    pub fn why_none(&self, q: f64) -> String {
         match self.n < LEAST_MODULE {
             true => format!("fewer than {LEAST_MODULE} genes to test"),
-            false => format!("no term at q <= {Q} (BH over every module and term)"),
+            false => format!(
+                "no term at q <= {q} sharing 2 or more genes (BH over every module and term)"
+            ),
         }
     }
 }
