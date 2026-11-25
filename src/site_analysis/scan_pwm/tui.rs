@@ -246,12 +246,12 @@ impl PwmView {
             );
         let style = sheet.style((width, height));
         let mut c = Canvas::styled(width, height, &style);
+        let (width, height) = c.page();
         let head = match style.panel_only {
             true => 0.0,
             false => {
-                let em = c.em();
-                c.bold(16.0 * em, 22.0 * em, &self.title, 12.0, Anchor::Start, INK);
-                30.0 * em
+                c.bold(16.0, 22.0, &self.title, 12.0, Anchor::Start, INK);
+                30.0
             }
         };
         self.draw_logo(&mut c, (0.0, head, width, height - head), None);
@@ -267,27 +267,19 @@ impl PwmView {
         cursor: Option<usize>,
     ) {
         let n = self.columns.len().max(1);
-        let em = c.em();
-        let (left, top, bottom) = (x0 + 56.0 * em, y0 + 10.0 * em, 50.0 * em);
-        let cw = ((w - MARGINS * em) / n as f64).max(1.0);
-        let ph = (h - 10.0 * em - bottom).max(1.0);
+        let (left, top, bottom) = (x0 + 56.0, y0 + 10.0, 50.0);
+        let cw = ((w - MARGINS) / n as f64).max(1.0);
+        let ph = (h - 10.0 - bottom).max(1.0);
         let top_value = self.mode.top();
         for f in [0.0, 0.5, 1.0] {
             let y = top + ph - f * ph;
-            c.line(left - 4.0 * em, y, left, y, INK, 0.6);
+            c.line(left - 4.0, y, left, y, INK, 0.6);
             let label = format!("{}", f * top_value);
-            c.text(
-                left - 7.0 * em,
-                y + 3.0 * em,
-                &label,
-                8.0,
-                Anchor::End,
-                MUTED,
-            );
+            c.text(left - 7.0, y + 3.0, &label, 8.0, Anchor::End, MUTED);
         }
         c.line(left, top, left, top + ph, INK, 0.6);
         c.line(left, top + ph, left + cw * n as f64, top + ph, INK, 0.6);
-        c.vtext(x0 + 18.0 * em, top + ph / 2.0, self.mode.name(), 9.0, MUTED);
+        c.vtext(x0 + 18.0, top + ph / 2.0, self.mode.name(), 9.0, MUTED);
         for (j, col) in self.columns.iter().enumerate() {
             let x = left + j as f64 * cw;
             let heights = col.heights(self.mode);
@@ -301,14 +293,14 @@ impl PwmView {
             let rel = self.rel(j);
             if rel == 0 {
                 // The site: an accent tick under the axis.
-                c.rect(x + 0.5, top + ph + em, cw - 1.0, 2.5 * em, ACCENT);
+                c.rect(x + 0.5, top + ph + 1.0, cw - 1.0, 2.5, ACCENT);
             }
             if rel % 5 == 0 || n <= 25 {
                 let colour = if rel == 0 { ACCENT } else { INK };
                 let label = rel.to_string();
                 c.text(
                     x + cw / 2.0,
-                    top + ph + 13.0 * em,
+                    top + ph + 13.0,
                     &label,
                     8.0,
                     Anchor::Middle,
@@ -316,13 +308,13 @@ impl PwmView {
                 );
             }
             if cursor == Some(j) {
-                c.rect(x + 0.5, top + ph + 17.0 * em, cw - 1.0, 3.0 * em, INK);
+                c.rect(x + 0.5, top + ph + 17.0, cw - 1.0, 3.0, INK);
             }
         }
         let mid = left + cw * n as f64 / 2.0;
         c.text(
             mid,
-            top + ph + 34.0 * em,
+            top + ph + 34.0,
             "position relative to the site",
             8.0,
             Anchor::Middle,

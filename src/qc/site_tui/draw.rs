@@ -5,8 +5,9 @@ use crate::figure::style::{Palette, Sheet};
 use crate::site_analysis::miami::genemodel::draw_gene_model;
 use crate::tui::marker;
 
-/// The width a qc figure needs at least, in points: its table and its
-/// plots (the height depends on the plots shown).
+/// The width a qc figure needs at least, in points of its 8-point layout:
+/// its table and its plots (the height depends on the plots shown). The
+/// pairs and the cells figures, drawn on the same page, need no more.
 pub(crate) const QC_LEAST_W: f64 = 720.0;
 
 /// A knob figure's own size drawn alone (`--panel-only`), in points: its
@@ -14,10 +15,17 @@ pub(crate) const QC_LEAST_W: f64 = 720.0;
 const PANEL_OWN: (f64, f64) = (QC_LEAST_W - 330.0, 280.0);
 
 /// Refused when a side of `sheet`'s page asked for is less than `least`
-/// points (see [`knob_least`] and [`crate::figure::size::at_least`]).
+/// points (see [`knob_least`] and [`crate::figure::size::at_least`]),
+/// saying so at the font asked for when that grew it.
 pub(crate) fn knob_room(sheet: &Sheet, least: (f64, f64), what: &str) -> anyhow::Result<()> {
+    let font = match (sheet.look.font_size, sheet.grow() > 1.0) {
+        (Some(pt), true) => {
+            format!(" at --font-size {pt}; a smaller --font-size or a larger page fits")
+        }
+        _ => String::new(),
+    };
     crate::figure::size::at_least(sheet.page, least, what)
-        .map_err(|e| anyhow::anyhow!("{e}; --panel-only draws the plot alone at any size"))
+        .map_err(|e| anyhow::anyhow!("{e}{font}; --panel-only draws the plot alone at any size"))
 }
 
 /// The least heights of a knob figure's plots: the histogram, then a box
@@ -39,13 +47,15 @@ fn knob_panels(boxes: usize, plots: &[f64]) -> figure::Panels<'_> {
 /// The least page a knob figure on `sheet` needs, in points: none alone
 /// (`--panel-only` draws its histogram at any size); else its table's
 /// width, and with `boxes` below its histogram (the gene's, the
-/// metagene's), once known, its plots' height.
+/// metagene's), once known, its plots' height; each its 8-point layout's,
+/// grown to the font asked for ([`Sheet::grow`]).
 pub(crate) fn knob_least(sheet: &Sheet, boxes: Option<usize>) -> (f64, f64) {
     if sheet.look.panel_only {
         return (0.0, 0.0);
     }
     let height = boxes.map_or(0.0, |b| knob_panels(b, &knob_plots(b)).height());
-    (QC_LEAST_W, height)
+    let g = sheet.grow();
+    (QC_LEAST_W * g, height * g)
 }
 
 /// The file stem of `c`'s figure of `t`'s sites.
@@ -546,11 +556,13 @@ impl<'a> SitePicker<'a> {
         // Only a side asked for can be short: its own size fits by making.
         let what = format!("{}'s figure", view.table.modality);
         knob_room(&sheet, least, &what)?;
+        let style = sheet.style((width, height));
+        let mut canvas = Canvas::styled(width, height, &style);
+        // Laid out at 8 points on the page the font scales.
+        let (width, height) = canvas.page();
         let plots_w = width - 330.0;
         let heights = panels.heights(height);
         let (hist_h, box_h) = (heights[0], heights.get(1).copied().unwrap_or(0.0));
-        let style = sheet.style((width, height));
-        let mut canvas = Canvas::styled(width, height, &style);
         canvas.bold(16.0, 22.0, &self.title, 12.0, Anchor::Start, INK);
         canvas.text(
             16.0,
@@ -620,7 +632,7 @@ impl<'a> SitePicker<'a> {
     fn knob_panel(&self, sheet: Sheet) -> anyhow::Result<String> {
         let q = Axis::of(self.criterion());
         let panels = self.knob_hists(self.modality, vec![q], sheet)?;
-        Ok(panels.hist_figure(q, sheet.fill(|| PANEL_OWN)))
+        Ok(panels.hist_figure(q, sheet.fill_own(PANEL_OWN)))
     }
 
     /// The histograms of `quantities` of modality `m` as
@@ -649,7 +661,7 @@ impl<'a> SitePicker<'a> {
     pub(super) fn knob_panels_of(&self, m: usize, sheet: Sheet) -> anyhow::Result<Vec<Figure>> {
         let criteria = &self.views[m].criteria;
         let panels = self.knob_hists(m, criteria.iter().map(|&c| Axis::of(c)).collect(), sheet)?;
-        let size = sheet.fill(|| PANEL_OWN);
+        let size = sheet.fill_own(PANEL_OWN);
         Ok((criteria.iter())
             .map(|&c| Figure {
                 stem: knob_stem(self.views[m].table, c),

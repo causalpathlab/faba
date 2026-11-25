@@ -7,7 +7,8 @@ use super::density::{decades, Plot, Squares, BINS};
 use crate::figure::style::{Palette, Style};
 use crate::figure::{Anchor, Canvas, INK, MUTED};
 
-/// A cells figure's own size, in points, when the page sets neither side.
+/// A cells figure's own size, in points of its 8-point layout, when the
+/// page sets neither side.
 pub const SIZE: (f64, f64) = (720.0, 320.0);
 use data_beans::qc_lib::QcReport;
 
@@ -100,9 +101,11 @@ impl Cells {
 
     /// The figure, `w` by `h` in `style`: the knee on the left, genes by
     /// counts on the right, the verdicts' key and counts over them; alone
-    /// (`--panel-only`), the two plots only.
+    /// (`--panel-only`), the two plots only. Laid out at 8 points on the
+    /// page the style's font scales.
     pub fn figure(&self, (w, h): (f64, f64), style: &Style) -> String {
-        let mut c = Canvas::styled(w, h, &style.for_boxes());
+        let mut c = Canvas::styled(w, h, style);
+        let (w, h) = c.page();
         let half = (w - 12.0) / 2.0;
         let top = if style.panel_only { 0.0 } else { 40.0 };
         if !style.panel_only {
@@ -165,7 +168,7 @@ impl Cells {
     fn knee(&self, c: &mut Canvas, area: (f64, f64, f64, f64), palette: Palette) {
         let (points, end) = self.knee_points(KNEE_STEPS);
         let top = points.first().map_or(1.0, |p| p.1);
-        let plot = Plot::on(c, area, (0.0, end), (0.0, top.max(1.0)));
+        let plot = Plot::on(area, (0.0, end), (0.0, top.max(1.0)));
         for pair in points.windows(2) {
             let (a, b) = (plot.at(pair[0].0, pair[0].1), plot.at(pair[1].0, pair[1].1));
             c.line(a.0, a.1, b.0, b.1, pair[1].2.colour(palette), 1.6);
@@ -211,7 +214,7 @@ impl Cells {
     /// which most of its barcodes are, deeper as it holds more.
     fn density(&self, c: &mut Canvas, area: (f64, f64, f64, f64)) {
         let g = self.density_grid();
-        let plot = Plot::on(c, area, g.xr, g.yr);
+        let plot = Plot::on(area, g.xr, g.yr);
         g.squares.draw(c, &plot);
         let ticks = [decades(g.xr), decades(g.yr)];
         plot.axes(c, [&ticks[0], &ticks[1]], ["counts", "genes detected"]);

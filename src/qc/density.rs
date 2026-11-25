@@ -2,7 +2,7 @@
 //! kept apart from the rest, a square's colour deeper as it holds more; and
 //! the frame they are drawn in, its ticks and titles.
 
-use crate::figure::style::Palette;
+use crate::figure::style::{Palette, OWN_FONT};
 use crate::figure::{mixed, rgb, Anchor, Canvas, FAINT, INK, MUTED};
 
 /// A kept site or barcode, drawn in this.
@@ -91,24 +91,17 @@ pub struct Plot {
     pub yr: (f64, f64),
     /// The box `(x, y, w, h)` it sits in, its titles under and beside it.
     outer: (f64, f64, f64, f64),
-    size: f64,
 }
 
+/// Ticks' and titles' size, in points of the 8-point layout: as a bar
+/// panel's, which the canvas scales to its font.
+const SIZE: f64 = OWN_FONT;
+
 impl Plot {
-    /// The plot on `c` in the box `(x, y, w, h)` over `xr` by `yr`, with
-    /// room for ticks and titles at the canvas' font when one was asked
-    /// for (every label at it), else at a size fit to the box.
-    pub fn on(
-        c: &Canvas,
-        (x, y, w, h): (f64, f64, f64, f64),
-        xr: (f64, f64),
-        yr: (f64, f64),
-    ) -> Self {
-        let size = match c.style().uniform {
-            true => c.style().font,
-            false => (w.min(h) / 26.0).clamp(7.0, 10.0),
-        };
-        let (l, r, t, b) = (size * 4.6, size, size * 0.6, size * 3.6);
+    /// The plot in the box `(x, y, w, h)` over `xr` by `yr`, with room
+    /// for ticks and titles at the layout's 8 points.
+    pub fn on((x, y, w, h): (f64, f64, f64, f64), xr: (f64, f64), yr: (f64, f64)) -> Self {
+        let (l, r, t, b) = (SIZE * 4.6, SIZE, SIZE * 0.6, SIZE * 3.6);
         Self {
             px: x + l,
             py: y + t,
@@ -117,7 +110,6 @@ impl Plot {
             xr,
             yr,
             outer: (x, y, w, h),
-            size,
         }
     }
 
@@ -132,20 +124,13 @@ impl Plot {
 
     /// Its axes, ticks (drawn positions and labels) and titles.
     pub fn axes(&self, c: &mut Canvas, ticks: [&[(f64, String)]; 2], titles: [&str; 2]) {
-        let (px, py, pw, ph, size) = (self.px, self.py, self.pw, self.ph, self.size);
+        let (px, py, pw, ph, size) = (self.px, self.py, self.pw, self.ph, SIZE);
         c.line(px, py + ph, px + pw, py + ph, FAINT, 0.8);
         c.line(px, py, px, py + ph, FAINT, 0.8);
         for (v, label) in ticks[0] {
             let x = self.at(*v, self.yr.0).0;
             c.line(x, py + ph, x, py + ph + 3.0, FAINT, 0.8);
-            c.text(
-                x,
-                py + ph + size * 1.4,
-                label,
-                size * 0.9,
-                Anchor::Middle,
-                MUTED,
-            );
+            c.text(x, py + ph + size * 1.4, label, size, Anchor::Middle, MUTED);
         }
         for (v, label) in ticks[1] {
             let y = self.at(self.xr.0, *v).1;
@@ -154,7 +139,7 @@ impl Plot {
                 px - size * 0.5,
                 y + size * 0.35,
                 label,
-                size * 0.9,
+                size,
                 Anchor::End,
                 MUTED,
             );

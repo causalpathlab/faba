@@ -516,7 +516,7 @@ impl Grid {
     /// `title` over it (none when empty).
     pub fn draw(&self, canvas: &mut Canvas, (x, y, w, h): (f64, f64, f64, f64), title: &str) {
         let head = if title.is_empty() { 0.0 } else { 14.0 };
-        let plot = Plot::on(canvas, (x, y + head, w, h - head), self.xr, self.yr);
+        let plot = Plot::on((x, y + head, w, h - head), self.xr, self.yr);
         if !title.is_empty() {
             canvas.text(plot.px, y + 10.0, title, 10.0, Anchor::Start, INK);
         }
@@ -565,7 +565,9 @@ pub fn figure(
     let grids: Vec<Grid> = (pairs.par_iter())
         .map(|(x, y, _)| grid(s, (*x, *y), f, BINS))
         .collect();
-    let mut canvas = Canvas::styled(w, h, &style.for_boxes());
+    let mut canvas = Canvas::styled(w, h, style);
+    // Laid out at 8 points on the page the font scales.
+    let (w, h) = canvas.page();
     let c = &mut canvas;
     let alone = style.panel_only;
     if !alone {
