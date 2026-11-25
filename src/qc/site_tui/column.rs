@@ -126,7 +126,11 @@ pub(super) fn knob_scales(scales: &crate::qc::scale::Scales) -> [usize; 8] {
     use crate::qc::scale::Scale as Of;
     let mut out = [0; 8];
     for c in SHOWN {
-        let want = match scales.of(Axis::of(c)) {
+        let q = Axis::of(c);
+        // A p-value's knob spreads its bars on log-spaced p unless a scale
+        // was asked for: on -log10 p as it is, most sites crowd the first.
+        let want = match scales.of(q) {
+            _ if c == Criterion::MaxPv && !scales.asked(q) => Scale::Log,
             Of::Linear => Scale::Linear,
             Of::Log => Scale::Log,
         };

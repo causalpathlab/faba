@@ -99,31 +99,9 @@ fn margins(m: &Modules, rows: &[usize]) -> (Margin, Margin) {
     (genes, cells)
 }
 
-/// A character's width in `f`-point GO text, Helvetica's advance rounded
-/// up (a set's name is often in capitals, a term's in lower case, so one
-/// width for all would leave the one short and the other running over).
-fn char_width(c: char, f: f64) -> f64 {
-    let em = match c {
-        'i' | 'j' | 'l' | 'I' | '.' | ',' | ':' | ';' | '\'' | '!' | '|' | ' ' => 0.28,
-        'f' | 't' | 'r' | '(' | ')' | '[' | ']' | '-' | '/' => 0.34,
-        'c' | 'k' | 's' | 'v' | 'x' | 'y' | 'z' | 'J' => 0.5,
-        'm' | 'M' => 0.84,
-        'w' => 0.73,
-        'W' => 0.95,
-        'L' => 0.56,
-        'F' | 'T' | 'Z' => 0.62,
-        'C' | 'D' | 'H' | 'N' | 'R' | 'U' => 0.73,
-        'G' | 'O' | 'Q' => 0.78,
-        '…' => 1.0,
-        c if c.is_uppercase() => 0.67,
-        _ => 0.56,
-    };
-    em * f
-}
-
 /// `s`'s width in `f`-point GO text.
 pub(in crate::cluster::browse) fn go_width(s: &str, f: f64) -> f64 {
-    s.chars().map(|c| char_width(c, f)).sum()
+    crate::figure::set_width(s, f)
 }
 
 /// `s` as it fits `room` points of `f`-point GO text: whole, or cut at the
@@ -137,7 +115,7 @@ fn shortened(s: &str, room: f64, f: f64) -> String {
     let mut used = go_width("…", f);
     let fits = (chars.iter())
         .take_while(|&&c| {
-            used += char_width(c, f);
+            used += crate::figure::glyph_width(c, f);
             used <= room
         })
         .count();

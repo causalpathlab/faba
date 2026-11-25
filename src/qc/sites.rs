@@ -52,6 +52,13 @@ pub struct SiteTable {
     /// `0.5/(n_control + 0.5)`). Raw, a clean control reads `+inf` and passes,
     /// and a variant converting equally in both arms reads exactly `0.0`.
     pub raw_log_odds: Vec<f64>,
+    /// Cells with a converted read per site on the control arm's batches
+    /// alone, for drawing that arm beside the signal's; no threshold reads
+    /// it (the cells threshold reads the cells pooled over every batch).
+    pub control_cells: Option<Vec<usize>>,
+    /// The control arm's own p-value per site, read once when first drawn
+    /// (see [`SiteTable::control_pvalues`]).
+    pub control_pv: std::sync::OnceLock<Vec<f32>>,
 }
 
 /// The columns a criterion's raw value and a site's weight are read from,
@@ -138,6 +145,38 @@ impl SiteTable {
         } else {
             EDITED
         }
+    }
+
+    /// The control arm's p-value per site: its converted reads of its
+    /// coverage tested alone against sequencing error, with the per-site
+    /// beta-binomial test the A-to-I sites are called by, at its default
+    /// error rate and overdispersion. For drawing that arm; no threshold
+    /// reads it (the p-value threshold reads [`SiteTable::pv`]).
+    pub fn control_pvalues(&self) -> &[f32] {
+        use faba::hypothesis_tests::{betabinom_pvalue_greater, ERROR_RATE, OVERDISPERSION};
+        self.control_pv.get_or_init(|| {
+            let (k, n) = (&self.control_converted, &self.control_coverage);
+            // On threads of its own, not rayon's: a rayon worker waiting
+            // here could steal a task that waits here too.
+            let threads = std::thread::available_parallelism().map_or(1, |t| t.get());
+            let chunk = k.len().div_ceil(threads).max(1);
+            std::thread::scope(|scope| {
+                let parts: Vec<_> = (k.chunks(chunk).zip(n.chunks(chunk)))
+                    .map(|(k, n)| {
+                        scope.spawn(move || {
+                            (k.iter().zip(n))
+                                .map(|(&k, &n)| {
+                                    betabinom_pvalue_greater(k, n, ERROR_RATE, OVERDISPERSION)
+                                })
+                                .collect::<Vec<f32>>()
+                        })
+                    })
+                    .collect();
+                (parts.into_iter())
+                    .flat_map(|p| p.join().expect("a p-value thread"))
+                    .collect()
+            })
+        })
     }
 
     /// Kept cells per site, aligned to the table, from the pooled per-key
@@ -290,6 +329,8 @@ pub fn site_table_of(batch: RecordBatch, modality: &str) -> anyhow::Result<SiteT
         fold,
         raw_log_odds,
         batch,
+        control_cells: None,
+        control_pv: Default::default(),
     })
 }
 
@@ -610,4 +651,62 @@ pub fn write_site_tables(
     write_record_batch(&dropped, dropped_path)?;
 
     Ok((kept.num_rows(), dropped.num_rows()))
+}
+
+/// The batches of the fileset in `dir` sequenced as the control arm, as its
+/// run records name them: a record with both `bam` and `control_bam` names
+/// its batches as the pipeline does (see [`crate::common::uniq_batch_names`],
+/// the signal's then the control's, named together), the control's last.
+/// A directory with no such record (a `faba qc` output) is read through the
+/// fileset its record names, once. Empty when nothing names a control.
+pub fn control_batches(dir: &std::path::Path) -> FxHashSet<Box<str>> {
+    control_batches_at(dir, true)
+}
+
+fn control_batches_at(dir: &std::path::Path, follow: bool) -> FxHashSet<Box<str>> {
+    use serde_json::Value;
+    let paths = |v: Option<&Value>| -> Vec<Box<str>> {
+        (v.and_then(Value::as_array).into_iter().flatten())
+            .filter_map(|e| e.as_str().or_else(|| e.get("path")?.as_str()))
+            .map(Box::from)
+            .collect()
+    };
+    let mut out = FxHashSet::default();
+    let mut inputs: Vec<Box<str>> = Vec::new();
+    let records = std::fs::read_dir(dir).into_iter().flatten().flatten();
+    for e in records.filter(|e| crate::run_record::is_run_record(&e.file_name().to_string_lossy()))
+    {
+        let Some(v) = std::fs::read_to_string(e.path())
+            .ok()
+            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        else {
+            continue;
+        };
+        let (bam, control) = (
+            paths(v.pointer("/inputs/bam")),
+            paths(v.pointer("/inputs/control_bam")),
+        );
+        if !control.is_empty() {
+            let all: Vec<Box<str>> = bam.iter().chain(&control).cloned().collect();
+            if let Ok(names) = crate::common::uniq_batch_names(&all) {
+                out.extend(names.into_iter().skip(bam.len()));
+            }
+        }
+        if let Some(f) = crate::run_record::input_of(&e.path(), "fileset") {
+            inputs.push(f);
+        }
+    }
+    if out.is_empty() && follow {
+        for f in inputs {
+            out.extend(control_batches_at(std::path::Path::new(&*f), false));
+        }
+    }
+    out
+}
+
+/// Cells per site of `t` on the control arm's batches alone, from the
+/// pooled per-key counts of [`accumulate_site_cells`] over those batches'
+/// `_site` matrices; none when no such matrix was counted.
+pub fn set_control_cells(t: &mut SiteTable, acc: Option<&FxHashMap<Box<str>, usize>>) {
+    t.control_cells = acc.map(|acc| t.cells_per_site(acc));
 }
