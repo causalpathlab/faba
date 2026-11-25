@@ -204,6 +204,8 @@ pub(super) struct GroupedMatrix {
     pub(super) matched: usize,
     /// The matched gene keys, sorted.
     pub(super) genes: Vec<Box<str>>,
+    /// The matched rows' chromosomes, sorted and distinct.
+    pub(super) chrs: Vec<Box<str>>,
 }
 
 /// One file's share of [`read_matrix_positions_grouped`], merged with the
@@ -405,6 +407,9 @@ pub(super) fn read_matrix_positions_grouped(
     let mut genes: Vec<Box<str>> = distinct_genes.keys().cloned().collect();
     genes.sort_unstable();
     let chr: Box<str> = summarize_chr(&matched_chrs);
+    let mut chrs = matched_chrs;
+    chrs.sort_unstable();
+    chrs.dedup();
 
     info!(
         "matched {} rows across {} gene(s) in {} file(s) for {} [{}]",
@@ -447,6 +452,7 @@ pub(super) fn read_matrix_positions_grouped(
         total,
         matched: total_matched,
         genes,
+        chrs,
     })
 }
 

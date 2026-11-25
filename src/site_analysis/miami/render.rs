@@ -15,6 +15,8 @@ use std::fmt::Write as _;
 /// Per-cell-type data for one panel.
 pub struct PanelData {
     pub celltype: Box<str>,
+    /// The panel's cell type's index, its colour in every track.
+    pub hue: usize,
     /// Raw epi sites `(genomic_pos, signal)` for the top lollipop track.
     pub epi_sites: Vec<(i64, f64)>,
     /// Pre-binned read depth (on the shared [`BinEdges`] grid) for the
@@ -57,6 +59,29 @@ fn track_height(height_in: Option<f32>, n: f32, fixed: f32, dpi: f32) -> anyhow:
     Ok(track)
 }
 
+/// Where the panel labels start, in dots at `dpi`, their swatch before.
+fn label_x(dpi: f32) -> f32 {
+    (1.1 * dpi).round() - 0.82 * dpi
+}
+
+/// The left margin, in dots at `dpi`: 1.1 inches, or wide enough for the
+/// longest of `labels` at `label_fs` (each character about 0.55 of it)
+/// from [`label_x`], and a tenth of an inch more.
+fn left_margin<'a>(labels: impl Iterator<Item = &'a str>, dpi: f32, label_fs: f32) -> f32 {
+    let widest = labels.map(|l| l.chars().count()).max().unwrap_or(0) as f32;
+    let need = (label_x(dpi) + widest * label_fs * 0.55 + 0.1 * dpi).round();
+    (1.1 * dpi).round().max(need)
+}
+
+/// A panel's label: its cell type, or all cells.
+fn panel_label(panel: &PanelData) -> &str {
+    if panel.celltype.is_empty() {
+        "all cells"
+    } else {
+        &panel.celltype
+    }
+}
+
 /// Build + render the faceted Miami figure. Returns the number of files
 /// written.
 pub fn render_miami(
@@ -67,7 +92,8 @@ pub fn render_miami(
 ) -> anyhow::Result<usize> {
     let dpi = opts.dpi as f32;
     let w = (opts.width_in * dpi).round();
-    let left = (1.1 * dpi).round();
+    let label_fs = 0.10 * dpi;
+    let left = left_margin(panels.iter().map(panel_label), dpi, label_fs);
     let right = (0.3 * dpi).round();
     let top = (0.7 * dpi).round();
     let bottom = (0.5 * dpi).round();
@@ -85,7 +111,6 @@ pub fn render_miami(
     let h = fixed + n * (top_h + bottom_h);
 
     let title_fs = 0.16 * dpi;
-    let label_fs = 0.10 * dpi;
     let tick_fs = 0.075 * dpi;
     let band_h = (model_h * 0.45).max(4.0);
     let binpx = plot_w / edges.num_bins as f32;
@@ -99,8 +124,9 @@ pub fn render_miami(
     );
     let depth_max = robust_max(panels.iter().flat_map(|p| p.depth_bins.iter().copied()));
 
-    // Per-cell-type hue.
-    let pal = palette::resolve(&opts.palette, panels.len());
+    // Per-cell-type hue, the same in every track.
+    let hues = panels.iter().map(|p| p.hue + 1).max().unwrap_or(0);
+    let pal = palette::resolve(&opts.palette, hues);
 
     let mut svg = String::with_capacity(64 * 1024);
     let _ = write!(
@@ -130,19 +156,14 @@ pub fn render_miami(
         let epi_baseline = panel_top + top_h;
         let model_mid = epi_baseline + model_h / 2.0;
         let depth_baseline = epi_baseline + model_h;
-        let color = palette::color(&pal, pi);
+        let color = palette::color(&pal, panel.hue);
         let hex = rgb_hex(color);
 
         // Cell-type label + color swatch (left margin, at the model band).
-        let label = if panel.celltype.is_empty() {
-            "all cells".to_string()
-        } else {
-            panel.celltype.to_string()
-        };
         let _ = write!(
             svg,
             "<rect x=\"{:.1}\" y=\"{:.1}\" width=\"{:.1}\" height=\"{:.1}\" fill=\"{hex}\"/>",
-            left - 0.95 * dpi,
+            label_x(dpi) - 0.13 * dpi,
             model_mid - label_fs * 0.5,
             label_fs * 0.7,
             label_fs * 0.7
@@ -151,10 +172,10 @@ pub fn render_miami(
             svg,
             "<text x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"start\" font-family=\"sans-serif\" \
              font-size=\"{:.1}\" fill=\"#333\">{}</text>",
-            left - 0.82 * dpi,
+            label_x(dpi),
             model_mid + label_fs * 0.35,
             label_fs,
-            esc(&label)
+            esc(panel_label(panel))
         );
 
         // Baselines.
