@@ -90,7 +90,7 @@ pub struct Plot {
 
 /// Ticks' and titles' size, in points of the 8-point layout: as a bar
 /// panel's, which the canvas scales to its font.
-const SIZE: f64 = OWN_FONT;
+pub(super) const SIZE: f64 = OWN_FONT;
 
 impl Plot {
     /// The plot in the box `(x, y, w, h)` over `xr` by `yr`, with room

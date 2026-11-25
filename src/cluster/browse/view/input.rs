@@ -8,7 +8,8 @@ use ratatui::crossterm::event::{
 };
 
 /// Modifiers that turn a press into a drag. Terminals mostly keep Shift
-/// with the mouse for selecting text, so Alt is the one that arrives.
+/// with the mouse for selecting text and macOS terminals keep Option, so
+/// Ctrl is the one that reliably arrives (the help names it).
 const DRAG: KeyModifiers = KeyModifiers::ALT
     .union(KeyModifiers::SHIFT)
     .union(KeyModifiers::CONTROL);

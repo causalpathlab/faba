@@ -113,7 +113,7 @@ impl ModulesView<'_> {
                     keys.push(("Del", "unpin"));
                 }
                 keys.extend([
-                    ("Alt-drag", "pin onto genes"),
+                    ("Ctrl-drag", "pin onto genes"),
                     ("PgUp/PgDn", "page"),
                     if self.sort == Sort::Module {
                         ("o", "sort")
@@ -132,7 +132,7 @@ impl ModulesView<'_> {
                     keys.push(("↑/↓", "pinned gene"));
                 }
                 if !self.pins.is_empty() {
-                    keys.extend([("Del", "unpin"), ("Alt-drag", "move, off to unpin")]);
+                    keys.extend([("Del", "unpin"), ("Ctrl-drag", "move, off to unpin")]);
                 }
                 keys
             }

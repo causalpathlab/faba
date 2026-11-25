@@ -152,7 +152,7 @@ impl SitePicker<'_> {
         let scales = format!(
             "x {} · y {} · {} in front · p axis {}{}",
             self.scale().name(),
-            self.y_scale.name(),
+            self.y_scale().name(),
             self.arm_look.front.name(),
             self.arm_look.p_axis.name(),
             self.controls.tag()

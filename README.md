@@ -463,17 +463,36 @@ take `xlab` and `ylab`. MCP's `cluster_view` draws several of its figures in one
 two at a time (default: the pairs `qc` picks), `--marginals top,right` (or `both`) on the pair's
 own axes, and `--bins` along each axis. `--style view` draws each panel as the `qc` view draws it,
 the control arm (MUT) against the signal arm (WT): a histogram as its knob's (MUT's sites light gray
-behind, WT's filtered out by any threshold white and outlined over its kept by every one, dark; each
-threshold dashed orange-red at the cut between bars, its bin split there, with the words for either
-side, e.g. `p > 0.05 | p <= 0.05`; ticks at the bins' edges; a key at the right; on log y and the
-view's bins unless `--bins` is given), a pair as its 2D panel (MUT's squares behind WT's, its
+behind, WT's filtered out by any threshold white and outlined over its retained by every one, dark;
+each threshold dashed orange-red at the cut between bars, its bin split there, with the words for
+either side, e.g. `p > 0.05 | p <= 0.05`, each on its own side where it fits; ticks at the bins'
+edges spread evenly, at least four where they fit; a key at the right; the counts on a square-root
+axis ending at a round count over the tallest bar, and the view's bins unless `--bins` is given), a pair as its 2D panel (MUT's squares behind WT's, its
 marginals alike), with marginals `--marginal-size` of the plot's shorter side deep (0.2 unless
 given; the default panel style keeps its own). MUT is drawn where a quantity has a value on each arm:
-the coverage, the converted reads (each arm's own) and the edit ratio; the p-value, the fold and the
-log odds compare the arms and the cells are counted on WT's `_site` matrices, so those draw WT alone
-and the key says so (the coverage's threshold adds both arms' reads, as its words say). `--front
-mut` draws MUT in front, `--p-axis neglog10` labels the p-value's ticks as -log10 p (p itself
-unless asked; the bars stay), and `--panel-only` drops the title and the key, which `--key` keeps. The cells per site
+the coverage, the converted reads (each arm's own) and the edit ratio; in a histogram also the
+p-value, WT on the WT-vs-MUT p its threshold reads (so its line splits filtered out from retained)
+and MUT on its own reads tested alone against sequencing error (the beta-binomial test the A-to-I
+sites are called by, at its default error rate and overdispersion; its title and key say so), and
+the cells, counted on the control batches' `_site` matrices (the batches a run
+record names as `control_bam`; the cells threshold still reads the cells pooled over every batch).
+The fold and the log odds compare the arms, so those draw WT alone and the key says so (the
+coverage's threshold adds both arms' reads, as its words say). The p-value's bars sit on log-spaced p
+(unless `--scale pv=...` asks otherwise), ticked at round p, the last bar holding every p at or below
+a round cap (`<= 1e-30`, from where the WT-vs-MUT p reach), at which the 2D panels' p axis ends too. `--front mut` draws MUT in front, `--p-axis neglog10` labels the p-value's
+ticks as -log10 p (p itself unless asked; the bars stay), and `--panel-only` drops the title and the
+key, which `--key` keeps; `--key-at right|top|inside|alone` puts it beside the plot (which narrows by its
+width; a key that would leave the plot under 60% of the panel's width is drawn smaller, else at the
+top, as on a panel under about 4 inches at 7 points), in a row above the plot (two rows, or the short
+names `MUT`, `WT filtered`, `WT kept`, where one row does not fit; the plot keeps its width and loses
+only that row's height, and no threshold's words give way to it), over the plot's top right corner
+(the plot keeping its width), or in a figure of its own,
+`{stem}_key`, one key for a row of panels. `--yscale pv=sqrt,cells=log1p` (or one scale for every
+quantity) sets a histogram's count axis, linear, sqrt or log1p (sqrt unless asked; `y` steps the
+focused one in the view); `--marginal-scale` a marginal's (log1p unless asked, so one busy bar leaves
+the others a depth that reads; its axis drawn beside it at the panel's type and ticked at a round
+count over its busiest bar) and `--count-scale` a 2D square's shade (log1p unless asked; in gray
+from half the ink to all of it, clearly darker than MUT's light gray). The cells per site
 are read off the `{batch}_{modality}_site` matrices, over every cell, with no cell QC. Each quantity is read on one scale, range and set of bins in
 every figure (`--scale pv=log,fold=linear` to change one), so ticks line up across panels.
 Thresholds, the `--site-*` flags named as `qc`'s, are optional: given ones are drawn as dashed

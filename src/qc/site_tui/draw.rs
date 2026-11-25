@@ -233,9 +233,6 @@ fn draw_gene(canvas: &mut Canvas, p: &GeneProfile, (x, y, w, h): (f64, f64, f64,
     }
 }
 
-/// The y scale a knob's histogram opens on (`y` steps it in the view).
-pub(super) const KNOB_Y_SCALE: Scale = Scale::Log;
-
 /// A knob's histogram's title, as the view's figure names it.
 fn knob_title(c: Criterion) -> String {
     format!("{} · y: sites per bin", c.label())
@@ -248,7 +245,7 @@ fn knob_title(c: Criterion) -> String {
 pub(super) struct KnobHist<'a> {
     pub(super) hist: &'a ArmHist,
     pub(super) scale: Scale,
-    pub(super) y_scale: Scale,
+    pub(super) y_scale: crate::qc::arms::CountScale,
     /// What its x axis shows ([`Criterion::axis_counted`]).
     pub(super) axis: &'static str,
     pub(super) look: ArmLook,
@@ -266,7 +263,7 @@ impl KnobHist<'_> {
         let c = self.hist.c;
         let per_arm = self.hist.mutant.is_some();
         let what = arm_axis(c, self.axis, per_arm, self.look.p_axis);
-        let own = format!("{what} ({} bins)", self.scale.name());
+        let own = what.to_string();
         let (x_title, y_title) = arm_titles(c, own, self.titles);
         let how = HistLook {
             y_scale: self.y_scale,
@@ -287,14 +284,14 @@ impl KnobHist<'_> {
 /// quantity's scale in `s`'s cache, its y on the view's opening scale, in
 /// about `bins` bins (`None`: the view's own). Its cells are named as
 /// counted: over the cells the cell QC kept when `kept_cells`, else over
-/// every cell.
+/// every cell. With `--key-at alone`, its key too, as a figure of its own.
 pub(crate) fn view_hist(
     s: &Sites,
     (f, q): (&SiteFilterArgs, Axis),
     (bins, kept_cells): (Option<usize>, bool),
     ((w, h), style): ((f64, f64), &figure::style::Style),
     (look, titles): (ArmLook, &Titles),
-) -> String {
+) -> (String, Option<String>) {
     let applies = || (q.criteria().iter().copied()).filter(|c| s.criteria.contains(c));
     let c = (applies().find(|c| !c.is_off(f)))
         .or_else(|| applies().next())
@@ -307,13 +304,16 @@ pub(crate) fn view_hist(
     KnobHist {
         hist: &hist,
         scale,
-        y_scale: KNOB_Y_SCALE,
+        y_scale: look.y.of(q),
         axis: c.axis_counted(kept_cells),
         look,
         titles,
     }
     .draw(&mut canvas, (0.0, 0.0, pw, ph), knob_title(c));
-    canvas.finish()
+    let keyed = !style.panel_only || look.key;
+    let key =
+        (keyed && look.key_at == crate::qc::arms::KeyAt::Alone).then(|| hist.key_figure(style));
+    (canvas.finish(), key)
 }
 
 /// What the table's two counts mean, a line each for the screen and the
@@ -775,7 +775,7 @@ impl<'a> SitePicker<'a> {
         KnobHist {
             hist: &self.arm_hist,
             scale: self.scale(),
-            y_scale: self.y_scale,
+            y_scale: self.y_scale(),
             axis: self.criterion().axis(),
             look: self.arm_look,
             titles: &self.titles,
@@ -796,18 +796,21 @@ impl<'a> SitePicker<'a> {
         let sum = |v: &[usize]| v.iter().sum::<usize>();
         // As the bars draw each series: the control arm dim, the signal
         // arm's filtered shaded and its kept solid.
-        let mut spans = vec![
-            Span::styled("█ ", PLAIN),
-            Span::styled(format!("WT kept {}   ", sum(&h.kept)), DIM),
-            Span::styled("░ ", PLAIN),
-            Span::styled(format!("WT filtered {}   ", sum(&h.filtered)), DIM),
-        ];
-        match &h.mutant {
-            Some(m) => spans.extend([
+        let mut spans = Vec::new();
+        if let Some(m) = &h.mutant {
+            spans.extend([
                 Span::styled("█ ", DIM),
-                Span::styled(format!("MUT {}", sum(m)), DIM),
-            ]),
-            None => spans.push(Span::styled("WT only", DIM)),
+                Span::styled(format!("{} {}   ", h.mutant_name(), sum(m)), DIM),
+            ]);
+        }
+        spans.extend([
+            Span::styled("░ ", PLAIN),
+            Span::styled(format!("{KEY_FILTERED} {}   ", sum(&h.filtered)), DIM),
+            Span::styled("█ ", PLAIN),
+            Span::styled(format!("{KEY_KEPT} {}", sum(&h.kept)), DIM),
+        ]);
+        if h.mutant.is_none() {
+            spans.push(Span::styled("   WT only", DIM));
         }
         let key_text = Line::from(spans);
         let key_rows = if key_text.width() > inner.width as usize {
@@ -852,7 +855,7 @@ impl<'a> SitePicker<'a> {
             return;
         }
         let how = HistLook {
-            y_scale: self.y_scale,
+            y_scale: self.y_scale(),
             scale: self.scale(),
             look: self.arm_look,
             title: String::new(),

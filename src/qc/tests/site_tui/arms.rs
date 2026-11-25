@@ -31,11 +31,11 @@ fn arms_picker(t: &SiteTable, f: SiteFilterArgs) -> SitePicker<'_> {
 }
 
 /// Site `i`'s value of knob `c` on the signal arm and on the control arm
-/// (NaN where it has none), as shown.
+/// (NaN where it has none), as its histogram shows it.
 fn values(p: &SitePicker, c: Criterion, i: usize) -> (f64, f64) {
     let s = p.view().sites();
     let q = Axis::of(c);
-    (arms::wt(&s, q, i), arms::mutant(&s, q, i))
+    (arms::wt(&s, q, i), arms::mutant_hist(&s, q, i))
 }
 
 /// The bar of `h` holding `v`, found by walking its edges (the end bars
@@ -71,8 +71,10 @@ fn the_series_add_up_to_the_site_table() {
             };
             for i in 0..t.len() {
                 let (wt, m) = values(&p, c, i);
+                // Past a p-value's cap, in its last bar.
+                let capped = h.clamped.0.is_some_and(|cap| wt > cap);
                 assert!(
-                    wt.is_nan() || wt.is_infinite() || (lo..hi).contains(&wt),
+                    wt.is_nan() || wt.is_infinite() || capped || (lo..hi).contains(&wt),
                     "{c:?}"
                 );
                 if let Some(b) = place(wt) {
@@ -96,7 +98,7 @@ fn the_series_add_up_to_the_site_table() {
             );
             let all_kept = p.view().fails.iter().filter(|&&m| m == 0).count();
             assert_eq!(kept.iter().sum::<usize>(), all_kept, "{c:?}");
-            match arms::per_arm(Axis::of(c), &t) {
+            match arms::per_arm_hist(Axis::of(c), &t) {
                 true => {
                     assert_eq!(h.mutant.as_ref(), Some(&mutant), "{c:?}");
                     let with = (0..t.len())
@@ -301,10 +303,20 @@ fn the_words_name_both_sides() {
             .into_iter()
             .map(|l| l.1)
             .collect();
-        for said in [low, high] {
-            let drawn = |l: &String| l.trim_start_matches("← ").trim_end_matches(" →") == said;
-            assert!(labels.iter().any(drawn), "{c:?}: {said} in {labels:?}");
+        // Each side's words where there is room for them on that side.
+        let h = &p.arm_hist;
+        let e = (h.cuts.iter()).find(|cut| cut.0 == c).unwrap().2;
+        let (lo, hi) = (h.at[0], h.at[h.at.len() - 1]);
+        let room = |to: f64| (to - h.at[e]).abs() / (hi - lo);
+        for (said, side) in [(low, lo), (high, hi)] {
+            if room(side) > 0.25 {
+                assert!(
+                    labels.iter().any(|l| l == said),
+                    "{c:?}: {said} in {labels:?}"
+                );
+            }
         }
+        assert!(!labels.iter().any(|l| l.contains('←') || l.contains('→')));
     }
 }
 
@@ -313,8 +325,13 @@ fn the_words_name_both_sides() {
 /// are drawn, "<= p" of the smallest other.
 #[test]
 fn p_ticks_name_the_p_at_their_place() {
-    let t = table(M6A, 1200);
+    use crate::qc::scale::Scales;
+    let mut t = table(M6A, 1200);
+    // A control site whose own reads give a p of 0: drawn at the end.
+    (t.control_coverage[0], t.control_converted[0]) = (5000, 5000);
     let mut p = arms_picker(&t, mid_bin());
+    // On -log10 p as it is, as asked: a tick's place is its -log10 p.
+    p.set_scales(Scales::parse(&["pv=linear"]).unwrap(), 50);
     focus_on(&mut p, Criterion::MaxPv);
     let h = &p.arm_hist;
     let hi = h.clamped.0.expect("p-values of 0 are drawn at the end");
@@ -627,9 +644,9 @@ fn the_view_and_the_panel_show_the_same_series() {
     let sum = |v: &[usize]| v.iter().sum::<usize>();
     let h = &p.arm_hist;
     for said in [
-        format!("WT kept {}", sum(&h.kept)),
-        format!("WT filtered {}", sum(&h.filtered)),
-        format!("MUT {}", sum(h.mutant.as_ref().unwrap())),
+        format!("retained (WT) {}", sum(&h.kept)),
+        format!("filtered out (WT) {}", sum(&h.filtered)),
+        format!("background (MUT) {}", sum(h.mutant.as_ref().unwrap())),
     ] {
         assert!(text.contains(&said), "{said}");
     }
@@ -661,7 +678,11 @@ fn the_key_stays_alone_only_when_asked() {
         },
         ..Sheet::OWN
     };
-    let has_key = |svg: &str| crate::figure::labels(svg).iter().any(|l| l.1 == "WT kept");
+    let has_key = |svg: &str| {
+        crate::figure::labels(svg)
+            .iter()
+            .any(|l| l.1 == "retained (WT)")
+    };
     assert!(has_key(&drawn_hist(&p, Sheet::OWN)));
     assert!(!has_key(&drawn_hist(&p, alone)));
     p.arm_look.key = true;
@@ -684,10 +705,10 @@ fn the_key_stays_alone_only_when_asked() {
         assert!(e.contains("--style view"), "{e}");
     }
     // A knob of a quantity that compares the arms says it draws WT alone.
-    focus_on(&mut p, Criterion::MaxPv);
+    focus_on(&mut p, Criterion::MinFold);
     let labels = crate::figure::labels(&drawn_hist(&p, Sheet::OWN));
     assert!(labels.iter().any(|l| l.1 == "WT only"));
-    assert!(!labels.iter().any(|l| l.1 == "MUT"));
+    assert!(!labels.iter().any(|l| l.1 == "background (MUT)"));
 }
 
 /// `f` puts the other arm in front and `u` reads the p-value the other

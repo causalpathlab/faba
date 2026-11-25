@@ -29,19 +29,25 @@ impl Scale {
     }
 }
 
-/// Each quantity's [`Scale`], by `Quantity as usize`.
+/// Each quantity's [`Scale`], by `Quantity as usize`, and whether
+/// `--scale` asked for it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
-pub struct Scales([Scale; 7]);
+pub struct Scales([Scale; 7], #[serde(skip)] [bool; 7]);
 
 impl Default for Scales {
     fn default() -> Self {
-        Self(Quantity::ALL.map(Quantity::default_scale))
+        Self(Quantity::ALL.map(Quantity::default_scale), [false; 7])
     }
 }
 
 impl Scales {
     pub fn of(&self, q: Quantity) -> Scale {
         self.0[q as usize]
+    }
+
+    /// Whether `--scale` named `q`'s scale, not left it to its default.
+    pub fn asked(&self, q: Quantity) -> bool {
+        self.1[q as usize]
     }
 
     /// The defaults with `items` (`q=linear|log`, as `--scale` takes them)
@@ -60,6 +66,7 @@ impl Scales {
                 q.key()
             );
             out.0[q as usize] = s;
+            out.1[q as usize] = true;
         }
         Ok(out)
     }
