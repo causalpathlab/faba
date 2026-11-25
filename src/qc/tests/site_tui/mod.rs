@@ -17,6 +17,7 @@ mod genes;
 mod keys;
 mod metagene;
 mod pairs;
+mod read_only;
 mod report;
 mod thresholds;
 

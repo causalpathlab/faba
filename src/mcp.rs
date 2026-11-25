@@ -26,7 +26,7 @@ use crate::mcp::schema::tools;
 use crate::mcp::tools::cluster::{cluster, cluster_view};
 use crate::mcp::tools::docs::docs;
 use crate::mcp::tools::producers::{apa, atoi, count, dartseq, depth, run, snp};
-use crate::mcp::tools::qc::{qc, site_plot};
+use crate::mcp::tools::qc::{qc, qc_view, site_plot};
 use crate::mcp::tools::sites::{metagene, pileup, pwm};
 use anyhow::{bail, Result};
 use clap::Args;
@@ -54,7 +54,9 @@ dartseq needs control BAMs; without them, run skips m6A.
 3. qc filters a directory into a new one, with the site thresholds given. It \
 does not edit the input. With `dry_run` it writes nothing and returns what \
 the cell QC keeps and what each threshold removes: try thresholds that way \
-first.
+first. qc_view reads back a qc output: the same counts at the thresholds it \
+applied, its dropped sites with its kept, and with `plots` or `html` its \
+figures and page.
 4. pileup, metagene and pwm read a directory's sites. metagene and pwm \
 return their table and its figure as an image. site_plot draws a \
 directory's site statistics as paper panels (histograms, pairs, \
@@ -119,6 +121,7 @@ impl Handler for Faba {
             "snp" => snp(&a, cx)?,
             "run" => run(&a, cx)?,
             "qc" => return qc(&a, cx),
+            "qc_view" => return qc_view(&a, cx),
             "site_plot" => return site_plot(&a, cx),
             "cluster" => cluster(&a, cx)?,
             "cluster_view" => return cluster_view(&a, cx),

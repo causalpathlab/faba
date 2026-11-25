@@ -189,6 +189,11 @@ fn hand_written() -> Vec<ToolSpec> {
             schema(site_plot_properties(&dir(), &out(), &options(), &modality()), &["input"]),
         ),
         ToolSpec::new(
+            "qc_view",
+            "Read back what a `qc` run kept and dropped (`faba qc-view --batch-process`), cutting nothing: `input` is the qc output directory, whose qc.run.json gives the thresholds it applied; its kept sites and its dropped ones (with their reason) are read together, each site's cells counted as qc counted them (off the input it read, when that is still there; else the dropped sites read 0 cells, as it warns). Any other faba directory opens too, with no thresholds: every site kept. Returns the table `qc`'s `dry_run` returns, at the thresholds applied: `table`, what the cell QC kept per batch (off its reports) and what each threshold removes per modality (`removes` every site failing it, `only_this` those failing it alone), and `pairs`, the pairs Auto picks to show two at a time. With `plots`, the figures `qc` draws with `plots` go to `out`/qc_plots/ (the site panels to qc_plots/panels/) and come back as images, as `qc`'s do; with `html`, the page to share goes to that file. Neither may exist: an existing file or directory is refused, never replaced: ask the user for another path.",
+            schema(qc_view_properties(&dir(), &options()), &["input"]),
+        ),
+        ToolSpec::new(
             "cluster",
             "Cluster cells by their site reads (`faba cluster`). `data` is a faba directory or site matrices. The model is a blockmodel of cell modules and gene modules, a methylation shift per pair and each cell's own level, fitted by variational inference from k-means starts (`chains` restarts, the best by ELBO kept; `svi_epochs`, `batch_size`, `epochs`, `tol`). The MCMC fits of faba before 0.19 are gone: `model` link or crp, `sweeps`, `burn_in`, `shift`, `profile_strength` and `holdout` are refused. Tables go to `out`, a new directory, not back into `data`. With `modality` count, cluster cells by their gene counts instead (count matrices), fitted alike: its verdict is whether the best restart's ELBO settled. With `within`, the run record of such a count fit (count_blockmodel.run.json), fit the sites within each of its cell modules, one fit a module, into `out`/within/{m}/{group}/, with `out`/{m}_within.run.json naming them all and {m}_within_cells.parquet giving each cell its nested label (C3.2); `data` may then be left out, and the matrices are those beside the count fit's inputs. The sites' batches pair with the count fit's by name (the same, or one named with its folder: `b1` and `runs/a/b1`); when that is ambiguous the run is refused, listing each choice: ask the user which is meant, then run again with `batch_map`. While it fits, a progress line every 15 s says the restart and epoch, the ELBO per read (or count) and its last move against `tol`, the share of steps done and about how long is left (an upper bound: a restart that settles ends early); with `background`, job_status shows it as a `progress` stage (steps done of all, seconds taken and left) and the latest line in `last_lines`.",
             schema(
@@ -442,10 +447,10 @@ const TYPED: &[(&[&str], &str, &str)] = &[
 ];
 
 /// The tools whose site figures take a paper panel's look.
-const PANELS: &[&str] = &["metagene", "pwm", "qc", "site_plot"];
+const PANELS: &[&str] = &["metagene", "pwm", "qc", "qc_view", "site_plot"];
 
 /// The tools drawing the site panels, which take their choice of panels.
-const SITE_PANELS: &[&str] = &["qc", "site_plot"];
+const SITE_PANELS: &[&str] = &["qc", "qc_view", "site_plot"];
 
 /// The flags no tool offers as an argument, each for the tools named
 /// (none: every tool), with why. Every other flag of a tool's command is
@@ -832,6 +837,17 @@ fn qc_properties(dir: &Value, out: &Value, options: &Value) -> Value {
     })
 }
 
+/// `qc_view`'s arguments: the directory in, the page and the figures out.
+fn qc_view_properties(dir: &Value, options: &Value) -> Value {
+    json!({
+        "input": dir,
+        "html": { "type": "string", "description": "Also write the view's page here, to share, at the thresholds applied (each modality's strongest 50,000 sites by p-value). Must not exist: an existing file is refused, never replaced" },
+        "plots": { "type": "boolean", "description": "Also draw the figures `qc` draws with `plots`, at the thresholds applied, under `out`/qc_plots/ (`hist`, `pairs`, `marginals`, `scale`, `bins` choose the site panels under qc_plots/panels/); they come back as images" },
+        "out": { "type": "string", "description": "With `plots`: the directory the figures go to; must not exist. Omitted, a new directory in today's results folder" },
+        "options": options,
+    })
+}
+
 /// The site thresholds `qc` and `site_plot` take, as numbers.
 pub(super) const SITE_THRESHOLDS: [&str; 8] = [
     "site_max_pv",
@@ -868,12 +884,13 @@ fn site_plot_properties(dir: &Value, out: &Value, options: &Value, modality: &Va
 /// The tools that draw a figure, each taking its size as `width` and
 /// `height` in inches, passed as `--fig-width` and `--fig-height` (see
 /// [`with_typed`](super::args::with_typed)).
-const SIZED: [&str; 6] = [
+const SIZED: [&str; 7] = [
     "cluster_view",
     "pileup",
     "metagene",
     "pwm",
     "qc",
+    "qc_view",
     "site_plot",
 ];
 

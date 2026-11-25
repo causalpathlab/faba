@@ -5,7 +5,7 @@
 //! on `G`, one gene module's terms at a time, ↑/↓ to the next, as the
 //! modules list steps them.
 
-use super::super::go::{Hit, Table, Q};
+use super::super::go::{Hit, Table, DEFAULT_Q};
 use super::grid::{COMPACT, COUNTS, MODULE_EXTRA, MODULE_LABEL, SITE_LABEL};
 use super::{ModulesView, Pane};
 use crate::tui::ui::{help_line, panel, DIM, HIGHLIGHT, PLAIN};
@@ -109,7 +109,9 @@ impl ModulesView<'_> {
     pub(super) fn draw_go_column(&self, buf: &mut Buffer, area: Rect, roles: &[usize]) {
         // A column's gap from the grid.
         let (x, w) = (area.x + 1, area.width.saturating_sub(1) as usize);
-        buf.set_stringn(x, area.y, format!("GO (q <= {Q})"), w, DIM);
+        // The cutoff asked for (`--go-q`), the one the terms were held to.
+        let q = self.go_ask.as_ref().map_or(DEFAULT_Q, |a| a.q);
+        buf.set_stringn(x, area.y, format!("GO (q <= {q})"), w, DIM);
         let row_y = |k: usize| area.y + 1 + 2 * k as u16;
         let table = match &self.go_table {
             Some(Ok(table)) => table,
@@ -126,7 +128,7 @@ impl ModulesView<'_> {
         for (k, &g) in roles.iter().take(fit).enumerate() {
             let hits = table.of(g).map_or(&[][..], |m| &m.hits);
             if hits.is_empty() {
-                buf.set_stringn(x, row_y(k), format!("none at q <= {Q}"), w, DIM);
+                buf.set_stringn(x, row_y(k), format!("none at q <= {q}"), w, DIM);
                 continue;
             }
             for (dy, line) in packed(hits, w).into_iter().enumerate() {

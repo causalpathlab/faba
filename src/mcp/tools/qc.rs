@@ -1,13 +1,16 @@
-//! `qc` and `site_plot`: cutting a directory's cells and sites, and
-//! drawing its site statistics.
+//! `qc`, `qc_view` and `site_plot`: cutting a directory's cells and
+//! sites, reading back what a cut kept and dropped, and drawing its site
+//! statistics.
 
 use crate::mcp::args::{push_opt, Arguments};
-use crate::mcp::run::{command, exists, named, pngs, qc_images, run_out, tsv_rows};
+use crate::mcp::run::{
+    absolute, command, exists, fresh, named, pngs, qc_images, run_out, tsv_rows,
+};
 use crate::mcp::schema::SITE_THRESHOLDS;
 use anyhow::Result;
 use legume_mcp::{Call, Content};
 use serde_json::json;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub(in crate::mcp) fn qc(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
     let input = a.path("input")?;
@@ -90,9 +93,57 @@ pub(in crate::mcp) fn site_plot(a: &Arguments, cx: &Call) -> Result<Vec<Content>
     Ok(content)
 }
 
+/// `faba qc-view`'s command line for `a`, the figures going under `out`
+/// when `plots` asks for them: always `--batch-process`, so the table is
+/// printed and no view opens.
+fn qc_view_argv(a: &Arguments, out: Option<&str>) -> Result<Vec<String>> {
+    let mut argv = vec!["qc-view".into(), a.path("input")?];
+    argv.extend(a.options("qc_view")?);
+    if let Some(h) = a.path_opt("html")? {
+        argv.push(format!("--html={h}"));
+    }
+    if let Some(out) = out {
+        argv.extend(["--plots".into(), format!("--output={out}")]);
+    }
+    argv.push("--batch-process".into());
+    Ok(argv)
+}
+
+pub(in crate::mcp) fn qc_view(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
+    let input = a.path("input")?;
+    let html = a.path_opt("html")?;
+    let out = match a.flag("plots")? {
+        true => Some(a.out_or(cx, (&named(&input, "qc_view"), ""), exists)?),
+        false => None,
+    };
+    // Neither the page nor the figures' folder is ever replaced.
+    let made: Vec<PathBuf> = html.iter().chain(&out).map(PathBuf::from).collect();
+    for p in html.iter().chain(&out) {
+        fresh(p)?;
+    }
+    let cmd = command(&qc_view_argv(a, out.as_deref())?)?;
+    let printed = match made.is_empty() {
+        true => cx.run_reading(cmd)?,
+        false => cx.run_making(cmd, &made, &format!("the qc view of {input}"))?,
+    };
+    // The counts, then after a blank line Auto's pairs: two tables.
+    let (counts, pairs) = printed.split_once("\n\n").unwrap_or((&printed, ""));
+    let mut content = vec![Content::Json(json!({
+        "table": tsv_rows(counts),
+        "pairs": tsv_rows(pairs),
+        "html": html.as_deref().map(absolute),
+        "plots": out.as_ref().map(|o| absolute(&format!("{o}/qc_plots"))),
+        "note": "nothing cut or written but `plots` and `html` when asked; the counts are at the thresholds the qc run applied (none for a directory no qc run wrote): `removes` counts every site failing a threshold, `only_this` those failing it alone",
+    }))];
+    if let Some(out) = &out {
+        content.extend(qc_images(out)?);
+    }
+    Ok(content)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::site_plot_argv;
+    use super::{qc_view_argv, site_plot_argv};
     use crate::mcp::args::{typed_flags, with_typed, Arguments};
     use crate::mcp::schema::tools;
     use serde_json::json;
@@ -165,5 +216,70 @@ mod tests {
             &Arguments(json!({ "pairs": ["pv:cells"], "bins": 20 })),
         );
         assert_eq!(qc.unwrap(), ["--pairs", "pv:cells", "--bins", "20"]);
+    }
+
+    /// `qc_view` offers the page, the figures and every panel option and
+    /// look, and runs `faba qc-view --batch-process` with them as flags,
+    /// the figures under `out` only when `plots` asks; its view's session
+    /// and its output are not offered.
+    #[test]
+    fn qc_view_takes_the_panels_and_builds_its_command() {
+        let spec = tools()
+            .into_iter()
+            .find(|t| t.name == "qc_view")
+            .expect("qc_view");
+        let props = &spec.input_schema["properties"];
+        for key in [
+            "input",
+            "html",
+            "plots",
+            "out",
+            "gff",
+            "genes",
+            "hist",
+            "pairs",
+            "marginals",
+            "scale",
+            "bins",
+            "width",
+            "height",
+            "font_size",
+            "panel_only",
+            "palette",
+            "options",
+        ] {
+            assert!(props.get(key).is_some(), "qc_view: no `{key}`");
+        }
+        for key in ["output", "batch_process", "session", "no_detach"] {
+            assert!(props.get(key).is_none(), "qc_view: `{key}` offered");
+        }
+        assert_eq!(spec.input_schema["required"], json!(["input"]));
+        let args = json!({
+            "input": "runs/qc", "html": "page.html", "plots": true, "hist": ["pv"],
+            "marginals": ["top"], "width": 1.8, "height": 1.4, "panel_only": true, "gff": "g.gtf",
+        });
+        let a = Arguments(with_typed("qc_view", args).unwrap());
+        let argv = qc_view_argv(&a, Some("figs")).unwrap();
+        let has = |w: &[&str]| argv.windows(w.len()).any(|x| x == w);
+        assert_eq!(argv[..2], ["qc-view", "runs/qc"]);
+        assert_eq!(argv.last().map(String::as_str), Some("--batch-process"));
+        for w in [
+            &["--hist", "pv"][..],
+            &["--marginals", "top"],
+            &["--fig-width", "1.8", "--fig-height", "1.4"],
+            &["--panel-only"],
+            &["--gff", "g.gtf"],
+            &["--html=page.html"],
+            &["--plots", "--output=figs"],
+        ] {
+            assert!(has(w), "{w:?} in {argv:?}");
+        }
+        let bare = qc_view_argv(&Arguments(json!({ "input": "runs/qc" })), None).unwrap();
+        assert_eq!(bare, ["qc-view", "runs/qc", "--batch-process"]);
+        // What the command line asks for parses as `faba qc-view` takes it.
+        let line = std::iter::once("faba".to_string()).chain(argv);
+        assert!(crate::matches(&mut crate::faba_command(), line).is_ok());
+        let e = Arguments(json!({ "options": ["--batch-process"] })).options("qc_view");
+        assert!(e.unwrap_err().to_string().contains("adds it itself"));
     }
 }

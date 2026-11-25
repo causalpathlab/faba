@@ -695,3 +695,94 @@ fn qc_plots_write_the_site_panels() {
         .unwrap();
     assert!(!refused.status.success());
 }
+
+/// The `sites` rows of a printed counts table, by flag: `(removes,
+/// only_this, kept, of)`.
+fn site_counts(text: &str) -> Vec<(String, [String; 4])> {
+    text.lines()
+        .map(|l| l.split('\t').collect::<Vec<_>>())
+        .filter(|r| r[0] == "sites")
+        .map(|r| (r[2].to_string(), [4, 5, 6, 7].map(|i| r[i].to_string())))
+        .collect()
+}
+
+/// `faba qc-view --batch-process` on what `faba qc` wrote prints the same
+/// counts the dry run of that cut does: the thresholds recorded, the
+/// dropped sites read back with the kept, each one's cells counted as qc
+/// counted them (off the input), and each batch's cells off its report.
+/// At one cell a site, S3 (dropped for its log odds) passes the cells
+/// check only when its cell is counted. With the input gone, it still
+/// opens, the dropped sites' cells unknown.
+#[test]
+fn qc_view_reads_back_the_cut_qc_wrote() {
+    let tmp = tempfile::tempdir().unwrap();
+    let input = format!("{}/in", tmp.path().display());
+    let output = format!("{}/out", tmp.path().display());
+    std::fs::create_dir_all(&input).unwrap();
+    build_fixture(&input);
+    let mut at_one = CUT;
+    assert_eq!(at_one[7], "--site-min-cells");
+    at_one[8] = "1";
+    let cut = faba()
+        .args(["qc", &input, "--batch-process", "--no-zip", "-o", &output])
+        .args(at_one)
+        .output()
+        .unwrap();
+    assert!(
+        cut.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cut.stderr)
+    );
+    let dry = faba()
+        .args(["qc", &input, "--dry-run"])
+        .args(at_one)
+        .output()
+        .unwrap();
+    let viewed = faba()
+        .args(["-v", "qc-view", &output, "--batch-process"])
+        .output()
+        .unwrap();
+    let said = String::from_utf8_lossy(&viewed.stderr);
+    assert!(viewed.status.success(), "{said}");
+    assert!(!said.contains("not on this machine"), "{said}");
+    let (dry, viewed) = (
+        String::from_utf8(dry.stdout).unwrap(),
+        String::from_utf8(viewed.stdout).unwrap(),
+    );
+    let rows = site_counts(&viewed);
+    assert_eq!(rows, site_counts(&dry), "{viewed}");
+    let by_cells = rows.iter().find(|r| r.0 == "--site-min-cells").unwrap();
+    assert_eq!(by_cells.1[0], "1", "only S4, with no kept cell: {viewed}");
+    let cells = |t: &str| {
+        t.lines()
+            .find(|l| l.starts_with("cells\t"))
+            .map(String::from)
+    };
+    assert_eq!(cells(&viewed), cells(&dry), "{viewed}");
+
+    // Its input moved away: the kept sites' cells off the output's own
+    // `_site` matrix, the dropped ones' unknown, as it warns.
+    std::fs::rename(&input, format!("{input}.moved")).unwrap();
+    let alone = faba()
+        .args(["-v", "qc-view", &output, "--batch-process"])
+        .output()
+        .unwrap();
+    assert!(alone.status.success());
+    let warned = String::from_utf8_lossy(&alone.stderr);
+    assert!(warned.contains("not on this machine"), "{warned}");
+    let rows = site_counts(&String::from_utf8(alone.stdout).unwrap());
+    assert!(
+        rows.iter().all(|(_, r)| r[2] == "2" && r[3] == "4"),
+        "{rows:?}"
+    );
+
+    // The page, never over a file.
+    let page = format!("{}/qc.html", tmp.path().display());
+    std::fs::write(&page, "mine").unwrap();
+    let refused = faba()
+        .args(["qc-view", &output, "--html", &page])
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+    assert_eq!(std::fs::read_to_string(&page).unwrap(), "mine");
+}

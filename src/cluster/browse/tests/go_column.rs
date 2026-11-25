@@ -36,6 +36,7 @@ fn with_go(dir: &std::path::Path) -> (Modules, Ask) {
         gmt: Some(gmt.to_string_lossy().into()),
         obo: None,
         min_weight: 0.5,
+        q: super::super::go::DEFAULT_Q,
     };
     (m, ask)
 }

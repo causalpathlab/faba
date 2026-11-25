@@ -8,7 +8,7 @@ RNA modifications (DART-seq m6A, A-to-I editing), alternative polyadenylation
 
 ## A quick look
 
-Run in a terminal, `run`, `qc`, `pileup`, `metagene`, `pwm` and `cluster-view` open full-screen
+Run in a terminal, `run`, `qc`, `qc-view`, `pileup`, `metagene`, `pwm` and `cluster-view` open full-screen
 views; `--batch-process` skips them for scripts and clusters.
 
 Each view runs as a detachable session: Ctrl+Alt+D leaves it running (as does a dropped
@@ -163,6 +163,7 @@ faba <COMMAND> [OPTIONS]
 | `run` | Set up the pipeline in a view (inputs, steps, flags), preview and save the command, and run it: SNP → count → ATOI → m6A → APA |
 | **QC — choose and apply thresholds after profiling** ||
 | `qc`                      | Pick thresholds in a full-screen view, then filter a faba output directory into a new fileset |
+| `qc-view`                 | View what a `qc` run kept and dropped in its site view, read only: the thresholds it applied drawn, every site shown kept or dropped, each batch's cells; `s` saves the panel on screen, `--html` writes the page, `--batch-process` prints the threshold table |
 | `site-plot` (`sp`)        | Draw a directory's site statistics as paper panels, no QC: histograms, chosen pairs with marginals, each quantity on one scale; thresholds optional |
 | **Clustering: cells by their own sites** ||
 | `cluster`                 | Cluster cells by their site reads: cell and gene modules with a methylation shift per pair, fitted by variational inference. `--modality count` fits cell modules by gene counts instead; `--within` its run record then fits the sites within each of those cell modules |
@@ -212,7 +213,7 @@ Producers write every candidate and apply no p-value cutoff. qc is where cells, 
 
 1. docs lists the method write-ups. With `query` it prints the sections named (a topic such as profiling, a command such as qc, or a section number).
 2. count, atoi, dartseq, apa, depth and snp each write one modality. run writes the pipeline (SNP, then count, A-to-I, m6A, APA) into one directory. dartseq needs control BAMs; without them, run skips m6A.
-3. qc filters a directory into a new one, with the site thresholds given. It does not edit the input. With `dry_run` it writes nothing and returns what the cell QC keeps and what each threshold removes: try thresholds that way first.
+3. qc filters a directory into a new one, with the site thresholds given. It does not edit the input. With `dry_run` it writes nothing and returns what the cell QC keeps and what each threshold removes: try thresholds that way first. qc_view reads back a qc output: the same counts at the thresholds it applied, its dropped sites with its kept, and with `plots` or `html` its figures and page.
 4. pileup, metagene and pwm read a directory's sites. metagene and pwm return their table and its figure as an image. site_plot draws a directory's site statistics as paper panels (histograms, pairs, marginals), thresholds optional, and returns them as images. pileup returns a binned table for a gene or region (and, with `figure`, a Miami SVG, as an image too). cluster_view shows a cluster fit level by level, from its run record ({m}_blockmodel.run.json) or the directory holding its tables: the modules, then a gene module, a gene, the cell modules, the trace and verdict, the settings.
 5. cluster fits cells by their own site reads (a blockmodel of cell and gene modules, by variational inference) and writes its tables to `out`. In two rounds: first `modality` count, cell modules by gene counts (it writes count_blockmodel.run.json); then, with `within` naming that record, m6a or atoi within each of its cell modules. The second round writes {m}_within.run.json, which cluster_view opens: the list of its fits, and with `group` the fit within one cell module.
 
@@ -229,6 +230,7 @@ legume-mcp adds where the records are and the background jobs below. The project
 | `count`, `atoi`, `dartseq`, `apa`, `depth`, `snp` | one modality each, into a new directory |
 | `run` | the pipeline (SNP, then count, A-to-I, m6A, APA) into one directory |
 | `qc` | filters a directory into a new one |
+| `qc_view` | reads back what a `qc` run kept and dropped: its threshold table, and its figures and page when asked |
 | `cluster` | fits cells by their own site reads, by gene counts (`modality` count), or by site reads within a count fit's cell modules (`within`); writes its tables to a new directory |
 | `pileup`, `metagene`, `pwm`, `cluster_view` | read what was written |
 | `site_plot` | draws a directory's site statistics as paper panels into a new directory |
