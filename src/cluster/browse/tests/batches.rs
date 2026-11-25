@@ -8,7 +8,7 @@ use crate::cluster::batches::Label;
 /// [`tables`] with its cells in four batches, two replicates of `a` and
 /// two of `b`: cell module 1 alike in every batch, module 2 in `rep1_a`
 /// alone.
-fn batched() -> Modules {
+pub(super) fn batched() -> Modules {
     let tmp = tempfile::tempdir().unwrap();
     tables(tmp.path());
     let batches = ["rep1_a", "rep2_a", "rep1_b", "rep2_b"];

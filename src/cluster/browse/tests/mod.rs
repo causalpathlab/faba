@@ -15,6 +15,7 @@ mod batches;
 mod data;
 mod figure;
 mod gene;
+mod json;
 mod model;
 mod posterior;
 mod report;

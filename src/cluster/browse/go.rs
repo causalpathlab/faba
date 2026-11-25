@@ -511,6 +511,43 @@ impl Table {
         out
     }
 
+    /// The table as JSON: what was tested (the source, the fit's genes and
+    /// the universe, the weight cut, the terms' sizes and the q a term
+    /// needs), then per gene module its genes and the terms listed, as
+    /// [`Self::lines`] has them, or why there are none.
+    pub fn json(&self) -> serde_json::Value {
+        use serde_json::json;
+        let modules: Vec<serde_json::Value> = (self.modules.iter().enumerate())
+            .map(|(role, m)| {
+                let terms: Vec<serde_json::Value> = (m.hits.iter())
+                    .map(|h| {
+                        json!({
+                            "id": h.id, "name": h.name, "namespace": h.namespace,
+                            "k": h.k, "n": h.n, "K": h.big_k, "N": h.big_n,
+                            "odds": h.odds, "p": h.ln_p.exp(), "q": h.q, "genes": h.genes,
+                        })
+                    })
+                    .collect();
+                json!({
+                    "module": format!("M{}", role + 1),
+                    "genes": m.n,
+                    "of": m.all,
+                    "terms": terms,
+                    "why_none": m.hits.is_empty().then(|| m.why_none()),
+                })
+            })
+            .collect();
+        json!({
+            "source": self.source,
+            "genes": self.genes,
+            "universe": self.universe,
+            "min_weight": self.min_weight,
+            "term_sizes": [SIZES.start(), SIZES.end()],
+            "go_q": Q,
+            "modules": modules,
+        })
+    }
+
     /// Gene role `role`'s terms.
     pub fn of(&self, role: usize) -> Option<&ModuleTerms> {
         self.modules.get(role)

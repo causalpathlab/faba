@@ -4,11 +4,15 @@
 //! its methylated %, UMIs per cell, or that standardized across the cell
 //! modules), the trace (each restart's ELBO by
 //! step), and the cell modules against the batches. Each is laid out for a
-//! size when one is given (inches), its text at a size that reads in print.
+//! size when one is given (inches), its text at a size that reads in print,
+//! and drawn in the panel look asked for (see [`crate::figure::style`]):
+//! the text at `--font-size`, the plot alone with `--panel-only` (no title,
+//! key or notes), in grays with `--palette gray`.
 
 use super::order::standardized;
 use super::Modules;
 use crate::figure::size::{self, Page};
+use crate::figure::style::{Palette, Sheet};
 use crate::figure::{esc, mix, svg, Anchor, Canvas, FAINT, INK, MUTED};
 
 /// Which figure.
@@ -95,19 +99,73 @@ fn title_text(title: &str, f: f64, room: f64) -> String {
 }
 
 /// The figure `plot` of `m` under `look`, titled `title`, laid out for
-/// the page `size` (see [`crate::figure::SizeArgs`]); why there is none
-/// (no trace, one batch).
+/// the sheet's page (see [`crate::figure::SizeArgs`]) in its look; why
+/// there is none (no trace, one batch).
 pub fn draw(
     m: &Modules,
     plot: Plot,
     look: Look,
     title: &str,
-    size: Page,
+    sheet: Sheet,
 ) -> Result<String, String> {
+    let ink = Ink::of(&sheet);
     match plot {
-        Plot::Modules => heatmap(m, look, title, size),
-        Plot::Trace => trace(m, title, size),
-        Plot::Batches => batches(m, title, size),
+        Plot::Modules => heatmap(m, look, title, sheet.page, ink),
+        Plot::Trace => trace(m, title, sheet.page, ink),
+        Plot::Batches => batches(m, title, sheet.page, ink),
+    }
+}
+
+/// How a figure is drawn, from its sheet's look: its text size in points,
+/// whether the plot is drawn alone, and whether in grays.
+#[derive(Debug, Clone, Copy)]
+struct Ink {
+    f: f64,
+    panel_only: bool,
+    gray: bool,
+}
+
+/// The gray palette's ends: a value of 0 and the top value.
+const GRAY_LOW: (f64, f64, f64) = (242.0, 242.0, 242.0);
+const GRAY_HIGH: (f64, f64, f64) = (38.0, 38.0, 38.0);
+
+impl Ink {
+    /// The look `sheet` asks for: the text at its size, else fit to the
+    /// page (see [`font`]).
+    fn of(sheet: &Sheet) -> Self {
+        Self {
+            f: sheet.look.font_size.unwrap_or_else(|| font(sheet.page)),
+            panel_only: sheet.look.panel_only,
+            gray: sheet.look.palette == Palette::Gray,
+        }
+    }
+
+    /// A value's fill, as [`fill`] gives it; in grays, darker as it is
+    /// further from 0 either way.
+    fn fill(&self, v: f64, top: f64, diverging: bool) -> (String, bool) {
+        match self.gray {
+            true => {
+                let t = (v.abs() / top.max(1e-12)).min(1.0);
+                (mix(GRAY_LOW, GRAY_HIGH, t), t > 0.6)
+            }
+            false => fill(v, top, diverging),
+        }
+    }
+
+    /// The title, but for the plot alone.
+    fn heading(&self, c: &mut Canvas, title: &str, w: f64) {
+        if !self.panel_only {
+            heading(c, title, self.f, w);
+        }
+    }
+
+    /// `room` for a title, a key or a note: none for the plot alone.
+    fn room(&self, room: f64) -> f64 {
+        if self.panel_only {
+            0.0
+        } else {
+            room
+        }
     }
 }
 
@@ -178,7 +236,7 @@ fn values(m: &Modules, look: Look) -> (Vec<usize>, Vec<Vec<Option<f64>>>) {
 /// The figure of `m` under `look`, titled `title`: a box per block with its
 /// value, the gene modules' names and sizes on the left, the cell modules'
 /// on top, and the colour scale on the right.
-fn heatmap(m: &Modules, look: Look, title: &str, size: Page) -> Result<String, String> {
+fn heatmap(m: &Modules, look: Look, title: &str, size: Page, ink: Ink) -> Result<String, String> {
     let (rows, values) = values(m, look);
     let all: Vec<f64> = values.iter().flatten().flatten().copied().collect();
     let diverging = look != Look::Percent;
@@ -193,18 +251,23 @@ fn heatmap(m: &Modules, look: Look, title: &str, size: Page) -> Result<String, S
         (Look::Percent, false) => "methylated %",
         (Look::Z, _) => "z across the cell modules",
     };
-    let f = font(size);
+    let f = ink.f;
     let names: Vec<String> = (rows.iter())
         .map(|&g| format!("M{} ({} genes)", g + 1, m.gene_sizes[g]))
         .collect();
     let label = names.iter().map(|n| width(n, f)).fold(0.0, f64::max) + f;
-    let (head, scale, foot) = (4.0 * f, 6.0 * f, 3.0 * f);
+    // The plot alone: no title over it, no scale beside it, no note under.
+    let (head, scale, foot) = (
+        2.0 * f + ink.room(2.0 * f),
+        ink.room(6.0 * f),
+        f + ink.room(2.0 * f),
+    );
     let (cols, n) = (m.columns.len(), rows.len());
     // Square boxes as large as the page allows (44 points without one).
     let (cell, (w, h)) = cells(size, 44.0, (label + scale, head + foot), (cols, n))?;
     let font = (cell * 0.28).min(f);
     Ok(svg(w, h, |c: &mut Canvas| {
-        heading(c, title, f, w);
+        ink.heading(c, title, w);
         for (j, &role) in m.columns.iter().enumerate() {
             let x = label + cell * (j as f64 + 0.5);
             c.text(
@@ -232,23 +295,26 @@ fn heatmap(m: &Modules, look: Look, title: &str, size: Page) -> Result<String, S
                     c.rect(x + 1.0, y + 1.0, cell - 2.0, cell - 2.0, "#ffffff");
                     continue;
                 };
-                let (colour, dark) = fill(*v, top, diverging);
+                let (colour, dark) = ink.fill(*v, top, diverging);
                 c.rect(x + 1.0, y + 1.0, cell - 2.0, cell - 2.0, &colour);
                 let text = match look {
                     Look::Shift | Look::Z => format!("{v:+.2}"),
                     // As the grid writes it: a whole %, or UMIs per cell.
                     Look::Percent => m.block(rows[i])[j].number().unwrap_or_default(),
                 };
-                let ink = if dark { "#ffffff" } else { INK };
+                let text_ink = if dark { "#ffffff" } else { INK };
                 c.text(
                     x + cell / 2.0,
                     y + cell / 2.0 + font / 2.5,
                     &text,
                     font,
                     Anchor::Middle,
-                    ink,
+                    text_ink,
                 );
             }
+        }
+        if ink.panel_only {
+            return;
         }
         // The scale: a column of steps from the top value down to its other
         // end, labelled at both ends and the middle.
@@ -262,7 +328,7 @@ fn heatmap(m: &Modules, look: Look, title: &str, size: Page) -> Result<String, S
                 y,
                 f * 1.2,
                 sh / steps as f64 + 0.5,
-                &fill(v, top, diverging).0,
+                &ink.fill(v, top, diverging).0,
             );
         }
         let mid = (top + low) / 2.0;
@@ -337,7 +403,7 @@ const TICK: f64 = 4.5;
 
 /// The trace: each restart's ELBO over its steps, in a colour of its own,
 /// the end of its k-means start marked.
-fn trace(m: &Modules, title: &str, size: Page) -> Result<String, String> {
+fn trace(m: &Modules, title: &str, size: Page, ink: Ink) -> Result<String, String> {
     let t = m.fit.trace.as_ref().map_err(Clone::clone)?;
     let points: Vec<(f64, f64)> = t
         .restarts
@@ -354,22 +420,26 @@ fn trace(m: &Modules, title: &str, size: Page) -> Result<String, String> {
     let (y0, y1) = points
         .iter()
         .fold((f64::MAX, f64::MIN), |a, p| (a.0.min(p.1), a.1.max(p.1)));
-    let f = font(size);
+    let f = ink.f;
     let (w, h) = size::fill(size, || (480.0, 300.0));
+    // The plot alone: no title over it, no restarts named beside it.
     let (left, top, right, bottom) = (
         TICK * f + 2.5 * f,
-        3.0 * f,
-        width("restart 0", f) + f,
+        f + ink.room(2.0 * f),
+        f + ink.room(width("restart 0", f)),
         3.5 * f,
     );
     let (pw, ph) = (w - left - right, h - top - bottom);
     let sx = |x: f64| left + pw * (x - x0) / (x1 - x0).max(1e-12);
     let sy = |v: f64| top + ph * (1.0 - (v - y0) / (y1 - y0).max(1e-12));
-    let colours = [
-        "#2a78d6", "#e34948", "#1f9e89", "#d89b23", "#7c5cc4", "#c2549d", "#5c7d8a", "#8a5c3b",
-    ];
+    let colours: &[&str] = match ink.gray {
+        true => &["#1a1a1a", "#5c5c5c", "#8c8c8c", "#b3b3b3"],
+        false => &[
+            "#2a78d6", "#e34948", "#1f9e89", "#d89b23", "#7c5cc4", "#c2549d", "#5c7d8a", "#8a5c3b",
+        ],
+    };
     Ok(svg(w, h, |c: &mut Canvas| {
-        heading(c, title, f, w);
+        ink.heading(c, title, w);
         let names = ("k-means iteration, then epoch", "ELBO");
         axes(c, (left, top, pw, ph), (x0, x1), (y0, y1), names, f);
         if t.warmup as f64 > x0 && (t.warmup as f64) < x1 {
@@ -383,6 +453,9 @@ fn trace(m: &Modules, title: &str, size: Page) -> Result<String, String> {
                 .collect();
             let colour = colours[i % colours.len()];
             c.polyline(&line, colour, 1.5);
+            if ink.panel_only {
+                continue;
+            }
             let name = format!("restart {i}");
             c.text(
                 left + pw + f,
@@ -398,11 +471,11 @@ fn trace(m: &Modules, title: &str, size: Page) -> Result<String, String> {
 
 /// The cell modules against the batches, by condition: each module's share
 /// in each batch (its cells by batch size), its evenness and label.
-fn batches(m: &Modules, title: &str, size: Page) -> Result<String, String> {
+fn batches(m: &Modules, title: &str, size: Page, ink: Ink) -> Result<String, String> {
     let b = m.batches.as_ref().ok_or("the cells are of one batch")?;
     let d = &b.design;
     let order = d.order();
-    let f = font(size);
+    let f = ink.f;
     let said: Vec<String> = (m.columns.iter())
         .map(|&r| {
             let s = &b.spread[r];
@@ -412,14 +485,16 @@ fn batches(m: &Modules, title: &str, size: Page) -> Result<String, String> {
         .collect();
     let longest =
         |names: &mut dyn Iterator<Item = &String>| names.map(|s| width(s, f)).fold(0.0, f64::max);
-    // Under the title, the batches' names upright, read from below.
-    let (label, head) = (3.5 * f, 2.6 * f + longest(&mut d.batches.iter()) * 1.1 + f);
-    let (right, foot) = (longest(&mut said.iter()) + 2.0 * f, 3.0 * f);
+    // Under the title, the batches' names upright, read from below; the
+    // plot alone has no title over it and no conditions under it.
+    let names = longest(&mut d.batches.iter()) * 1.1 + f;
+    let (label, head) = (3.5 * f, ink.room(2.6 * f) + names);
+    let (right, foot) = (longest(&mut said.iter()) + 2.0 * f, f + ink.room(2.0 * f));
     let (cols, n) = (order.len(), m.columns.len());
     let (cell, (w, h)) = cells(size, 40.0, (label + right, head + foot), (cols, n))?;
     let font = (cell * 0.28).min(f);
     Ok(svg(w, h, |c: &mut Canvas| {
-        heading(c, title, f, w);
+        ink.heading(c, title, w);
         for (j, &bt) in order.iter().enumerate() {
             let x = label + cell * (j as f64 + 0.5);
             c.rotated(
@@ -454,23 +529,22 @@ fn batches(m: &Modules, title: &str, size: Page) -> Result<String, String> {
             let top = s.per_batch.iter().copied().fold(0.0, f64::max);
             for (j, &bt) in order.iter().enumerate() {
                 let p = s.per_batch[bt];
-                let (colour, dark) = fill(p, top, false);
+                let (colour, dark) = ink.fill(p, top, false);
                 let x = label + cell * j as f64;
                 c.rect(x + 1.0, y + 1.0, cell - 2.0, cell - 2.0, &colour);
-                let ink = if dark { "#ffffff" } else { INK };
+                let text_ink = if dark { "#ffffff" } else { INK };
                 c.text(
                     x + cell / 2.0,
                     y + cell / 2.0 + font / 2.5,
                     &format!("{:.0}%", 100.0 * p),
                     font,
                     Anchor::Middle,
-                    ink,
+                    text_ink,
                 );
             }
-            let ink = if s.label.is_batch() {
-                crate::figure::ACCENT
-            } else {
-                INK
+            let colour = match s.label.is_batch() && !ink.gray {
+                true => crate::figure::ACCENT,
+                false => INK,
             };
             c.text(
                 right_x,
@@ -478,10 +552,12 @@ fn batches(m: &Modules, title: &str, size: Page) -> Result<String, String> {
                 &esc(said),
                 f,
                 Anchor::Start,
-                ink,
+                colour,
             );
         }
-        let listing = d.listing().join(" · ");
-        c.text(label, h - f, &esc(&listing), f * 0.9, Anchor::Start, MUTED);
+        if !ink.panel_only {
+            let listing = d.listing().join(" · ");
+            c.text(label, h - f, &esc(&listing), f * 0.9, Anchor::Start, MUTED);
+        }
     }))
 }

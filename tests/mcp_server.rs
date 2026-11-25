@@ -237,3 +237,247 @@ fn the_readme_gives_an_agent_the_servers_own_instructions() {
         "README's agent block differs from faba's instructions"
     );
 }
+
+/// A count fit of two kinds of cells in `dir`, fitted by the built binary:
+/// 40 cells, half of 20 genes high in each kind.
+fn count_fit(dir: &Path) -> String {
+    use data_beans::sparse_io::{create_sparse_from_triplets_owned, SparseIoBackend};
+    let (cells, genes) = (40usize, 20usize);
+    let names = |n: usize, f: &dyn Fn(usize) -> String| -> Vec<Box<str>> {
+        (0..n).map(|i| f(i).into_boxed_str()).collect()
+    };
+    let mut triplets = Vec::new();
+    for c in 0..cells {
+        for g in 0..genes {
+            let high = (c < cells / 2) == (g < genes / 2);
+            let umis = if high { 8 } else { 1 } + (c * 7 + g * 3) % 3;
+            triplets.push((g as u64, c as u64, umis as f32));
+        }
+    }
+    let path = dir.join("b1_count.zarr");
+    let n = triplets.len();
+    let mut data = create_sparse_from_triplets_owned(
+        triplets,
+        (genes, cells, n),
+        Some(&path.to_string_lossy()),
+        Some(&SparseIoBackend::Zarr),
+    )
+    .unwrap();
+    data.register_row_names_vec(&names(genes, &|g| format!("G{g}/count/spliced")));
+    data.register_column_names_vec(&names(cells, &|c| format!("CELL{c:02}-1")));
+    let folder = format!("{}/", dir.display());
+    let line = ["cluster", "--modality", "count", &folder, "--batch-process"];
+    let more = ["--chains", "2", "--epochs", "20", "--min-cell-sites", "1"];
+    let out = Command::new(EXE)
+        .args(line.iter().chain(&more))
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    dir.join("count_blockmodel.run.json")
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// A PNG's width and height in pixels, from its header.
+fn png_size(png: &[u8]) -> (u32, u32) {
+    let at = |i: usize| u32::from_be_bytes(png[i..i + 4].try_into().unwrap());
+    (at(16), at(20))
+}
+
+/// `cluster_view` over the server: the overview by default, as JSON, its
+/// GO left unread (a GAF not there is never opened); the levels as JSON
+/// rows; GO read only with `go`; and several figures in one call, each an
+/// image at the size asked for.
+#[test]
+fn cluster_view_returns_json_levels_and_several_figures() {
+    let dir = tempfile::tempdir().unwrap();
+    let record = count_fit(dir.path());
+    let mut c = Client::start(dir.path());
+    c.request("initialize", json!({}));
+    let missing = json!({ "data": record, "gaf": "no-such.gaf", "obo": "no-such.obo" });
+    let overview = c.call("cluster_view", missing.clone()).unwrap();
+    let o = &overview["overview"];
+    assert!(
+        o["verdict"] == "ELBO ok" || o["verdict"] == "ELBO check",
+        "{overview:#}"
+    );
+    assert!(o["gene_modules"].as_u64().unwrap() >= 1, "{o:#}");
+    assert!(o["cell_sizes"].as_array().is_some_and(|c| !c.is_empty()));
+    let genes = o["gene_sizes"].as_array().unwrap();
+    assert!(genes
+        .iter()
+        .any(|g| !g["top"].as_array().unwrap().is_empty()));
+    assert!(overview.get("go").is_none(), "{overview:#}");
+
+    let mut asked = missing.clone();
+    asked["go"] = json!(true);
+    let err = c.call("cluster_view", asked).unwrap_err();
+    assert!(err.contains("no-such"), "{err}");
+
+    let levels = c
+        .call(
+            "cluster_view",
+            json!({ "data": record, "grid": true, "cells": true, "module": "M1",
+                    "trace": true, "settings": true }),
+        )
+        .unwrap();
+    for level in ["modules", "cells", "module", "trace", "settings"] {
+        assert!(levels[level].is_object(), "no {level}: {levels:#}");
+    }
+    let row = &levels["modules"]["rows"][0];
+    assert!(row["values"][0]["value"].is_number(), "{row:#}");
+
+    let prefix = dir.path().join("fig").to_string_lossy().into_owned();
+    let r = c.request(
+        "tools/call",
+        json!({ "name": "cluster_view", "arguments": {
+            "data": record, "figure": prefix, "plots": ["modules", "trace"],
+            "width": 4, "height": 3, "font_size": 7, "panel_only": true,
+        } }),
+    );
+    let result = &r["result"];
+    assert_ne!(result["isError"], json!(true), "{r:#}");
+    let images = (result["content"].as_array().unwrap().iter())
+        .filter(|c| c["type"] == "image")
+        .count();
+    assert_eq!(images, 2, "{result:#}");
+    let figures = result["structuredContent"]["figures"].as_array().unwrap();
+    assert_eq!(figures.len(), 2);
+    for (f, plot) in figures.iter().zip(["modules", "trace"]) {
+        assert_eq!(f["plot"], plot);
+        let png = std::fs::read(f["png"].as_str().unwrap()).unwrap();
+        // 4 by 3 inches, two pixels a point.
+        assert_eq!(png_size(&png), (576, 432), "{plot}");
+        assert!(Path::new(f["pdf"].as_str().unwrap()).is_file());
+    }
+}
+
+/// A within record in `dir` over the count fit `count`: group C1's fit is
+/// that count fit itself, group C2 skipped.
+fn within_record(dir: &Path, count: &str) -> String {
+    let record = json!({ "job": "cluster", "results": { "within": {
+        "modality": "m6a", "count_record": count,
+        "groups": [
+            { "group": "C1", "cells": 20, "status": "fitted", "dir": ".",
+              "record": "count_blockmodel.run.json" },
+            { "group": "C2", "cells": 3, "status": "skipped", "why": "too few" },
+        ],
+    } } });
+    let path = dir.join("m6a_within.run.json");
+    std::fs::write(&path, record.to_string()).unwrap();
+    path.to_string_lossy().into_owned()
+}
+
+/// `cluster_view` of a within record with no group and no level is its
+/// listing as JSON: the count fit's modules, each group's fit, the modules
+/// within each fit. A level named is the count fit's; a group opens that
+/// fit alone, its overview when no level is named, as a single fit does.
+#[test]
+fn cluster_view_lists_a_within_record_unless_a_group_or_level_is_named() {
+    let dir = tempfile::tempdir().unwrap();
+    let count = count_fit(dir.path());
+    let record = within_record(dir.path(), &count);
+    let mut c = Client::start(dir.path());
+    c.request("initialize", json!({}));
+
+    let listing = c.call("cluster_view", json!({ "data": record })).unwrap();
+    assert!(listing.get("overview").is_none(), "{listing:#}");
+    assert_eq!(listing["modality"], "m6a", "{listing:#}");
+    assert!(listing["modules"]["rows"].is_array(), "{listing:#}");
+    let groups = listing["groups"].as_array().unwrap();
+    let names: Vec<&str> = groups
+        .iter()
+        .map(|g| g["group"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["C1", "C2"], "{listing:#}");
+    assert_eq!(groups[1]["status"], "skipped");
+    let within = listing["within"].as_array().unwrap();
+    assert_eq!(within.len(), 1, "{listing:#}");
+    assert_eq!(within[0]["group"], "C1");
+    assert!(within[0]["modules"]["rows"].is_array(), "{listing:#}");
+
+    let level = c
+        .call("cluster_view", json!({ "data": record, "cells": true }))
+        .unwrap();
+    assert!(level["cells"].is_object(), "{level:#}");
+    assert!(level.get("groups").is_none(), "{level:#}");
+
+    for one in [
+        json!({ "data": record, "group": "C1" }),
+        json!({ "data": count }),
+    ] {
+        let overview = c.call("cluster_view", one.clone()).unwrap();
+        assert!(overview["overview"].is_object(), "{one}: {overview:#}");
+        assert!(overview.get("groups").is_none(), "{one}: {overview:#}");
+    }
+}
+
+/// `plots` without `figure` writes under today's results folder, named
+/// after the fit, the next free name once any plot's file is there; no
+/// file there is ever replaced, and every figure comes back as an image.
+#[test]
+fn cluster_view_plots_without_a_figure_go_to_the_results_folder() {
+    let dir = tempfile::tempdir().unwrap();
+    let record = count_fit(dir.path());
+    let mut c = Client::start(dir.path());
+    c.request("initialize", json!({}));
+    let asked = json!({ "data": record, "plots": ["modules", "trace"] });
+    let mut call = || {
+        let r = c.request(
+            "tools/call",
+            json!({ "name": "cluster_view", "arguments": asked }),
+        );
+        let result = r["result"].clone();
+        assert_ne!(result["isError"], json!(true), "{r:#}");
+        let images = (result["content"].as_array().unwrap().iter())
+            .filter(|c| c["type"] == "image")
+            .count();
+        assert_eq!(images, 2, "{result:#}");
+        let figures = result["structuredContent"]["figures"].as_array().unwrap();
+        let files: Vec<std::path::PathBuf> = (figures.iter())
+            .flat_map(|f| [&f["pdf"], &f["png"]])
+            .map(|p| p.as_str().unwrap().into())
+            .collect();
+        assert_eq!(files.len(), 4, "{result:#}");
+        files
+    };
+    let name = |p: &std::path::PathBuf| p.file_name().unwrap().to_string_lossy().into_owned();
+    let first = call();
+    let day = first[0].parent().unwrap().canonicalize().unwrap();
+    let results = dir.path().join("results").canonicalize().unwrap();
+    assert_eq!(day.parent().unwrap(), results, "{}", day.display());
+    let names: Vec<String> = first.iter().map(name).collect();
+    assert_eq!(
+        names,
+        [
+            "count_blockmodel.cluster_view.modules.pdf",
+            "count_blockmodel.cluster_view.modules.png",
+            "count_blockmodel.cluster_view.trace.pdf",
+            "count_blockmodel.cluster_view.trace.png",
+        ]
+    );
+    let kept: Vec<Vec<u8>> = first.iter().map(|p| std::fs::read(p).unwrap()).collect();
+
+    // Again: the next name, the first figures as they were.
+    let second = call();
+    assert!(second
+        .iter()
+        .all(|p| name(p).starts_with("count_blockmodel.cluster_view-2.")));
+    for (p, bytes) in first.iter().zip(&kept) {
+        assert_eq!(&std::fs::read(p).unwrap(), bytes, "{}", p.display());
+    }
+
+    // One plot's file under the next name is enough to take it.
+    let planted = day.join("count_blockmodel.cluster_view-3.trace.png");
+    std::fs::write(&planted, b"kept").unwrap();
+    let third = call();
+    assert!(third
+        .iter()
+        .all(|p| name(p).starts_with("count_blockmodel.cluster_view-4.")));
+    assert_eq!(std::fs::read(&planted).unwrap(), b"kept");
+}

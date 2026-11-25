@@ -212,6 +212,10 @@ impl Nested {
         if args.shown.any() || args.figure.is_some() {
             return super::show(args, self.open(None)?, gtf);
         }
+        if args.shown.json {
+            println!("{}", self.printed_json());
+            return Ok(());
+        }
         if crate::tui::batch(args.batch_process, "cluster-view") {
             self.printed().iter().for_each(|line| println!("{line}"));
             return Ok(());
@@ -245,6 +249,27 @@ impl Nested {
             out.extend(modules(Some(fit)));
         }
         out
+    }
+
+    /// [`Self::printed`] as JSON: the count fit's record and modules, its
+    /// groups as the record has them, and the modules within each fitted
+    /// group; a fit that cannot be read says why in its place.
+    pub(super) fn printed_json(&self) -> serde_json::Value {
+        let modules = |group: Option<&GroupFit>| match self.load(group) {
+            Ok((_, m)) => super::json::modules(&m),
+            Err(e) => serde_json::json!({ "error": format!("{e:#}") }),
+        };
+        let within: Vec<serde_json::Value> = (self.fitted())
+            .map(|fit| serde_json::json!({ "group": fit.group, "modules": modules(Some(fit)) }))
+            .collect();
+        serde_json::json!({
+            "count_fit": self.count.display().to_string(),
+            "modules": modules(None),
+            "modality": self.modality,
+            "record": self.dir.join(&self.name).display().to_string(),
+            "groups": self.groups,
+            "within": within,
+        })
     }
 
     /// `--html`: the pages (see [`Self::pages`]), each linking to the

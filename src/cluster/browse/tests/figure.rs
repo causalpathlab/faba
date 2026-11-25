@@ -3,24 +3,26 @@
 
 use super::super::figure::{draw, Look, Plot};
 use super::loaded;
-use crate::figure::size::OWN;
+use crate::figure::style::{Palette, Sheet, StyleArgs};
 
 #[test]
 fn the_modules_grid_is_drawn_under_each_look_and_for_a_size() {
     let m = loaded();
     for look in [Look::Shift, Look::Percent, Look::Z] {
-        let svg = draw(&m, Plot::Modules, look, "a fit", OWN).unwrap();
+        let svg = draw(&m, Plot::Modules, look, "a fit", Sheet::OWN).unwrap();
         assert!(
             svg.contains("M1") && svg.contains("C1") && svg.contains("C2"),
             "{look:?}"
         );
     }
-    let shift = draw(&m, Plot::Modules, Look::Shift, "a fit", OWN).unwrap();
+    let shift = draw(&m, Plot::Modules, Look::Shift, "a fit", Sheet::OWN).unwrap();
     assert!(shift.contains("shift (logit"));
     // 3.5 inches wide is 252 points, whatever the modules; given alone,
     // the height fits square cells, as tall as the grid's own is wide.
     let at = |page| {
-        crate::figure::svg_size(&draw(&m, Plot::Modules, Look::Shift, "a fit", page).unwrap())
+        crate::figure::svg_size(
+            &draw(&m, Plot::Modules, Look::Shift, "a fit", Sheet::of(page)).unwrap(),
+        )
     };
     assert_eq!(at((Some(252.0), Some(216.0))), (252.0, 216.0));
     // One side alone: the other in the grid's own proportions.
@@ -33,14 +35,15 @@ fn the_modules_grid_is_drawn_under_each_look_and_for_a_size() {
         Plot::Modules,
         Look::Shift,
         "a fit",
-        (Some(60.0), Some(50.0)),
+        Sheet::of((Some(60.0), Some(50.0))),
     )
     .unwrap_err();
     assert!(e.contains("needs at least"), "{e}");
 }
 
 /// `--fig-width` and `--fig-height` (0.19.0's `--width` and `--height`
-/// too) only with `--figure`.
+/// too), and the look (`--font-size`, `--panel-only`, `--palette`), only
+/// with `--figure`.
 #[test]
 fn a_size_goes_with_a_figure() {
     let parse = |words: &[&str]| {
@@ -52,14 +55,104 @@ fn a_size_goes_with_a_figure() {
     assert!(parse(&["--fig-width", "3"])
         .unwrap_err()
         .contains("--figure"));
+    for look in [
+        &["--font-size", "6"][..],
+        &["--panel-only"],
+        &["--palette", "gray"],
+    ] {
+        assert!(parse(look).unwrap_err().contains("--figure"), "{look:?}");
+        let with: Vec<&str> = look.iter().copied().chain(["--figure", "f"]).collect();
+        assert!(parse(&with).is_ok(), "{with:?}");
+    }
+}
+
+/// Every `fill="#rrggbb"` and `stroke="#rrggbb"` of `svg`.
+fn colours(svg: &str) -> Vec<&str> {
+    ["fill=\"#", "stroke=\"#"]
+        .iter()
+        .flat_map(|at| {
+            svg.match_indices(at)
+                .map(move |(i, _)| &svg[i + at.len()..][..6])
+        })
+        .collect()
+}
+
+/// The panel look, on each figure: `panel_only` leaves the title and the
+/// key out; `font_size` sets every label's size; `palette` gray draws in
+/// grays alone; each at the size asked for.
+#[test]
+fn each_figure_takes_the_panels_look() {
+    let traced = super::trace::load(true, true);
+    let batched = super::batches::batched();
+    let page = (Some(288.0), Some(216.0));
+    for (m, plot) in [
+        (&loaded(), Plot::Modules),
+        (&traced, Plot::Trace),
+        (&batched, Plot::Batches),
+    ] {
+        let drawn = |look: StyleArgs| {
+            let sheet = Sheet { page, look };
+            draw(m, plot, Look::Shift, "TITLE1", sheet).unwrap()
+        };
+        let own = drawn(StyleArgs::default());
+        assert!(own.contains("TITLE1"), "{plot:?}");
+        assert_eq!(crate::figure::svg_size(&own), (288.0, 216.0), "{plot:?}");
+        let alone = drawn(StyleArgs {
+            panel_only: true,
+            ..Default::default()
+        });
+        assert!(!alone.contains("TITLE1"), "{plot:?}: no title");
+        assert_eq!(crate::figure::svg_size(&alone), (288.0, 216.0), "{plot:?}");
+        let sized = drawn(StyleArgs {
+            font_size: Some(6.5),
+            ..Default::default()
+        });
+        assert!(sized.contains("font-size=\"6.5\""), "{plot:?}");
+        assert!(!own.contains("font-size=\"6.5\""), "{plot:?}");
+        let gray = drawn(StyleArgs {
+            palette: Palette::Gray,
+            ..Default::default()
+        });
+        let hues: Vec<&str> = (colours(&gray).into_iter())
+            .filter(|c| !(c[..2] == c[2..4] && c[2..4] == c[4..]))
+            .collect();
+        assert!(hues.is_empty(), "{plot:?} in gray: {hues:?}");
+        assert!(colours(&own).iter().any(|c| c[..2] != c[2..4]), "{plot:?}");
+    }
+    // The grid's key, the colour scale, is left out with the title.
+    let m = loaded();
+    let sheet = |panel_only| Sheet {
+        page,
+        look: StyleArgs {
+            panel_only,
+            ..Default::default()
+        },
+    };
+    let key = |s: &str| s.contains("shift (logit");
+    assert!(key(&draw(
+        &m,
+        Plot::Modules,
+        Look::Shift,
+        "t",
+        sheet(false)
+    )
+    .unwrap()));
+    assert!(!key(&draw(
+        &m,
+        Plot::Modules,
+        Look::Shift,
+        "t",
+        sheet(true)
+    )
+    .unwrap()));
 }
 
 #[test]
 fn a_figure_with_nothing_to_draw_says_why() {
     let m = loaded();
-    let err = draw(&m, Plot::Batches, Look::Shift, "a fit", OWN).unwrap_err();
+    let err = draw(&m, Plot::Batches, Look::Shift, "a fit", Sheet::OWN).unwrap_err();
     assert!(err.contains("one batch"), "{err}");
-    assert!(draw(&m, Plot::Trace, Look::Shift, "a fit", OWN).is_err());
+    assert!(draw(&m, Plot::Trace, Look::Shift, "a fit", Sheet::OWN).is_err());
 }
 
 /// The trace's and the batches' margins do not shrink with their text:

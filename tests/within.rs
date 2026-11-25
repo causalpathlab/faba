@@ -168,6 +168,16 @@ fn the_second_round_fits_within_the_firsts_cell_modules() {
         printed.contains(&format!("m6a within {name}\nmodule\tmain genes")),
         "{printed}"
     );
+    // The same as JSON: the count fit's modules, the groups, the modules
+    // within each fitted group.
+    let printed = faba(&["cluster-view", &record, "--batch-process", "--json"]);
+    let v: serde_json::Value = serde_json::from_str(&printed).unwrap();
+    assert!(v["modules"]["rows"].is_array(), "{v:#}");
+    assert_eq!(v["groups"].as_array().unwrap().len(), groups.len());
+    let within = v["within"].as_array().unwrap();
+    assert_eq!(within.len(), fitted.len(), "{v:#}");
+    assert_eq!(within[0]["group"], name);
+    assert!(within[0]["modules"]["rows"].is_array(), "{v:#}");
     let one = faba(&["cluster-view", &record, "--group", name, "--batch-process"]);
     assert!(
         one.starts_with("module\tmain genes") && one.contains(" %"),

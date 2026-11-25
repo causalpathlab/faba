@@ -24,6 +24,7 @@ mod data;
 mod figure;
 mod gene;
 mod go;
+mod json;
 mod order;
 mod report;
 mod text;
@@ -38,11 +39,16 @@ pub use order::standardized;
 pub use view::ModulesView;
 
 #[derive(Args, Debug, Clone)]
-// The figure's size (0.19.0 named it --width and --height), only with
-// --figure.
+// The figure's size (0.19.0 named it --width and --height) and look, only
+// with --figure.
 #[command(
     mut_arg("fig_width", |a| a.visible_alias("width").requires("figure")),
-    mut_arg("fig_height", |a| a.visible_alias("height").requires("figure"))
+    mut_arg("fig_height", |a| a.visible_alias("height").requires("figure")),
+    mut_arg("font_size", |a| a.requires("figure")),
+    mut_arg("panel_only", |a| a.requires("figure")),
+    mut_arg("palette", |a| a.requires("figure").help(
+        "The figure's colours: as on screen (colour), or grays alone (gray), a block darker as its value is further from 0"
+    ))
 )]
 pub struct ModulesArgs {
     #[arg(
@@ -133,6 +139,10 @@ pub struct ModulesArgs {
     #[command(flatten)]
     size: crate::figure::SizeArgs,
 
+    /// The figure's font, panel and palette (only with --figure).
+    #[command(flatten)]
+    style: crate::figure::style::StyleArgs,
+
     #[arg(
         long = "look",
         value_enum,
@@ -184,9 +194,9 @@ impl ModulesArgs {
     }
 
     /// Whether this writes or prints instead of browsing (--batch-process,
-    /// --html, --figure): no session, no input browser.
+    /// --json, --html, --figure): no session, no input browser.
     fn writes(&self) -> bool {
-        self.batch_process || self.html.is_some() || self.figure.is_some()
+        self.batch_process || self.shown.json || self.html.is_some() || self.figure.is_some()
     }
 
     /// The session the browser runs in; none when it writes or prints
@@ -376,9 +386,10 @@ const NO_GROUP: &str = "--group names a fit within a count fit's cell module: na
      record ({modality}_within.run.json), which `faba cluster --within` writes";
 
 pub fn run_modules(args: &ModulesArgs) -> anyhow::Result<()> {
-    // The figure's size, refused before any fit is read.
+    // The figure's size and look, refused before any fit is read.
     if args.figure.is_some() {
         figure::page(args.plot, &args.size)?;
+        args.style.check()?;
     }
     // No inputs named: browse for them, as `faba pileup` does.
     let batch = args.writes();
@@ -438,7 +449,8 @@ fn target(
 }
 
 /// The figure `args` ask for of `m` (its tables in `dir`) as `prefix`.pdf
-/// and `prefix`.png, at the size asked for (see [`crate::figure::SizeArgs`]);
+/// and `prefix`.png, at the size and in the look asked for (see
+/// [`crate::figure::SizeArgs`] and [`crate::figure::style::StyleArgs`]);
 /// the paths written, printed. Refused when it has none to draw, or a side
 /// is too small.
 fn write_figure(m: &Modules, args: &ModulesArgs, dir: &Path, prefix: &str) -> anyhow::Result<()> {
@@ -458,8 +470,11 @@ fn write_figure(m: &Modules, args: &ModulesArgs, dir: &Path, prefix: &str) -> an
             "{path} exists: name a new --figure"
         );
     }
-    let page = figure::page(args.plot, &args.size)?;
-    let drawn = figure::draw(m, args.plot, args.look, &title, page).map_err(anyhow::Error::msg)?;
+    let sheet = crate::figure::style::Sheet {
+        page: figure::page(args.plot, &args.size)?,
+        look: args.style,
+    };
+    let drawn = figure::draw(m, args.plot, args.look, &title, sheet).map_err(anyhow::Error::msg)?;
     for path in crate::figure::save_with_png(&drawn, prefix)? {
         println!("{path}");
     }
@@ -483,7 +498,12 @@ fn show(
     if let Some(path) = &args.html {
         return write_html(&modules, gtf.as_deref(), path);
     }
-    // A level asked for by name is printed as text, terminal or not.
+    // A level asked for by name is printed, terminal or not: as JSON with
+    // --json, else as text.
+    if args.shown.json {
+        println!("{}", json::levels(&modules, &args.shown)?);
+        return Ok(());
+    }
     if args.shown.any() || crate::tui::batch(args.batch_process, "cluster-view") {
         text::printed(&modules, &args.shown)?
             .iter()
@@ -494,25 +514,39 @@ fn show(
     browse(&dir, &modules, models, args.shown.go_ask())
 }
 
+/// What `faba cluster-view` would open, as [`opens`] tells it.
+#[cfg(feature = "mcp")]
+#[derive(Debug)]
+pub(crate) struct Opens {
+    /// A within record opened whole, which lists its fits when no level
+    /// is named; else one fit.
+    pub whole: bool,
+    /// The pages `--html` would write (see [`opens`]).
+    pub pages: Vec<PathBuf>,
+}
+
 /// What `faba cluster-view` would open from `data_files`, refused as the
-/// command refuses it, with nothing read but run records: the pages
-/// `--html html` would write, one for one fit, and for a within record
-/// opened whole one more for each fitted group; none without `html`.
+/// command refuses it, with nothing read but run records: whether it is a
+/// within record whole, and the pages `--html html` would write, one for
+/// one fit, and for a within record opened whole one more for each fitted
+/// group; none without `html`.
 #[cfg(feature = "mcp")]
 pub(crate) fn opens(
     data_files: &[Box<str>],
     modality: Option<&str>,
     group: Option<&str>,
     html: Option<&Path>,
-) -> anyhow::Result<Vec<PathBuf>> {
+) -> anyhow::Result<Opens> {
     let target = target(data_files, modality, None, group)?;
-    let Some(html) = html else {
-        return Ok(Vec::new());
+    let whole = matches!(target, Target::Nested(_));
+    let pages = match (html, target) {
+        (None, _) => Vec::new(),
+        (Some(html), Target::Fit(..)) => vec![html.to_path_buf()],
+        (Some(html), Target::Nested(nested)) => {
+            nested.pages(html).into_iter().map(|(_, p)| p).collect()
+        }
     };
-    Ok(match target {
-        Target::Fit(..) => vec![html.to_path_buf()],
-        Target::Nested(nested) => nested.pages(html).into_iter().map(|(_, p)| p).collect(),
-    })
+    Ok(Opens { whole, pages })
 }
 
 /// What `data_files` open, as they are: the directory, the modality and
