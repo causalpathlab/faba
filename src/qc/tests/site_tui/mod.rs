@@ -20,6 +20,7 @@ mod metagene;
 mod pairs;
 mod read_only;
 mod report;
+mod state;
 mod thresholds;
 mod view_style;
 

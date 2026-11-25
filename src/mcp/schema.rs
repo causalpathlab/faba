@@ -269,6 +269,7 @@ fn hand_written() -> Vec<ToolSpec> {
             ),
         ),
     ];
+    specs.extend(view_tools());
     // A producer on large BAMs outlasts a client's wait on one call: it can
     // run as a job instead.
     for s in specs
@@ -281,6 +282,62 @@ fn hand_written() -> Vec<ToolSpec> {
         });
     }
     specs
+}
+
+/// The tools that put a view in front of the user and read back what
+/// they arranged in it (see [`crate::tui::live`]).
+fn view_tools() -> Vec<ToolSpec> {
+    let session = || json!({ "type": "string", "description": "The view's session, as view_open returned it (or its label, or the end of its id)" });
+    let views: Vec<&str> = super::tools::views::VIEWS.iter().map(|v| v.0).collect();
+    vec![
+        ToolSpec::new(
+            "view_open",
+            "Put a view in front of the user (`faba qc-view` and the other views, without `--batch-process`): it starts as a detached session, reading its inputs, and the call returns its `session` and `attach`, the command the user runs in a terminal to see it (`open_window` opens a Terminal window on it, on macOS). The user arranges it there (thresholds, scales, the panel in focus, the look; `?` lists the keys) and tells you when; view_state then reads what they chose and view_export draws the figure from exactly that. `args` are the arguments of the tool `view` names, as that tool takes them (`input` for qc_view, `data` for the others, and every typed flag), but those that write in place of the view (`html`, `plots`, `out`, `figure`). `view_state` in `args` opens the view arranged as a state file says. Only qc_view answers view_state and view_export yet; the others open for the user to look at. The session ends when the user leaves the view (q).",
+            schema(
+                json!({
+                    "view": { "type": "string", "enum": views, "description": "Which view" },
+                    "args": { "type": "object", "description": "The arguments of the tool `view` names, as that tool's schema gives them" },
+                    "session": { "type": "string", "description": "A label for the session (letters, digits, `-`, `_`, `.`), unique among the live ones; its id is then faba-{screen}-{label}. Default: the next number" },
+                    "open_window": { "type": "boolean", "description": "Also open a Terminal window attached to it (macOS only); default false: give the user `attach`" },
+                }),
+                &["view"],
+            ),
+        ),
+        ToolSpec::new(
+            "view_list",
+            "faba's live view sessions: each one's `session`, label, whether a terminal is attached, its command and status, whether it `answers` view_state and view_export, and `attach`, the command that shows it.",
+            schema(json!({}), &[]),
+        )
+        .read_only(),
+        ToolSpec::new(
+            "view_state",
+            "What the user arranged in a live view, as JSON: for qc_view the modality on screen, the `panel` Tab is on, the knob in `focus`, each threshold (`thresholds`, null when off; `flags` as `qc` takes them), each knob's histogram scale (`x_scale`) and the counts' (`y_scale`), `two_d` with the `pairs` chosen and the one in focus (`pair_at`), the arms' look (`front`, `p_axis`), the axis titles, the bars' `weight`, the 2D `scales` and `bins`, `saves` (the panel `s` saves now) and the `gene` selected; `command` is the view's command line. With `set`, arrange the view so first (keys left out stay; the user sees it change) and return the state after.",
+            schema(
+                json!({
+                    "session": session(),
+                    "set": { "type": "object", "description": "A state, or part of one, as view_state returns it, to arrange the view by" },
+                }),
+                &["session"],
+            ),
+        ),
+        ToolSpec::new(
+            "view_export",
+            "Draw the figure a live view's `s` saves, from its state now (the panel on screen as the user arranged it), as `formats` (default pdf and png) under the prefix `out`, at `width` by `height` inches, `font_size`, `panel_only` and `palette` over the view's own (what is not given is the view's). Its state is kept beside it as {out}.view.json, which `--view-state` (qc_view's `view_state`) reads back: `replay` is the command that draws the same figure without the view. Returns the paths written, the state, the sheet drawn on, and the figure as an image. Nothing is replaced: a file there is refused.",
+            schema(
+                json!({
+                    "session": session(),
+                    "out": { "type": "string", "description": "The figure's prefix: {out}.pdf, {out}.png, {out}.svg as `formats` ask, and {out}.view.json; none may exist. Omitted, in today's results folder" },
+                    "formats": { "type": "array", "items": { "type": "string", "enum": ["svg", "pdf", "png"] }, "minItems": 1, "uniqueItems": true, "description": "What to write (default pdf and png)" },
+                    "width": { "type": "number", "minimum": crate::figure::size::MIN.0, "description": "The figure's width in inches; omitted, the view's own" },
+                    "height": { "type": "number", "minimum": crate::figure::size::MIN.1, "description": "The figure's height in inches; omitted, the view's own" },
+                    "font_size": { "type": "number", "exclusiveMinimum": 0, "description": "Every label's size in points; omitted, the view's (fit to the figure)" },
+                    "panel_only": { "type": "boolean", "description": "The plot, its axes and their titles only" },
+                    "palette": { "type": "string", "enum": ["colour", "gray"], "description": "Kept and removed sites in colour or in grays" },
+                }),
+                &["session"],
+            ),
+        ),
+    ]
 }
 
 /// The flags no tool offers as an argument, each for the tools named
@@ -746,6 +803,7 @@ fn qc_view_properties(dir: &Value, options: &Value) -> Value {
         "html": { "type": "string", "description": "Also write the view's page here, to share, at the thresholds applied (each modality's strongest 50,000 sites by p-value). Must not exist: an existing file is refused, never replaced" },
         "plots": { "type": "boolean", "description": "Also draw the figures `qc` draws with `plots`, at the thresholds applied, under `out`/qc_plots/ (`hist`, `pairs`, `marginals`, `scale`, `bins` choose the site panels under qc_plots/panels/); they come back as images" },
         "out": { "type": "string", "description": "With `plots`: the directory the figures go to; must not exist. Omitted, a new directory in today's results folder" },
+        "figure": { "type": "string", "description": "Also write the panel the view's `s` saves, as `view_state` arranges the view (a state view_export kept, {prefix}.view.json), to {figure}.pdf and .png (`format`: svg, pdf, png), returned as an image: what view_export drew, without the view. None may exist" },
         "options": options,
     })
 }
@@ -896,7 +954,7 @@ mod tests {
             ("pwm", &["genome"]),
             // A run without the cut, the figures and the page it plans.
             ("qc", &["dry_run", "plots", "html"]),
-            ("qc_view", &["plots", "html"]),
+            ("qc_view", &["plots", "html", "figure"]),
             // The figures, each planned and checked new.
             ("cluster", &["batch_map"]),
             ("cluster_view", &["html", "figure", "plot", "look"]),

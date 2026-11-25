@@ -386,7 +386,9 @@ qc width type="number" minimum=1.0
 qc xlab type="array" items="string"
 qc ylab type="array" items="string"
 qc_view bins type="integer" minimum=0.0
+qc_view figure type="string"
 qc_view font_size type="number"
+qc_view format type="array" items="string" enum=["pdf","png","svg"]
 qc_view front type="string" enum=["mut","wt"]
 qc_view genes type="array" items="string"
 qc_view gff type="string"
@@ -406,6 +408,7 @@ qc_view panel_only type="boolean"
 qc_view plots type="boolean"
 qc_view scale type="array" items="string"
 qc_view style type="string" enum=["panel","view"]
+qc_view view_state type="string"
 qc_view width type="number" minimum=1.0
 qc_view xlab type="array" items="string"
 qc_view ylab type="array" items="string"
@@ -532,3 +535,17 @@ snp out type="string"
 snp skip_discovery type="boolean"
 snp source type="string"
 snp umi_tag type="string"
+view_export font_size type="number" exclusiveMinimum=0.0
+view_export formats type="array" items="string" enum=["pdf","png","svg"] minItems=1.0
+view_export height type="number" minimum=0.75
+view_export out type="string"
+view_export palette type="string" enum=["colour","gray"]
+view_export panel_only type="boolean"
+view_export session type="string"
+view_export width type="number" minimum=1.0
+view_open args type="object"
+view_open open_window type="boolean"
+view_open session type="string"
+view_open view type="string" enum=["cluster_view","metagene","pileup","pwm","qc_view"]
+view_state session type="string"
+view_state set type="object"

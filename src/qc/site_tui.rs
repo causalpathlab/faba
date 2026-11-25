@@ -58,6 +58,7 @@ mod keys;
 mod mouse;
 mod pairs_view;
 mod report;
+mod state;
 mod writer;
 
 use annotation::*;
@@ -68,6 +69,7 @@ use draw::{render_gff, render_leave, KNOB_Y_SCALE, LEGEND};
 use genes::*;
 use keys::*;
 use mouse::*;
+pub use state::write_view_figure;
 pub use writer::{Figure, Writer};
 
 /// Width of HistPlot's y gutter.
@@ -1161,21 +1163,27 @@ pub fn run_site_picker(
 /// tables at `filter`, as [`run_site_picker`] opens it but with nothing to
 /// apply: its knobs and 2D axes on `plan`'s scales, `s` saving the panel
 /// on screen as `plan` and `sheet` lay it out, each batch's `cells` on its
-/// page. Needs a terminal and at least one non-empty site table.
+/// page, arranged as `state` says (a `--view-state` file's, see
+/// [`state`]). Needs a terminal and at least one non-empty site table. In
+/// a named session its state is read, and its figure drawn, from outside
+/// ([`crate::tui::live`]).
 pub fn run_site_viewer(
     input_dir: &str,
     (tables, site_cells): (&FxHashMap<Box<str>, SiteTable>, &super::sites::SiteCells),
     filter: &SiteFilterArgs,
     genes: (Option<&str>, &[Box<str>]),
     (plan, sheet): (crate::qc::site_plot::Plan, Sheet),
-    cells: CellsShared,
+    (cells, state): (CellsShared, Option<&serde_json::Value>),
 ) -> anyhow::Result<()> {
     let scales = (plan.scales, plan.bins_on(&sheet));
     let mut picker = picker(input_dir, tables, site_cells, filter, genes, Some(scales))?;
     picker.cells = cells;
     picker.view_only(plan, sheet);
+    if let Some(state) = state {
+        state::set_from_file(&mut picker, state)?;
+    }
     picker.controls = Controls::new("qc_view").detect();
-    run_view(&mut picker)
+    crate::tui::run_live_view(&mut picker)
 }
 
 #[cfg(test)]
