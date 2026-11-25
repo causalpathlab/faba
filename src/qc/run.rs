@@ -933,6 +933,8 @@ mod tests {
         coverage: Vec<u64>,
         converted: Vec<u64>,
         control_coverage: Vec<u64>,
+        #[serde(default)]
+        control_converted: Vec<u64>,
         edit_ratio: Vec<u32>,
         fold: Vec<u32>,
         raw_log_odds: Vec<u64>,
@@ -975,6 +977,7 @@ mod tests {
                     coverage: takeu(&t.coverage),
                     converted: takeu(&t.converted),
                     control_coverage: takeu(&t.control_coverage),
+                    control_converted: takeu(&t.control_converted),
                     edit_ratio: take(&t.edit_ratio),
                     fold: take(&t.fold),
                     raw_log_odds: idx.iter().map(|&i| t.raw_log_odds[i].to_bits()).collect(),
@@ -1002,6 +1005,11 @@ mod tests {
                     coverage: s.coverage,
                     converted: s.converted,
                     control_coverage: s.control_coverage,
+                    // A snapshot from before the column reads none.
+                    control_converted: match s.control_converted.is_empty() {
+                        true => vec![0; s.pv.len()],
+                        false => s.control_converted,
+                    },
                     edit_ratio: s.edit_ratio.iter().map(|&b| f32::from_bits(b)).collect(),
                     fold: s.fold.iter().map(|&b| f32::from_bits(b)).collect(),
                     raw_log_odds: s.raw_log_odds.iter().map(|&b| f64::from_bits(b)).collect(),

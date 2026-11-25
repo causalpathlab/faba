@@ -533,11 +533,14 @@ Example:\n  \
             and the sites they remove are drawn apart from those kept; with none, every site is\n\
             drawn as kept. --fig-width and --fig-height (or --width, --height) are kept exactly;\n\
             --font-size sets the labels, --panel-only leaves only the plot, its axes and titles.\n\
-            --style view draws each panel as `faba qc`'s view draws it: a histogram as its\n\
-            knob's (every site faint, those passing every other threshold in front, the part\n\
-            the threshold drops apart, the threshold's bin dashed, on the view's bins unless\n\
-            --bins is given), a pair as its 2D panel, its marginals --marginal-size deep; with\n\
-            --panel-only, no title.\n\
+            --style view draws each panel as `faba qc`'s view draws it, the control arm (MUT)\n\
+            against the signal arm (WT): a histogram as its knob's (MUT light gray behind, WT's\n\
+            filtered out white and outlined over its kept dark, each threshold dashed at the\n\
+            cut between bars with the words for either side, a key at the right, on the view's\n\
+            bins unless --bins is given), a pair as its 2D panel, its marginals --marginal-size\n\
+            deep. MUT is drawn for the reads and the edit ratio, which each arm has; the rest\n\
+            draw WT alone. --front mut puts MUT in front, --p-axis neglog10 labels the p-value\n\
+            as -log10 p (else p); with --panel-only, no title and no key, unless --key.\n\
             `faba qc --plots` writes the same panels at its thresholds under qc_plots/panels/.",
         after_long_help = "\
 \tExample:\n\

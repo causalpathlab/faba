@@ -38,14 +38,9 @@ impl Squares {
         }
     }
 
-    /// Square `at`'s colour over white: [`KEPT`] or [`REMOVED`], by which
-    /// most of it is, deeper as it holds more of the busiest; none when
-    /// empty.
-    pub fn colour(&self, at: usize) -> Option<(u8, u8, u8)> {
-        self.tone(at, Palette::Colour)
-    }
-
-    /// [`Squares::colour`] in `palette`'s kept and removed colours.
+    /// Square `at`'s colour over white in `palette`'s kept and removed
+    /// colours, by which most of it is, deeper as it holds more of the
+    /// busiest; none when empty.
     pub fn tone(&self, at: usize, palette: Palette) -> Option<(u8, u8, u8)> {
         let (k, o) = (self.kept[at], self.other[at]);
         let n = k + o;

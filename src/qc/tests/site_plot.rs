@@ -595,16 +595,18 @@ fn the_view_style_is_the_size_and_font_asked() {
                     let titled = labels.iter().any(|l| l.1.ends_with(" · y: sites per bin"));
                     assert!(has("sites"), "{}", f.stem);
                     assert_eq!(titled, !alone, "{}", f.stem);
+                    // The threshold's line is orange-red in either palette.
                     let line = format!(
-                        r#"stroke="{}" stroke-width="0.8" stroke-dasharray"#,
-                        roles.line
+                        r#"stroke="{}" stroke-width="0.9" stroke-dasharray"#,
+                        crate::qc::arms::THRESHOLD
                     );
                     assert!(f.svg.contains(&line), "{}: no threshold line", f.stem);
                     assert!(f.svg.contains(crate::figure::FAINT), "{}", f.stem);
                     assert!(f.svg.contains(roles.bar), "{}", f.stem);
                 } else {
-                    let (x, y) = (Quantity::Pvalue, Quantity::Cells);
-                    assert!(has(x.name()) && has(y.name()), "{}", f.stem);
+                    // The p-value reads as p unless asked otherwise.
+                    let x = crate::qc::arms::PAxis::P.name();
+                    assert!(has(x) && has(Quantity::Cells.name()), "{}", f.stem);
                     assert_eq!(has("cells by -log10 p"), !alone, "{}", f.stem);
                 }
             }

@@ -27,6 +27,7 @@ pub fn site_table(
         coverage: Vec::new(),
         converted: Vec::new(),
         control_coverage: Vec::new(),
+        control_converted: Vec::new(),
         edit_ratio: Vec::new(),
         fold: Vec::new(),
         raw_log_odds: Vec::new(),
@@ -40,6 +41,7 @@ pub fn site_table(
         t.coverage.push(cov);
         t.converted.push(conv);
         t.control_coverage.push(ctl_cov);
+        t.control_converted.push(ctl_conv);
         t.edit_ratio.push(w);
         t.fold.push(if m <= 0.0 { f32::INFINITY } else { w / m });
         t.raw_log_odds.push(faba::hypothesis_tests::log_odds_ratio(

@@ -504,3 +504,19 @@ fn the_default_figures_are_unchanged() {
     let shown = [fingerprint(&panel()), fingerprint(&c.finish())];
     assert_eq!(shown, [3060415989485868728, 6542742469748360925]);
 }
+
+/// A title too long for its room drops its closing parenthetical, then
+/// what follows a colon, then is cut short with an ellipsis; one that fits
+/// is as it is.
+#[test]
+fn a_long_title_is_shortened_to_fit() {
+    let at = |s: &str, room: f64| super::fit_text(s, room, 8.0);
+    let w = |s: &str| super::text_width(s, 8.0);
+    let s = "TITLE1 TITLE2 (TITLE3)";
+    assert_eq!(at(s, w(s)), s);
+    assert_eq!(at(s, w(s) - 1.0), "TITLE1 TITLE2");
+    let s = "TITLE1: TITLE2 TITLE3 (TITLE4)";
+    assert_eq!(at(s, w("TITLE1: TITLE2")), "TITLE1");
+    let cut = at("TITLE1TITLE2TITLE3", w("TITLE1TI"));
+    assert!(cut.ends_with('…') && w(&cut) <= w("TITLE1TI"), "{cut}");
+}

@@ -374,6 +374,8 @@ fn only_is_what_turning_the_threshold_off_keeps() {
         let regained = kept_linear(&t, Some(&c), &off) - kept;
         assert_eq!(p.tally.alone[k as usize], regained, "{k:?}");
     }
+    // The reads have a value on each arm: the control's are drawn too.
+    focus_on(&mut p, Criterion::MinCoverage);
     let mut term = Terminal::new(TestBackend::new(150, 40)).unwrap();
     term.draw(|f| p.render(f)).unwrap();
     let text: String = term
@@ -384,9 +386,11 @@ fn only_is_what_turning_the_threshold_off_keeps() {
         .map(|c| c.symbol())
         .collect();
     assert!(text.contains("filtered out: sites failing this threshold."));
-    assert!(text.contains("filtered out only by this "));
-    assert!(text.contains("█ all sites "));
-    assert!(text.contains("pass the other thresholds "));
+    // The histogram's key counts its series: the signal arm's kept and
+    // filtered sites, the control arm's.
+    for said in ["WT kept ", "WT filtered ", "MUT "] {
+        assert!(text.contains(said), "{said}");
+    }
     assert!(!text.contains("rescued"));
     assert!(!text.contains("reason"));
 }
@@ -525,14 +529,14 @@ fn a_knob_starts_on_its_quantitys_scale() {
     // The defaults: -log10 p and the edit ratio linear, counts on a log.
     let (scale, svg) = at(&mut p, Criterion::MaxPv);
     assert_eq!(scale, Scale::Linear);
-    assert!(svg.contains("-log10 p (linear bins)"), "{svg}");
+    assert!(svg.contains("p-value (linear bins)"), "{svg}");
     assert_eq!(at(&mut p, Criterion::MinCoverage).0, Scale::Log);
     assert_eq!(at(&mut p, Criterion::MinEditRatio).0, Scale::Linear);
     let scales = Scales::parse(&["pv=log", "coverage=linear", "edit_ratio=log"]).unwrap();
     p.set_scales(scales, 40);
     let (scale, svg) = at(&mut p, Criterion::MaxPv);
     assert_eq!(scale, Scale::Log);
-    assert!(svg.contains("-log10 p (log bins)"), "{svg}");
+    assert!(svg.contains("p-value (log bins)"), "{svg}");
     assert_eq!(at(&mut p, Criterion::MinCoverage).0, Scale::Linear);
     assert_eq!(at(&mut p, Criterion::MaxEditRatio).0, Scale::Log);
     let page = serde_json::to_value(p.report_source().data()).unwrap();

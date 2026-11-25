@@ -99,17 +99,26 @@ impl SitePicker<'_> {
     }
 
     /// The site panels `plan` asks for of every modality at the thresholds
-    /// now, as `faba site-plot` draws them, under `panels/`. A quantity
+    /// now, as `faba site-plot` draws them, under `panels/`, the arms and
+    /// the axis titles as the view has them (`f`, `u`, `t`). A quantity
     /// asked for that a modality lacks is left out of that modality's.
     pub(super) fn site_panels(
         &self,
         plan: &crate::qc::site_plot::Plan,
         sheet: Sheet,
     ) -> anyhow::Result<Vec<Figure>> {
+        let plan = crate::qc::site_plot::Plan {
+            look: crate::qc::arms::ArmLook {
+                key: plan.look.key,
+                ..self.arm_look
+            },
+            titles: self.titles.clone(),
+            ..plan.clone()
+        };
         let mut out = Vec::new();
         for v in &self.views {
             let panels =
-                crate::qc::site_plot::Panels::of_view(&v.sites(), &self.filter, plan, sheet)?;
+                crate::qc::site_plot::Panels::of_view(&v.sites(), &self.filter, &plan, sheet)?;
             out.extend(panels.figures().into_iter().map(|f| Figure {
                 stem: format!("panels/{}", f.stem),
                 svg: f.svg,

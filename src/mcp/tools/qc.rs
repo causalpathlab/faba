@@ -215,6 +215,17 @@ mod tests {
             let flags = typed_flags(tool, &Arguments(a)).unwrap();
             let want = ["--style", "view", "--marginal-size", "0.25"];
             assert!(flags.windows(4).any(|w| w == want), "{tool}: {flags:?}");
+            // And the arms: which in front, how the p-value reads, the key.
+            let a = json!({ "style": "view", "front": "mut", "p_axis": "neglog10", "key": true });
+            let flags = typed_flags(tool, &Arguments(a)).unwrap();
+            for want in [
+                &["--front", "mut"][..],
+                &["--p-axis", "neglog10"],
+                &["--key"],
+            ] {
+                let has = flags.windows(want.len()).any(|w| w == want);
+                assert!(has, "{tool}: {want:?} in {flags:?}");
+            }
         }
     }
 

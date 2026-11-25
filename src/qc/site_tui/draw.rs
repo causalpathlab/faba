@@ -2,6 +2,8 @@
 
 use super::*;
 use crate::figure::style::{Palette, Sheet};
+use crate::qc::arms::ArmLook;
+use crate::qc::site_plot::Titles;
 use crate::site_analysis::miami::genemodel::draw_gene_model;
 use crate::tui::marker;
 
@@ -65,13 +67,13 @@ pub(super) fn knob_stem(t: &SiteTable, c: Criterion) -> String {
 }
 
 /// What the figure's bar colours mean in `palette`, named as its roles
-/// name them; on screen each plot has its own key.
+/// name them; the histogram has its own key beside it too.
 fn figure_key(palette: Palette) -> [String; 3] {
     let r = palette.roles();
     [
-        format!("Bars: {}, all sites; {}, kept;", r.faint_name, r.bar_name),
-        format!("  {}, filtered out only by the focused", r.removed_name),
-        "  threshold.".into(),
+        format!("Bars: light gray, MUT; {}, WT kept by", r.bar_name),
+        "  every threshold; white, WT filtered out by".into(),
+        "  any. Dashed: the focused threshold.".into(),
     ]
 }
 
@@ -240,20 +242,17 @@ fn knob_title(c: Criterion) -> String {
 }
 
 /// A knob's histogram as the view draws it, on screen, in its figure and
-/// as a `--style view` site panel: every site faint, those passing every
-/// other threshold in front, the part the knob's threshold drops in the
-/// palette's colour for it, the threshold's bin dashed.
+/// as a `--style view` site panel ([`ArmHist::draw`]): the control arm's
+/// sites behind the signal arm's, its filtered out apart from its kept,
+/// each threshold dashed at its cut with its words.
 pub(super) struct KnobHist<'a> {
-    pub(super) c: Criterion,
-    pub(super) column: &'a Column,
-    /// Per bin, the sites passing every other threshold.
-    pub(super) subset: &'a [usize],
-    /// The threshold's bin, `None` when it is off.
-    pub(super) pointer: Option<i32>,
+    pub(super) hist: &'a ArmHist,
     pub(super) scale: Scale,
     pub(super) y_scale: Scale,
     /// What its x axis shows ([`Criterion::axis_counted`]).
     pub(super) axis: &'static str,
+    pub(super) look: ArmLook,
+    pub(super) titles: &'a Titles,
 }
 
 impl KnobHist<'_> {
@@ -264,54 +263,37 @@ impl KnobHist<'_> {
         (x, y, w, h): (f64, f64, f64, f64),
         title: String,
     ) {
-        let (c, col, key) = (self.c, self.column, self.pointer);
-        // Histogram ticks: the smallest value in about six bins.
-        let (nb, lowest) = (col.lowest.len(), &col.lowest);
-        let every = (nb / 6).max(1);
-        let ticks = (0..nb)
-            .step_by(every)
-            .filter_map(|b| (b..nb).find(|&j| lowest[j].is_finite()))
-            .map(|b| (b, c.fmt_short(lowest[b])))
-            .collect::<Vec<_>>();
-        let pointer = key.map(|k| (k - col.hist.kmin) as usize);
-        let dropped = |b: usize| c.drops(col.hist.kmin + b as i32, key);
-        let values: Vec<f64> = col.hist.counts.iter().map(|&v| v as f64).collect();
-        let front: Vec<f64> = self.subset.iter().map(|&v| v as f64).collect();
-        let kept = canvas.style().palette.roles().bar;
-        Bars {
-            rotated: false,
-            values: &values,
-            front: Some(&front),
-            accent: &dropped,
-            colour: &|_| kept,
+        let c = self.hist.c;
+        let per_arm = self.hist.mutant.is_some();
+        let what = arm_axis(c, self.axis, per_arm, self.look.p_axis);
+        let own = format!("{what} ({} bins)", self.scale.name());
+        let (x_title, y_title) = arm_titles(c, own, self.titles);
+        let how = HistLook {
             y_scale: self.y_scale,
-            y_max: None,
-            ticks,
-            pointer,
-            marks: Vec::new(),
-            dividers: Vec::new(),
+            scale: self.scale,
+            look: self.look,
             title,
-            x_title: format!("{} ({} bins)", self.axis, self.scale.name()),
-            y_title: "sites".into(),
-        }
-        .draw(canvas, x, y, w, h);
+            x_title,
+            y_title,
+        };
+        self.hist.draw(canvas, (x, y, w, h), &how);
     }
 }
 
 /// Quantity `q` of `s` at the thresholds `f` as the view draws its knob's
-/// histogram ([`KnobHist`]), the whole of a figure `w` by `h` in `style`:
-/// the knob of `q` that is on (of the edit ratio's two, the lower), else
-/// its first, on its quantity's scale in `s`'s cache, its y on the view's
-/// opening scale, in about `bins` bins (`None`: the view's own). Its cells
-/// are named as counted: over the cells the cell QC kept when
-/// `kept_cells`, else over every cell.
+/// histogram ([`KnobHist`]), the whole of a figure `w` by `h` in `style`,
+/// its arms and titles as `look` and `titles` say: the knob of `q` that is
+/// on (of the edit ratio's two, the lower), else its first, on its
+/// quantity's scale in `s`'s cache, its y on the view's opening scale, in
+/// about `bins` bins (`None`: the view's own). Its cells are named as
+/// counted: over the cells the cell QC kept when `kept_cells`, else over
+/// every cell.
 pub(crate) fn view_hist(
     s: &Sites,
-    f: &SiteFilterArgs,
-    q: Axis,
+    (f, q): (&SiteFilterArgs, Axis),
     (bins, kept_cells): (Option<usize>, bool),
-    (w, h): (f64, f64),
-    style: &figure::style::Style,
+    ((w, h), style): ((f64, f64), &figure::style::Style),
+    (look, titles): (ArmLook, &Titles),
 ) -> String {
     let applies = || (q.criteria().iter().copied()).filter(|c| s.criteria.contains(c));
     let c = (applies().find(|c| !c.is_off(f)))
@@ -319,17 +301,16 @@ pub(crate) fn view_hist(
         .expect("a quantity drawn applies");
     let scale = c.scales()[knob_scales(&s.cache.scales)[c as usize]];
     let column = Column::binned(s, c, scale, bins);
-    let tally = Tally::new(s, c, &column);
+    let hist = ArmHist::new(s, c, f, column.hist.bins);
     let mut canvas = Canvas::styled(w, h, style);
     let (pw, ph) = canvas.page();
     KnobHist {
-        c,
-        column: &column,
-        subset: &tally.subset,
-        pointer: column.pointer(c, f),
+        hist: &hist,
         scale,
         y_scale: KNOB_Y_SCALE,
         axis: c.axis_counted(kept_cells),
+        look,
+        titles,
     }
     .draw(&mut canvas, (0.0, 0.0, pw, ph), knob_title(c));
     canvas.finish()
@@ -755,6 +736,7 @@ impl<'a> SitePicker<'a> {
             marginals: Default::default(),
             style: Default::default(),
             marginal_size: crate::qc::site_plot::MARGINAL_SIZE,
+            look: Default::default(),
             scales: v.cache.scales,
             bins: Some(v.cache.bins),
             titles: Default::default(),
@@ -785,33 +767,49 @@ impl<'a> SitePicker<'a> {
         (x, y, w, h): (f64, f64, f64, f64),
         title: String,
     ) {
+        self.knob_hist().draw(canvas, (x, y, w, h), title);
+    }
+
+    /// The focused knob's histogram as the view draws it.
+    fn knob_hist(&self) -> KnobHist<'_> {
         KnobHist {
-            c: self.criterion(),
-            column: &self.column,
-            subset: &self.tally.subset,
-            pointer: self.pointer_key(),
+            hist: &self.arm_hist,
             scale: self.scale(),
             y_scale: self.y_scale,
             axis: self.criterion().axis(),
+            look: self.arm_look,
+            titles: &self.titles,
         }
-        .draw(canvas, (x, y, w, h), title);
     }
 
     pub(super) fn render_hist(&mut self, frame: &mut Frame, area: Rect) {
+        let mut image = std::mem::take(&mut self.plot);
         let c = self.criterion();
-        let block = panel(format!(" {} · y: sites per bin ", c.axis()), true);
+        let knob = self.knob_hist();
+        let per_arm = self.arm_hist.mutant.is_some();
+        let what = arm_axis(c, c.axis(), per_arm, self.arm_look.p_axis);
+        let x_title = arm_titles(c, what.into(), &self.titles).0;
+        let block = panel(format!(" {x_title} · y: sites per bin "), true);
         let inner = block.inner(area);
         frame.render_widget(block, area);
-        let front: usize = self.tally.subset.iter().sum();
-        let n = self.view().table.len();
-        let key_text = key_line(&[
-            (DIM, format!("all sites {n}")),
-            (PLAIN, format!("pass the other thresholds {front}")),
-            (
-                ACCENTED,
-                format!("filtered out only by this {}", self.tally.alone[c as usize]),
-            ),
-        ]);
+        let h = &self.arm_hist;
+        let sum = |v: &[usize]| v.iter().sum::<usize>();
+        // As the bars draw each series: the control arm dim, the signal
+        // arm's filtered shaded and its kept solid.
+        let mut spans = vec![
+            Span::styled("█ ", PLAIN),
+            Span::styled(format!("WT kept {}   ", sum(&h.kept)), DIM),
+            Span::styled("░ ", PLAIN),
+            Span::styled(format!("WT filtered {}   ", sum(&h.filtered)), DIM),
+        ];
+        match &h.mutant {
+            Some(m) => spans.extend([
+                Span::styled("█ ", DIM),
+                Span::styled(format!("MUT {}", sum(m)), DIM),
+            ]),
+            None => spans.push(Span::styled("WT only", DIM)),
+        }
+        let key_text = Line::from(spans);
         let key_rows = if key_text.width() > inner.width as usize {
             2
         } else {
@@ -844,34 +842,24 @@ impl<'a> SitePicker<'a> {
             key,
         );
 
-        let mut image = std::mem::take(&mut self.plot);
         let drawn = self.controls.images().is_some_and(|picker| {
             image.render(frame, plot, picker, |w, h| {
-                figure::svg(w, h, |c| self.draw_hist(c, (0.0, 0.0, w, h), String::new()))
+                figure::svg(w, h, |c| knob.draw(c, (0.0, 0.0, w, h), String::new()))
             })
         });
         self.plot = image;
         if drawn {
             return;
         }
-        let col = &self.column;
-        let pointer = self.pointer_key();
-        let style = |k: i32| if c.drops(k, pointer) { ACCENTED } else { PLAIN };
-        HistPlot {
-            look: crate::tui::LOOK,
-            bins: col.hist.bins,
-            kmin: col.hist.kmin,
-            counts: &col.hist.counts,
-            style: &style,
-            subset: Some(&self.tally.subset),
+        let how = HistLook {
             y_scale: self.y_scale,
-            y_max: None,
-            pointer,
-            marks: Vec::new(),
-            x_label: None,
-            tick_every: None,
-        }
-        .render(frame.buffer_mut(), plot);
+            scale: self.scale(),
+            look: self.arm_look,
+            title: String::new(),
+            x_title: String::new(),
+            y_title: String::new(),
+        };
+        self.arm_hist.render_text(frame.buffer_mut(), plot, &how);
     }
 
     /// What applying would do: where it writes, each threshold (changed

@@ -47,15 +47,6 @@ impl Criterion {
         self != Criterion::MaxEditRatio
     }
 
-    /// Whether bin `k` lies on the dropped side of the threshold's bin.
-    pub(super) fn drops(self, k: i32, threshold: Option<i32>) -> bool {
-        match threshold {
-            Some(p) if self.keeps_high() => k < p,
-            Some(p) => k > p,
-            None => false,
-        }
-    }
-
     /// The threshold as shown: `≥ v` or `≤ v`, `None` when off.
     pub(super) fn shown(self, f: &SiteFilterArgs) -> Option<String> {
         let op = if self.is_max() { "≤" } else { "≥" };
@@ -219,11 +210,6 @@ impl Column {
         let d = c.display(raw).clamp(self.lo, self.hi);
         let kmax = self.hist.kmax();
         self.hist.bins.key(d).clamp(self.hist.kmin, kmax)
-    }
-
-    /// The bin holding `c`'s threshold in `f`, `None` when it is off.
-    pub(super) fn pointer(&self, c: Criterion, f: &SiteFilterArgs) -> Option<i32> {
-        (!c.is_off(f)).then(|| self.key_of(c, c.get(f)))
     }
 }
 
