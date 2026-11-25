@@ -179,7 +179,7 @@ faba <COMMAND> [OPTIONS]
 | `cluster-view` (`modules`, `blocks`) | View a `cluster` fit from its run record `{m}_blockmodel.run.json`, or from its input directory (it never fits: run `cluster` first): its gene modules against its cell modules, each module's sites, the genes you pin side by side, and a gene's full pileup, one track per cell module; GO terms beside the gene modules on demand; `--html` (Ctrl+E in the browser) writes it as one self-contained page to share, `--json` and `--overview` print its levels, `--figure` draws it. A `--within` record (`{m}_within.run.json`) opens as the list of its fits, the count fit first; `--group C3` opens the one within a cell module |
 | **Inspection & reference** ||
 | `pwm`                     | Build a position weight matrix around genomic sites |
-| `pileup` (`inspect`)      | Browse a gene's sites, or print an ASCII pileup, or draw a faceted Miami plot (a panel per `--track`) |
+| `pileup` (`inspect`)      | Browse a gene's sites, or print an ASCII pileup, or draw the browser's figure (a WT/MUT `--track` pair mirrored over the gene model) |
 | `metagene` (`mg`)         | Metagene histogram of site positions across gene features |
 | `docs`                    | Print the method write-ups compiled into this binary |
 | `mcp`                     | Serve the commands to an agent over the Model Context Protocol |
@@ -223,7 +223,7 @@ Producers write every candidate and apply no p-value cutoff. qc is where cells, 
 1. docs lists the method write-ups. With `query` it prints the sections named (a topic such as profiling, a command such as qc, or a section number).
 2. count, atoi, dartseq, apa, depth and snp each write one modality. run writes the pipeline (SNP, then count, A-to-I, m6A, APA) into one directory. dartseq needs control BAMs; without them, run skips m6A.
 3. qc filters a directory into a new one, with the site thresholds given. It does not edit the input. With `dry_run` it writes nothing and returns what the cell QC keeps and what each threshold removes: try thresholds that way first. qc_view reads back a qc output: the same counts at the thresholds it applied, its dropped sites with its kept, and with `plots` or `html` its figures and page.
-4. pileup, metagene and pwm read a directory's sites. metagene and pwm return their table and its figure as an image. site_plot draws a directory's site statistics as paper panels (histograms, pairs, marginals), thresholds optional, and returns them as images. pileup returns a binned table for a gene or region (and, with `figure`, a Miami SVG, as an image too). cluster_view shows a cluster fit level by level, from its run record ({m}_blockmodel.run.json) or the directory holding its tables, each level as JSON rows: by default an overview (the ELBO verdict, the modules' sizes, each gene module's top genes), then the modules grid, a gene module, a gene, the cell modules, the batches, the trace, the settings, and GO terms only with `go`; with `plots`, several figures as images.
+4. pileup, metagene and pwm read a directory's sites. metagene and pwm return their table and its figure as an image. site_plot draws a directory's site statistics as paper panels (histograms, pairs, marginals), thresholds optional, and returns them as images. pileup returns a binned table for a gene or region (and, with `figure`, the browser's figure as SVG, as an image too). cluster_view shows a cluster fit level by level, from its run record ({m}_blockmodel.run.json) or the directory holding its tables, each level as JSON rows: by default an overview (the ELBO verdict, the modules' sizes, each gene module's top genes), then the modules grid, a gene module, a gene, the cell modules, the batches, the trace, the settings, and GO terms only with `go`; with `plots`, several figures as images.
 5. cluster fits cells by their own site reads (a blockmodel of cell and gene modules, by variational inference) and writes its tables to `out`. In two rounds: first `modality` count, cell modules by gene counts (it writes count_blockmodel.run.json); then, with `within` naming that record, m6a or atoi within each of its cell modules. The second round writes {m}_within.run.json, which cluster_view opens: the list of its fits, and with `group` the fit within one cell module.
 6. When the user wants to arrange a figure by eye: view_open (qc_view or cluster_view) returns an `attach` line such as `faba attach faba-qc-view-1`; give it to the user to run in their terminal. When they say they are done, view_state reads what they chose and view_export draws that figure. view_list lists the live views.
 
@@ -443,20 +443,50 @@ Every figure faba writes takes its size on the page in inches: `--fig-width` and
 either or both (the other is then the figure's own). It is laid out for that size, its text set in
 points as it prints, and its outer size is kept exactly as asked, down to 1 by 0.75 inches. This
 holds for `metagene --figure`, `pwm --figure`, `qc --plots` (and `qc-view`), `site-plot`,
-`cluster-view --figure` (where `--width` and `--height` still work) and `pileup`'s Miami plot (8
-inches wide unless given; its tracks share the height given). A few figures keep a larger floor
-and say the least they need when asked for less: `pileup`'s Miami plot and `cluster-view`'s
+`cluster-view --figure` (where `--width` and `--height` still work) and `pileup`'s figure (5
+inches wide unless given; its plots share the height given). A few figures keep a larger floor
+and say the least they need when asked for less: `pileup`'s Miami plot (with `--bam` or
+`--cell-membership`) and `cluster-view`'s
 `--plot trace` and `--plot batches` (2 by 1.5 inches, their margins fixed), and `qc`'s full knob
 figure (its table and plots: 10 inches across) unless `--panel-only` draws the plot alone.
 
-The figures but `pileup`'s take the same look: `--font-size` sets every label in points (by default
+The figures but `pileup`'s Miami plot take the same look: `--font-size` sets every label in points (by default
 the text is fit to the page; a font above 8 points needs a page grown alike, and a page too small
 for it is refused, naming the size it needs), `--panel-only` draws the plot, its axes and their
 titles only (no title, file name, key or notes), and `--palette colour|gray` draws kept and removed
 (or a grid's blocks) in colour or in grays; in gray, `pwm`'s letters and `metagene`'s regions
 each take a shade of their own. Each is written as PDF, its labels as text, and PNG.
-`pileup` writes SVG and PDF (`--png` for a PNG too) and takes its own `--palette` for the cell
-types. Over MCP, each figure tool takes `width` and `height`, and all but `pileup` take `font_size`,
+`pileup` writes SVG and PDF (`--png` for a PNG too); its figure is what the browser saves with
+`s`: by default (`--window sites`) at the gene's sites, of any track: centred on them, their span
+and a quarter of it either side but 1 kb at least, kept within the gene (`--pad` instead runs from
+the first site to the last with that many bases either side), the gene model cut there and its cut
+ends marked; `--window gene` draws the whole gene, TSS to TES, as the browser
+opens (`0` there steps to the sites and back, `W` for every marked gene). The gene model is on top, titled by the gene symbol, and two alike tracks
+(`--track WT=... --track MUT=...`) one above the other mirrored on one zero line and one y scale,
+the converted reads in front of the total, laid out from the font down to about 1 by 2.5 inches
+(a page its rows cannot fit is refused, naming the least that is drawn). It is drawn as the
+browser draws that window on a 110-column terminal: the same bases per bar (`--bins` sets the bars
+across instead), the y scale `--yscale linear|sqrt|log10` (`log1p` names log10 too; `y` in the
+browser), sqrt labelled at evenly spread round counts (500, 1k, 1.5k) and log10 at powers of ten
+up each arm, its top too where it is one, the arms' names clear of those labels and of the bars, the difference
+row only with `--difference` (`D` hides it in the browser), two or three position ticks in Mb on a
+small page, at round positions, flat where they fit (moved in at a panel's ends), else turned, the
+chromosome under them naming the unit.
+In `--palette gray` the converted reads are near black over their total in light gray. The key to the colours goes
+`--key-at inside` (under the plots), `right` (beside them) or `alone` (`{out}_key`, `K` in the
+browser); `--panel-only` leaves it out unless `--key`.
+
+Many genes at once: `-q GENE1,GENE2,...` (or `--gene-file`, a gene a line) writes a figure
+each, `{out}_{SYMBOL}.svg` and `.pdf`, each at `--fig-width` by `--fig-height`, and `--row` (or
+`--grid COLSxROWS`) one figure of them all side by side, `{out}_row` (`{out}_grid`): each panel at
+that size, one y scale choice, one key for all, the y axis titled on the first panel of each row
+only, the others' plots taking that room. In the browser, mark genes in the gene list
+(Space), open them together (the apply key) and `s` writes the same files from the view as it is
+drawn (`|` lays them out one under another, side by side or in a grid). Over MCP, `pileup` takes
+`genes` as a list, `gene_file`, `row`, `grid`, `window`, `pad`, `yscale`, `difference`, `key` and `key_at`, and
+returns the figures as images. The Miami plot, drawn
+for `--bam` read depth or `--cell-membership` cell types, takes `--celltype-palette` for the cell
+types. Over MCP, each figure tool takes `width` and `height`, and each takes `font_size`,
 `panel_only` and `palette`; `site_plot`, `qc`, `qc_view`, `pwm`, `metagene` and `cluster_view`
 take `xlab` and `ylab`. MCP's `cluster_view` draws several of its figures in one call
 (`plots`: modules, trace, batches), each returned as an image at the `width` and `height` given.
@@ -535,6 +565,10 @@ faba pwm out/ -f genome.fa --batch-process --figure logo --fig-width 2 --font-si
   --palette gray --xlab "position relative to the site (nt)" --ylab "information (bits)"
 # The same panels from a qc output, at the thresholds it applied
 faba qc-view out_qc/ --plots -o figures/ --hist pv,cells --panel-only
+# Seven genes' pileups, an inch by 2.5 each at 7 points, WT over MUT, and all of them in a row
+faba pileup out/ -q GENE1,GENE2,GENE3 --batch-process --gtf genes.gtf \
+  --track 'WT=*_wt_*' --track 'MUT=*_mut_*' --fig-width 1 --fig-height 2.5 --font-size 7 \
+  --panel-only --row --key --key-at alone --out panels/pileup
 # A Miami plot with a panel per condition
 faba pileup out/ -q GENE1 --batch-process --gtf genes.gtf --bam s1_wt_rep1.bam s1_mut_rep1.bam \
   --track 'wt=*_wt_*,mut=*_mut_*' --out gene1_miami --png

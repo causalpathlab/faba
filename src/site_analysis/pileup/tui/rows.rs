@@ -18,7 +18,11 @@ impl PileupView<'_> {
     /// The rows top to bottom: contrast, tracks, then genes; a track
     /// flagged to mirror takes the next into its row, unless split.
     pub(super) fn rows(&self) -> Vec<Row> {
-        let mut rows: Vec<Row> = self.contrast.map(Row::Contrast).into_iter().collect();
+        let mut rows: Vec<Row> = self
+            .shown_contrast()
+            .map(Row::Contrast)
+            .into_iter()
+            .collect();
         let mut k = 0;
         while k < self.tracks.len() {
             if self.mirror && self.tracks[k].mirror_with_next {
@@ -31,6 +35,11 @@ impl PileupView<'_> {
         }
         rows.extend((!self.genes.is_empty()).then_some(Row::Genes));
         rows
+    }
+
+    /// The comparison whose row is drawn: none when `D` hid it.
+    pub(super) fn shown_contrast(&self) -> Option<Contrast> {
+        self.contrast.filter(|_| self.difference)
     }
 
     /// The top of `row`'s scale: the shared one, but for a track on its own

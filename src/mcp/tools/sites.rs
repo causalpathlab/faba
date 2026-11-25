@@ -18,8 +18,8 @@ pub(in crate::mcp) fn pileup_argv(a: &Arguments) -> Result<(Vec<String>, bool)> 
     let genes = a.strings("genes")?;
     let regions = a.strings("regions")?;
     ensure!(
-        !genes.is_empty() || !regions.is_empty(),
-        "give `genes` or `regions`"
+        !genes.is_empty() || !regions.is_empty() || a.str("gene_file").is_some(),
+        "give `genes`, `gene_file` or `regions`"
     );
     let bam = a.paths("bam")?;
     let gtf = a.path_opt("gtf")?;
@@ -54,6 +54,9 @@ pub(in crate::mcp) fn pileup_argv(a: &Arguments) -> Result<(Vec<String>, bool)> 
 pub(in crate::mcp) fn pileup(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
     let data = a.paths_req("data")?;
     let (mut argv, figure) = pileup_argv(a)?;
+    if figure && several(a)? {
+        return pileup_genes(a, cx, argv, &data);
+    }
     if figure {
         // `--out` is the prefix; the file written is `{prefix}.miami.svg`.
         let prefix = a.out_or(cx, (&named(&data[0], "pileup"), ""), |p| {
@@ -74,6 +77,86 @@ pub(in crate::mcp) fn pileup(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
     let tsv = a.out_or(cx, (&named(&data[0], "pileup"), ".tsv"), exists)?;
     let what = format!("pileup of {}", data.join(", "));
     Ok(vec![Content::Json(run_text(cx, argv, &tsv, &what)?)])
+}
+
+/// Whether a figure call draws several genes' figures: more than one in
+/// `genes`, a `gene_file`, or a `row` or `grid` of them.
+fn several(a: &Arguments) -> Result<bool> {
+    let many = a.strings("genes")?.len() > 1 || a.str("gene_file").is_some();
+    Ok(many || a.flag("row")? || a.str("grid").is_some())
+}
+
+/// Most figures returned as images by one call of several genes.
+const GENE_IMAGES: usize = 8;
+
+/// Several genes' figures: `{out}_{SYMBOL}.svg` each, `{out}_row.svg` or
+/// `{out}_grid.svg` of them all, `{out}_key.svg` for a key alone; listed,
+/// and the combined one (else the first few) returned as images.
+fn pileup_genes(
+    a: &Arguments,
+    cx: &Call,
+    mut argv: Vec<String>,
+    data: &[String],
+) -> Result<Vec<Content>> {
+    let combined = match (a.flag("row")?, a.str("grid")) {
+        (true, _) => Some("row"),
+        (false, Some(_)) => Some("grid"),
+        _ => None,
+    };
+    let prefix = a.out_or(cx, (&named(&data[0], "pileup"), ""), |p| {
+        written_under(p).next().is_some()
+    })?;
+    ensure!(
+        written_under(&prefix).next().is_none(),
+        "figures under {prefix}_ exist; not replacing them: choose another `out`"
+    );
+    push_flag(&mut argv, "--out", &prefix);
+    let outputs: Vec<PathBuf> = combined
+        .map(|c| PathBuf::from(format!("{prefix}_{c}.svg")))
+        .into_iter()
+        .collect();
+    let what = format!("pileup figures of {}", data.join(", "));
+    let printed = cx.run_making(command(&argv)?, &outputs, &what)?;
+    let mut svgs: Vec<String> = written_under(&prefix).collect();
+    svgs.sort();
+    let mut content = vec![Content::Json(json!({
+        "written": svgs.iter().map(|p| absolute(p)).collect::<Vec<_>>(),
+        "stdout": printed.trim(),
+    }))];
+    // The figure of them all first, then each gene's.
+    let first = combined.map(|c| format!("{prefix}_{c}.svg"));
+    let shown = first
+        .iter()
+        .chain(svgs.iter().filter(|p| Some(*p) != first.as_ref()));
+    for svg in shown.take(GENE_IMAGES) {
+        match svg_png(svg) {
+            Ok(png) => content.push(Content::Png(png)),
+            Err(e) => log::warn!("{svg}: not drawn as an image: {e:#}"),
+        }
+    }
+    Ok(content)
+}
+
+/// The SVGs written under `prefix` as several genes' figures are:
+/// `{prefix}_*.svg`.
+fn written_under(prefix: &str) -> impl Iterator<Item = String> {
+    let path = Path::new(prefix);
+    let dir = match path.parent() {
+        Some(d) if !d.as_os_str().is_empty() => d.to_path_buf(),
+        _ => PathBuf::from("."),
+    };
+    let stem = format!(
+        "{}_",
+        path.file_name()
+            .map(|f| f.to_string_lossy().to_string())
+            .unwrap_or_default()
+    );
+    let files = std::fs::read_dir(&dir).into_iter().flatten().flatten();
+    files.filter_map(move |e| {
+        let name = e.file_name().to_string_lossy().to_string();
+        let ours = name.starts_with(&stem) && name.ends_with(".svg");
+        ours.then(|| dir.join(name).to_string_lossy().to_string())
+    })
 }
 
 pub(in crate::mcp) fn metagene(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {

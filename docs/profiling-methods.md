@@ -621,8 +621,10 @@ None of these fit a model or produce a p-value.
   recorded (or the recorded one not on this machine), the view asks for a FASTA, or downloads one
   from GENCODE or Ensembl into `~/faba_refs/` as `faba run` does.
 - **`pileup`** aggregates the matrix rows matched by `--genes` and/or `--regions` into one ASCII
-  histogram, or (with `--gtf`, `--bam`, `--format`, `--svg` or `--png`) a faceted Miami plot:
-  sites above, gene model in the middle, read depth below, one panel per cell type.
+  histogram, or (with `--gtf`, `--format`, `--svg` or `--png`) the figure the browser saves: the
+  gene model on top, a pair of alike tracks one above the other mirrored on one y scale. With
+  `--bam` or `--cell-membership` it draws a faceted Miami plot instead: sites above, gene model in
+  the middle, read depth below, one panel per cell type.
 - **`metagene`** follows MetaPlotR [19], so its output can be held against published m6A profiles.
   Each site is placed on **every coding transcript** containing it — 1/k of the site on each of k
   under `--isoforms weighted` (the default, as in `qc`'s metagene panel), the whole site on each

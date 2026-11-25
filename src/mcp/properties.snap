@@ -313,30 +313,42 @@ pileup bam type="array" items="string"
 pileup bins type="integer" minimum=0.0
 pileup cell_barcode_tag type="string"
 pileup cell_membership type="string"
+pileup celltype_palette type="string" enum=["auto","category10","category20","dark2","okabeito","paired","set1","set2","set3"]
 pileup data type="array" items="string" minItems=1.0
 pileup depth type="array" items="string"
+pileup difference type="boolean"
 pileup dpi type="integer" minimum=0.0
 pileup exact_barcode_match type="boolean"
 pileup figure type="boolean"
+pileup font_size type="number"
+pileup gene_file type="string"
 pileup genes type="array" items="string"
+pileup grid type="string"
 pileup gtf type="string"
-pileup height type="number" minimum=1.5
+pileup height type="number" minimum=0.75
+pileup key type="boolean"
+pileup key_at type="string" enum=["alone","inside","right"]
 pileup membership_barcode_col type="integer" minimum=0.0
 pileup membership_celltype_col type="integer" minimum=0.0
 pileup modality type="string" enum=["atoi","m6a"]
 pileup options type="array" items="string"
 pileup out type="string"
-pileup palette type="string" enum=["auto","category10","category20","dark2","okabeito","paired","set1","set2","set3"]
+pileup pad type="integer" minimum=0.0
+pileup palette type="string" enum=["colour","gray"]
+pileup panel_only type="boolean"
 pileup quiet type="boolean"
 pileup raster_threshold type="integer" minimum=0.0
 pileup regions type="array" items="string"
+pileup row type="boolean"
 pileup separate type="boolean"
 pileup signal type="string" enum=["log10-sum","nnz","sum"]
 pileup site_signal type="string" enum=["count","mut-coverage","neg-log10-pv","wt-coverage"]
 pileup sites_parquet type="string"
 pileup top_modality type="array" items="string"
 pileup track type="array" items="string"
-pileup width type="number" minimum=2.0
+pileup width type="number" minimum=1.0
+pileup window type="string" enum=["gene","sites"]
+pileup yscale type="string" enum=["linear","log10","sqrt"]
 pwm data type="array" items="string" minItems=1.0
 pwm figure type="boolean"
 pwm font_size type="number"

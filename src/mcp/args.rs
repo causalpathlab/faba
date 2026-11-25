@@ -644,7 +644,7 @@ mod tests {
     #[test]
     fn figure_tools_take_the_panels_look() {
         let a = Arguments(json!({ "font_size": 6, "panel_only": true, "palette": "gray" }));
-        for tool in ["metagene", "pwm", "qc"] {
+        for tool in ["metagene", "pwm", "qc", "pileup"] {
             assert_eq!(
                 typed_flags(tool, &a).unwrap(),
                 ["--font-size", "6", "--panel-only", "--palette", "gray"],
@@ -653,6 +653,44 @@ mod tests {
         }
         let e = typed_flags("qc", &Arguments(json!({ "palette": "blue" }))).unwrap_err();
         assert!(e.to_string().contains("one of colour, gray"), "{e}");
+    }
+
+    /// Many genes' pileups in one call: the genes, a row or grid of them,
+    /// the y scale, the difference row and the key, each as its flag.
+    #[test]
+    fn pileup_takes_many_genes_a_row_and_the_views_state() {
+        let args = json!({
+            "data": ["s.zarr"], "genes": ["GENE1", "GENE2"], "figure": true,
+            "row": true, "yscale": "sqrt", "difference": true, "key": true,
+            "key_at": "alone", "bins": 40, "window": "gene", "pad": 30,
+        });
+        let (argv, figure) =
+            crate::mcp::tools::sites::pileup_argv(&Arguments(with_typed("pileup", args).unwrap()))
+                .unwrap();
+        assert!(figure);
+        let has = |w: &[&str]| argv.windows(w.len()).any(|x| x == w);
+        for want in [
+            &["-q", "GENE1,GENE2"][..],
+            &["--row"],
+            &["--yscale", "sqrt"],
+            &["--difference"],
+            &["--key"],
+            &["--key-at", "alone"],
+            &["--bins", "40"],
+            &["--window", "gene"],
+            &["--pad", "30"],
+        ] {
+            assert!(has(want), "{want:?} in {argv:?}");
+        }
+        let grid = json!({ "data": ["s.zarr"], "gene_file": "genes.txt", "grid": "3x2" });
+        let (argv, _) =
+            crate::mcp::tools::sites::pileup_argv(&Arguments(with_typed("pileup", grid).unwrap()))
+                .unwrap();
+        assert!(argv.windows(2).any(|w| w == ["--grid", "3x2"]), "{argv:?}");
+        assert!(
+            argv.windows(2).any(|w| w == ["--gene-file", "genes.txt"]),
+            "{argv:?}"
+        );
     }
 
     /// Axis titles: a text each on the logo and the profile, a `q=TEXT`

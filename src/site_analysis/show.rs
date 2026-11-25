@@ -32,6 +32,15 @@ impl Show {
         }
     }
 
+    /// The y axis' title in a figure, where a key names the colours:
+    /// [`Show::label`], but `reads` for both.
+    pub fn axis(self, on: &str, off: &str) -> String {
+        match self {
+            Show::Both => "reads".into(),
+            _ => self.label(on, off),
+        }
+    }
+
     /// A short name, for the key that switches to it.
     pub fn short(self) -> &'static str {
         match self {

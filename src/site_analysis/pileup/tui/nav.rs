@@ -6,7 +6,103 @@ use crate::figure::term::PlotImage;
 use crate::site_analysis::pileup::{parse_query, Query};
 use genomic_data::coordinates::chr_eq;
 
+/// What a figure's window spans.
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Window {
+    /// The whole gene, TSS to TES, as the browser opens.
+    Gene,
+    /// At the gene's sites, of any track: centred on them, 1 kb at least,
+    /// or padded as asked (`0` in the browser).
+    Sites,
+}
+
+impl Window {
+    pub fn name(self) -> &'static str {
+        match self {
+            Window::Gene => "gene",
+            Window::Sites => "sites",
+        }
+    }
+}
+
+/// The least a window at the sites spans when no pad is asked for.
+pub(super) const LEAST_SITES_WINDOW: i64 = 1_000;
+
+/// A window at sites from `lo` to `hi` when no pad is asked for: centred
+/// on them, their span and a quarter of it either side, but
+/// [`LEAST_SITES_WINDOW`] at least.
+fn around(lo: i64, hi: i64) -> (i64, i64) {
+    let span = hi - lo;
+    let w = (span + 2 * (span / 4)).max(LEAST_SITES_WINDOW);
+    let start = lo + span / 2 - w / 2;
+    (start, start + w)
+}
+
 impl PileupView<'_> {
+    /// The first and last site of any track (a read or its total), when
+    /// there are any.
+    fn sites_span(&self) -> Option<(i64, i64)> {
+        let reads = self.tracks.iter().flat_map(|t| {
+            let behind = t.behind().unwrap_or_default();
+            t.front().iter().chain(behind)
+        });
+        let at = reads.filter(|p| p.1 > 0.0).map(|p| p.0);
+        at.fold(None, |span, p| match span {
+            None => Some((p, p)),
+            Some((lo, hi)) => Some((lo.min(p), hi.max(p))),
+        })
+    }
+
+    /// The window at the sites: from the first to the last and the pad
+    /// either side, else around them (see [`around`]); within the extent,
+    /// a base a bar at least; the whole extent when there are none.
+    pub(super) fn sites_window(&self) -> (i64, i64) {
+        let Some((lo, hi)) = self.sites_span() else {
+            return self.extent;
+        };
+        let (mut lo, mut hi) = match self.pad {
+            Some(pad) => (lo - pad.max(0), hi + pad.max(0)),
+            None => around(lo, hi),
+        };
+        let least = self.columns.max(1) as i64;
+        if hi - lo < least {
+            let mid = lo + (hi - lo) / 2;
+            (lo, hi) = (mid - least / 2, mid - least / 2 + least);
+        }
+        let (flo, fhi) = self.extent;
+        let w = (hi - lo).min(fhi - flo);
+        let lo = lo.clamp(flo, fhi - w);
+        (lo, lo + w)
+    }
+
+    /// The window `w` asks for: the whole gene or its sites; the cursor
+    /// kept in it.
+    pub(super) fn set_window(&mut self, w: Window) {
+        self.window = match w {
+            Window::Gene => self.extent,
+            Window::Sites => self.sites_window(),
+        };
+        self.cursor = self.cursor.clamp(self.window.0, self.window.1);
+        self.plots.iter_mut().for_each(PlotImage::invalidate);
+    }
+
+    /// Which of the two the window is, when it is either.
+    pub(super) fn window_is(&self) -> Option<Window> {
+        match self.window {
+            w if w == self.extent => Some(Window::Gene),
+            w if w == self.sites_window() => Some(Window::Sites),
+            _ => None,
+        }
+    }
+
+    /// `0`: the whole gene, or from the whole gene its sites.
+    pub(super) fn whole_or_sites(&mut self) {
+        match self.window == self.extent {
+            true => self.set_window(Window::Sites),
+            false => self.set_window(Window::Gene),
+        }
+    }
+
     pub(super) fn edges(&self) -> BinEdges {
         BinEdges::new(self.window.0, self.window.1, self.columns)
     }

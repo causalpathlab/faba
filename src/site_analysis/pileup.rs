@@ -54,6 +54,29 @@ impl PileupSignal {
     }
 }
 
+/// How the bars' heights are spread up the y axis.
+#[derive(clap::ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum YScale {
+    /// As the values are.
+    #[default]
+    Linear,
+    /// On their square roots.
+    Sqrt,
+    /// On log10(1 + v), ticked at powers of ten (`log1p` names it too).
+    #[value(name = "log10", alias = "log1p")]
+    Log10,
+}
+
+impl From<YScale> for crate::tui::ui::Scale {
+    fn from(y: YScale) -> Self {
+        match y {
+            YScale::Linear => Self::Linear,
+            YScale::Sqrt => Self::Sqrt,
+            YScale::Log10 => Self::Log,
+        }
+    }
+}
+
 #[derive(clap::ValueEnum, Clone, Debug)]
 pub enum SiteSignal {
     /// Number of sites per bin
@@ -87,8 +110,8 @@ pub enum FigFormat {
 
 #[derive(Args, Debug, Clone)]
 #[command(
-    mut_arg("fig_width", |a| a.help("The figure's width in inches (default 8)")),
-    mut_arg("fig_height", |a| a.help("The figure's height in inches, its panels' tracks sharing it (default: as tall as they need)"))
+    mut_arg("fig_width", |a| a.help("The figure's width in inches, each gene's panel's with several genes (default 5, or 8 with --bam or --cell-membership)")),
+    mut_arg("fig_height", |a| a.help("The figure's height in inches, each gene's panel's with several genes, its tracks sharing it (default: as tall as they need)"))
 )]
 pub struct PileupArgs {
     #[arg(
@@ -124,7 +147,10 @@ pub struct PileupArgs {
         help = "Genes to pile up: comma-separated symbols (`GENE1,GENE2`) or Ensembl IDs",
         long_help = "Genes to pile up: comma-separated symbols (`GENE1,GENE2`) or Ensembl IDs,\n\
                      case-insensitive. Uses the shared relaxed gene-name scheme;\n\
-                     all matched genes are aggregated into one pileup."
+                     the printed pileup and the TSV aggregate all matched genes into one.\n\
+                     The figure (--batch-process with --gtf) draws each its own:\n\
+                     `{out}_{SYMBOL}.svg` and `.pdf`, each --fig-width by --fig-height,\n\
+                     and with --row or --grid one figure of them all (see --gene-file)."
     )]
     genes: Vec<Box<str>>,
 
@@ -167,10 +193,13 @@ pub struct PileupArgs {
     #[arg(
         short = 'n',
         long = "bins",
-        default_value_t = 80,
-        help = "Number of bins along the gene body"
+        help = "Number of bins along the gene body (default 80; a figure: the browser's bars on a 110-column terminal)",
+        long_help = "Number of bins along the gene body. The printed pileup and the TSV take\n\
+                     80 by default. The figure (--batch-process with --gtf) takes the\n\
+                     browser's bars on a 110-column terminal, so each bar holds the bases it\n\
+                     holds on screen; --bins sets the bars across instead."
     )]
-    num_bins: usize,
+    num_bins: Option<usize>,
 
     #[arg(
         long = "height",
@@ -362,12 +391,91 @@ pub struct PileupArgs {
     dpi: u32,
 
     #[arg(
-        long = "palette",
+        long = "celltype-palette",
         value_enum,
         default_value = "auto",
-        help = "Qualitative color palette for cell-type panels"
+        help = "Qualitative color palette for the cell-type panels of the --bam or --cell-membership figure"
     )]
-    palette: Palette,
+    celltype_palette: Palette,
+
+    /// The figure's look: `--font-size`, `--panel-only`, `--palette`.
+    #[command(flatten)]
+    look: crate::figure::style::StyleArgs,
+
+    #[arg(
+        long = "yscale",
+        value_enum,
+        default_value = "linear",
+        help = "The bars' y scale, in the figure and as the browser opens: linear, sqrt (ticked at evenly spread round counts) or log10 (of 1 + reads, ticked at powers of ten; log1p is the same); `y` steps it in the browser"
+    )]
+    yscale: YScale,
+
+    #[arg(
+        long = "difference",
+        default_value_t = false,
+        help = "Draw the row comparing the first two tracks (WT vs MUT) in the figure, as the browser does until `D` hides it"
+    )]
+    difference: bool,
+
+    #[arg(
+        long = "key",
+        default_value_t = false,
+        help = "Draw the key to the colours under --panel-only too (it is left out there otherwise)"
+    )]
+    key: bool,
+
+    #[arg(
+        long = "key-at",
+        value_enum,
+        default_value = "inside",
+        help = "Where the figure's key goes: inside (under the plots), right (beside them) or alone (`{out}_key`, one key for a row of panels; `K` in the browser)"
+    )]
+    key_at: tui::KeyAt,
+
+    #[arg(
+        long = "window",
+        value_enum,
+        help = "What the figure spans: sites (default), the gene's sites of any track, centred on them, 1 kb at least (or --pad either side); or gene, TSS to TES. The browser opens on the whole gene; `0` steps to the sites and back",
+        long_help = "What the figure (--batch-process with --gtf) spans, each gene's own:\n\
+                     sites (the default) its sites, of any track, centred on them, their\n\
+                     span and a quarter of it either side, 1 kb at least, within the gene\n\
+                     (--pad: from the first to the last, that many bases either side), the\n\
+                     gene model cut there and its cut ends marked;\n\
+                     gene, the whole gene, TSS to TES. The bases per bar follow from it as\n\
+                     in the browser: the window over the bars across. The browser opens on\n\
+                     the whole gene; `0` steps to its sites and back (`W` every marked gene)."
+    )]
+    window: Option<tui::Window>,
+
+    #[arg(
+        long = "pad",
+        value_name = "BP",
+        help = "Bases either side of the sites where the window is at them (--window sites, `0` in the browser), from the first to the last; by default the window is centred on the sites, their span and a quarter of it either side, 1 kb at least, within the gene"
+    )]
+    pad: Option<u32>,
+
+    #[arg(
+        long = "gene-file",
+        value_name = "FILE",
+        value_hint = clap::ValueHint::FilePath,
+        help = "Genes to draw, one figure each, read from a file (a symbol or ID a line, or separated by commas or spaces; `#` starts a comment), with any -q"
+    )]
+    gene_file: Option<Box<str>>,
+
+    #[arg(
+        long = "row",
+        default_value_t = false,
+        conflicts_with = "grid",
+        help = "With several genes, also draw them side by side as one figure (`{out}_row`), each panel at --fig-width by --fig-height, one key for all"
+    )]
+    row: bool,
+
+    #[arg(
+        long = "grid",
+        value_name = "COLSxROWS",
+        help = "With several genes, also draw them as one figure in a grid (`{out}_grid`), COLS to a row, each panel at --fig-width by --fig-height, one key for all"
+    )]
+    grid: Option<Box<str>>,
 
     #[arg(
         long = "raster-threshold",
@@ -906,7 +1014,11 @@ fn interactive(base: &PileupArgs, source: Source, first: Option<Loaded>) -> anyh
     let mut current = first;
     let mut status: Option<String> = None;
     // How the bars are drawn carries from one gene to the next.
-    let mut settings = tui::Settings::default();
+    let mut settings = tui::Settings {
+        y_scale: Some(base.yscale.into()),
+        pad: base.pad.map(i64::from),
+        ..tui::Settings::default()
+    };
     loop {
         let Source {
             args,
@@ -1071,6 +1183,16 @@ impl PileupArgs {
         Ok((out, groups))
     }
 
+    /// The figure these arguments draw: the Miami figure for `--bam` reads
+    /// or `--cell-membership` cell types, which only it draws; else the
+    /// browser's rows.
+    fn figure_kind(&self) -> crate::figure::size::Figure {
+        match !self.bam_files.is_empty() || self.cell_membership_file.is_some() {
+            true => crate::figure::size::Figure::Miami,
+            false => crate::figure::size::Figure::Pileup,
+        }
+    }
+
     /// `--gtf`, or else the GFF the first matrix was made from, found in its
     /// run record.
     fn annotation(&self) -> Option<Box<str>> {
@@ -1080,10 +1202,11 @@ impl PileupArgs {
 }
 
 pub fn run_pileup(args: &PileupArgs) -> anyhow::Result<()> {
-    // The figure's size, refused before anything is read: its margins do
-    // not shrink with its text (see `Figure::least`); its tracks' floor,
-    // which depends on the panels, is checked as it is drawn.
-    crate::figure::size::Figure::Pileup.page(&args.size)?;
+    // The figure's size and look, refused before anything is read: the
+    // Miami figure's margins do not shrink with its text (see
+    // `Figure::least`); the browser's rows' floor, which depends on them
+    // and the font, is checked as they are drawn.
+    crate::figure::style::Sheet::new(args.figure_kind(), &args.size, &args.look)?;
     let mut base = args.clone();
     if base.data_files.is_empty() {
         let ask = crate::site_analysis::input_picker::ask_inputs(
@@ -1126,6 +1249,9 @@ pub fn run_pileup(args: &PileupArgs) -> anyhow::Result<()> {
     if interactive && args.genes.is_empty() && args.regions.is_empty() {
         return self::interactive(base, source, None);
     }
+    if figure_mode && args.figure_kind() == crate::figure::size::Figure::Pileup {
+        return run_rows_figure(args, groups);
+    }
     let selector = Selector::build(&args.genes, &args.regions)?;
     if figure_mode {
         return run_miami_figure(args, groups, &selector);
@@ -1152,7 +1278,7 @@ fn write_pileup(args: &PileupArgs, loaded: &Loaded, print: bool) -> anyhow::Resu
         .chain(loaded.sites.iter().map(|sa| sa.num_sites))
         .max()
         .unwrap_or(0);
-    let effective_bins = args.num_bins.min(max_sites.max(1));
+    let effective_bins = args.num_bins.unwrap_or(80).min(max_sites.max(1));
     let is_log = matches!(args.signal, PileupSignal::Log10Sum);
 
     let mut pileups: Vec<BinnedPileup> = loaded

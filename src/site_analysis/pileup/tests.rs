@@ -629,3 +629,110 @@ fn each_track_reads_depth_from_its_own_bams() {
     let bins: Vec<&[f64]> = drawn.iter().map(|p| &*p.depth_bins).collect();
     assert_eq!(bins, [&[1.0, 1.0][..], &[0.0, 0.0], &[3.0, 3.0]]);
 }
+
+/// `faba pileup x.zarr` and `line`, or why its command line refuses them.
+fn figure_args(line: &[&str]) -> anyhow::Result<PileupArgs> {
+    use clap::FromArgMatches;
+    let cmd = crate::faba_command()
+        .find_subcommand("pileup")
+        .unwrap()
+        .clone();
+    let all = ["pileup", "x.zarr"].into_iter().chain(line.iter().copied());
+    Ok(PileupArgs::from_arg_matches(
+        &cmd.try_get_matches_from(all)?,
+    )?)
+}
+
+/// Genes come from -q and a gene file (lines, commas or spaces, `#`
+/// comments), each once whatever its case.
+#[test]
+fn the_genes_are_q_and_the_gene_file_each_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("genes.txt");
+    std::fs::write(&file, "GENE2, GENE3 # a comment\n\n#GENE9\ngene1\tGENE4\n").unwrap();
+    let a = figure_args(&["-q", "GENE1", "--gene-file", file.to_str().unwrap()]).unwrap();
+    let genes = a.gene_list().unwrap();
+    assert_eq!(
+        genes,
+        ["GENE1", "GENE2", "GENE3", "GENE4"].map(Box::<str>::from)
+    );
+    let missing = figure_args(&["--gene-file", "/no/such.txt"]).unwrap();
+    assert!(missing
+        .gene_list()
+        .unwrap_err()
+        .to_string()
+        .contains("/no/such.txt"));
+}
+
+/// `--row` lays every gene side by side, `--grid COLSxROWS` COLS to a
+/// row; a grid too small for the genes, or not written so, is refused.
+#[test]
+fn row_and_grid_lay_the_genes_out() {
+    let row = figure_args(&["--row"])
+        .unwrap()
+        .combine(5)
+        .unwrap()
+        .unwrap();
+    assert_eq!((row.cols, row.name), (5, "row"));
+    let grid = figure_args(&["--grid", "3x2"])
+        .unwrap()
+        .combine(5)
+        .unwrap()
+        .unwrap();
+    assert_eq!((grid.cols, grid.name), (3, "grid"));
+    assert!(figure_args(&[]).unwrap().combine(5).unwrap().is_none());
+    let small = figure_args(&["--grid", "2x2"])
+        .unwrap()
+        .combine(5)
+        .unwrap_err();
+    assert!(small.to_string().contains("holds 4"), "{small}");
+    for bad in ["3", "0x2", "ax2"] {
+        let e = figure_args(&["--grid", bad])
+            .unwrap()
+            .combine(5)
+            .unwrap_err();
+        assert!(e.to_string().contains("COLSxROWS"), "{bad}: {e}");
+    }
+    assert!(
+        figure_args(&["--row", "--grid", "2x3"]).is_err(),
+        "one or the other"
+    );
+}
+
+/// The figure's flags are the browser's state: the y scale (log10 the
+/// browser's log, log1p naming it too), both channels, the difference row, the key's place.
+#[test]
+fn the_figures_flags_are_the_browsers_state() {
+    use crate::tui::ui::Scale;
+    let plain = figure_args(&[]).unwrap().figure_settings();
+    assert_eq!(plain.y_scale, Some(Scale::Linear));
+    assert_eq!(plain.difference, Some(false));
+    assert_eq!(plain.key_at, Some(tui::KeyAt::Inside));
+    assert_eq!(plain.show, Some(crate::site_analysis::show::Show::Both));
+    let a = figure_args(&[
+        "--yscale",
+        "log10",
+        "--difference",
+        "--key-at",
+        "alone",
+        "--key",
+    ])
+    .unwrap();
+    let s = a.figure_settings();
+    assert_eq!(s.y_scale, Some(Scale::Log));
+    assert_eq!(s.difference, Some(true));
+    assert_eq!(s.key_at, Some(tui::KeyAt::Alone));
+    assert!(a.key);
+    let sqrt = figure_args(&["--yscale", "sqrt"])
+        .unwrap()
+        .figure_settings();
+    assert_eq!(sqrt.y_scale, Some(Scale::Sqrt));
+    let log1p = figure_args(&["--yscale", "log1p"]).unwrap();
+    assert_eq!(log1p.figure_settings().y_scale, Some(Scale::Log));
+    assert!(
+        figure_args(&["--yscale", "log"]).is_err(),
+        "log10, by its name"
+    );
+    // Without --bins the printed pileup keeps its 80, the figure the browser's bars.
+    assert_eq!(figure_args(&[]).unwrap().num_bins, None);
+}

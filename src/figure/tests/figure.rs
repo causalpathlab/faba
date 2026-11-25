@@ -502,7 +502,7 @@ fn the_default_figures_are_unchanged() {
     }
     .draw(&mut c, 0.0, 0.0, 300.0, 200.0);
     let shown = [fingerprint(&panel()), fingerprint(&c.finish())];
-    assert_eq!(shown, [3060415989485868728, 6542742469748360925]);
+    assert_eq!(shown, [3060415989485868728, 16840006330901660691]);
 }
 
 /// A title too long for its room drops its closing parenthetical, then

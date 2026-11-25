@@ -22,8 +22,10 @@ const FIXED_MIN: (f64, f64) = (2.0, 1.5);
 /// which its command checks and MCP's `width` and `height` state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Figure {
-    /// `faba pileup`'s Miami figure.
+    /// `faba pileup`'s figure: the browser's rows.
     Pileup,
+    /// `faba pileup`'s Miami figure, of `--bam` reads or `--cell-membership` cell types.
+    Miami,
     /// `faba cluster-view`'s modules grid.
     Modules,
     /// `faba cluster-view`'s trace.
@@ -43,13 +45,13 @@ pub enum Figure {
 
 impl Figure {
     /// The least size, in inches: [`MIN`], its text and margins shrinking
-    /// with the font, but for pileup's figure and cluster-view's trace and
+    /// with the font, but for pileup's Miami figure and cluster-view's trace and
     /// batches, whose margins do not ([`FIXED_MIN`]). A figure may need
     /// more as it is laid out (a qc figure's table, pileup's tracks), and
     /// says so as it is drawn.
     pub const fn least(self) -> (f64, f64) {
         match self {
-            Self::Pileup | Self::Trace | Self::Batches => FIXED_MIN,
+            Self::Miami | Self::Trace | Self::Batches => FIXED_MIN,
             _ => MIN,
         }
     }
@@ -58,6 +60,7 @@ impl Figure {
     pub const fn name(self) -> &'static str {
         match self {
             Self::Pileup => "a pileup figure",
+            Self::Miami => "a pileup figure with bam or cell_membership",
             Self::Modules => "the modules figure",
             Self::Trace => "the trace figure",
             Self::Batches => "the batches figure",
@@ -204,7 +207,7 @@ mod tests {
             e.contains("the trace figure is at least 2.0 by 1.5 inches"),
             "{e}"
         );
-        let fits = Figure::Pileup.page(&SizeArgs::new(Some(2.0), Some(1.5)));
+        let fits = Figure::Miami.page(&SizeArgs::new(Some(2.0), Some(1.5)));
         assert_eq!(fits.unwrap(), (Some(2.0 * PT), Some(1.5 * PT)));
         let grid = Figure::Modules.page(&SizeArgs::new(Some(1.0), Some(0.75)));
         assert_eq!(grid.unwrap(), (Some(PT), Some(0.75 * PT)));

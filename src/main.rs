@@ -887,10 +887,15 @@ mod tests {
             }
         };
         let floor = "at least 2.0 by 1.5 inches";
+        let miami = ["faba", "pileup", "/no/such.zarr", "--bam", "/no/such.bam"];
+        let e = run_line(&[&miami[..], &["--fig-width", "1.5"]].concat());
+        assert!(e.unwrap_err().to_string().contains(floor));
+        let e = run_line(&[&miami[..], &["--fig-height", "1"]].concat());
+        assert!(e.unwrap_err().to_string().contains(floor));
+        // Without them, the browser's rows lay out from the font: the size
+        // is not refused before anything is read.
         let e = run_line(&["faba", "pileup", "/no/such.zarr", "--fig-width", "1.5"]);
-        assert!(e.unwrap_err().to_string().contains(floor));
-        let e = run_line(&["faba", "pileup", "/no/such.zarr", "--fig-height", "1"]);
-        assert!(e.unwrap_err().to_string().contains(floor));
+        assert!(!e.unwrap_err().to_string().contains("inches"));
         for plot in ["trace", "batches"] {
             let line = [
                 "faba",

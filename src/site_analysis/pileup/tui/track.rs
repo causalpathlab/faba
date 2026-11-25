@@ -195,6 +195,14 @@ impl Measure {
         }
     }
 
+    /// [`Measure::name`] short, for a small page's axis.
+    pub(super) fn short(self) -> &'static str {
+        match self {
+            Measure::Difference => "Δ (pp)",
+            Measure::Log2Fold => "log2 FC",
+        }
+    }
+
     pub(super) fn next(self) -> Self {
         match self {
             Measure::Difference => Measure::Log2Fold,

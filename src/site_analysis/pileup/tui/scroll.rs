@@ -35,7 +35,10 @@ impl PileupView<'_> {
     /// How many of `rows` are plots, and how many of those stay on top.
     fn plots_fixed(&self, rows: &[Row]) -> (usize, usize) {
         let plots = rows.iter().filter(|&&r| r != Row::Genes).count();
-        (plots, (usize::from(self.contrast.is_some()) + 1).min(plots))
+        (
+            plots,
+            (usize::from(self.shown_contrast().is_some()) + 1).min(plots),
+        )
     }
 
     /// The rows that scroll.
