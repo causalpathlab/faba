@@ -188,6 +188,7 @@ pub struct PileupArgs {
     #[arg(
         long = "depth",
         value_name = "FILE",
+        value_hint = clap::ValueHint::FilePath,
         num_args = 1..,
         help = "`_depth` matrices for a read-depth row in the browser: each bin's reads summed over cells and files"
     )]
@@ -262,6 +263,7 @@ pub struct PileupArgs {
     #[arg(
         long = "cell-membership",
         visible_alias = "membership",
+        value_hint = clap::ValueHint::FilePath,
         help = "Cell barcode -> cell type membership (TSV/CSV/Parquet)",
         long_help = "Cell barcode -> cell type membership (TSV/CSV/Parquet).\n\
                      Panels are faceted by cell type;\n\

@@ -38,7 +38,7 @@ mod write;
 pub use args::ClusterArgs;
 use args::{check, inputs, output_dir, with_inputs};
 #[cfg(feature = "mcp")]
-pub(crate) use args::{refused, REMOVED_SAID};
+pub(crate) use args::{is_removed, refused, REMOVED_SAID};
 #[cfg(feature = "mcp")]
 pub(crate) use browse::opens;
 pub use browse::{fitting_hint, run_modules, ModulesArgs};
