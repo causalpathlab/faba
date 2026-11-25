@@ -59,6 +59,16 @@ struct AxisInfo {
     criteria: Vec<usize>,
 }
 
+/// An axis' ruler as the page reads it (see `crate::qc::scale`): its
+/// range along its line, whether it places a shown value there at
+/// `ln(1 + v)` (else at `v`), and its ticks there.
+#[derive(Serialize)]
+struct RulerInfo {
+    range: (f64, f64),
+    log: bool,
+    ticks: Vec<(f64, String)>,
+}
+
 /// A panel's axes, and why it is shown.
 #[derive(Serialize)]
 struct PairInfo {
@@ -130,10 +140,10 @@ struct Modality {
     /// threshold the page holds at or below it.
     limit: Option<f32>,
     /// The 2D panels as the view had them, the pairs Auto picks at the
-    /// thresholds as written, and each axis' drawn range.
+    /// thresholds as written, and each axis' ruler.
     pairs: Vec<PairInfo>,
     auto: Vec<PairInfo>,
-    ranges: Vec<(Axis, (f64, f64))>,
+    rulers: Vec<(Axis, RulerInfo)>,
     n_genes: usize,
     /// The criteria that apply, by id in the view's order, and for each
     /// its raw value per site.
@@ -250,10 +260,10 @@ struct ViewSource {
     /// What the bars add up.
     weight: Weight,
     fails: Vec<u8>,
-    /// The 2D panels, Auto's at the thresholds now, and the axes' ranges.
+    /// The 2D panels, Auto's at the thresholds now, and the axes' rulers.
     pairs: Vec<(Axis, Axis, String)>,
     auto: Vec<(Axis, Axis, String)>,
-    ranges: Vec<(Axis, (f64, f64))>,
+    rulers: Vec<(Axis, RulerInfo)>,
 }
 
 impl Source {
@@ -334,7 +344,7 @@ impl ViewSource {
             limit,
             pairs: info(&self.pairs),
             auto: info(&self.auto),
-            ranges: self.ranges,
+            rulers: self.rulers,
             n_genes: self.n_genes,
             criteria: self.criteria.iter().map(|&c| c as usize).collect(),
             raw,
@@ -481,6 +491,14 @@ impl SitePicker<'_> {
         let t = v.table;
         // Auto's pairs once: the panels too, when none were picked.
         let auto = pairs::auto_panels(&v.sites(), pairs::PANELS);
+        let axes = pairs::axes(&v.sites());
+        let rulers = (axes.iter())
+            .map(|&a| {
+                let r = v.sites().ruler(a, &self.filter);
+                let (range, log, ticks) = (r.span(), r.axis.log, r.ticks());
+                (a, RulerInfo { range, log, ticks })
+            })
+            .collect();
         let shown = match v.pairs.is_empty() {
             true => auto.clone(),
             false => v.pairs.clone(),
@@ -501,9 +519,7 @@ impl SitePicker<'_> {
             fails: v.fails.clone(),
             pairs: shown,
             auto,
-            ranges: (pairs::axes(&v.sites()).into_iter())
-                .map(|a| (a, v.sites().column(a).range))
-                .collect(),
+            rulers,
         }
     }
 

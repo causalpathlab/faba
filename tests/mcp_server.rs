@@ -93,7 +93,15 @@ fn tools_read_and_refuse_to_replace() {
         .iter()
         .map(|t| t["name"].as_str().unwrap())
         .collect();
-    for tool in ["docs", "count", "run", "qc", "cluster", "pileup"] {
+    for tool in [
+        "docs",
+        "count",
+        "run",
+        "qc",
+        "site_plot",
+        "cluster",
+        "pileup",
+    ] {
         assert!(names.contains(&tool), "{names:?}");
     }
     // The project's notebook is the `legume` server's alone (legume-mcp 0.6).

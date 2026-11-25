@@ -57,7 +57,7 @@ fn the_metagene_panel_says_why_it_is_empty_and_draws_when_ready() {
     assert!(text.contains("CDS"));
     // The export carries the metagene too; read coverage by default.
     assert!(p
-        .figure(crate::figure::size::OWN)
+        .figure(crate::figure::style::Sheet::OWN)
         .unwrap()
         .contains("m6a metagene · y: read coverage per bin"));
     assert!(text.contains("metagene · y: read coverage per bin"));

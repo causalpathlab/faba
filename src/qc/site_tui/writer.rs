@@ -2,7 +2,7 @@
 //! figures saved with it.
 
 use super::*;
-use crate::figure::size::{Page, OWN};
+use crate::figure::style::Sheet;
 
 /// Writes the fileset once the thresholds are confirmed: `start` spawns the
 /// writer with them, and `progress` is how far it has got.
@@ -11,9 +11,12 @@ pub struct Writer<'a> {
     pub output: &'a str,
     pub progress: &'a Progress,
     pub start: Option<StartWrite<'a>>,
-    /// The page the figures are laid out for (see
-    /// [`crate::figure::SizeArgs`]).
-    pub page: Page,
+    /// The page and look the figures are laid out for (see
+    /// [`crate::figure::SizeArgs`] and [`crate::figure::style::StyleArgs`]).
+    pub sheet: Sheet,
+    /// The site panels drawn with the view's figures, as `faba site-plot`
+    /// draws them (see [`crate::qc::site_plot::Panels`]); none when `None`.
+    pub panels: Option<crate::qc::site_plot::Plan>,
     /// Each batch's cell QC, for the cells figures and the report.
     pub cells: CellsShared,
 }
@@ -37,13 +40,24 @@ impl Writer<'_> {
             output: "",
             progress: &NOTHING_TO_WRITE,
             start: None,
-            page: OWN,
+            sheet: Sheet::default(),
+            panels: None,
             cells: CellsShared::default(),
         }
     }
 }
 
 impl SitePicker<'_> {
+    /// Refused when `sheet`'s page is short of what a knob's figure needs
+    /// with the boxes the view opens with: the gene's when a table has
+    /// genes, the metagene's when an annotation is named (see
+    /// [`knob_room`]). Checked before the view opens, as the width is.
+    pub(super) fn page_problem(&self, sheet: &Sheet) -> anyhow::Result<()> {
+        let genes = self.views.iter().any(|v| v.genes.is_some());
+        let boxes = usize::from(genes) + usize::from(self.annotation.gff.is_some());
+        knob_room(sheet, knob_least(sheet, Some(boxes)), "a qc figure")
+    }
+
     /// Apply the confirmed thresholds: start the write, which [`Screen::tick`]
     /// then follows to the end.
     pub(super) fn apply(&mut self) {
@@ -51,30 +65,72 @@ impl SitePicker<'_> {
     }
 
     /// Draw the figures and start the writer, once the writing pop-up is up.
+    /// A figure the page is still too small for (an annotation read in the
+    /// view adds the metagene) is said, and the view stays open, unwritten.
     pub(super) fn start_writing(&mut self) {
-        if let Some(start) = self.writer.start.take() {
-            // A page too small was refused before the view opened (see
-            // `faba qc`), and their own size always fits.
-            let figures = self
-                .figures(self.writer.page)
-                .expect("the page was checked");
-            start(self.filter.clone(), figures);
+        let Some(start) = self.writer.start.take() else {
+            return;
+        };
+        let plan = self.writer.panels.clone();
+        match self.written_figures(plan.as_ref(), self.writer.sheet) {
+            Ok(figures) => start(self.filter.clone(), figures),
+            Err(e) => {
+                self.writer.start = Some(start);
+                self.mode = Mode::Browse;
+                self.status = Some(format!("not written: {e}"));
+            }
         }
     }
 
+    /// The figures saved with the fileset, laid out for `sheet`: the
+    /// view's (see [`Self::figures`]), then the site panels `plan` asks
+    /// for, if any (see [`Self::site_panels`]).
+    pub(super) fn written_figures(
+        &mut self,
+        plan: Option<&crate::qc::site_plot::Plan>,
+        sheet: Sheet,
+    ) -> anyhow::Result<Vec<Figure>> {
+        let mut out = self.figures(sheet)?;
+        if let Some(plan) = plan {
+            out.extend(self.site_panels(plan, sheet)?);
+        }
+        Ok(out)
+    }
+
+    /// The site panels `plan` asks for of every modality at the thresholds
+    /// now, as `faba site-plot` draws them, under `panels/`. A quantity
+    /// asked for that a modality lacks is left out of that modality's.
+    pub(super) fn site_panels(
+        &self,
+        plan: &crate::qc::site_plot::Plan,
+        sheet: Sheet,
+    ) -> anyhow::Result<Vec<Figure>> {
+        let mut out = Vec::new();
+        for v in &self.views {
+            let panels =
+                crate::qc::site_plot::Panels::of_view(&v.sites(), &self.filter, plan, sheet)?;
+            out.extend(panels.figures().into_iter().map(|f| Figure {
+                stem: format!("panels/{}", f.stem),
+                svg: f.svg,
+            }));
+        }
+        Ok(out)
+    }
+
     /// The view's figure for every modality and every knob, under the
-    /// applied thresholds and the scales chosen per knob, each laid out for
-    /// `page` (see [`crate::figure::SizeArgs`]); refused when one is too
-    /// small. The modality on screen keeps its selected gene; the others
+    /// applied thresholds and the scales chosen per knob, and each
+    /// modality's pairs (not alone, `--panel-only`: the site panels are
+    /// those), each laid out for `sheet` (see [`crate::figure::SizeArgs`]);
+    /// refused when one is too small. The modality on screen keeps its selected gene; the others
     /// show their top gene, the gene filter aside. The view is left as it
     /// was.
-    pub(super) fn figures(&mut self, page: Page) -> anyhow::Result<Vec<Figure>> {
+    pub(super) fn figures(&mut self, sheet: Sheet) -> anyhow::Result<Vec<Figure>> {
         let (modality, focus, at) = (self.modality, self.focus, self.list.at);
         let find = std::mem::take(&mut self.list.find);
-        let out = self.each_figure(page, (modality, at), &find);
+        let out = self.each_figure(sheet, (modality, at), &find);
         self.restore((modality, focus, at), find);
         let mut out = out?;
-        out.extend(cell_figures(&self.cells, page));
+        out.extend(cell_figures(&self.cells, sheet));
         Ok(out)
     }
 
@@ -83,7 +139,7 @@ impl SitePicker<'_> {
     /// `find`).
     fn each_figure(
         &mut self,
-        page: Page,
+        sheet: Sheet,
         (modality, at): (usize, usize),
         find: &str,
     ) -> anyhow::Result<Vec<Figure>> {
@@ -98,18 +154,24 @@ impl SitePicker<'_> {
             if m == modality {
                 self.list.at = at;
             }
+            // Alone, each knob's histogram only, which needs no column of
+            // the view's own; and the pairs are the site panels, a figure
+            // each.
+            if sheet.look.panel_only {
+                out.extend(self.knob_panels_of(m, sheet)?);
+                continue;
+            }
             for f in 0..self.views[m].criteria.len() {
                 self.focus = f;
                 self.rebuild_column();
-                let knob = self.criterion().flag().trim_start_matches("--site-");
                 out.push(Figure {
-                    stem: format!("{}_{knob}", self.view().table.modality),
-                    svg: self.figure(page)?,
+                    stem: super::draw::knob_stem(self.view().table, self.criterion()),
+                    svg: self.figure(sheet)?,
                 });
             }
             out.push(Figure {
                 stem: super::pairs_view::pairs_stem(&self.view().table.modality),
-                svg: self.pairs_figure(m, page),
+                svg: self.pairs_figure(m, sheet),
             });
         }
         Ok(out)

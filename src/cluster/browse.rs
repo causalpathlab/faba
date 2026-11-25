@@ -373,6 +373,10 @@ const NO_GROUP: &str = "--group names a fit within a count fit's cell module: na
      record ({modality}_within.run.json), which `faba cluster --within` writes";
 
 pub fn run_modules(args: &ModulesArgs) -> anyhow::Result<()> {
+    // The figure's size, refused before any fit is read.
+    if args.figure.is_some() {
+        figure::page(args.plot, &args.size)?;
+    }
     // No inputs named: browse for them, as `faba pileup` does.
     let batch = args.writes();
     let offered = (
@@ -451,7 +455,7 @@ fn write_figure(m: &Modules, args: &ModulesArgs, dir: &Path, prefix: &str) -> an
             "{path} exists: name a new --figure"
         );
     }
-    let page = args.size.page()?;
+    let page = figure::page(args.plot, &args.size)?;
     let drawn = figure::draw(m, args.plot, args.look, &title, page).map_err(anyhow::Error::msg)?;
     for path in crate::figure::save_with_png(&drawn, prefix)? {
         println!("{path}");

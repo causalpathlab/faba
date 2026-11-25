@@ -25,7 +25,10 @@ pub enum PwmSource {
 #[derive(Args, Debug)]
 #[command(
     mut_arg("fig_width", |a| a.requires("figure")),
-    mut_arg("fig_height", |a| a.requires("figure"))
+    mut_arg("fig_height", |a| a.requires("figure")),
+    mut_arg("font_size", |a| a.requires("figure")),
+    mut_arg("panel_only", |a| a.requires("figure")),
+    mut_arg("palette", |a| a.requires("figure"))
 )]
 pub struct ScanPwmArgs {
     #[arg(
@@ -111,6 +114,10 @@ pub struct ScanPwmArgs {
     /// The figure's size on the page (only with --figure).
     #[command(flatten)]
     size: crate::figure::SizeArgs,
+
+    /// The figure's font, panel and palette (only with --figure).
+    #[command(flatten)]
+    style: crate::figure::style::StyleArgs,
 
     #[arg(
         long = "batch-process",
@@ -381,9 +388,8 @@ pub fn run_scan_pwm(args: &ScanPwmArgs) -> anyhow::Result<()> {
     let Some((site_files, bam_files)) = args.inputs()? else {
         return Ok(());
     };
-    // The logo's page, refused before the reads: 2 window + 1 positions.
-    let columns = (2 * args.window.max(0) + 1) as usize;
-    let page = args.size.page_at_least(tui::least(columns), "this logo")?;
+    // The logo's page and look, checked before the reads.
+    let sheet = crate::figure::style::Sheet::new(&args.size, &args.style)?;
     if !bam_files.is_empty() && matches!(args.source, PwmSource::Reference) {
         log::warn!(
             "{} read only with --source reads; the reference gives the bases",
@@ -438,7 +444,7 @@ pub fn run_scan_pwm(args: &ScanPwmArgs) -> anyhow::Result<()> {
     }
     let title = output_dir::title(&site_files);
     if let Some(prefix) = &args.figure {
-        let drawn = tui::figure(&title, &pwm, args.window, page);
+        let drawn = tui::figure(&title, &pwm, args.window, sheet);
         let paths = crate::figure::save_with_png(&drawn, prefix)?;
         info!("wrote sequence logo to {}", paths.join(", "));
     }

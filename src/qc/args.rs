@@ -92,7 +92,14 @@ pub struct SiteFilterArgs {
 #[derive(Args, Debug, serde::Serialize)]
 #[command(
     mut_arg("fig_width", |a| a.requires("plots")),
-    mut_arg("fig_height", |a| a.requires("plots"))
+    mut_arg("fig_height", |a| a.requires("plots")),
+    mut_arg("font_size", |a| a.requires("plots")),
+    mut_arg("panel_only", |a| a.requires("plots")),
+    mut_arg("palette", |a| a.requires("plots")),
+    mut_arg("hist", |a| a.requires("plots")),
+    mut_arg("pairs", |a| a.requires("plots")),
+    mut_arg("marginals", |a| a.requires("plots")),
+    mut_arg("bins", |a| a.requires("plots"))
 )]
 pub struct QcArgs {
     #[arg(
@@ -184,7 +191,8 @@ pub struct QcArgs {
                      and a metagene of the kept sites below it. Tab moves between panels;\n\
                      Ctrl+R (or the apply button) asks to confirm (a recap of the output, the changed thresholds\n\
                      and what each modality keeps) and the fileset is then written with its\n\
-                     progress shown, with the view's figures under qc_plots/. The view needs stdin and stdout on a terminal; pass this\n\
+                     progress shown, with the view's figures under qc_plots/ and the site panels under\n\
+                     qc_plots/panels/. The view needs stdin and stdout on a terminal; pass this\n\
                      flag for scripts and scheduled jobs."
     )]
     pub batch_process: bool,
@@ -204,7 +212,15 @@ pub struct QcArgs {
                      each modality's thresholds two at a time, `{modality}_pairs` (the pairs Auto\n\
                      picks); and each batch's cell QC, `{batch}_cells` (the knee, and genes\n\
                      detected by counts). With --dry-run they go under -o DIR, new or empty, and\n\
-                     nothing else is written: what the cut would do, without cutting."
+                     nothing else is written: what the cut would do, without cutting.\n\
+                     --fig-width, --fig-height, --font-size and --palette lay them out; with\n\
+                     --panel-only each is its plot alone, at any size (a knob's histogram\n\
+                     without its table, 10 inches across, which it needs otherwise, drawn as\n\
+                     `faba site-plot` draws it), and `{modality}_pairs` is not drawn: its\n\
+                     pairs are the panels under `qc_plots/panels/`, one a figure.\n\
+                     Also the site panels `faba site-plot` draws, at these thresholds, under\n\
+                     `qc_plots/panels/`: `{modality}_hist_{q}` and `{modality}_{y}_vs_{x}`\n\
+                     (--hist, --pairs, --marginals, --scale, --bins choose them)."
     )]
     pub plots: bool,
 
@@ -225,6 +241,16 @@ pub struct QcArgs {
     /// The figures' size on the page (only with --plots).
     #[command(flatten)]
     pub size: crate::figure::SizeArgs,
+
+    /// The figures' font, panel and palette (only with --plots).
+    #[command(flatten)]
+    pub style: crate::figure::style::StyleArgs,
+
+    /// The site panels `--plots` also writes, as `faba site-plot` draws
+    /// them, under qc_plots/panels/; `--scale` also sets the 2D view's and
+    /// the page's axes.
+    #[command(flatten)]
+    pub panels: super::site_plot::PanelArgs,
 
     #[arg(
         long = "dry-run",

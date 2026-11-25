@@ -17,8 +17,14 @@ pub mod path_tui;
 pub mod progress;
 pub mod repool;
 pub mod run;
+pub mod scale;
+pub mod site_plot;
 pub mod site_tui;
 pub mod sites;
+
+#[cfg(test)]
+#[path = "tests/fixtures.rs"]
+mod fixtures;
 
 pub use args::QcArgs;
 pub use run::run_qc;

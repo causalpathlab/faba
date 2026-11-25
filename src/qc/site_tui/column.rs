@@ -59,12 +59,14 @@ impl Criterion {
         )
     }
 
+    /// The scales its histogram steps through; it starts on its
+    /// quantity's (see [`knob_scales`]).
     pub(super) fn scales(self) -> &'static [Scale] {
         match self {
             Criterion::MinLogOdds => &[Scale::Linear],
-            // Log bins resolve the p ~ 0.05 region the decision is made in.
-            Criterion::MaxPv => &[Scale::Log, Scale::Sqrt, Scale::Linear],
-            Criterion::MinEditRatio | Criterion::MaxEditRatio => &[Scale::Linear, Scale::Sqrt],
+            Criterion::MinEditRatio | Criterion::MaxEditRatio => {
+                &[Scale::Linear, Scale::Sqrt, Scale::Log]
+            }
             _ => &[Scale::Log, Scale::Sqrt, Scale::Linear],
         }
     }
@@ -110,9 +112,26 @@ impl Criterion {
         }
     }
 
-    pub(super) fn bit(self) -> u8 {
+    /// Its bit in a site's failed checks.
+    pub(crate) fn bit(self) -> u8 {
         1 << self as u8
     }
+}
+
+/// Each knob's starting scale, by `c as usize`, as an index into
+/// [`Criterion::scales`]: its quantity's in `scales` (`--scale`, else the
+/// default), so the knob, its figure and the panels read it alike.
+pub(super) fn knob_scales(scales: &crate::qc::scale::Scales) -> [usize; 8] {
+    use crate::qc::scale::Scale as Of;
+    let mut out = [0; 8];
+    for c in SHOWN {
+        let want = match scales.of(Axis::of(c)) {
+            Of::Linear => Scale::Linear,
+            Of::Log => Scale::Log,
+        };
+        out[c as usize] = (c.scales().iter()).position(|&s| s == want).unwrap_or(0);
+    }
+    out
 }
 
 /// The focused criterion's column, binned.
@@ -180,6 +199,23 @@ impl Column {
     }
 }
 
+/// Bins about legume's own count across `0..=max` (see [`Binning::new`]).
+const KNOB_BINS: f64 = 50.0;
+
+/// A knob's bins spanning `0..=max`, as [`Binning::new`] lays them, but on
+/// log always `ln(1 + v)`, the line the site panels' ruler reads (see
+/// [`crate::qc::scale::along`]), where [`Binning::new`] would shift reals
+/// under 20 by a thousandth of `max`.
+fn binning(scale: Scale, max: f64, integer: bool) -> Binning {
+    let width = crate::qc::scale::along(crate::qc::scale::Scale::Log, max) / KNOB_BINS;
+    match scale {
+        Scale::Log if !integer && width.is_finite() && width > 0.0 => {
+            Binning::with_width(Scale::Log, width)
+        }
+        _ => Binning::new(scale, max, integer),
+    }
+}
+
 /// A column binned: the histogram, each site's slot, the stops, and each
 /// bin's smallest value.
 type ColumnBins = (Binned, Vec<u16>, Vec<(i32, f64)>, Vec<f64>);
@@ -199,7 +235,7 @@ pub(super) fn bin(
     } else {
         hi
     };
-    let bins = Binning::new(scale, max, c.is_integer());
+    let bins = binning(scale, max, c.is_integer());
     let kmin = bins.key(lo);
     let n = (bins.key(hi) - kmin + 1).clamp(1, MAX_BINS) as usize;
     let mut counts = vec![0; n];

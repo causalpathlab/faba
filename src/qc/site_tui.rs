@@ -9,8 +9,7 @@
 //! what the focused threshold decides among sites that would otherwise be
 //! kept.
 
-use crate::figure::size::OWN;
-use crate::figure::Page;
+use crate::figure::style::Sheet;
 use crate::tui::ui::{
     header, help_line, input_line, panel, Binned, Binning, HistPlot, Scale, Screen, ACCENTED, DIM,
     HIGHLIGHT, PLAIN,
@@ -60,7 +59,7 @@ mod writer;
 
 use annotation::*;
 use column::*;
-pub(crate) use draw::QC_LEAST_W;
+pub(crate) use draw::{knob_least, knob_room};
 use draw::{render_gff, render_leave, LEGEND};
 use genes::*;
 use keys::*;
@@ -328,7 +327,8 @@ impl<'a> SitePicker<'a> {
     fn new(title: &str, views: Vec<SiteView<'a>>, filter: SiteFilterArgs, meta: Meta) -> Self {
         assert!(!views.is_empty(), "no site table to pick thresholds on");
         let c = views[0].criteria[0];
-        let column = Column::new(&views[0], c, c.scales()[0]);
+        let x_scale = knob_scales(&views[0].cache.scales);
+        let column = Column::new(&views[0], c, c.scales()[x_scale[c as usize]]);
         let tally = Tally::new(&views[0], c, &column);
         Self {
             title: title.to_string(),
@@ -337,7 +337,7 @@ impl<'a> SitePicker<'a> {
             filter,
             modality: 0,
             focus: 0,
-            x_scale: [0; 8],
+            x_scale,
             y_scale: Scale::Log,
             column,
             tally,
@@ -607,9 +607,10 @@ impl Screen for SitePicker<'_> {
                 Key::Pass => {}
                 Key::Used => return,
                 Key::Save(prefix) => {
-                    return self
-                        .controls
-                        .save(&self.figure(OWN).expect("its own size fits"), &prefix)
+                    return self.controls.save(
+                        &self.figure(Sheet::OWN).expect("its own size fits"),
+                        &prefix,
+                    )
                 }
             }
         }
@@ -641,17 +642,15 @@ pub enum Picked {
     PrintOnly(SiteFilterArgs),
 }
 
-/// Open the picker over the non-empty site tables, in [`SITE_MODALITIES`]
-/// order, with each modality's kept cells per site where `_site` matrices
-/// gave them. Needs a terminal and at least one non-empty site table.
-/// Returns how it ended and the annotation it ended on, which `g` may have
-/// changed from `gff`.
 /// The non-empty site tables as views, in [`SITE_MODALITIES`] order, with
 /// each modality's kept cells per site where `_site` matrices gave them.
+/// Their 2D axes are read on `scales`' scales, their rulers in about its
+/// bins (see [`pairs::Cache`]); on the defaults without.
 fn site_views<'a>(
     tables: &'a FxHashMap<Box<str>, SiteTable>,
     site_cells: &FxHashMap<Box<str>, FxHashMap<Box<str>, usize>>,
     filter: &SiteFilterArgs,
+    scales: Option<(crate::qc::scale::Scales, usize)>,
 ) -> Vec<SiteView<'a>> {
     SITE_MODALITIES
         .iter()
@@ -659,21 +658,26 @@ fn site_views<'a>(
         .filter(|t| !t.is_empty())
         .map(|t| {
             let n_cells = site_cells.get(&t.modality).map(|acc| t.cells_per_site(acc));
-            SiteView::new(t, n_cells, filter)
+            let mut v = SiteView::new(t, n_cells, filter);
+            if let Some((scales, bins)) = scales {
+                v.cache = pairs::Cache::new(scales, bins);
+            }
+            v
         })
         .collect()
 }
 
-/// The picker over the site tables, its annotation being read.
+/// The picker over the site tables, its annotation being read; its knobs'
+/// histograms and 2D axes on `scales` (see [`site_views`]).
 fn picker<'a>(
     input_dir: &str,
     tables: &'a FxHashMap<Box<str>, SiteTable>,
     site_cells: &FxHashMap<Box<str>, FxHashMap<Box<str>, usize>>,
     filter: &SiteFilterArgs,
-    gff: Option<&str>,
-    pinned: &[Box<str>],
+    (gff, pinned): (Option<&str>, &[Box<str>]),
+    scales: Option<(crate::qc::scale::Scales, usize)>,
 ) -> anyhow::Result<SitePicker<'a>> {
-    let views = site_views(tables, site_cells, filter);
+    let views = site_views(tables, site_cells, filter, scales);
     anyhow::ensure!(
         !views.is_empty(),
         "no editing site table to pick thresholds on"
@@ -696,16 +700,32 @@ fn picker<'a>(
     Ok(picker)
 }
 
+#[cfg(test)]
+impl SitePicker<'_> {
+    /// Every view's 2D axes read again on `scales`, their rulers in about
+    /// `bins` bins (see [`pairs::Cache`]); each knob's histogram back on
+    /// its quantity's scale.
+    pub(super) fn set_scales(&mut self, scales: crate::qc::scale::Scales, bins: usize) {
+        for v in &mut self.views {
+            v.cache = pairs::Cache::new(scales, bins);
+            v.generation += 1;
+        }
+        self.x_scale = knob_scales(&scales);
+        self.rebuild_column();
+    }
+}
+
 /// Each batch's cell QC, shared by the view, its report and its figures.
 pub type CellsShared = std::sync::Arc<[crate::qc::cells_plot::Cells]>;
 
-/// Each batch's cell QC as a figure, laid out for `page`.
-pub(crate) fn cell_figures(cells: &[crate::qc::cells_plot::Cells], page: Page) -> Vec<Figure> {
-    let size = crate::figure::size::fill(page, || crate::qc::cells_plot::SIZE);
+/// Each batch's cell QC as a figure, laid out for `sheet`.
+pub(crate) fn cell_figures(cells: &[crate::qc::cells_plot::Cells], sheet: Sheet) -> Vec<Figure> {
+    let size = sheet.fill(|| crate::qc::cells_plot::SIZE);
+    let style = sheet.style(size);
     (cells.iter())
         .map(|c| Figure {
             stem: c.stem(),
-            svg: c.figure(size),
+            svg: c.figure(size, &style),
         })
         .collect()
 }
@@ -721,19 +741,21 @@ pub struct Batch<'a> {
 impl<'a> Batch<'a> {
     /// Over `tables` (and their kept cells per site) at `filter`, the
     /// annotation `gff` read for the metagene, `pinned` genes first, with
-    /// each batch's `cells`.
+    /// each batch's `cells`; its knobs' histograms and 2D panels' axes on
+    /// `scales` (`--scale`, its rulers in about `bins` bins), else the
+    /// defaults.
     pub fn new(
         input_dir: &str,
         tables: &'a FxHashMap<Box<str>, SiteTable>,
         site_cells: &FxHashMap<Box<str>, FxHashMap<Box<str>, usize>>,
         filter: &SiteFilterArgs,
-        (gff, pinned): (Option<&str>, &[Box<str>]),
-        cells: CellsShared,
+        genes: (Option<&str>, &[Box<str>]),
+        (cells, scales): (CellsShared, Option<(crate::qc::scale::Scales, usize)>),
     ) -> anyhow::Result<Self> {
         let has_sites = tables.values().any(|t| !t.is_empty());
         let picker = match has_sites {
             true => {
-                let mut p = picker(input_dir, tables, site_cells, filter, gff, pinned)?;
+                let mut p = picker(input_dir, tables, site_cells, filter, genes, scales)?;
                 p.cells = cells.clone();
                 Some(p)
             }
@@ -752,18 +774,23 @@ impl<'a> Batch<'a> {
     }
 
     /// The figures the view writes under `qc_plots/` on apply, laid out for
-    /// `page`: every modality and knob, the metagene once the annotation is
-    /// read, the pairs, and each batch's cells.
-    pub fn figures(&mut self, page: Page) -> anyhow::Result<Vec<Figure>> {
+    /// `sheet`: every modality and knob, the metagene once the annotation is
+    /// read, the pairs, and each batch's cells; then the site panels `plan`
+    /// asks for, if any (see [`SitePicker::written_figures`]).
+    pub fn figures(
+        &mut self,
+        plan: Option<&crate::qc::site_plot::Plan>,
+        sheet: Sheet,
+    ) -> anyhow::Result<Vec<Figure>> {
         match &mut self.picker {
             Some(p) => {
                 p.meta.wait();
                 if let Meta::Unavailable(why) = &p.meta {
                     log::warn!("qc_plots without a metagene: {why}");
                 }
-                p.figures(page)
+                p.written_figures(plan, sheet)
             }
-            None => Ok(cell_figures(&self.cells, page)),
+            None => Ok(cell_figures(&self.cells, sheet)),
         }
     }
 
@@ -799,7 +826,7 @@ pub(crate) fn time_steps(
     let mut said = Vec::new();
     let mut time = |what: String, t: Instant| said.push((what, t.elapsed().as_secs_f64()));
     let t = Instant::now();
-    let views = site_views(tables, site_cells, filter);
+    let views = site_views(tables, site_cells, filter, None);
     let sizes: Vec<String> = views
         .iter()
         .map(|v| format!("{} {}", v.table.modality, v.table.len()))
@@ -851,7 +878,7 @@ pub(crate) fn time_steps(
     term.draw(|f| p.render(f)).unwrap();
     time("a panel's axis (x, one draw)".into(), t);
     let t = Instant::now();
-    let figures = p.figures(crate::figure::size::OWN).unwrap();
+    let figures = p.figures(Sheet::OWN).unwrap();
     time(format!("the view's {} figures, drawn", figures.len()), t);
     let t = Instant::now();
     let html = out.join("qc.html");
@@ -897,10 +924,10 @@ pub(crate) fn redraw(
     };
     for m in 0..p.views.len() {
         let stem = pairs_view::pairs_stem(&p.views[m].table.modality);
-        save(&stem, &p.pairs_figure(m, crate::figure::size::OWN));
+        save(&stem, &p.pairs_figure(m, Sheet::OWN));
     }
     for c in &cells {
-        let svg = c.figure((720.0, 320.0));
+        let svg = c.figure((720.0, 320.0), &Default::default());
         save(&format!("{}_cells", c.batch), &svg);
     }
     p.cells = cells.into();
@@ -934,7 +961,7 @@ pub fn threshold_counts(
     site_cells: &FxHashMap<Box<str>, FxHashMap<Box<str>, usize>>,
     filter: &SiteFilterArgs,
 ) -> Vec<ThresholdCount> {
-    counts_of(&site_views(tables, site_cells, filter), filter).0
+    counts_of(&site_views(tables, site_cells, filter, None), filter).0
 }
 
 /// Every applicable threshold's counts at `filter` over `views`, and the
@@ -967,16 +994,30 @@ fn counts_of(
     (out, pairs_of)
 }
 
+/// Open the picker over the non-empty site tables (their knobs and 2D
+/// axes on `scales`, see [`site_views`]), in [`SITE_MODALITIES`]
+/// order, with each modality's kept cells per site where `_site` matrices
+/// gave them. Needs a terminal and at least one non-empty site table.
+/// Returns how it ended and the annotation it ended on, which `g` may have
+/// changed from `gff`.
 pub fn run_site_picker(
     input_dir: &str,
     tables: &FxHashMap<Box<str>, SiteTable>,
     site_cells: &FxHashMap<Box<str>, FxHashMap<Box<str>, usize>>,
     filter: &SiteFilterArgs,
-    gff: Option<&str>,
-    pinned: &[Box<str>],
+    (gff, pinned): (Option<&str>, &[Box<str>]),
+    (scales, bins): (crate::qc::scale::Scales, usize),
     writer: Writer<'_>,
 ) -> anyhow::Result<(Picked, Option<Box<str>>)> {
-    let mut picker = picker(input_dir, tables, site_cells, filter, gff, pinned)?;
+    let mut picker = picker(
+        input_dir,
+        tables,
+        site_cells,
+        filter,
+        (gff, pinned),
+        Some((scales, bins)),
+    )?;
+    picker.page_problem(&writer.sheet)?;
     picker.cells = writer.cells.clone();
     picker.writer = writer;
     picker.controls = Controls::new("qc_sites").detect();

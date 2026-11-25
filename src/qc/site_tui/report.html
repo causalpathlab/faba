@@ -479,51 +479,40 @@ function draw() {
 // ---- Two thresholds at a time: as `faba qc`'s 2D view draws them. ----
 const KEPT = "#2a78d6", REMOVED = "#eb6834", EMPTY = "#8a8f8b", BINS = 44;
 const AXES = new Map(DATA.axes.map(a => [a.key, a]));
-// A criterion's raw value on the axis' drawn scale, as src/qc/pairs.rs.
-const SCALED = {
-  coverage: v => Math.log10(Math.max(v, 1)), converted: v => Math.log10(v + 1), cells: v => Math.log10(v + 1),
-  edit_ratio: v => v, log_odds: v => v, fold: v => Math.log2(v),
-  pvalue: v => v <= 0 ? Infinity : -Math.log10(v),
-};
+// A criterion's raw value as shown, as src/qc/pairs.rs `Axis::shown`: a
+// p-value as -log10 p (infinite at 0, NaN where it is, left out), the rest
+// as they are; then placed along the axis' line by its ruler, as
+// src/qc/scale.rs `along`: at ln(1 + v) on a log ruler.
+const asShown = (key, v) => key !== "pvalue" ? v : v <= 0 ? Infinity : v !== v ? v : rmax(-Math.log10(v), 0);
+const placed = (m, key, v) => m.rulers.get(key).log && v === v ? Math.log(rmax(v, 0) + 1) : v;
+// Where knob `k`'s threshold at `raw` is drawn on axis `key`, as
+// src/qc/scale.rs `edge`: at its shown value; a count's on a linear ruler,
+// whose bars are centred on counts, half a count out.
+const edgeOf = (m, key, k, raw) => { const v = asShown(key, raw); return placed(m, key, k.integer && !m.rulers.get(key).log ? v + (k.max ? 0.5 : -0.5) : v); };
 // Each modality's axis values, read once, and its panels as written.
 mods.forEach(m => {
   m.axisValues = new Map();
-  m.ranges = new Map(m.ranges);
+  m.rulers = new Map(m.rulers);
   m.panels = m.pairs.map(p => ({...p}));
 });
 function axisValues(m, key) {
   if (!m.axisValues.has(key)) {
-    const id = AXES.get(key).criteria.find(c => m.raw.has(c)), raw = m.raw.get(id), f = SCALED[key];
-    m.axisValues.set(key, Float64Array.from(raw, f));
+    const id = AXES.get(key).criteria.find(c => m.raw.has(c)), raw = m.raw.get(id);
+    m.axisValues.set(key, Float64Array.from(raw, v => placed(m, key, asShown(key, v))));
   }
   return m.axisValues.get(key);
 }
-// Where the axis' thresholds pass on its drawn scale: [lo, hi], open ends ±∞.
+// Where the axis' thresholds pass on its drawn scale, each at its edge, as
+// src/qc/pairs.rs `Axis::passes`: [lo, hi], open ends ±∞.
 function passes(m, key) {
   let lo = -Infinity, hi = Infinity;
   for (const id of AXES.get(key).criteria) {
     const k = knob(id);
     if (!m.raw.has(id) || isOff(k, thr.get(id))) continue;
-    const v = SCALED[key](thr.get(id));
+    const v = edgeOf(m, key, k, thr.get(id));
     if (k.max && key !== "pvalue") hi = v; else lo = v;
   }
   return [lo, hi];
-}
-// An axis' ticks as [drawn position, label], as src/qc/pairs.rs: a count's
-// log scale at 0, 10, 100…; otherwise round values, decimals by step.
-function axisTicks(key, [lo, hi]) {
-  const inside = p => p >= lo - 1e-9 && p <= hi + 1e-9;
-  if (key === "coverage" || key === "converted" || key === "cells") {
-    const at = v => key === "coverage" ? Math.log10(v) : Math.log10(v + 1);
-    const vals = key === "coverage" ? [...Array(10)].map((_, k) => 10 ** k) : [0].concat([...Array(9)].map((_, k) => 10 ** (k + 1)));
-    const all = vals.map(v => [at(v), compact(v)]).filter(([p]) => inside(p));
-    const every = Math.max(1, Math.ceil(all.length / 6));
-    return all.filter((_, k) => k % every === 0);
-  }
-  const span = hi - lo, raw = span / 4, mag = 10 ** Math.floor(Math.log10(raw));
-  const step = [1, 2, 5, 10].map(x => x * mag).find(x => x >= raw), places = Math.max(0, -Math.floor(Math.log10(step)));
-  const out = []; for (let v = Math.ceil(lo / step) * step; v <= hi + 1e-9; v += step) out.push([v, (Math.abs(v) < step * 1e-9 ? 0 : v).toFixed(places)]);
-  return out;
 }
 // Each decade of a log10 range, labelled as counts read.
 const decades = ([lo, hi]) => { const out = []; for (let k = Math.ceil(lo); k <= Math.floor(hi); k++) out.push([k, compact(10 ** k)]); return out; };
@@ -559,7 +548,7 @@ let thresholdsSet = 0;
 function binned(m, p) {
   const key = `${thresholdsSet}|${p.x}|${p.y}`;
   if (p.bin && p.bin.key === key) return p.bin;
-  const xs = axisValues(m, p.x), ys = axisValues(m, p.y), xr = m.ranges.get(p.x), yr = m.ranges.get(p.y);
+  const xs = axisValues(m, p.x), ys = axisValues(m, p.y), xr = m.rulers.get(p.x).range, yr = m.rulers.get(p.y).range;
   const kx = BINS / (xr[1] - xr[0]), ky = BINS / (yr[1] - yr[0]), last = BINS - 1;
   const kept = new Uint32Array(BINS * BINS), other = new Uint32Array(BINS * BINS);
   const drawn = [...AXES.get(p.x).criteria, ...AXES.get(p.y).criteria].reduce((b, id) => b | 1 << id, 0);
@@ -578,16 +567,16 @@ function binned(m, p) {
 }
 // One panel of `m`: the squares, the box, the axes; its binning back.
 function drawPanel(canvas, m, p) {
-  const xr = m.ranges.get(p.x), yr = m.ranges.get(p.y), b = binned(m, p), f = frame(canvas, xr, yr);
+  const xr = m.rulers.get(p.x).range, yr = m.rulers.get(p.y).range, b = binned(m, p), f = frame(canvas, xr, yr);
   squares(f, b.squares);
   const [xlo, xhi] = passes(m, p.x), [ylo, yhi] = passes(m, p.y);
   const [x0, y1] = f.at(Math.max(xlo, xr[0]), Math.max(ylo, yr[0])), [x1, y0] = f.at(Math.min(xhi, xr[1]), Math.min(yhi, yr[1]));
   f.ctx.strokeStyle = css("--fg"); f.ctx.setLineDash([5, 4]); f.ctx.lineWidth = 1.2;
   if (x1 > x0 && y1 > y0) f.ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
-  f.axes(axisTicks(p.x, xr), axisTicks(p.y, yr), AXES.get(p.x).name, AXES.get(p.y).name);
+  f.axes(m.rulers.get(p.x).ticks, m.rulers.get(p.y).ticks, AXES.get(p.x).name, AXES.get(p.y).name);
   return b;
 }
-const options = (m, sel) => [...m.ranges.keys()].map(k => `<option value="${k}"${k === sel ? " selected" : ""}>${esc(AXES.get(k).name)}</option>`).join("");
+const options = (m, sel) => [...m.rulers.keys()].map(k => `<option value="${k}"${k === sel ? " selected" : ""}>${esc(AXES.get(k).name)}</option>`).join("");
 let pairsOf = null;
 function drawPairs() {
   const m = mod(), box = document.getElementById("pairs");

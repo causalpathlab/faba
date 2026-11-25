@@ -9,7 +9,7 @@
 //! unconverted reads, both, and the sites), each region in its colour, as
 //! `faba qc` draws its metagene.
 
-use crate::figure::size::{Page, OWN};
+use crate::figure::style::Sheet;
 use crate::tui::ui::{header, help_line, panel, Scale, Screen, DIM, HIGHLIGHT};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -238,16 +238,23 @@ impl<'a> MetageneView<'a> {
     }
 
     /// The shown track as a figure, at the shown merge factor, laid out
-    /// for `page`: a side not asked for the view's shape on screen, else a
-    /// page of its own.
-    fn figure(&self, page: Page) -> String {
-        let (w, h) = crate::figure::size::fill(page, || {
+    /// for `sheet`'s page: a side not asked for the view's shape on screen,
+    /// else a page of its own; its text and margins from the sheet's font.
+    /// Alone (`--panel-only`), the bars, their axes and axis titles only.
+    fn figure(&self, sheet: Sheet) -> String {
+        let (w, h) = sheet.fill(|| {
             self.controls
                 .page(self.drawn, LEAST)
                 .unwrap_or((680.0, 300.0))
         });
-        let mut c = Canvas::new(w, h);
-        c.bold(16.0, 22.0, &self.title, 12.0, Anchor::Start, INK);
+        let style = sheet.style((w, h));
+        let mut c = Canvas::styled(w, h, &style);
+        if style.panel_only {
+            self.draw_track(&mut c, (0.0, 0.0, w, h), None, String::new());
+            return c.finish();
+        }
+        let em = c.em();
+        c.bold(16.0 * em, 22.0 * em, &self.title, 12.0, Anchor::Start, INK);
         let totals: Vec<String> = self
             .track
             .regions()
@@ -255,15 +262,16 @@ impl<'a> MetageneView<'a> {
             .map(|&r| format!("{} {}", REGION_NAMES[r], count_text(self.region_total(r))))
             .collect();
         c.text(
-            16.0,
-            38.0,
+            16.0 * em,
+            38.0 * em,
             &format!("{} per region: {}", self.unit(), totals.join(", ")),
             9.0,
             Anchor::Start,
             MUTED,
         );
         let title = format!("{} bin(s) per bar", self.shown_merge);
-        self.draw_track(&mut c, (8.0, 48.0, w - 16.0, h - 56.0), None, title);
+        let track = (8.0 * em, 48.0 * em, w - 16.0 * em, h - 56.0 * em);
+        self.draw_track(&mut c, track, None, title);
         c.finish()
     }
 
@@ -377,7 +385,7 @@ impl Screen for MetageneView<'_> {
         match self.controls.key(key) {
             Key::Pass => self.plot.invalidate(),
             Key::Used => return,
-            Key::Save(prefix) => return self.controls.save(&self.figure(OWN), &prefix),
+            Key::Save(prefix) => return self.controls.save(&self.figure(Sheet::OWN), &prefix),
         }
         match key.code {
             KeyCode::Left | KeyCode::Char('h') => self.move_cursor(-1),
@@ -479,15 +487,16 @@ impl Screen for MetageneView<'_> {
     }
 }
 
-/// The least page a profile is laid out on, in points: its title, totals
-/// and axes need the room.
+/// The least page a profile saved from the view grows to, in points, lest a
+/// small terminal squeeze its title, totals and axes; a page asked for is
+/// taken as it is, its text fit to it.
 pub const LEAST: (f64, f64) = (360.0, 200.0);
 
 /// The profile as the view first shows it, drawn without a terminal, laid
-/// out for `page` (see [`crate::figure::SizeArgs`], checked against
-/// [`LEAST`] by the caller).
-pub fn figure(title: &str, hist: &GeneFeatureHistogram, page: Page) -> String {
-    MetageneView::new(title, hist).figure(page)
+/// out for `sheet` (see [`crate::figure::SizeArgs`] and
+/// [`crate::figure::style::StyleArgs`]).
+pub fn figure(title: &str, hist: &GeneFeatureHistogram, sheet: Sheet) -> String {
+    MetageneView::new(title, hist).figure(sheet)
 }
 
 /// Show the profile full screen until the user quits.

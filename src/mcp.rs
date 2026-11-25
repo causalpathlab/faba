@@ -46,7 +46,9 @@ does not edit the input. With `dry_run` it writes nothing and returns what \
 the cell QC keeps and what each threshold removes: try thresholds that way \
 first.
 4. pileup, metagene and pwm read a directory's sites. metagene and pwm \
-return their table and its figure as an image. pileup returns a binned table \
+return their table and its figure as an image. site_plot draws a \
+directory's site statistics as paper panels (histograms, pairs, \
+marginals), thresholds optional, and returns them as images. pileup returns a binned table \
 for a gene or region (and, with `figure`, a Miami SVG, as an image too). \
 cluster_view shows a cluster fit level by level, from its run record \
 ({m}_blockmodel.run.json) or the directory holding its tables: the modules, \
@@ -215,8 +217,13 @@ fn tools() -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "qc",
-            "Filter a faba directory into a new one (`faba qc --batch-process`). Cells are cut on `{batch}_count` and the same cells are kept in every matrix; sites are cut on the thresholds given (marginal p-values, no FDR). Omit a threshold to keep faba's default. Try thresholds first with `dry_run`: it returns what the cell QC keeps per batch and what each threshold removes per modality, writing nothing. The dry run's `pairs` are the pairs of thresholds Auto picks to show two at a time: those splitting the most sites (pass one, fail the other) on axes that agree least. With `plots`, the view's figures go to `qc_plots/` and come back as images: each threshold's histogram, each modality's thresholds two at a time ({m}_pairs: kept sites against removed, the box where both pass) and each batch's cell QC ({batch}_cells). With `html`, a page to share goes to that file (dry run too); a file that exists is refused, never replaced: ask the user for another path.",
+            "Filter a faba directory into a new one (`faba qc --batch-process`). Cells are cut on `{batch}_count` and the same cells are kept in every matrix; sites are cut on the thresholds given (marginal p-values, no FDR). Omit a threshold to keep faba's default. Try thresholds first with `dry_run`: it returns what the cell QC keeps per batch and what each threshold removes per modality, writing nothing. The dry run's `pairs` are the pairs of thresholds Auto picks to show two at a time: those splitting the most sites (pass one, fail the other) on axes that agree least. With `plots`, the view's figures go to `qc_plots/`: each threshold's histogram, each modality's thresholds two at a time ({m}_pairs: kept sites against removed, the box where both pass; not drawn with `panel_only`, whose pairs are the panels) and each batch's cell QC ({batch}_cells); and the site panels `site_plot` draws go to `qc_plots/panels/`. Both come back as images, at most 8: the view's figures first, then the panels, each in name order, half the room each and the rest to whichever has more. With `html`, a page to share goes to that file (dry run too); a file that exists is refused, never replaced: ask the user for another path.",
             schema(qc_properties(&dir(), &out(), &options()), &["input"]),
+        ),
+        ToolSpec::new(
+            "site_plot",
+            "Draw a faba directory's site statistics as paper panels (`faba site-plot`), no QC: for one `modality`, a histogram of each `hist` quantity (pv, fold, log_odds, coverage, converted, edit_ratio, cells; default every one that applies) and each of `pairs` two at a time (\"x:y\", e.g. \"pv:cells\"; default the pairs `qc` picks), with `marginals` (top, right) on the pair's own axes. Each quantity has one scale, range and set of bins in every figure (`scale`: \"pv=log\", \"fold=linear\"; defaults: -log10 p, edit ratio and log odds linear, fold and counts log). cells counts the cells with a converted read at a site, over every cell. Thresholds are optional: given ones are drawn as dashed lines and the sites they remove drawn apart; none given, every site is kept. Writes only figures to `out`, a new directory: {modality}_hist_{q} and {modality}_{y}_vs_{x}, each .pdf (labels as text) and .png; returns their paths and the PNGs as images. `qc` with `plots` writes the same panels under qc_plots/panels/.",
+            schema(site_plot_properties(&dir(), &out(), &options(), &modality()), &["input"]),
         ),
         ToolSpec::new(
             "cluster",
@@ -329,11 +336,11 @@ fn tools() -> Vec<ToolSpec> {
     for s in specs.iter_mut() {
         // Every tool that draws a figure takes its size alike.
         if SIZED.contains(&s.name.as_str()) {
-            let least = crate::figure::size::MIN;
+            let least = least_size(&s.name);
             s.input_schema["properties"]["width"] = json!({ "type": "number", "minimum": least.0,
                 "description": "The figure's width in inches, laid out for it, its text kept readable (e.g. 3.5 for a column, 7 for a page); alone or with `height`, the other the figure's own" });
             s.input_schema["properties"]["height"] = json!({ "type": "number", "minimum": least.1,
-                "description": "The figure's height in inches; alone or with `width`. A figure may need more than the least for its labels (it says so)" });
+                "description": "The figure's height in inches; alone or with `width`, its text fit to it. A qc figure with its table needs 10 inches across unless `panel_only` (it says so)" });
         }
         for &(_, key, kind, about) in TYPED.iter().filter(|t| t.0.contains(&s.name.as_str())) {
             s.input_schema["properties"][key] = typed_schema(kind, about);
@@ -464,7 +471,61 @@ const TYPED: &[(&[&str], &str, Kind, &str)] = &[
         Kind::Switch,
         "Also profile non-coding genes, on their own track",
     ),
+    (
+        SITE_PANELS,
+        "hist",
+        Kind::List,
+        "Site panels: quantities to draw a histogram of (pv, fold, log_odds, coverage, converted, edit_ratio, cells); default every one that applies, [\"none\"] for none",
+    ),
+    (
+        SITE_PANELS,
+        "pairs",
+        Kind::List,
+        "Site panels: pairs to draw two at a time, each \"x:y\" (e.g. \"pv:cells\"); default the pairs qc picks, [\"none\"] for none",
+    ),
+    (
+        SITE_PANELS,
+        "marginals",
+        Kind::List,
+        "Site panels: histograms beside each pair on its own axes, \"top\" (x) and/or \"right\" (y)",
+    ),
+    (
+        SITE_PANELS,
+        "scale",
+        Kind::List,
+        "A quantity's scale in every figure of it, each \"q=linear\" or \"q=log\" (e.g. \"pv=log\"); log odds is linear only",
+    ),
+    (
+        SITE_PANELS,
+        "bins",
+        Kind::Number,
+        "Site panels: bins along each quantity's axis (default from the figure's width, 20 to 60)",
+    ),
+    (
+        PANELS,
+        "font_size",
+        Kind::Number,
+        "Every label's size in points, as printed (default: fit to the figure)",
+    ),
+    (
+        PANELS,
+        "panel_only",
+        Kind::Switch,
+        "Draw the plot, its axes and their titles only: no title, file name, key or notes",
+    ),
+    (
+        PANELS,
+        "palette",
+        Kind::Choice(&["colour", "gray"]),
+        "Kept and removed sites in blue and orange (colour) or dark and light gray (gray)",
+    ),
 ];
+
+/// The tools whose site figures take a paper panel's look.
+const PANELS: &[&str] = &["metagene", "pwm", "qc", "site_plot"];
+
+/// The tools drawing the site panels, which take their choice of panels.
+const SITE_PANELS: &[&str] = &["qc", "site_plot"];
 
 /// The JSON schema of a typed argument.
 fn typed_schema(kind: Kind, about: &str) -> Value {
@@ -562,10 +623,43 @@ fn qc_properties(dir: &Value, out: &Value, options: &Value) -> Value {
         "auto_cutoff": { "type": "boolean" },
         "no_cell_qc": { "type": "boolean" },
         "dry_run": { "type": "boolean", "description": "Count what the thresholds remove, per batch and modality; write nothing (`out` is ignored)" },
-        "plots": { "type": "boolean", "description": "Also draw each modality's and knob's figure, each modality's thresholds two at a time ({m}_pairs) and each batch's cell QC ({batch}_cells) under `qc_plots/`, and return them as images" },
+        "plots": { "type": "boolean", "description": "Also draw each modality's and knob's figure, each modality's thresholds two at a time ({m}_pairs) and each batch's cell QC ({batch}_cells) under `qc_plots/`, and the site panels `site_plot` draws, at these thresholds, under `qc_plots/panels/` (`hist`, `pairs`, `marginals`, `scale`, `bins` choose them); both come back as images (see the tool's description)" },
         "html": { "type": "string", "description": "Also write the view's page here, to share (with `dry_run` too): the thresholds recounted live, their pairs two at a time and each batch's cell QC, carrying each modality's strongest 50,000 sites by p-value. Must not exist: an existing file is refused, never replaced" },
         "options": options,
     })
+}
+
+/// The site thresholds `qc` and `site_plot` take, as numbers.
+const SITE_THRESHOLDS: [&str; 8] = [
+    "site_max_pv",
+    "site_min_log_odds",
+    "site_min_coverage",
+    "site_min_converted",
+    "site_min_edit_ratio",
+    "site_max_edit_ratio",
+    "site_min_fold",
+    "site_min_cells",
+];
+
+/// `site_plot`'s arguments: the directory in, the modality, the optional
+/// thresholds (as `qc`'s), the directory out.
+fn site_plot_properties(dir: &Value, out: &Value, options: &Value, modality: &Value) -> Value {
+    let qc = qc_properties(dir, out, options);
+    let mut p = json!({
+        "input": dir,
+        "modality": modality,
+        "out": { "type": "string", "description": "Directory the figures go to; must not exist. Omitted, a new directory in today's results folder" },
+        "options": options,
+    });
+    for key in SITE_THRESHOLDS {
+        let mut t = qc[key].clone();
+        t["description"] = json!(format!(
+            "Optional; drawn as a dashed line, the sites it removes drawn apart. {}",
+            t["description"].as_str().unwrap_or("As qc's")
+        ));
+        p[key] = t;
+    }
+    p
 }
 
 pub fn run_mcp(_args: &McpArgs) -> Result<()> {
@@ -602,6 +696,7 @@ impl Handler for Faba {
             "snp" => snp(&a, cx)?,
             "run" => run(&a, cx)?,
             "qc" => return qc(&a, cx),
+            "site_plot" => return site_plot(&a, cx),
             "cluster" => cluster(&a, cx)?,
             "cluster_view" | "modules" => return cluster_view(&a, cx),
             "pileup" => return pileup(&a, cx),
@@ -887,14 +982,16 @@ fn recorded_results(dir: &str) -> Option<Value> {
 }
 
 /// The prefix `--figure` takes beside the table `table`, after checking the
-/// PDF and PNG it writes are new; both are added to `outputs`.
+/// PDF and PNG it writes are new; all are added to `outputs`.
 fn figure_prefix(table: &str, outputs: &mut Vec<PathBuf>) -> Result<(String, String)> {
     let prefix = table.strip_suffix(".tsv").unwrap_or(table);
     // Exactly the files a figure saved under `prefix` writes.
-    let [pdf, png] = crate::figure::saved_paths(prefix);
-    fresh(&pdf)?;
-    fresh(&png)?;
-    outputs.extend([PathBuf::from(&pdf), PathBuf::from(&png)]);
+    let paths = crate::figure::saved_paths(prefix);
+    for path in &paths {
+        fresh(path)?;
+    }
+    outputs.extend(paths.iter().map(PathBuf::from));
+    let [_, png] = paths;
     Ok((prefix.to_string(), png))
 }
 
@@ -1191,19 +1288,8 @@ fn run(a: &Arguments, cx: &Call) -> Result<Value> {
 fn qc(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
     let input = a.path("input")?;
     let mut argv = vec!["qc".into(), input.clone()];
-    argv.extend(a.numbers(&[
-        "site_max_pv",
-        "site_min_log_odds",
-        "site_min_coverage",
-        "site_min_converted",
-        "site_min_edit_ratio",
-        "site_max_edit_ratio",
-        "site_min_fold",
-        "site_min_cells",
-        "row_nnz_cutoff",
-        "column_nnz_cutoff",
-        "qc_mads",
-    ])?);
+    argv.extend(a.numbers(&SITE_THRESHOLDS)?);
+    argv.extend(a.numbers(&["row_nnz_cutoff", "column_nnz_cutoff", "qc_mads"])?);
     if a.flag("auto_cutoff")? {
         argv.push("--auto-cutoff".into());
     }
@@ -1255,18 +1341,52 @@ fn qc(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
     Ok(content)
 }
 
-/// The figures under `out`'s `qc_plots/`, as images, in name order, at
-/// most [`QC_IMAGES`].
-fn qc_images(out: &str) -> Result<Vec<Content>> {
-    let mut images: Vec<PathBuf> = std::fs::read_dir(Path::new(out).join("qc_plots"))
-        .into_iter()
-        .flatten()
-        .flatten()
+/// `faba site-plot`'s command line for `a`, short of `-o`.
+fn site_plot_argv(a: &Arguments) -> Result<Vec<String>> {
+    let mut argv = vec!["site-plot".into(), a.path("input")?];
+    push_opt(&mut argv, "--modality", a.str("modality"));
+    argv.extend(a.numbers(&SITE_THRESHOLDS)?);
+    argv.extend(a.options(&[])?);
+    Ok(argv)
+}
+
+/// Most images attached to one `site_plot` call.
+const SITE_PLOT_IMAGES: usize = 12;
+
+fn site_plot(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
+    let input = a.path("input")?;
+    let argv = site_plot_argv(a)?;
+    let out = a.out_or(cx, (&named(&input, "site_plot"), ""), exists)?;
+    let what = format!("site panels of {input}");
+    let v = run_out(a, cx, argv, &out, &what)?;
+    let mut content = vec![Content::Json(v)];
+    for p in pngs(Path::new(&out)).iter().take(SITE_PLOT_IMAGES) {
+        content.push(Content::Png(std::fs::read(p)?));
+    }
+    Ok(content)
+}
+
+/// The PNGs directly in `dir`, in name order; none when it cannot be read.
+fn pngs(dir: &Path) -> Vec<PathBuf> {
+    let mut v: Vec<PathBuf> = (std::fs::read_dir(dir).into_iter().flatten().flatten())
         .map(|e| e.path())
         .filter(|p| p.extension().is_some_and(|x| x == "png"))
         .collect();
-    images.sort();
-    (images.iter().take(QC_IMAGES))
+    v.sort();
+    v
+}
+
+/// The figures under `out`'s `qc_plots/`, as images: the view's, then
+/// the panels under `qc_plots/panels/`, each in name order, at most
+/// [`QC_IMAGES`] in all; half that each, the rest to whichever has more.
+fn qc_images(out: &str) -> Result<Vec<Content>> {
+    let plots = Path::new(out).join("qc_plots");
+    let (figures, panels) = (pngs(&plots), pngs(&plots.join("panels")));
+    let half = QC_IMAGES / 2;
+    let n_panels = panels.len().min(QC_IMAGES - figures.len().min(half));
+    let n_figures = figures.len().min(QC_IMAGES - n_panels);
+    (figures.iter().take(n_figures))
+        .chain(panels.iter().take(n_panels))
         .map(|p| Ok(Content::Png(std::fs::read(p)?)))
         .collect()
 }
@@ -1274,7 +1394,24 @@ fn qc_images(out: &str) -> Result<Vec<Content>> {
 /// The tools that draw a figure, each taking its size as `width` and
 /// `height` in inches, passed as `--fig-width` and `--fig-height` (see
 /// [`typed_flags`]).
-const SIZED: [&str; 5] = ["cluster_view", "pileup", "metagene", "pwm", "qc"];
+const SIZED: [&str; 6] = [
+    "cluster_view",
+    "pileup",
+    "metagene",
+    "pwm",
+    "qc",
+    "site_plot",
+];
+
+/// The least `width` and `height` a [`SIZED`] tool's figure takes, in
+/// inches: pileup's and cluster_view's margins do not shrink with their
+/// text (see [`crate::figure::size::FIXED_MIN`]).
+fn least_size(tool: &str) -> (f64, f64) {
+    match tool {
+        "pileup" | "cluster_view" => crate::figure::size::FIXED_MIN,
+        _ => crate::figure::size::MIN,
+    }
+}
 
 /// `cluster`'s arguments of the MCMC fits faba had before 0.19, refused as
 /// `faba cluster` refuses their flags, rather than dropped: none is in the
@@ -1570,7 +1707,8 @@ fn exists(path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        pileup_argv, recorded_results, tools, tsv_rows, typed_flags, with_typed, Arguments, TYPED,
+        pileup_argv, qc_images, recorded_results, site_plot_argv, tools, tsv_rows, typed_flags,
+        with_typed, Arguments, QC_IMAGES, TYPED,
     };
     use clap::CommandFactory;
     use serde_json::json;
@@ -1875,12 +2013,37 @@ sites	m6A	10	2
             "{argv:?}"
         );
         assert!(typed_flags("pwm", &Arguments(json!({ "width": "wide" }))).is_err());
-        // The schema states the least a figure takes.
-        let pwm = tools().into_iter().find(|t| t.name == "pwm").unwrap();
-        assert_eq!(
-            pwm.input_schema["properties"]["width"]["minimum"],
-            json!(2.0)
-        );
+        // The schema states the least a figure takes: pileup's and
+        // cluster_view's, whose margins do not shrink, more.
+        let least = |tool: &str, key: &str| {
+            let t = tools().into_iter().find(|t| t.name == tool).unwrap();
+            t.input_schema["properties"][key]["minimum"].clone()
+        };
+        let (min, fixed) = (crate::figure::size::MIN, crate::figure::size::FIXED_MIN);
+        for tool in ["pwm", "metagene", "qc", "site_plot"] {
+            assert_eq!(least(tool, "width"), json!(min.0), "{tool}");
+            assert_eq!(least(tool, "height"), json!(min.1), "{tool}");
+        }
+        for tool in ["pileup", "cluster_view"] {
+            assert_eq!(least(tool, "width"), json!(fixed.0), "{tool}");
+            assert_eq!(least(tool, "height"), json!(fixed.1), "{tool}");
+        }
+    }
+
+    /// A paper panel's look: the font, the panel alone and the palette, for
+    /// every tool drawing a site figure, as its command's flags.
+    #[test]
+    fn figure_tools_take_the_panels_look() {
+        let a = Arguments(json!({ "font_size": 6, "panel_only": true, "palette": "gray" }));
+        for tool in ["metagene", "pwm", "qc"] {
+            assert_eq!(
+                typed_flags(tool, &a).unwrap(),
+                ["--font-size", "6", "--panel-only", "--palette", "gray"],
+                "{tool}"
+            );
+        }
+        let e = typed_flags("qc", &Arguments(json!({ "palette": "blue" }))).unwrap_err();
+        assert!(e.to_string().contains("one of colour, gray"), "{e}");
     }
 
     /// `figure` alone draws: the command gets `--svg`, which puts it in
@@ -1897,5 +2060,114 @@ sites	m6A	10	2
         assert!(!argv.contains(&"--svg".to_string()), "{argv:?}");
         let (argv, figure) = call(json!({ "data": ["s.zarr"], "genes": ["G1"] }));
         assert!(!figure && !argv.contains(&"--svg".to_string()), "{argv:?}");
+    }
+
+    /// `site_plot` offers every panel option, the thresholds and the look,
+    /// and runs `faba site-plot` with them as flags; `qc` takes the same
+    /// panel options.
+    #[test]
+    fn site_plot_takes_the_panels_and_builds_its_command() {
+        let spec = tools()
+            .into_iter()
+            .find(|t| t.name == "site_plot")
+            .expect("site_plot");
+        let props = &spec.input_schema["properties"];
+        for key in [
+            "input",
+            "modality",
+            "hist",
+            "pairs",
+            "marginals",
+            "scale",
+            "bins",
+            "site_max_pv",
+            "site_min_log_odds",
+            "site_min_coverage",
+            "site_min_converted",
+            "site_min_edit_ratio",
+            "site_max_edit_ratio",
+            "site_min_fold",
+            "site_min_cells",
+            "width",
+            "height",
+            "font_size",
+            "panel_only",
+            "palette",
+            "out",
+            "options",
+        ] {
+            assert!(props.get(key).is_some(), "site_plot: no `{key}`");
+        }
+        assert_eq!(spec.input_schema["required"], json!(["input"]));
+        let args = json!({
+            "input": "runs/a", "modality": "m6a", "hist": ["pv", "cells"],
+            "pairs": ["pv:cells", "fold:pv"], "marginals": ["top", "right"],
+            "scale": ["pv=log"], "bins": 30, "site_max_pv": 0.05, "site_min_cells": 10,
+            "width": 1.8, "height": 1.4, "font_size": 6, "panel_only": true, "palette": "gray",
+        });
+        let argv = site_plot_argv(&Arguments(with_typed("site_plot", args).unwrap())).unwrap();
+        let has = |w: &[&str]| argv.windows(w.len()).any(|x| x == w);
+        assert_eq!(argv[..2], ["site-plot", "runs/a"]);
+        for w in [
+            &["--modality", "m6a"][..],
+            &["--hist", "pv", "--hist", "cells"],
+            &["--pairs", "pv:cells", "--pairs", "fold:pv"],
+            &["--marginals", "top", "--marginals", "right"],
+            &["--scale", "pv=log"],
+            &["--bins", "30"],
+            &["--site-max-pv", "0.05"],
+            &["--site-min-cells", "10"],
+            &["--fig-width", "1.8", "--fig-height", "1.4"],
+            &["--font-size", "6", "--panel-only", "--palette", "gray"],
+        ] {
+            assert!(has(w), "{w:?} in {argv:?}");
+        }
+        assert!(
+            !argv.iter().any(|a| a == "-o" || a == "--batch-process"),
+            "{argv:?}"
+        );
+        let qc = typed_flags(
+            "qc",
+            &Arguments(json!({ "pairs": ["pv:cells"], "bins": 20 })),
+        );
+        assert_eq!(qc.unwrap(), ["--pairs", "pv:cells", "--bins", "20"]);
+    }
+
+    /// `qc`'s images are its view's figures and its panels under
+    /// `qc_plots/panels/`, each in name order, half the room each and the
+    /// rest to whichever has more.
+    #[test]
+    fn qc_returns_its_panels_with_its_figures() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().to_string_lossy().into_owned();
+        let plots = dir.path().join("qc_plots");
+        std::fs::create_dir_all(plots.join("panels")).unwrap();
+        let png = |path: PathBuf, n: usize| std::fs::write(path, [n as u8]).unwrap();
+        let figures = |n: usize| {
+            for k in 0..n {
+                png(plots.join(format!("f{k:02}.png")), k);
+                std::fs::write(plots.join(format!("f{k:02}.pdf")), "").unwrap();
+            }
+        };
+        let bytes = |c: &super::Content| match c {
+            super::Content::Png(b) => b[0],
+            _ => panic!("not an image"),
+        };
+        // Two panels: both come back, after the view's figures.
+        figures(QC_IMAGES + 3);
+        for k in 0..2 {
+            png(plots.join("panels").join(format!("p{k:02}.png")), 100 + k);
+        }
+        let got: Vec<u8> = qc_images(&out).unwrap().iter().map(bytes).collect();
+        let want: Vec<u8> = (0..QC_IMAGES as u8 - 2).chain([100, 101]).collect();
+        assert_eq!(got, want);
+        // Many panels: half the room each.
+        for k in 2..QC_IMAGES + 2 {
+            png(plots.join("panels").join(format!("p{k:02}.png")), 100 + k);
+        }
+        let got: Vec<u8> = qc_images(&out).unwrap().iter().map(bytes).collect();
+        let half = QC_IMAGES as u8 / 2;
+        let want: Vec<u8> = (0..half).chain(100..100 + half).collect();
+        assert_eq!(got, want);
     }
 }

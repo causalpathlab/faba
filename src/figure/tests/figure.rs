@@ -318,16 +318,160 @@ fn turning_images_off_outlives_another_terminal() {
     assert!(c.images_on());
 }
 
-/// `--figure` writes the PDF and a PNG at two pixels per point beside it.
+/// `--figure` writes the PDF and a PNG at two pixels per point beside it,
+/// under any spelling of the prefix.
 #[test]
-fn save_with_png_writes_both() {
+fn save_with_png_writes_the_pdf_and_png() {
     let dir = tempfile::tempdir().unwrap();
     let prefix = dir.path().join("fig").to_string_lossy().into_owned();
     let svg = svg(100.0, 50.0, |c| c.rect(10.0, 10.0, 20.0, 20.0, INK));
-    let paths = save_with_png(&svg, &prefix).unwrap();
-    assert_eq!(paths, [format!("{prefix}.pdf"), format!("{prefix}.png")]);
+    let paths = save_with_png(&svg, &format!("{prefix}.pdf")).unwrap();
+    let want = ["pdf", "png"].map(|x| format!("{prefix}.{x}"));
+    assert_eq!(paths, want);
+    assert_eq!(saved_paths(&prefix), want, "what a save is checked against");
     let png = std::fs::read(&paths[1]).unwrap();
     assert!(png.starts_with(b"\x89PNG"));
     let image = image::load_from_memory(&png).unwrap();
     assert_eq!((image.width(), image.height()), (200, 100));
+}
+
+/// The PDF keeps a label as text in a font, not only as outlines, so it
+/// stays editable.
+#[test]
+fn a_pdf_keeps_its_labels_as_text() {
+    let dir = tempfile::tempdir().unwrap();
+    let prefix = dir.path().join("fig").to_string_lossy().into_owned();
+    let svg = svg(100.0, 50.0, |c| {
+        c.text(10.0, 30.0, "LABEL1", 8.0, Anchor::Start, INK)
+    });
+    let pdf = std::fs::read(&save(&svg, &prefix).unwrap()[0]).unwrap();
+    let has = |what: &[u8]| pdf.windows(what.len()).any(|w| w == what);
+    assert!(
+        has(b"/Font") && has(b"/FontDescriptor"),
+        "no font in the PDF"
+    );
+}
+
+/// A canvas styled for a font scales its labels from the 8 points they
+/// were laid out for, or sets every one at the size asked for; a
+/// sequence-logo letter keeps filling its box.
+#[test]
+fn a_styled_canvas_sizes_its_labels_from_the_font() {
+    let draw = |style: &style::Style| {
+        let mut c = Canvas::styled(100.0, 50.0, style);
+        c.text(1.0, 10.0, "T1", 8.0, Anchor::Start, INK);
+        c.bold(1.0, 20.0, "T2", 11.0, Anchor::Start, INK);
+        c.vtext(1.0, 30.0, "T3", 9.0, INK);
+        c.rotated(1.0, 40.0, "T4", 8.0, Anchor::End, INK);
+        c.glyph(50.0, 10.0, 20.0, 30.0, 'A', INK);
+        (c.em(), c.finish())
+    };
+    let fit = style::Style {
+        font: 6.0,
+        ..Default::default()
+    };
+    let (em, scaled) = draw(&fit);
+    assert_eq!(em, 0.75);
+    let sizes: Vec<String> = labels(&scaled).into_iter().map(|l| l.0).collect();
+    assert_eq!(sizes, ["6", "8.25", "6.75", "6"], "{scaled}");
+    let asked = style::Style {
+        uniform: true,
+        ..fit
+    };
+    let (_, uniform) = draw(&asked);
+    assert!(labels(&uniform).iter().all(|l| l.0 == "6"), "{uniform}");
+    for svg in [&scaled, &uniform] {
+        assert!(
+            svg.contains(r#"font-size="100" font-weight="bold""#),
+            "{svg}"
+        );
+    }
+    assert_eq!(draw(&style::Style::default()).1, {
+        let mut c = Canvas::new(100.0, 50.0);
+        c.text(1.0, 10.0, "T1", 8.0, Anchor::Start, INK);
+        c.bold(1.0, 20.0, "T2", 11.0, Anchor::Start, INK);
+        c.vtext(1.0, 30.0, "T3", 9.0, INK);
+        c.rotated(1.0, 40.0, "T4", 8.0, Anchor::End, INK);
+        c.glyph(50.0, 10.0, 20.0, 30.0, 'A', INK);
+        c.finish()
+    });
+}
+
+/// Bars lay out from the font: at 6 points their margins are three
+/// quarters of those at 8, and the panel alone draws no title.
+#[test]
+fn bars_lay_out_from_the_font() {
+    let values = [1.0, 3.0, 2.0];
+    let draw = |style: &style::Style| {
+        let mut c = Canvas::styled(200.0, 100.0, style);
+        Bars {
+            rotated: false,
+            values: &values,
+            front: None,
+            accent: &|i| i == 2,
+            colour: &|_| BAR,
+            y_scale: Scale::Linear,
+            y_max: None,
+            ticks: vec![(0, "0".into())],
+            pointer: Some(1),
+            marks: Vec::new(),
+            dividers: Vec::new(),
+            title: "PANEL1".into(),
+            x_title: "value".into(),
+            y_title: "n".into(),
+        }
+        .draw(&mut c, 0.0, 0.0, 200.0, 100.0);
+        c.finish()
+    };
+    let small = style::Style {
+        font: 6.0,
+        ..Default::default()
+    };
+    let svg = draw(&small);
+    // The y axis at 52 x 0.75 from the left, from 20 x 0.75 down.
+    assert!(svg.contains(r#"x1="39.00" y1="15.00" x2="39.00""#), "{svg}");
+    assert!(svg.contains("PANEL1"));
+    let panel = style::Style {
+        panel_only: true,
+        palette: style::Palette::Gray,
+        ..small
+    };
+    let svg = draw(&panel);
+    assert!(!svg.contains("PANEL1"), "{svg}");
+    // Room for the top label only, not a title.
+    assert!(svg.contains(r#"x1="39.00" y1="6.00" x2="39.00""#), "{svg}");
+    // Gray: what a threshold drops in light gray, the pointer in ink.
+    let removed = style::Palette::Gray.roles().removed;
+    assert!(svg.contains(&format!(r#"fill="{removed}""#)), "{svg}");
+    assert!(!svg.contains(ACCENT), "{svg}");
+}
+
+/// A figure drawn at its own size, with no font asked for, is drawn as it
+/// always was.
+#[test]
+fn the_default_figures_are_unchanged() {
+    let mut c = Canvas::new(300.0, 200.0);
+    let up = [1.0, 4.0, 2.0];
+    let down = [0.5, 0.0, 3.0];
+    Mirror {
+        up: Half {
+            values: &up,
+            front: Some(&down),
+            colour: BAR,
+            name: "up".into(),
+        },
+        down: Half::plain(&down, BAR),
+        y_scale: Scale::Linear,
+        y_max: None,
+        y_labels: Default::default(),
+        ticks: vec![(0, "L1-0".into()), (2, "L1-2".into())],
+        pointer: Some(1),
+        title: "PANEL2".into(),
+        x_title: "x".into(),
+        y_title: "y".into(),
+        rotated: true,
+    }
+    .draw(&mut c, 0.0, 0.0, 300.0, 200.0);
+    let shown = [fingerprint(&panel()), fingerprint(&c.finish())];
+    assert_eq!(shown, [3060415989485868728, 6542742469748360925]);
 }

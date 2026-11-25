@@ -433,3 +433,265 @@ fn qc_plots_are_drawn_in_batch() {
         assert!(plots.contains(&pdf), "{png} without {pdf}");
     }
 }
+
+/// `--plots --panel-only` draws each figure's plot alone at the size asked,
+/// however small; without --panel-only a page that narrow is refused,
+/// naming it.
+#[test]
+fn qc_panels_are_drawn_alone_at_any_size() {
+    let tmp = tempfile::tempdir().unwrap();
+    let input = format!("{}/in", tmp.path().display());
+    std::fs::create_dir_all(&input).unwrap();
+    build_fixture(&input);
+    let run = |output: &str, alone: &[&str]| {
+        faba()
+            .args(["qc", &input, "--batch-process", "--plots", "--no-zip"])
+            .args(["-o", output, "--fig-width", "2.5", "--fig-height", "1.8"])
+            .args(["--font-size", "6", "--palette", "gray"])
+            .args(alone)
+            .args(CUT)
+            .output()
+            .unwrap()
+    };
+    let refused = run(&format!("{}/narrow", tmp.path().display()), &[]);
+    assert!(!refused.status.success());
+    let said = String::from_utf8_lossy(&refused.stderr);
+    assert!(said.contains("--panel-only"), "{said}");
+    let output = format!("{}/out", tmp.path().display());
+    assert!(run(&output, &["--panel-only"]).status.success());
+    let pdfs: Vec<std::path::PathBuf> = std::fs::read_dir(format!("{output}/qc_plots"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|x| x == "pdf"))
+        .collect();
+    assert!(!pdfs.is_empty());
+    // The pairs alone are the site panels, a figure each: no 2x2 grid.
+    let pairs = format!("{output}/qc_plots/m6a_pairs.pdf");
+    assert!(!std::path::Path::new(&pairs).exists(), "{pairs}");
+    for path in &pdfs {
+        assert_eq!(pdf_size(path), (180.0, 129.6), "{}", path.display());
+    }
+}
+
+/// The page of the PDF at `path`, width by height in points, to a tenth.
+fn pdf_size(path: &std::path::Path) -> (f64, f64) {
+    let pdf = std::fs::read(path).unwrap();
+    let key = b"/MediaBox";
+    let at = (pdf.windows(key.len()))
+        .position(|w| w == key)
+        .unwrap_or_else(|| panic!("{}: no page size", path.display()));
+    let rest = String::from_utf8_lossy(&pdf[at + key.len()..at + key.len() + 80]).into_owned();
+    let inner = rest.split('[').nth(1).and_then(|r| r.split(']').next());
+    let v: Vec<f64> = (inner.unwrap_or_default().split_whitespace())
+        .map(|x| x.parse().unwrap())
+        .collect();
+    let tenth = |x: f64| (x * 10.0).round() / 10.0;
+    (tenth(v[2] - v[0]), tenth(v[3] - v[1]))
+}
+
+/// A knob's figure is drawn whatever scale `--scale` gives its quantity
+/// (which bins it reads is checked on the drawing itself, in the unit
+/// tests).
+#[test]
+fn qc_knob_figures_read_the_scale_asked() {
+    let tmp = tempfile::tempdir().unwrap();
+    let input = format!("{}/in", tmp.path().display());
+    std::fs::create_dir_all(&input).unwrap();
+    build_fixture(&input);
+    for (k, scale) in [None, Some("pv=linear"), Some("pv=log")]
+        .into_iter()
+        .enumerate()
+    {
+        let output = format!("{}/out{k}", tmp.path().display());
+        let mut run = faba();
+        run.args(["qc", &input, "--dry-run", "--plots", "-o", &output]);
+        if let Some(s) = scale {
+            run.args(["--scale", s]);
+        }
+        let out = run.args(CUT).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let pdf = format!("{output}/qc_plots/m6a_max-pv.pdf");
+        assert!(std::path::Path::new(&pdf).exists(), "{scale:?}");
+    }
+}
+
+/// The files directly in `dir`, sorted.
+fn listed(dir: &str) -> Vec<String> {
+    let mut v: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    v.sort();
+    v
+}
+
+/// `faba site-plot` writes exactly the figures asked for (PDF and PNG
+/// each, and its run record), prints their paths, and leaves the input as
+/// it was; it never writes into a directory holding files.
+#[test]
+fn site_plot_writes_exactly_the_figures_asked() {
+    let tmp = tempfile::tempdir().unwrap();
+    let input = format!("{}/in", tmp.path().display());
+    let output = format!("{}/out", tmp.path().display());
+    std::fs::create_dir_all(&input).unwrap();
+    build_fixture(&input);
+    let before = listed(&input);
+    let out = faba()
+        .args(["site-plot", &input, "-o", &output])
+        .args([
+            "--hist",
+            "pv,cells",
+            "--pairs",
+            "pv:cells",
+            "--marginals",
+            "top,right",
+        ])
+        .args(["--site-max-pv", "0.05"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let mut want: Vec<String> = ["m6a_hist_pv", "m6a_hist_cells", "m6a_cells_vs_pv"]
+        .iter()
+        .flat_map(|s| ["pdf", "png"].map(|x| format!("{s}.{x}")))
+        .collect();
+    let printed: Vec<String> = String::from_utf8(out.stdout)
+        .unwrap()
+        .lines()
+        .map(|l| l.rsplit('/').next().unwrap().to_string())
+        .collect();
+    let mut sorted = printed.clone();
+    sorted.sort();
+    want.sort();
+    assert_eq!(sorted, want, "printed");
+    want.push("site-plot.run.json".into());
+    want.sort();
+    assert_eq!(listed(&output), want);
+    assert_eq!(listed(&input), before);
+    let again = faba()
+        .args(["site-plot", &input, "-o", &output, "--hist", "pv"])
+        .output()
+        .unwrap();
+    assert!(!again.status.success());
+    assert_eq!(listed(&output), want, "nothing written over");
+    let bad = faba()
+        .args([
+            "site-plot",
+            &input,
+            "-o",
+            &format!("{output}2"),
+            "--pairs",
+            "pv:nope",
+        ])
+        .output()
+        .unwrap();
+    assert!(!bad.status.success());
+    assert!(String::from_utf8_lossy(&bad.stderr).contains("nope"));
+}
+
+/// A site-plot panel is the size asked, `--width` and `--height` too, with
+/// `--panel-only` and `--font-size` (each label's size is checked on the
+/// drawing itself, in the unit tests).
+#[test]
+fn site_plot_panels_are_the_size_and_font_asked() {
+    let tmp = tempfile::tempdir().unwrap();
+    let input = format!("{}/in", tmp.path().display());
+    let output = format!("{}/out", tmp.path().display());
+    std::fs::create_dir_all(&input).unwrap();
+    build_fixture(&input);
+    let out = faba()
+        .args(["site-plot", &input, "-o", &output, "--panel-only"])
+        .args(["--width", "1.8", "--fig-height", "1.4", "--font-size", "6"])
+        .args([
+            "--pairs",
+            "coverage:cells",
+            "--marginals",
+            "right",
+            "--palette",
+            "gray",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let pdfs: Vec<String> = listed(&output)
+        .into_iter()
+        .filter(|f| f.ends_with(".pdf"))
+        .collect();
+    assert!(
+        pdfs.contains(&"m6a_cells_vs_coverage.pdf".to_string()),
+        "{pdfs:?}"
+    );
+    assert!(
+        pdfs.contains(&"m6a_hist_fold.pdf".to_string()),
+        "every histogram: {pdfs:?}"
+    );
+    for name in &pdfs {
+        let path = std::path::Path::new(&output).join(name);
+        assert_eq!(pdf_size(&path), (129.6, 100.8), "{name}");
+    }
+}
+
+/// `faba qc --plots` writes the same panels at its thresholds under
+/// `qc_plots/panels/`, in a dry run too.
+#[test]
+fn qc_plots_write_the_site_panels() {
+    let tmp = tempfile::tempdir().unwrap();
+    let input = format!("{}/in", tmp.path().display());
+    std::fs::create_dir_all(&input).unwrap();
+    build_fixture(&input);
+    let panels = [
+        "--hist",
+        "pv,coverage",
+        "--pairs",
+        "pv:cells",
+        "--marginals",
+        "top",
+        "--scale",
+        "pv=log",
+    ];
+    for dry in [false, true] {
+        let output = format!("{}/out{dry}", tmp.path().display());
+        let mode = if dry { "--dry-run" } else { "--batch-process" };
+        let out = faba()
+            .args(["qc", &input, mode, "--plots", "--no-zip", "-o", &output])
+            .args(panels)
+            .args(CUT)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let got: Vec<String> = listed(&format!("{output}/qc_plots/panels"))
+            .into_iter()
+            .filter(|f| f.ends_with(".pdf"))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                "m6a_cells_vs_pv.pdf",
+                "m6a_hist_coverage.pdf",
+                "m6a_hist_pv.pdf"
+            ],
+            "dry run {dry}"
+        );
+    }
+    // The panel flags need --plots.
+    let refused = faba()
+        .args(["qc", &input, "--dry-run", "--hist", "pv"])
+        .output()
+        .unwrap();
+    assert!(!refused.status.success());
+}

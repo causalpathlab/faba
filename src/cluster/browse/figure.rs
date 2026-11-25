@@ -111,6 +111,18 @@ pub fn draw(
     }
 }
 
+/// The page `asked` for `plot`: refused when a side is under the
+/// trace's or the batches' floor, their margins not shrinking with their
+/// text (see [`size::FIXED_MIN`]); the grid lays itself out, saying the
+/// least it needs as it is drawn.
+pub fn page(plot: Plot, asked: &crate::figure::SizeArgs) -> anyhow::Result<Page> {
+    match plot {
+        Plot::Modules => asked.page(),
+        Plot::Trace => asked.page_at_least(size::FIXED_LEAST, "the trace figure"),
+        Plot::Batches => asked.page_at_least(size::FIXED_LEAST, "the batches figure"),
+    }
+}
+
 /// What colours a block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum Look {

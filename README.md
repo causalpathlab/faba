@@ -163,6 +163,7 @@ faba <COMMAND> [OPTIONS]
 | `run` | Set up the pipeline in a view (inputs, steps, flags), preview and save the command, and run it: SNP → count → ATOI → m6A → APA |
 | **QC — choose and apply thresholds after profiling** ||
 | `qc`                      | Pick thresholds in a full-screen view, then filter a faba output directory into a new fileset |
+| `site-plot` (`sp`)        | Draw a directory's site statistics as paper panels, no QC: histograms, chosen pairs with marginals, each quantity on one scale; thresholds optional |
 | **Clustering: cells by their own sites** ||
 | `cluster`                 | Cluster cells by their site reads: cell and gene modules with a methylation shift per pair, fitted by variational inference. `--modality count` fits cell modules by gene counts instead; `--within` its run record then fits the sites within each of those cell modules |
 | `cluster-view` (`modules`, `blocks`) | View a `cluster` fit from its run record `{m}_blockmodel.run.json`, or from its input directory (it never fits: run `cluster` first): its gene modules against its cell modules, each module's sites, the genes you pin side by side, and a gene's full pileup, one track per cell module; `--html` writes it as one self-contained page to share. A `--within` record (`{m}_within.run.json`) opens as the list of its fits, the count fit first; `--group C3` opens the one within a cell module |
@@ -212,7 +213,7 @@ Producers write every candidate and apply no p-value cutoff. qc is where cells, 
 1. docs lists the method write-ups. With `query` it prints the sections named (a topic such as profiling, a command such as qc, or a section number).
 2. count, atoi, dartseq, apa, depth and snp each write one modality. run writes the pipeline (SNP, then count, A-to-I, m6A, APA) into one directory. dartseq needs control BAMs; without them, run skips m6A.
 3. qc filters a directory into a new one, with the site thresholds given. It does not edit the input. With `dry_run` it writes nothing and returns what the cell QC keeps and what each threshold removes: try thresholds that way first.
-4. pileup, metagene and pwm read a directory's sites. metagene and pwm return their table and its figure as an image. pileup returns a binned table for a gene or region (and, with `figure`, a Miami SVG, as an image too). cluster_view shows a cluster fit level by level, from its run record ({m}_blockmodel.run.json) or the directory holding its tables: the modules, then a gene module, a gene, the cell modules, the trace and verdict, the settings.
+4. pileup, metagene and pwm read a directory's sites. metagene and pwm return their table and its figure as an image. site_plot draws a directory's site statistics as paper panels (histograms, pairs, marginals), thresholds optional, and returns them as images. pileup returns a binned table for a gene or region (and, with `figure`, a Miami SVG, as an image too). cluster_view shows a cluster fit level by level, from its run record ({m}_blockmodel.run.json) or the directory holding its tables: the modules, then a gene module, a gene, the cell modules, the trace and verdict, the settings.
 5. cluster fits cells by their own site reads (a blockmodel of cell and gene modules, by variational inference) and writes its tables to `out`. In two rounds: first `modality` count, cell modules by gene counts (it writes count_blockmodel.run.json); then, with `within` naming that record, m6a or atoi within each of its cell modules. The second round writes {m}_within.run.json, which cluster_view opens: the list of its fits, and with `group` the fit within one cell module.
 
 The producers (count, depth, atoi, dartseq, apa, snp, run, qc, cluster) take `background`: on large BAMs set it, and the call returns a job id at once.
@@ -230,6 +231,7 @@ legume-mcp adds where the records are and the background jobs below. The project
 | `qc` | filters a directory into a new one |
 | `cluster` | fits cells by their own site reads, by gene counts (`modality` count), or by site reads within a count fit's cell modules (`within`); writes its tables to a new directory |
 | `pileup`, `metagene`, `pwm`, `cluster_view` | read what was written |
+| `site_plot` | draws a directory's site statistics as paper panels into a new directory |
 | `job_status`, `job_wait`, `job_cancel` | from legume-mcp |
 
 ### Long runs in the background
@@ -340,13 +342,29 @@ either or both (the other is then the figure's own). It is laid out for that siz
 points as it prints, rather than scaled. This holds for `cluster-view --figure` (where 0.19.0's
 `--width` and `--height` still work), `metagene --figure`, `pwm --figure`, `qc --plots`, and
 `pileup`'s Miami plot (8 inches wide unless given; its tracks share the height given). Over MCP,
-each of these tools takes `width` and `height`. A size too small for a figure's labels is
-refused, saying the least it needs.
+each of these tools takes `width` and `height`, from 1 by 0.75 inches. A few figures keep a floor
+and refuse a smaller size, saying the least they need: `qc`'s full knob figure (its table and
+plots: 10 inches across, and a height that grows with the gene and metagene boxes) unless
+`--panel-only` draws the plot alone, `pileup`'s Miami plot, and `cluster-view`'s `--plot trace`
+and `--plot batches` (2 by 1.5 inches, their margins fixed). The others lay out their text and
+margins to fit the size given; `cluster-view`'s modules grid still says so when its cells cannot
+fit.
+
+`faba site-plot DIR -o OUT` draws one modality's site statistics as panels and nothing else:
+`--hist` quantities (pv, fold, log_odds, coverage, converted, edit_ratio, cells), `--pairs x:y,...`
+two at a time (default: the pairs `qc` picks), `--marginals top,right` on the pair's own axes. Each
+quantity is read on one scale, range and set of bins in every figure (`--scale pv=log,fold=linear`
+to change one), so ticks line up across panels. Thresholds, named as `qc`'s, are optional: given
+ones are drawn as dashed lines and the sites they remove drawn apart. `--font-size`, `--panel-only`
+and `--palette gray` set the look; `qc --plots` writes the same panels under `qc_plots/panels/`.
 
 ```bash
 # A column-wide modules grid and a page-wide logo
 faba cluster-view out/m6a_blockmodel.run.json --figure grid --fig-width 3.5 --fig-height 3
 faba pwm out/ -f genome.fa --batch-process --figure logo --fig-width 7
+# Panels 1.8 inches square, text at 6 points, plot and axes only, in gray
+faba site-plot out/ -o panels/ --hist pv,cells --pairs pv:cells --marginals top,right \
+  --fig-width 1.8 --fig-height 1.8 --font-size 6 --panel-only --palette gray --site-max-pv 0.05
 ```
 
 ## Methods

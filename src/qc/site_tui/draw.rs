@@ -1,13 +1,69 @@
 //! Drawing: the threshold table, the three plots, and the saved figure.
 
 use super::*;
-use crate::figure::size::Page;
+use crate::figure::style::{Palette, Sheet};
 use crate::site_analysis::miami::genemodel::draw_gene_model;
 use crate::tui::marker;
 
 /// The width a qc figure needs at least, in points: its table and its
 /// plots (the height depends on the plots shown).
 pub(crate) const QC_LEAST_W: f64 = 720.0;
+
+/// A knob figure's own size drawn alone (`--panel-only`), in points: its
+/// histogram as the whole figure draws it.
+const PANEL_OWN: (f64, f64) = (QC_LEAST_W - 330.0, 280.0);
+
+/// Refused when a side of `sheet`'s page asked for is less than `least`
+/// points (see [`knob_least`] and [`crate::figure::size::at_least`]).
+pub(crate) fn knob_room(sheet: &Sheet, least: (f64, f64), what: &str) -> anyhow::Result<()> {
+    crate::figure::size::at_least(sheet.page, least, what)
+        .map_err(|e| anyhow::anyhow!("{e}; --panel-only draws the plot alone at any size"))
+}
+
+/// The least heights of a knob figure's plots: the histogram, then a box
+/// each (the gene, the metagene).
+fn knob_plots(boxes: usize) -> Vec<f64> {
+    std::iter::once(280.0)
+        .chain(std::iter::repeat_n(210.0, boxes))
+        .collect()
+}
+
+/// A knob figure's plots stacked under its heading, 10 apart.
+fn knob_panels(boxes: usize, plots: &[f64]) -> figure::Panels<'_> {
+    figure::Panels {
+        fixed: 60.0 + 10.0 * boxes as f64,
+        least: plots,
+    }
+}
+
+/// The least page a knob figure on `sheet` needs, in points: none alone
+/// (`--panel-only` draws its histogram at any size); else its table's
+/// width, and with `boxes` below its histogram (the gene's, the
+/// metagene's), once known, its plots' height.
+pub(crate) fn knob_least(sheet: &Sheet, boxes: Option<usize>) -> (f64, f64) {
+    if sheet.look.panel_only {
+        return (0.0, 0.0);
+    }
+    let height = boxes.map_or(0.0, |b| knob_panels(b, &knob_plots(b)).height());
+    (QC_LEAST_W, height)
+}
+
+/// The file stem of `c`'s figure of `t`'s sites.
+pub(super) fn knob_stem(t: &SiteTable, c: Criterion) -> String {
+    let knob = c.flag().trim_start_matches("--site-");
+    format!("{}_{knob}", t.modality)
+}
+
+/// What the figure's bar colours mean in `palette`, named as its roles
+/// name them; on screen each plot has its own key.
+fn figure_key(palette: Palette) -> [String; 3] {
+    let r = palette.roles();
+    [
+        format!("Bars: {}, all sites; {}, kept;", r.faint_name, r.bar_name),
+        format!("  {}, filtered out only by the focused", r.removed_name),
+        "  threshold.".into(),
+    ]
+}
 
 /// Each coding region's name at its middle bin, where a short UTR's label
 /// does not run into the next one.
@@ -175,12 +231,6 @@ pub(super) const LEGEND: [&str; 4] = [
 ];
 
 /// What the figure's bar colours mean; on screen each plot has its own key.
-const FIGURE_KEY: [&str; 3] = [
-    "Bars: light gray, all sites; dark gray, kept;",
-    "  orange, filtered out only by the focused",
-    "  threshold.",
-];
-
 /// The count column's header, a line each.
 const COUNT_HEADER: (&str, &str) = ("sites out", "(by it alone)");
 
@@ -470,10 +520,15 @@ impl<'a> SitePicker<'a> {
 
     /// The current view as a figure: the threshold table beside the
     /// focused column's histogram, the view's shape on screen.
-    /// Laid out for `page`, a side not asked for the view's shape on screen
-    /// (never less than the table and its plots need, see [`QC_LEAST_W`]);
-    /// refused when a side asked for is less than that, never at `OWN`.
-    pub(super) fn figure(&self, page: Page) -> anyhow::Result<String> {
+    /// Laid out for `sheet`'s page, a side not asked for the view's shape on
+    /// screen (never less than the table and its plots need, see
+    /// [`QC_LEAST_W`]); refused when a side asked for is less than that,
+    /// never at `OWN`. Alone (`--panel-only`), the histogram only, at any
+    /// size, as [`Self::knob_panel`] draws it.
+    pub(super) fn figure(&self, sheet: Sheet) -> anyhow::Result<String> {
+        if sheet.look.panel_only {
+            return self.knob_panel(sheet);
+        }
         let c = self.criterion();
         let view = self.view();
         let n = view.table.len();
@@ -482,26 +537,20 @@ impl<'a> SitePicker<'a> {
         // The histogram, then a box each for the gene and the metagene,
         // 10 apart.
         let boxes = usize::from(gene.is_some()) + usize::from(meta.is_some());
-        let least: Vec<f64> = std::iter::once(280.0)
-            .chain(std::iter::repeat_n(210.0, boxes))
-            .collect();
-        let panels = figure::Panels {
-            fixed: 60.0 + 10.0 * boxes as f64,
-            least: &least,
-        };
-        let least = (QC_LEAST_W, panels.height());
+        let plots = knob_plots(boxes);
+        let panels = knob_panels(boxes, &plots);
+        let least = knob_least(&sheet, Some(boxes));
         // The plots on the right take the room a larger page adds, the
         // table on the left keeps its own.
-        let (width, height) = crate::figure::size::fill(page, || {
-            self.controls.page(self.drawn, least).unwrap_or(least)
-        });
+        let (width, height) = sheet.fill(|| self.controls.page(self.drawn, least).unwrap_or(least));
         // Only a side asked for can be short: its own size fits by making.
         let what = format!("{}'s figure", view.table.modality);
-        crate::figure::size::at_least(page, least, &what)?;
+        knob_room(&sheet, least, &what)?;
         let plots_w = width - 330.0;
         let heights = panels.heights(height);
         let (hist_h, box_h) = (heights[0], heights.get(1).copied().unwrap_or(0.0));
-        let mut canvas = Canvas::new(width, height);
+        let style = sheet.style((width, height));
+        let mut canvas = Canvas::styled(width, height, &style);
         canvas.bold(16.0, 22.0, &self.title, 12.0, Anchor::Start, INK);
         canvas.text(
             16.0,
@@ -544,7 +593,8 @@ impl<'a> SitePicker<'a> {
             canvas.text(cols[1], y, &n, 9.0, Anchor::End, INK);
         }
         y += 8.0;
-        for line in LEGEND.iter().chain(&FIGURE_KEY) {
+        let key = figure_key(style.palette);
+        for line in (LEGEND.iter().copied()).chain(key.iter().map(String::as_str)) {
             y += 10.0;
             canvas.text(x0, y, line, 7.5, Anchor::Start, MUTED);
         }
@@ -561,6 +611,51 @@ impl<'a> SitePicker<'a> {
             self.draw_meta(&mut canvas, m, (320.0, below, plots_w, box_h), title);
         }
         Ok(canvas.finish())
+    }
+
+    /// The focused knob's histogram alone (`--panel-only`), laid out for
+    /// `sheet`: the panel `faba site-plot` draws of its quantity, on that
+    /// quantity's ruler, the thresholds on as edges and kept the sites none
+    /// of them removes.
+    fn knob_panel(&self, sheet: Sheet) -> anyhow::Result<String> {
+        let q = Axis::of(self.criterion());
+        let panels = self.knob_hists(self.modality, vec![q], sheet)?;
+        Ok(panels.hist_figure(q, sheet.fill(|| PANEL_OWN)))
+    }
+
+    /// The histograms of `quantities` of modality `m` as
+    /// [`Self::knob_panel`] draws them, laid out for `sheet`.
+    pub(super) fn knob_hists(
+        &self,
+        m: usize,
+        quantities: Vec<Axis>,
+        sheet: Sheet,
+    ) -> anyhow::Result<crate::qc::site_plot::Panels<'_>> {
+        use crate::qc::site_plot::{Choice, Panels, Plan};
+        let v = &self.views[m];
+        let plan = Plan {
+            hist: Choice::Given(quantities),
+            pairs: Choice::Given(Vec::new()),
+            marginals: Default::default(),
+            scales: v.cache.scales,
+            bins: Some(v.cache.bins),
+        };
+        Panels::of_view(&v.sites(), &self.filter, &plan, sheet)
+    }
+
+    /// Each knob's histogram of modality `m` alone, as
+    /// [`Self::knob_panel`] draws it: the stem and the figure, its values
+    /// and the sites kept read once for all of them.
+    pub(super) fn knob_panels_of(&self, m: usize, sheet: Sheet) -> anyhow::Result<Vec<Figure>> {
+        let criteria = &self.views[m].criteria;
+        let panels = self.knob_hists(m, criteria.iter().map(|&c| Axis::of(c)).collect(), sheet)?;
+        let size = sheet.fill(|| PANEL_OWN);
+        Ok((criteria.iter())
+            .map(|&c| Figure {
+                stem: knob_stem(self.views[m].table, c),
+                svg: panels.hist_figure(Axis::of(c), size),
+            })
+            .collect())
     }
 
     /// The focused column's histogram in the box `(x, y, w, h)`, as the
@@ -586,12 +681,13 @@ impl<'a> SitePicker<'a> {
         let dropped = |b: usize| c.drops(col.hist.kmin + b as i32, key);
         let values: Vec<f64> = col.hist.counts.iter().map(|&v| v as f64).collect();
         let front: Vec<f64> = self.tally.subset.iter().map(|&v| v as f64).collect();
+        let kept = canvas.style().palette.roles().bar;
         Bars {
             rotated: false,
             values: &values,
             front: Some(&front),
             accent: &dropped,
-            colour: &|_| figure::BAR,
+            colour: &|_| kept,
             y_scale: self.y_scale,
             y_max: None,
             ticks,

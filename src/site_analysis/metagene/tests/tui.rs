@@ -133,7 +133,7 @@ fn saves_the_profile() {
     let h = hist(true);
     let mut v = MetageneView::new("sites", &h);
     screen(&mut v, 60, 16);
-    let svg = v.figure(OWN);
+    let svg = v.figure(crate::figure::style::Sheet::OWN);
     for name in ["5&apos;UTR", "CDS", "3&apos;UTR"] {
         assert!(svg.contains(name), "{name}");
     }
@@ -251,21 +251,71 @@ fn enter_stays_and_plus_is_finer() {
     assert!(v.done());
 }
 
-/// A page under the profile's least is refused before anything is read.
+/// A paper panel's size is taken as asked, however small, as `faba
+/// metagene` reads it: the profile is drawn at that size, its text and
+/// margins shrunk with the font, every label on the page; none refused.
 #[test]
-fn a_page_too_small_for_the_profile_is_refused() {
-    let size = crate::figure::SizeArgs::new(Some(4.0), None);
-    let e = size
-        .page_at_least(super::LEAST, "a metagene profile")
-        .unwrap_err();
-    assert!(e.to_string().contains("at least 5.0 by 2.8 inches"), "{e}");
+fn a_panel_sized_page_is_not_refused() {
+    let size = crate::figure::SizeArgs::new(Some(1.8), Some(1.4));
+    let style = crate::figure::style::StyleArgs::default();
+    let sheet = crate::figure::style::Sheet::new(&size, &style).unwrap();
+    let svg = super::figure("TITLE1", &hist(true), sheet);
+    assert_eq!(crate::figure::svg_size(&svg), (129.6, 100.8));
+    let labels = crate::figure::labels(&svg);
+    assert!(labels.iter().any(|(_, t, _)| t.contains("CDS")), "{svg}");
+    for (_, text, y) in &labels {
+        assert!(
+            y.is_none_or(|y| (0.0..=100.8).contains(&y)),
+            "{text} at {y:?}"
+        );
+    }
+}
+
+/// At 1.8 by 1.4 inches the profile is exactly that size, every label at
+/// the font asked for and on the page; the panel alone keeps its bars,
+/// axes and their titles only.
+#[test]
+fn a_panel_is_drawn_exactly_at_the_size_and_font_asked() {
+    use crate::figure::style::{Sheet, StyleArgs};
+    let h = hist(true);
+    let page = (Some(1.8 * 72.0), Some(1.4 * 72.0));
+    let at = |panel_only| {
+        let look = StyleArgs {
+            font_size: Some(6.0),
+            panel_only,
+            ..Default::default()
+        };
+        super::figure("TITLE1", &h, Sheet { page, look })
+    };
+    for svg in [at(false), at(true)] {
+        assert_eq!(crate::figure::svg_size(&svg), (129.6, 100.8));
+        let labels = crate::figure::labels(&svg);
+        assert!(!labels.is_empty());
+        for (size, text, y) in &labels {
+            assert_eq!(size, "6", "{text}");
+            assert!(
+                y.is_none_or(|y| (0.0..=100.8).contains(&y)),
+                "{text} at {y:?}"
+            );
+        }
+    }
+    let panel = at(true);
+    for gone in ["TITLE1", "per region", "per bar"] {
+        assert!(!panel.contains(gone), "{gone}\n{panel}");
+    }
+    assert!(panel.contains("CDS") && panel.contains("metagene position"));
+    assert!(at(false).contains("bin(s) per bar"));
 }
 
 /// A size asked for is the figure's, whatever the view's shape.
 #[test]
 fn a_figure_is_laid_out_for_a_size_asked_for() {
     let h = hist(true);
-    let svg = super::figure("sites", &h, (Some(252.0), Some(144.0)));
+    let svg = super::figure(
+        "sites",
+        &h,
+        crate::figure::style::Sheet::of((Some(252.0), Some(144.0))),
+    );
     assert_eq!(crate::figure::svg_size(&svg), (252.0, 144.0));
 }
 
@@ -276,11 +326,23 @@ fn a_saved_figure_keeps_the_views_shape() {
     let size = crate::figure::svg_size;
     screen(&mut v, 150, 40);
     let (cw, ch) = crate::figure::CELL;
-    assert_eq!(size(&v.figure(OWN)), (150.0 * cw, 40.0 * ch));
+    assert_eq!(
+        size(&v.figure(crate::figure::style::Sheet::OWN)),
+        (150.0 * cw, 40.0 * ch)
+    );
     screen(&mut v, 90, 50);
     assert_eq!(
-        size(&v.figure(OWN)),
+        size(&v.figure(crate::figure::style::Sheet::OWN)),
         (90.0 * cw, 50.0 * ch),
         "a taller view, a taller page"
     );
+}
+
+/// The profile at its own size, no font asked for, is drawn as it always
+/// was.
+#[test]
+fn the_default_profile_is_unchanged() {
+    let h = hist(true);
+    let svg = super::figure("sites", &h, crate::figure::style::Sheet::OWN);
+    assert_eq!(crate::figure::fingerprint(&svg), 6676292108214670719);
 }

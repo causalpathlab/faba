@@ -2,10 +2,10 @@
 //! are by what they cover.
 
 use super::*;
+use crate::qc::fixtures::{cells, site_table, Row};
 use crate::site_analysis::miami::genemodel::GeneModel;
 use crate::site_analysis::site_io::GenomicSite;
 use arrow::datatypes::Schema;
-use arrow::record_batch::RecordBatch;
 use data_beans::aux::feature_rows::{ATOI, M6A};
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::KeyModifiers;
@@ -22,58 +22,24 @@ mod thresholds;
 /// A deterministic site table: `n` sites over seven genes, with p-values
 /// down to 0, clean and noisy controls, and a spread of depths.
 fn table(modality: &str, n: usize) -> SiteTable {
-    let mut t = SiteTable {
-        modality: modality.into(),
-        batch: RecordBatch::new_empty(Arc::new(Schema::empty())),
-        key: Vec::new(),
-        gene_id: Vec::new(),
-        n_genes: 7,
-        pv: Vec::new(),
-        coverage: Vec::new(),
-        converted: Vec::new(),
-        control_coverage: Vec::new(),
-        edit_ratio: Vec::new(),
-        fold: Vec::new(),
-        raw_log_odds: Vec::new(),
-    };
-    for i in 0..n {
-        let coverage = 1 + (i * 37 % 200) as u64;
-        let converted = (i * 13 % 50) as u64 % (coverage + 1);
-        let (control_cov, control_conv) = if i % 5 == 0 {
-            (10, 0)
-        } else {
-            (20, (i % 7) as u64)
-        };
-        let rate_w = converted as f32 / coverage as f32;
-        let rate_m = control_conv as f32 / control_cov as f32;
-        t.key.push(format!("chr1:{i}").into());
-        t.gene_id.push((i % 7) as u32);
-        t.pv.push(if i % 97 == 0 {
-            0.0
-        } else {
-            10f32.powf(-((i * 7919 % 1000) as f32) / 100.0)
-        });
-        t.coverage.push(coverage);
-        t.converted.push(converted);
-        t.control_coverage.push(control_cov);
-        t.edit_ratio.push(rate_w);
-        t.fold.push(if rate_m <= 0.0 {
-            f32::INFINITY
-        } else {
-            rate_w / rate_m
-        });
-        t.raw_log_odds.push(faba::hypothesis_tests::log_odds_ratio(
-            converted,
-            coverage - converted,
-            control_conv,
-            control_cov - control_conv,
-        ));
-    }
-    t
-}
-
-fn cells(n: usize) -> Vec<usize> {
-    (0..n).map(|i| i * 31 % 60).collect()
+    let rows: Vec<Row> = (0..n)
+        .map(|i| {
+            let coverage = 1 + (i * 37 % 200) as u64;
+            let converted = (i * 13 % 50) as u64 % (coverage + 1);
+            let (control_cov, control_conv) = if i % 5 == 0 {
+                (10, 0)
+            } else {
+                (20, (i % 7) as u64)
+            };
+            let pv = if i % 97 == 0 {
+                0.0
+            } else {
+                10f32.powf(-((i * 7919 % 1000) as f32) / 100.0)
+            };
+            (pv, coverage, converted, control_cov, control_conv)
+        })
+        .collect();
+    site_table(modality, 7, &rows, |i| i)
 }
 
 /// A picker over one table, applying on Enter.

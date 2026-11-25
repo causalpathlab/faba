@@ -118,26 +118,71 @@ fn a_wide_window_scrolls_to_the_cursor() {
     screen(&mut v, 8, 4);
 }
 
-/// A logo's least page grows with its positions: 8 points a letter.
+/// A paper panel's size is taken as asked, however many positions: the
+/// letters fill what room there is.
 #[test]
-fn a_logos_least_page_grows_with_its_positions() {
-    assert_eq!(super::least(21), (76.0 + 168.0, 200.0));
-    let size = crate::figure::SizeArgs::new(Some(2.0), None);
-    assert!(size.page_at_least(super::least(201), "this logo").is_err());
-    assert!(size.page_at_least(super::least(5), "this logo").is_ok());
+fn a_logo_of_any_width_is_not_refused() {
+    use crate::figure::style::{Sheet, StyleArgs};
+    let wide: Vec<DnaBaseCount> = (0..201).map(|i| count(i, 1, 1, 1)).collect();
+    let size = crate::figure::SizeArgs::new(Some(1.8), Some(1.4));
+    let sheet = Sheet::new(&size, &StyleArgs::default()).unwrap();
+    let svg = super::figure("sites", &wide, 100, sheet);
+    assert_eq!(crate::figure::svg_size(&svg), (129.6, 100.8));
+}
+
+/// At 1.8 by 1.4 inches the logo is exactly that size, every label at the
+/// font asked for and on the page (the letters fill their boxes); the
+/// panel alone has no title.
+#[test]
+fn a_logo_panel_is_drawn_exactly_at_the_size_and_font_asked() {
+    use crate::figure::style::{Sheet, StyleArgs};
+    let page = (Some(1.8 * 72.0), Some(1.4 * 72.0));
+    let at = |panel_only| {
+        let look = StyleArgs {
+            font_size: Some(5.5),
+            panel_only,
+            ..Default::default()
+        };
+        super::figure("TITLE1", &pwm(), 2, Sheet { page, look })
+    };
+    for svg in [at(false), at(true)] {
+        assert_eq!(crate::figure::svg_size(&svg), (129.6, 100.8));
+        for (size, text, y) in crate::figure::labels(&svg) {
+            assert_eq!(size, "5.5", "{text}");
+            assert!(
+                y.is_none_or(|y| (0.0..=100.8).contains(&y)),
+                "{text} at {y:?}"
+            );
+        }
+        assert!(svg.contains(">A<"), "the letters are drawn");
+    }
+    assert!(at(false).contains("TITLE1"));
+    let panel = at(true);
+    assert!(!panel.contains("TITLE1"), "{panel}");
+    // The y axis 56 points in and 10 down at 8-point text, scaled by 5.5/8.
+    assert!(
+        panel.contains(r#"x1="38.50" y1="6.88" x2="38.50""#),
+        "{panel}"
+    );
+    assert!(panel.contains("position relative to the site"));
 }
 
 /// A size asked for is the logo's, whatever the view's shape.
 #[test]
 fn the_logo_is_laid_out_for_a_size_asked_for() {
-    let svg = super::figure("sites", &pwm(), 2, (Some(504.0), Some(216.0)));
+    let svg = super::figure(
+        "sites",
+        &pwm(),
+        2,
+        crate::figure::style::Sheet::of((Some(504.0), Some(216.0))),
+    );
     assert_eq!(crate::figure::svg_size(&svg), (504.0, 216.0));
 }
 
 #[test]
 fn saves_the_logo() {
     let mut v = PwmView::new("sites", &pwm(), 2);
-    let svg = v.figure(OWN);
+    let svg = v.figure(crate::figure::style::Sheet::OWN);
     assert!(svg.contains(">A<") && svg.contains(crate::figure::ACCENT));
     let dir = tempfile::tempdir().unwrap();
     let prefix = dir.path().join("logo1");
@@ -209,7 +254,7 @@ fn a_saved_logo_keeps_the_views_shape() {
     for (w, h) in [(120, 30), (120, 40), (40, 30)] {
         screen(&mut v, w, h);
         assert!(v.drawn.width < w, "{w}x{h}: {:?}", v.drawn);
-        let (fw, fh) = size(&v.figure(OWN));
+        let (fw, fh) = size(&v.figure(crate::figure::style::Sheet::OWN));
         let on_screen = v.drawn.width as f64 * cw / (v.drawn.height as f64 * ch);
         assert!((fw / fh - on_screen).abs() < 1e-6, "{w}x{h}: {fw}x{fh}");
     }
@@ -221,6 +266,13 @@ fn a_long_motif_keeps_readable_letters() {
     let wide: Vec<DnaBaseCount> = (0..41).map(|_| count(5, 1, 1, 1)).collect();
     let mut v = PwmView::new("x", &wide, 20);
     screen(&mut v, 60, 20);
-    let (w, _) = crate::figure::svg_size(&v.figure(OWN));
+    let (w, _) = crate::figure::svg_size(&v.figure(crate::figure::style::Sheet::OWN));
     assert!(w >= 76.0 + 8.0 * 41.0, "{w}");
+}
+
+/// The logo at its own size, no font asked for, is drawn as it always was.
+#[test]
+fn the_default_logo_is_unchanged() {
+    let svg = super::figure("sites", &pwm(), 2, crate::figure::style::Sheet::OWN);
+    assert_eq!(crate::figure::fingerprint(&svg), 4045831948546200367);
 }
