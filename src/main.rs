@@ -533,12 +533,19 @@ Example:\n  \
             and the sites they remove are drawn apart from those kept; with none, every site is\n\
             drawn as kept. --fig-width and --fig-height (or --width, --height) are kept exactly;\n\
             --font-size sets the labels, --panel-only leaves only the plot, its axes and titles.\n\
+            --style view draws each panel as `faba qc`'s view draws it: a histogram as its\n\
+            knob's (every site faint, those passing every other threshold in front, the part\n\
+            the threshold drops apart, the threshold's bin dashed, on the view's bins unless\n\
+            --bins is given), a pair as its 2D panel, its marginals --marginal-size deep; with\n\
+            --panel-only, no title.\n\
             `faba qc --plots` writes the same panels at its thresholds under qc_plots/panels/.",
         after_long_help = "\
 \tExample:\n\
 \tfaba site-plot out/ -o panels/\n\
 \tfaba site-plot out/ -o panels/ --hist pv,cells --pairs pv:cells,fold:pv --marginals top,right \\\n\
-\t  --fig-width 1.8 --fig-height 1.8 --font-size 6 --panel-only --palette gray --site-max-pv 0.05"
+\t  --fig-width 1.8 --fig-height 1.8 --font-size 6 --panel-only --palette gray --site-max-pv 0.05\n\
+\tfaba site-plot out/ -o panels/ --style view --hist pv,cells --pairs pv:cells --marginals both \\\n\
+\t  --marginal-size 0.1 --fig-width 2.4 --fig-height 1.8 --font-size 7 --site-max-pv 0.05"
     )]
     SitePlot(SitePlotArgs),
 

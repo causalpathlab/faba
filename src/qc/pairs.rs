@@ -14,6 +14,7 @@ use super::density::{Plot, Squares};
 use super::scale::{along, edge, spread, Ruler, Scale, Scales};
 use super::sites::{Criterion, SiteTable};
 use crate::figure::{Anchor, Canvas, INK, MUTED};
+use data_beans::figure::panel::Marginals;
 
 /// Panels a view shows.
 pub const PANELS: usize = 4;
@@ -41,7 +42,7 @@ impl<'a> Sites<'a> {
         self.fails.len()
     }
 
-    fn cells(&self, i: usize) -> Option<usize> {
+    pub(crate) fn cells(&self, i: usize) -> Option<usize> {
         self.n_cells.map(|c| c[i])
     }
 
@@ -514,13 +515,35 @@ impl Grid {
     /// Drawn in the box `(x, y, w, h)` of `canvas`: the squares, the box
     /// where both thresholds pass dashed, the axes and their titles, and
     /// `title` over it (none when empty).
-    pub fn draw(&self, canvas: &mut Canvas, (x, y, w, h): (f64, f64, f64, f64), title: &str) {
+    pub fn draw(&self, canvas: &mut Canvas, area: (f64, f64, f64, f64), title: &str) {
+        self.draw_with(canvas, area, title, (Marginals::default(), 0.0));
+    }
+
+    /// [`Grid::draw`] with `marginals`, each `size` of the plot's shorter
+    /// side deep (see [`framed`]): every square's column above, its row
+    /// to the right, kept under removed in the squares' colours at full
+    /// depth, each scaled to its busiest.
+    pub fn draw_with(
+        &self,
+        canvas: &mut Canvas,
+        (x, y, w, h): (f64, f64, f64, f64),
+        title: &str,
+        (marginals, size): (Marginals, f64),
+    ) {
         let head = if title.is_empty() { 0.0 } else { 14.0 };
-        let plot = Plot::on((x, y + head, w, h - head), self.xr, self.yr);
+        let lay = framed(
+            (x, y + head, w, h - head),
+            self.xr,
+            self.yr,
+            marginals,
+            size,
+        );
+        let plot = &lay.plot;
         if !title.is_empty() {
             canvas.text(plot.px, y + 10.0, title, 10.0, Anchor::Start, INK);
         }
-        self.squares.draw(canvas, &plot);
+        self.squares.draw(canvas, plot);
+        self.marginals(canvas, &lay);
         // The box where both drawn thresholds pass.
         let (x0, y1) = plot.at(self.xbox.0, self.ybox.0);
         let (x1, y0) = plot.at(self.xbox.1, self.ybox.1);
@@ -540,6 +563,110 @@ impl Grid {
             [self.x.name(), self.y.name()],
         );
     }
+}
+
+impl Grid {
+    /// The marginals `lay` has room for: each column's sites above, each
+    /// row's to the right, kept under removed.
+    fn marginals(&self, c: &mut Canvas, lay: &Framed) {
+        let roles = c.style().palette.roles();
+        let n = self.squares.bins;
+        let (cols, rows) = self.margins();
+        let busiest = |v: &[(f64, f64)]| v.iter().map(|(k, o)| k + o).fold(1.0, f64::max);
+        let plot = &lay.plot;
+        if let Some((_, ty, _, th)) = lay.top {
+            let (most, cw) = (busiest(&cols), plot.pw / n as f64);
+            for (k, (kept, other)) in cols.into_iter().enumerate() {
+                let (hk, ho) = (kept / most * th, other / most * th);
+                let bx = plot.px + k as f64 * cw;
+                c.rect(bx, ty + th - hk, cw, hk, roles.kept);
+                c.rect(bx, ty + th - hk - ho, cw, ho, roles.removed);
+            }
+        }
+        if let Some((rx, _, rw, _)) = lay.right {
+            let (most, ch) = (busiest(&rows), plot.ph / n as f64);
+            for (j, (kept, other)) in rows.into_iter().enumerate() {
+                let (wk, wo) = (kept / most * rw, other / most * rw);
+                let by = plot.py + plot.ph - (j + 1) as f64 * ch;
+                c.rect(rx, by, wk, ch, roles.kept);
+                c.rect(rx + wk, by, wo, ch, roles.removed);
+            }
+        }
+    }
+
+    /// Kept and removed per column (along x, what the top marginal draws)
+    /// and per row (along y, the right one's); square `i` is in row
+    /// `i / n`, column `i % n`.
+    pub fn margins(&self) -> (Vec<Margin>, Vec<Margin>) {
+        let n = self.squares.bins;
+        let (mut cols, mut rows) = (vec![(0.0, 0.0); n], vec![(0.0, 0.0); n]);
+        let squares = self.squares.kept.iter().zip(&self.squares.other);
+        for (i, (&k, &o)) in squares.enumerate() {
+            for at in [&mut cols[i % n], &mut rows[i / n]] {
+                *at = (at.0 + k as f64, at.1 + o as f64);
+            }
+        }
+        (cols, rows)
+    }
+}
+
+/// A marginal bar's sites, `(kept, removed)`.
+pub type Margin = (f64, f64);
+
+/// A 2D panel's plot and its marginals' boxes `(x, y, w, h)`.
+pub struct Framed {
+    pub plot: Plot,
+    pub top: Option<(f64, f64, f64, f64)>,
+    pub right: Option<(f64, f64, f64, f64)>,
+}
+
+/// Room between the plot and a marginal, in points of the 8-point layout.
+const MARGINAL_GAP: f64 = 2.0;
+
+/// The plot over `xr` by `yr` in `area` as [`Plot::on`] lays it out, with
+/// room taken from it for `marginals`, each `size` of its shorter side
+/// deep: the top one over its whole width, the right one beside its whole
+/// height.
+pub fn framed(
+    area: (f64, f64, f64, f64),
+    xr: (f64, f64),
+    yr: (f64, f64),
+    marginals: Marginals,
+    size: f64,
+) -> Framed {
+    let mut plot = Plot::on(area, xr, yr);
+    let side = size * plot.pw.min(plot.ph);
+    let room = |on: bool| if on { side + MARGINAL_GAP } else { 0.0 };
+    plot.pw = (plot.pw - room(marginals.right)).max(1.0);
+    plot.ph = (plot.ph - room(marginals.top)).max(1.0);
+    plot.py += room(marginals.top);
+    let top = (marginals.top).then_some((plot.px, plot.py - MARGINAL_GAP - side, plot.pw, side));
+    let right =
+        (marginals.right).then_some((plot.px + plot.pw + MARGINAL_GAP, plot.py, side, plot.ph));
+    Framed { plot, top, right }
+}
+
+/// `y` against `x` over `s` at `f` as the view draws its 2D panel
+/// ([`Grid::draw`]), `bins` a side, the whole of a figure `w` by `h` in
+/// `style`, with `marginals` each `size` deep; titled as the view's 2D
+/// figure titles it, but alone (`--panel-only`).
+pub fn view_pair(
+    s: &Sites,
+    (x, y): (Axis, Axis),
+    f: &SiteFilterArgs,
+    bins: usize,
+    ((w, h), style): ((f64, f64), &crate::figure::style::Style),
+    marginals: (Marginals, f64),
+) -> String {
+    let g = grid(s, (x, y), f, bins);
+    let mut canvas = Canvas::styled(w, h, style);
+    let (pw, ph) = canvas.page();
+    let title = match style.panel_only {
+        true => String::new(),
+        false => format!("{} by {}", y.short(), x.short()),
+    };
+    g.draw_with(&mut canvas, (0.0, 0.0, pw, ph), &title, marginals);
+    canvas.finish()
 }
 
 /// Auto's `k` pairs over `s` as panels: the axes and why each was picked.

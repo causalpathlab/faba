@@ -152,6 +152,8 @@ mod tests {
             "hist",
             "pairs",
             "marginals",
+            "style",
+            "marginal_size",
             "scale",
             "bins",
             "site_max_pv",
@@ -175,8 +177,8 @@ mod tests {
         assert_eq!(spec.input_schema["required"], json!(["input"]));
         let args = json!({
             "input": "runs/a", "modality": "m6a", "hist": ["pv", "cells"],
-            "pairs": ["pv:cells", "fold:pv"], "marginals": ["top", "right"],
-            "scale": ["pv=log"], "bins": 30, "site_max_pv": 0.05, "site_min_cells": 10,
+            "pairs": ["pv:cells", "fold:pv"], "marginals": ["both"],
+            "style": "view", "marginal_size": 0.1, "scale": ["pv=log"], "bins": 30, "site_max_pv": 0.05, "site_min_cells": 10,
             "width": 1.8, "height": 1.4, "font_size": 6, "panel_only": true, "palette": "gray",
         });
         let argv = site_plot_argv(&Arguments(with_typed("site_plot", args).unwrap())).unwrap();
@@ -186,7 +188,8 @@ mod tests {
             &["--modality", "m6a"][..],
             &["--hist", "pv", "--hist", "cells"],
             &["--pairs", "pv:cells", "--pairs", "fold:pv"],
-            &["--marginals", "top", "--marginals", "right"],
+            &["--marginals", "both"],
+            &["--style", "view", "--marginal-size", "0.1"],
             &["--scale", "pv=log"],
             &["--bins", "30"],
             &["--site-max-pv", "0.05"],
@@ -205,6 +208,14 @@ mod tests {
             &Arguments(json!({ "pairs": ["pv:cells"], "bins": 20 })),
         );
         assert_eq!(qc.unwrap(), ["--pairs", "pv:cells", "--bins", "20"]);
+        // The style and the marginals' size reach every tool that draws the
+        // site panels.
+        for tool in ["site_plot", "qc", "qc_view"] {
+            let a = json!({ "style": "view", "marginal_size": 0.25 });
+            let flags = typed_flags(tool, &Arguments(a)).unwrap();
+            let want = ["--style", "view", "--marginal-size", "0.25"];
+            assert!(flags.windows(4).any(|w| w == want), "{tool}: {flags:?}");
+        }
     }
 
     /// `qc_view` offers the page, the figures and every panel option and

@@ -60,8 +60,8 @@ mod writer;
 
 use annotation::*;
 use column::*;
-pub(crate) use draw::{knob_least, knob_room};
-use draw::{render_gff, render_leave, LEGEND};
+pub(crate) use draw::{knob_least, knob_room, view_hist};
+use draw::{render_gff, render_leave, KNOB_Y_SCALE, LEGEND};
 use genes::*;
 use keys::*;
 use mouse::*;
@@ -163,6 +163,7 @@ impl<'a> SiteView<'a> {
         self.pairs = pairs::auto_panels(&self.sites(), pairs::PANELS);
     }
 
+    #[cfg(test)]
     fn cells(&self, i: usize) -> Option<usize> {
         self.n_cells.as_ref().map(|c| c[i])
     }
@@ -207,7 +208,7 @@ struct Tally {
 }
 
 impl Tally {
-    fn new(view: &SiteView, focus: Criterion, column: &Column) -> Self {
+    fn new(view: &Sites, focus: Criterion, column: &Column) -> Self {
         let mut t = Tally {
             subset: vec![0; column.hist.counts.len()],
             ..Tally::default()
@@ -334,8 +335,8 @@ impl<'a> SitePicker<'a> {
         assert!(!views.is_empty(), "no site table to pick thresholds on");
         let c = views[0].criteria[0];
         let x_scale = knob_scales(&views[0].cache.scales);
-        let column = Column::new(&views[0], c, c.scales()[x_scale[c as usize]]);
-        let tally = Tally::new(&views[0], c, &column);
+        let column = Column::new(&views[0].sites(), c, c.scales()[x_scale[c as usize]]);
+        let tally = Tally::new(&views[0].sites(), c, &column);
         Self {
             title: title.to_string(),
             views,
@@ -344,7 +345,7 @@ impl<'a> SitePicker<'a> {
             modality: 0,
             focus: 0,
             x_scale,
-            y_scale: Scale::Log,
+            y_scale: KNOB_Y_SCALE,
             column,
             tally,
             mode: Mode::Browse,
@@ -397,14 +398,14 @@ impl<'a> SitePicker<'a> {
     }
 
     fn retally(&mut self) {
-        self.tally = Tally::new(self.view(), self.criterion(), &self.column);
+        self.tally = Tally::new(&self.view().sites(), self.criterion(), &self.column);
         self.refresh_meta();
         self.refresh_genes(false);
     }
 
     /// Rebuild the focused column, after a modality or focus change.
     fn rebuild_column(&mut self) {
-        self.column = Column::new(self.view(), self.criterion(), self.scale());
+        self.column = Column::new(&self.view().sites(), self.criterion(), self.scale());
         self.retally();
     }
 
@@ -488,7 +489,8 @@ impl<'a> SitePicker<'a> {
         let i = c as usize;
         self.x_scale[i] = (self.x_scale[i] + 1) % c.scales().len();
         let scale = self.scale();
-        self.column.rebin(&self.views[self.modality], c, scale);
+        self.column
+            .rebin(&self.views[self.modality].sites(), c, scale);
         self.retally();
     }
 
@@ -509,7 +511,7 @@ impl<'a> SitePicker<'a> {
     /// The histogram bin holding the focused threshold, `None` when off.
     fn pointer_key(&self) -> Option<i32> {
         let c = self.criterion();
-        (!c.is_off(&self.filter)).then(|| self.column.key_of(c, c.get(&self.filter)))
+        self.column.pointer(c, &self.filter)
     }
 
     /// `s`, once a name is confirmed: the view's figure at its own size,
@@ -535,7 +537,7 @@ impl<'a> SitePicker<'a> {
         plan: &crate::qc::site_plot::Plan,
         sheet: Sheet,
     ) -> anyhow::Result<String> {
-        use crate::qc::site_plot::{Choice, Panels, Plan};
+        use crate::qc::site_plot::{Choice, PanelStyle, Panels, Plan};
         let v = self.view();
         let pair = (self.two_d)
             .then(|| v.shown_pairs().get(self.pair_at).map(|p| (p.0, p.1)))
@@ -548,8 +550,14 @@ impl<'a> SitePicker<'a> {
             hist: Choice::Given(hist),
             pairs: Choice::Given(pairs),
             marginals: plan.marginals,
+            style: plan.style,
+            marginal_size: plan.marginal_size,
             scales: v.cache.scales,
-            bins: Some(v.cache.bins),
+            // The view style draws on the view's own bins unless asked.
+            bins: match plan.style {
+                PanelStyle::View => plan.bins,
+                PanelStyle::Panel => Some(v.cache.bins),
+            },
         };
         let panels = Panels::of_view(&v.sites(), &self.filter, &plan, sheet)?;
         (panels.figures().pop())

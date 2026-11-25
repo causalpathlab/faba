@@ -339,6 +339,7 @@ qc height type="number" minimum=0.75
 qc hist type="array" items="string"
 qc html type="string"
 qc input type="string"
+qc marginal_size type="number"
 qc marginals type="array" items="string"
 qc no_cell_qc type="boolean"
 qc no_zip type="boolean"
@@ -361,6 +362,7 @@ qc site_min_coverage type="integer" minimum=0.0
 qc site_min_edit_ratio type="number"
 qc site_min_fold type="number"
 qc site_min_log_odds type="number"
+qc style type="string" enum=["panel","view"]
 qc width type="number" minimum=1.0
 qc_view bins type="integer" minimum=0.0
 qc_view font_size type="number"
@@ -370,6 +372,7 @@ qc_view height type="number" minimum=0.75
 qc_view hist type="array" items="string"
 qc_view html type="string"
 qc_view input type="string"
+qc_view marginal_size type="number"
 qc_view marginals type="array" items="string"
 qc_view options type="array" items="string"
 qc_view out type="string"
@@ -378,6 +381,7 @@ qc_view palette type="string" enum=["colour","gray"]
 qc_view panel_only type="boolean"
 qc_view plots type="boolean"
 qc_view scale type="array" items="string"
+qc_view style type="string" enum=["panel","view"]
 qc_view width type="number" minimum=1.0
 run ambient_hi type="integer" minimum=0.0
 run ambient_lo type="integer" minimum=0.0
@@ -450,6 +454,7 @@ site_plot font_size type="number"
 site_plot height type="number" minimum=0.75
 site_plot hist type="array" items="string"
 site_plot input type="string"
+site_plot marginal_size type="number"
 site_plot marginals type="array" items="string"
 site_plot modality type="string" enum=["atoi","m6a"]
 site_plot options type="array" items="string"
@@ -466,6 +471,7 @@ site_plot site_min_coverage type="integer" minimum=0.0
 site_plot site_min_edit_ratio type="number"
 site_plot site_min_fold type="number"
 site_plot site_min_log_odds type="number"
+site_plot style type="string" enum=["panel","view"]
 site_plot width type="number" minimum=1.0
 snp backend type="string" enum=["hdf5","zarr"]
 snp background type="boolean"

@@ -696,6 +696,79 @@ fn qc_plots_write_the_site_panels() {
     assert!(!refused.status.success());
 }
 
+/// The panels' PNGs under `dir`, by name (a PDF's bytes differ from run
+/// to run; a PNG's do not).
+fn panel_pngs(dir: &str) -> Vec<(String, Vec<u8>)> {
+    (listed(dir).into_iter())
+        .filter(|f| f.ends_with(".png"))
+        .map(|f| {
+            let bytes = std::fs::read(format!("{dir}/{f}")).unwrap();
+            (f, bytes)
+        })
+        .collect()
+}
+
+/// `faba qc --dry-run --plots --style view` and `faba qc-view --plots
+/// --style view` write the view-style panels under `qc_plots/panels/`:
+/// the same files the panel style writes, each drawn otherwise.
+#[test]
+fn qc_and_qc_view_write_the_view_style_panels() {
+    let tmp = tempfile::tempdir().unwrap();
+    let input = format!("{}/in", tmp.path().display());
+    let cut_dir = format!("{}/cut", tmp.path().display());
+    std::fs::create_dir_all(&input).unwrap();
+    build_fixture(&input);
+    let ran = |run: &mut Command| {
+        let out = run.output().unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    ran(faba()
+        .args(["qc", &input, "--batch-process", "--no-zip", "-o", &cut_dir])
+        .args(CUT));
+    let panels = [
+        "--hist",
+        "pv,coverage",
+        "--pairs",
+        "pv:cells",
+        "--marginals",
+        "both",
+    ];
+    let want = [
+        "m6a_cells_vs_pv.png",
+        "m6a_hist_coverage.png",
+        "m6a_hist_pv.png",
+    ];
+    for view in [false, true] {
+        let drawn = |style: &str| {
+            let output = format!("{}/{view}_{style}", tmp.path().display());
+            let mut run = faba();
+            if view {
+                run.args(["qc-view", &cut_dir, "--plots", "-o", &output]);
+            } else {
+                run.args(["qc", &input, "--dry-run", "--plots", "-o", &output])
+                    .args(CUT);
+            }
+            ran(run.args(panels).args(["--style", style]));
+            panel_pngs(&format!("{output}/qc_plots/panels"))
+        };
+        let (panel, styled) = (drawn("panel"), drawn("view"));
+        let names = |v: &[(String, Vec<u8>)]| v.iter().map(|f| f.0.clone()).collect::<Vec<_>>();
+        assert_eq!(names(&styled), want, "qc-view {view}");
+        assert_eq!(names(&panel), want, "qc-view {view}");
+        for (p, s) in panel.iter().zip(&styled) {
+            assert!(
+                p.1 != s.1,
+                "{} drawn in the panel style, qc-view {view}",
+                s.0
+            );
+        }
+    }
+}
+
 /// The `sites` rows of a printed counts table, by flag: `(removes,
 /// only_this, kept, of)`.
 fn site_counts(text: &str) -> Vec<(String, [String; 4])> {

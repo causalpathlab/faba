@@ -58,6 +58,21 @@ pub struct PanelArgs {
     pub marginals: Vec<String>,
 
     #[arg(
+        long = "style",
+        value_enum,
+        default_value_t = PanelStyle::Panel,
+        help = "How the panels are drawn: panel (the paper panel, kept and removed stacked) or view (as the qc view draws its histogram and its 2D panel)"
+    )]
+    pub style: PanelStyle,
+
+    #[arg(
+        long = "marginal-size",
+        value_name = "FRACTION",
+        help = "With --style view, each marginal's depth as a fraction of the plot's shorter side, above 0 and below 1 (default: 0.2); the panel style's marginals keep their own fifth"
+    )]
+    pub marginal_size: Option<f64>,
+
+    #[arg(
         long = "scale",
         value_name = "Q=linear|log,...",
         value_delimiter = ',',
@@ -69,10 +84,25 @@ pub struct PanelArgs {
         long = "bins",
         value_name = "N",
         value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..=1000),
-        help = "Bins along each quantity's axis (default: about one per 6 points of the figure's width, 20 to 60)"
+        help = "Bins along each quantity's axis (default: about one per 6 points of the figure's width, 20 to 60); with --style view, about this many in each histogram and a pair's squares a side (default: the view's own)"
     )]
     pub bins: Option<usize>,
 }
+
+/// How the site panels are drawn (`--style`).
+#[derive(clap::ValueEnum, Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PanelStyle {
+    /// The paper panel: kept and removed stacked, the thresholds as edges.
+    #[default]
+    Panel,
+    /// As the qc view draws its knob's histogram and its 2D panel.
+    View,
+}
+
+/// A marginal's depth, as a fraction of the plot's shorter side, unless
+/// `--marginal-size` says otherwise: the panel style's own.
+pub const MARGINAL_SIZE: f64 = 0.2;
 
 /// What was asked for, or Auto's.
 #[derive(Debug, Clone, PartialEq)]
@@ -87,6 +117,10 @@ pub struct Plan {
     pub hist: Choice<Quantity>,
     pub pairs: Choice<(Quantity, Quantity)>,
     pub marginals: Marginals,
+    pub style: PanelStyle,
+    /// The view style's marginals' depth, a fraction of the plot's
+    /// shorter side.
+    pub marginal_size: f64,
     pub scales: Scales,
     pub bins: Option<usize>,
 }
@@ -135,14 +169,31 @@ impl PanelArgs {
             match m.trim().to_ascii_lowercase().as_str() {
                 "top" => marginals.top = true,
                 "right" => marginals.right = true,
+                "both" => (marginals.top, marginals.right) = (true, true),
                 "none" => {}
                 other => anyhow::bail!("--marginals {other}: top, right or both"),
             }
         }
+        let marginal_size = match self.marginal_size {
+            None => MARGINAL_SIZE,
+            Some(f) => {
+                anyhow::ensure!(
+                    self.style == PanelStyle::View,
+                    "--marginal-size sizes the marginals of --style view only: the panel style's are a fifth of the plot"
+                );
+                anyhow::ensure!(
+                    f > 0.0 && f < 1.0,
+                    "--marginal-size {f}: a fraction of the plot's shorter side, above 0 and below 1"
+                );
+                f
+            }
+        };
         Ok(Plan {
             hist,
             pairs,
             marginals,
+            style: self.style,
+            marginal_size,
             scales: Scales::parse(&self.scale)?,
             bins: self.bins,
         })
@@ -306,10 +357,54 @@ pub struct Panels<'a> {
     kept: Option<Vec<bool>>,
     drawn: [Option<Drawn<'a>>; 7],
     sheet: Sheet,
+    /// With `--style view`, every panel as the view draws it, drawn while
+    /// the sites were at hand.
+    view: Option<Vec<Figure>>,
 }
 
 /// A pair of quantities drawn two at a time, `(x, y)`.
 type Pair = (Quantity, Quantity);
+
+/// A histogram's file stem.
+fn hist_stem(modality: &str, q: Quantity) -> String {
+    format!("{modality}_hist_{}", q.key())
+}
+
+/// A pair's file stem.
+fn pair_stem(modality: &str, (x, y): Pair) -> String {
+    format!("{modality}_{}_vs_{}", y.key(), x.key())
+}
+
+/// `hists` and `pairs` of `s` at the thresholds `f` as the qc view draws
+/// them (`--style view`), each the size `sheet` asks (else its own): a
+/// histogram as the view draws its knob's
+/// ([`crate::qc::site_tui::view_hist`]), a pair as its 2D panel
+/// ([`pairs::view_pair`]), in `plan`'s bins (else the view's) with its
+/// marginals at their size. The cells are named as counted: over the
+/// cells the cell QC kept when `kept_cells`, else over every cell.
+fn view_figures(
+    s: &Sites,
+    (f, kept_cells): (&SiteFilterArgs, bool),
+    (hists, pairs): (&[Quantity], &[Pair]),
+    plan: &Plan,
+    sheet: Sheet,
+) -> Vec<Figure> {
+    use rayon::prelude::*;
+    let modality = &s.table.modality;
+    let (hist, pair) = (sheet.fill(|| HIST_OWN), sheet.fill(|| PAIR_OWN));
+    let (hist_style, pair_style) = (sheet.style(hist), sheet.style(pair));
+    let bins = plan.bins.unwrap_or(pairs::BINS);
+    let hists = (hists.par_iter()).map(|&q| Figure {
+        stem: hist_stem(modality, q),
+        svg: super::site_tui::view_hist(s, f, q, (plan.bins, kept_cells), hist, &hist_style),
+    });
+    let marginals = (plan.marginals, plan.marginal_size);
+    let pairs = (pairs.par_iter()).map(|&p| Figure {
+        stem: pair_stem(modality, p),
+        svg: pairs::view_pair(s, p, f, bins, (pair, &pair_style), marginals),
+    });
+    hists.chain(pairs).collect()
+}
 
 /// The histograms and pairs `plan` asks for of `modality`'s sites, which
 /// `criteria` apply to, Auto's pairs from `auto`. A quantity asked for that
@@ -417,6 +512,16 @@ impl<'a> Panels<'a> {
                 })
                 .collect()
         });
+        // The view reads the sites failing the cut's thresholds.
+        let view = (plan.style == PanelStyle::View).then(|| {
+            let fails = fails_at(t, n_cells, &criteria, &cut.filter);
+            let s = Sites {
+                fails: &fails,
+                ..sites
+            };
+            // Over every cell: `faba site-plot` runs no cell QC.
+            view_figures(&s, (&cut.filter, false), (&hists, &pairs), plan, sheet)
+        });
         let mut columns = cache.into_columns();
         let mut drawn: [Option<Drawn>; 7] = Default::default();
         for q in used {
@@ -439,6 +544,7 @@ impl<'a> Panels<'a> {
             kept,
             drawn,
             sheet,
+            view,
         })
     }
 
@@ -474,6 +580,8 @@ impl<'a> Panels<'a> {
                 bins,
             ));
         }
+        let view = (plan.style == PanelStyle::View)
+            .then(|| view_figures(s, (f, true), (&hists, &pairs), plan, sheet));
         Ok(Self {
             modality: &s.table.modality,
             hists,
@@ -482,6 +590,7 @@ impl<'a> Panels<'a> {
             kept,
             drawn,
             sheet,
+            view,
         })
     }
 
@@ -565,18 +674,22 @@ impl<'a> Panels<'a> {
     }
 
     /// Every panel as a figure: `{modality}_hist_{q}`, then
-    /// `{modality}_{y}_vs_{x}`, each the size asked (else its own).
+    /// `{modality}_{y}_vs_{x}`, each the size asked (else its own), in
+    /// the style asked.
     pub fn figures(&self) -> Vec<Figure> {
         use rayon::prelude::*;
+        if let Some(view) = &self.view {
+            return view.clone();
+        }
         let (hw, hh) = self.sheet.fill(|| HIST_OWN);
         let (pw, ph) = self.sheet.fill(|| PAIR_OWN);
         let pl = self.look((pw, ph));
         let hists = (self.hists.par_iter()).map(|&q| Figure {
-            stem: format!("{}_hist_{}", self.modality, q.key()),
+            stem: hist_stem(self.modality, q),
             svg: self.hist_figure(q, (hw, hh)),
         });
         let pairs = (self.pairs.par_iter()).map(|&(x, y)| Figure {
-            stem: format!("{}_{}_vs_{}", self.modality, y.key(), x.key()),
+            stem: pair_stem(self.modality, (x, y)),
             svg: self.pair(x, y).svg(&pl, pw, ph),
         });
         hists.chain(pairs).collect()

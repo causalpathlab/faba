@@ -99,6 +99,8 @@ pub struct SiteFilterArgs {
     mut_arg("hist", |a| a.requires("plots")),
     mut_arg("pairs", |a| a.requires("plots")),
     mut_arg("marginals", |a| a.requires("plots")),
+    mut_arg("style", |a| a.requires("plots")),
+    mut_arg("marginal_size", |a| a.requires("plots")),
     mut_arg("bins", |a| a.requires("plots"))
 )]
 pub struct QcArgs {

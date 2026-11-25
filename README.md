@@ -404,9 +404,13 @@ types. Over MCP, each figure tool takes `width` and `height`, and all but `pileu
 
 `faba site-plot DIR -o OUT` draws one modality's site statistics as panels and nothing else:
 `--hist` quantities (pv, fold, log_odds, coverage, converted, edit_ratio, cells), `--pairs x:y,...`
-two at a time (default: the pairs `qc` picks), `--marginals top,right` on the pair's own axes, and
-`--bins` along each axis. The cells per site are read off the `{batch}_{modality}_site` matrices,
-over every cell, with no cell QC. Each quantity is read on one scale, range and set of bins in
+two at a time (default: the pairs `qc` picks), `--marginals top,right` (or `both`) on the pair's
+own axes, and `--bins` along each axis. `--style view` draws each panel as the `qc` view draws it:
+a histogram as its knob's (every site faint, those passing every other threshold in front, what the
+threshold drops apart, its bin dashed, on log y and the view's bins unless `--bins` is given), a
+pair as its 2D panel, with marginals `--marginal-size` of the plot's shorter side deep (0.2 unless
+given; the default panel style keeps its own); `--panel-only` drops the title. The cells per site
+are read off the `{batch}_{modality}_site` matrices, over every cell, with no cell QC. Each quantity is read on one scale, range and set of bins in
 every figure (`--scale pv=log,fold=linear` to change one), so ticks line up across panels.
 Thresholds, the `--site-*` flags named as `qc`'s, are optional: given ones are drawn as dashed
 lines, and the sites they remove are shaded apart from those kept; with none, every site is kept.
@@ -424,6 +428,9 @@ faba pwm out/ -f genome.fa --batch-process --figure logo --fig-width 7
 # Panels 1.8 inches square, text at 6 points, plot and axes only, in gray
 faba site-plot out/ -o panels/ --hist pv,cells --pairs pv:cells --marginals top,right \
   --fig-width 1.8 --fig-height 1.8 --font-size 6 --panel-only --palette gray --site-max-pv 0.05
+# Panels drawn as the qc view draws them, 2.4 by 1.8 inches at 7 points, short marginals
+faba site-plot out/ -o panels/ --style view --hist pv,cells --pairs pv:cells --marginals both \
+  --marginal-size 0.1 --fig-width 2.4 --fig-height 1.8 --font-size 7 --site-max-pv 0.05
 # The same panels from a qc output, at the thresholds it applied
 faba qc-view out_qc/ --plots -o figures/ --hist pv,cells --panel-only
 # A Miami plot with a panel per condition

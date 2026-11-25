@@ -41,7 +41,7 @@ fn args(hist: &[&str], pairs: &[&str], marginals: &[&str], scale: &[&str]) -> Pa
         pairs: own(pairs),
         marginals: own(marginals),
         scale: own(scale),
-        bins: None,
+        ..PanelArgs::default()
     }
 }
 
@@ -448,6 +448,164 @@ fn figures_are_the_size_asked_with_the_font_on_every_label() {
             }
             assert_eq!(labels.iter().any(|l| l.1.starts_with("m6a")), !alone);
         }
+    }
+}
+
+/// `--marginals both` asks for the top and the right marginal, alone or
+/// in a list, in either case.
+#[test]
+fn marginals_both_asks_for_top_and_right() {
+    let both = Marginals {
+        top: true,
+        right: true,
+    };
+    for asked in [
+        &["both"][..],
+        &["Both"],
+        &["top", "both"],
+        &["both", "none"],
+    ] {
+        let p = args(&[], &[], asked, &[]).plan().unwrap();
+        assert_eq!(p.marginals, both, "{asked:?}");
+    }
+}
+
+/// `--style view` and `--marginal-size` are read: the style by name, the
+/// size a fraction of the plot's shorter side, refused outside (0, 1) or
+/// with the panel style, whose marginals faba cannot size.
+#[test]
+fn the_style_and_the_marginal_size_are_read() {
+    let with = |style: PanelStyle, size: Option<f64>| PanelArgs {
+        style,
+        marginal_size: size,
+        ..args(&[], &["pv:cells"], &["top"], &[])
+    };
+    let p = with(PanelStyle::View, Some(0.1)).plan().unwrap();
+    assert_eq!((p.style, p.marginal_size), (PanelStyle::View, 0.1));
+    let p = with(PanelStyle::View, None).plan().unwrap();
+    assert_eq!(p.marginal_size, MARGINAL_SIZE);
+    assert_eq!(
+        PanelArgs::default().plan().unwrap().style,
+        PanelStyle::Panel
+    );
+    for bad in [0.0, 1.0, -0.2, f64::NAN] {
+        let e = with(PanelStyle::View, Some(bad)).plan().unwrap_err();
+        assert!(e.to_string().contains("--marginal-size"), "{e}");
+    }
+    let e = with(PanelStyle::Panel, Some(0.1)).plan().unwrap_err();
+    assert!(e.to_string().contains("--style view"), "{e}");
+}
+
+/// The panels `--style view` draws: each the size asked exactly, every
+/// label at the font asked, the view's words on them (its title, its axis
+/// titles, `sites`), the title only when not `--panel-only`; the threshold
+/// on as the view's dashed line, in the palette's colour.
+#[test]
+fn the_view_style_is_the_size_and_font_asked() {
+    let t = many(500);
+    let n = cells(500);
+    let cut = Thresholds {
+        site_max_pv: Some(0.05),
+        site_min_cells: Some(10),
+        ..Thresholds::default()
+    }
+    .cut();
+    let plan = PanelArgs {
+        style: PanelStyle::View,
+        ..args(&["pv", "cells"], &["pv:cells"], &["top", "right"], &[])
+    }
+    .plan()
+    .unwrap();
+    let (w, h) = (172.8, 129.6);
+    for alone in [false, true] {
+        for palette in [Palette::Colour, Palette::Gray] {
+            let mut sheet = sheet(w, h, Some(7.0), alone);
+            sheet.look.palette = palette;
+            let p = Panels::new(&t, Some(&n), &cut, &plan, sheet, true).unwrap();
+            let figures = p.figures();
+            let stems: Vec<&str> = figures.iter().map(|f| f.stem.as_str()).collect();
+            assert_eq!(stems, ["m6a_hist_pv", "m6a_hist_cells", "m6a_cells_vs_pv"]);
+            let roles = palette.roles();
+            for f in &figures {
+                let head = f.svg.lines().next().unwrap();
+                assert!(head.contains(r#"width="172.8" height="129.6""#), "{head}");
+                let labels = crate::figure::labels(&f.svg);
+                assert!(!labels.is_empty());
+                for (size, text, _) in &labels {
+                    assert_eq!(size, "7", "{}: {text}", f.stem);
+                }
+                let has = |s: &str| labels.iter().any(|l| l.1 == s);
+                if f.stem.contains("hist") {
+                    let titled = labels.iter().any(|l| l.1.ends_with(" · y: sites per bin"));
+                    assert!(has("sites"), "{}", f.stem);
+                    assert_eq!(titled, !alone, "{}", f.stem);
+                    let line = format!(
+                        r#"stroke="{}" stroke-width="0.8" stroke-dasharray"#,
+                        roles.line
+                    );
+                    assert!(f.svg.contains(&line), "{}: no threshold line", f.stem);
+                    assert!(f.svg.contains(crate::figure::FAINT), "{}", f.stem);
+                    assert!(f.svg.contains(roles.bar), "{}", f.stem);
+                } else {
+                    let (x, y) = (Quantity::Pvalue, Quantity::Cells);
+                    assert!(has(x.name()) && has(y.name()), "{}", f.stem);
+                    assert_eq!(has("cells by -log10 p"), !alone, "{}", f.stem);
+                }
+            }
+            let pv = crate::figure::labels(&figures[0].svg);
+            let title = pv.iter().any(|l| l.1 == "p-value · y: sites per bin");
+            assert_eq!(title, !alone);
+        }
+    }
+}
+
+/// `--marginal-size` sizes the view style's marginals: a smaller fraction
+/// leaves the squares more room, and none drawn is the plot alone.
+#[test]
+fn the_marginal_size_sizes_the_view_styles_marginals() {
+    let t = many(500);
+    let n = cells(500);
+    let figure = |marginals: &[&str], size: Option<f64>| {
+        let plan = PanelArgs {
+            style: PanelStyle::View,
+            marginal_size: size,
+            ..args(&["none"], &["pv:cells"], marginals, &[])
+        }
+        .plan()
+        .unwrap();
+        let sheet = sheet(200.0, 160.0, None, true);
+        let p = Panels::new(&t, Some(&n), &Cut::none(), &plan, sheet, true).unwrap();
+        p.figures().pop().unwrap().svg
+    };
+    let (small, large) = (figure(&["both"], Some(0.1)), figure(&["both"], Some(0.35)));
+    let plain = figure(&[], Some(0.35));
+    assert!(small != large && large != plain && small != plain);
+    // The marginals' bars are drawn over the same squares: kept and
+    // removed, a column's or a row's each.
+    let rects = |svg: &str| svg.lines().filter(|l| l.starts_with("<rect")).count();
+    assert!(rects(&large) > rects(&plain) + 20, "no marginal bars");
+    assert_eq!(rects(&small), rects(&large));
+    // The marginals' room, top and right, off the plot's box alone.
+    let area = (0.0, 0.0, 200.0, 160.0);
+    let lay = |m: Marginals, f: f64| crate::qc::pairs::framed(area, (1.0, 2.0), (1.0, 2.0), m, f);
+    let both = Marginals {
+        top: true,
+        right: true,
+    };
+    let none = lay(Marginals::default(), 0.1);
+    assert!(none.top.is_none() && none.right.is_none());
+    for f in [0.1, 0.35] {
+        let l = lay(both, f);
+        let (top, right) = (l.top.unwrap(), l.right.unwrap());
+        let side = (none.plot.pw).min(none.plot.ph) * f;
+        assert!(
+            (top.3 - side).abs() < 1e-9 && (right.2 - side).abs() < 1e-9,
+            "{f}"
+        );
+        assert!(l.plot.pw < none.plot.pw && l.plot.ph < none.plot.ph);
+        // Each marginal spans its side of the plot exactly.
+        assert_eq!((top.0, top.2), (l.plot.px, l.plot.pw));
+        assert_eq!((right.1, right.3), (l.plot.py, l.plot.ph));
     }
 }
 

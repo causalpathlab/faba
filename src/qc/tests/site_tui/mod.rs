@@ -20,6 +20,7 @@ mod pairs;
 mod read_only;
 mod report;
 mod thresholds;
+mod view_style;
 
 /// A deterministic site table: `n` sites over seven genes, with p-values
 /// down to 0, clean and noisy controls, and a spread of depths.

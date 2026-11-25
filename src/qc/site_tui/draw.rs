@@ -231,6 +231,110 @@ fn draw_gene(canvas: &mut Canvas, p: &GeneProfile, (x, y, w, h): (f64, f64, f64,
     }
 }
 
+/// The y scale a knob's histogram opens on (`y` steps it in the view).
+pub(super) const KNOB_Y_SCALE: Scale = Scale::Log;
+
+/// A knob's histogram's title, as the view's figure names it.
+fn knob_title(c: Criterion) -> String {
+    format!("{} · y: sites per bin", c.label())
+}
+
+/// A knob's histogram as the view draws it, on screen, in its figure and
+/// as a `--style view` site panel: every site faint, those passing every
+/// other threshold in front, the part the knob's threshold drops in the
+/// palette's colour for it, the threshold's bin dashed.
+pub(super) struct KnobHist<'a> {
+    pub(super) c: Criterion,
+    pub(super) column: &'a Column,
+    /// Per bin, the sites passing every other threshold.
+    pub(super) subset: &'a [usize],
+    /// The threshold's bin, `None` when it is off.
+    pub(super) pointer: Option<i32>,
+    pub(super) scale: Scale,
+    pub(super) y_scale: Scale,
+    /// What its x axis shows ([`Criterion::axis_counted`]).
+    pub(super) axis: &'static str,
+}
+
+impl KnobHist<'_> {
+    /// Drawn in the box `(x, y, w, h)`, `title` over it unless alone.
+    pub(super) fn draw(
+        &self,
+        canvas: &mut Canvas,
+        (x, y, w, h): (f64, f64, f64, f64),
+        title: String,
+    ) {
+        let (c, col, key) = (self.c, self.column, self.pointer);
+        // Histogram ticks: the smallest value in about six bins.
+        let (nb, lowest) = (col.lowest.len(), &col.lowest);
+        let every = (nb / 6).max(1);
+        let ticks = (0..nb)
+            .step_by(every)
+            .filter_map(|b| (b..nb).find(|&j| lowest[j].is_finite()))
+            .map(|b| (b, c.fmt_short(lowest[b])))
+            .collect::<Vec<_>>();
+        let pointer = key.map(|k| (k - col.hist.kmin) as usize);
+        let dropped = |b: usize| c.drops(col.hist.kmin + b as i32, key);
+        let values: Vec<f64> = col.hist.counts.iter().map(|&v| v as f64).collect();
+        let front: Vec<f64> = self.subset.iter().map(|&v| v as f64).collect();
+        let kept = canvas.style().palette.roles().bar;
+        Bars {
+            rotated: false,
+            values: &values,
+            front: Some(&front),
+            accent: &dropped,
+            colour: &|_| kept,
+            y_scale: self.y_scale,
+            y_max: None,
+            ticks,
+            pointer,
+            marks: Vec::new(),
+            dividers: Vec::new(),
+            title,
+            x_title: format!("{} ({} bins)", self.axis, self.scale.name()),
+            y_title: "sites".into(),
+        }
+        .draw(canvas, x, y, w, h);
+    }
+}
+
+/// Quantity `q` of `s` at the thresholds `f` as the view draws its knob's
+/// histogram ([`KnobHist`]), the whole of a figure `w` by `h` in `style`:
+/// the knob of `q` that is on (of the edit ratio's two, the lower), else
+/// its first, on its quantity's scale in `s`'s cache, its y on the view's
+/// opening scale, in about `bins` bins (`None`: the view's own). Its cells
+/// are named as counted: over the cells the cell QC kept when
+/// `kept_cells`, else over every cell.
+pub(crate) fn view_hist(
+    s: &Sites,
+    f: &SiteFilterArgs,
+    q: Axis,
+    (bins, kept_cells): (Option<usize>, bool),
+    (w, h): (f64, f64),
+    style: &figure::style::Style,
+) -> String {
+    let applies = || (q.criteria().iter().copied()).filter(|c| s.criteria.contains(c));
+    let c = (applies().find(|c| !c.is_off(f)))
+        .or_else(|| applies().next())
+        .expect("a quantity drawn applies");
+    let scale = c.scales()[knob_scales(&s.cache.scales)[c as usize]];
+    let column = Column::binned(s, c, scale, bins);
+    let tally = Tally::new(s, c, &column);
+    let mut canvas = Canvas::styled(w, h, style);
+    let (pw, ph) = canvas.page();
+    KnobHist {
+        c,
+        column: &column,
+        subset: &tally.subset,
+        pointer: column.pointer(c, f),
+        scale,
+        y_scale: KNOB_Y_SCALE,
+        axis: c.axis_counted(kept_cells),
+    }
+    .draw(&mut canvas, (0.0, 0.0, pw, ph), knob_title(c));
+    canvas.finish()
+}
+
 /// What the table's two counts mean, a line each for the screen and the
 /// figure.
 pub(super) const LEGEND: [&str; 4] = [
@@ -611,8 +715,7 @@ impl<'a> SitePicker<'a> {
             canvas.text(x0, y, line, 7.5, Anchor::Start, MUTED);
         }
 
-        let title = format!("{} · y: sites per bin", c.label());
-        self.draw_hist(&mut canvas, (320.0, 50.0, plots_w, hist_h), title);
+        self.draw_hist(&mut canvas, (320.0, 50.0, plots_w, hist_h), knob_title(c));
         let mut below = 60.0 + hist_h;
         if let Some(p) = &gene {
             draw_gene(&mut canvas, p, (320.0, below, plots_w, box_h));
@@ -649,6 +752,8 @@ impl<'a> SitePicker<'a> {
             hist: Choice::Given(quantities),
             pairs: Choice::Given(Vec::new()),
             marginals: Default::default(),
+            style: Default::default(),
+            marginal_size: crate::qc::site_plot::MARGINAL_SIZE,
             scales: v.cache.scales,
             bins: Some(v.cache.bins),
         };
@@ -678,39 +783,16 @@ impl<'a> SitePicker<'a> {
         (x, y, w, h): (f64, f64, f64, f64),
         title: String,
     ) {
-        let c = self.criterion();
-        // Histogram ticks: the smallest value in about six bins.
-        let col = &self.column;
-        let (nb, lowest) = (col.lowest.len(), &col.lowest);
-        let every = (nb / 6).max(1);
-        let ticks = (0..nb)
-            .step_by(every)
-            .filter_map(|b| (b..nb).find(|&j| lowest[j].is_finite()))
-            .map(|b| (b, c.fmt_short(lowest[b])))
-            .collect::<Vec<_>>();
-        let key = self.pointer_key();
-        let pointer = key.map(|k| (k - col.hist.kmin) as usize);
-        let dropped = |b: usize| c.drops(col.hist.kmin + b as i32, key);
-        let values: Vec<f64> = col.hist.counts.iter().map(|&v| v as f64).collect();
-        let front: Vec<f64> = self.tally.subset.iter().map(|&v| v as f64).collect();
-        let kept = canvas.style().palette.roles().bar;
-        Bars {
-            rotated: false,
-            values: &values,
-            front: Some(&front),
-            accent: &dropped,
-            colour: &|_| kept,
+        KnobHist {
+            c: self.criterion(),
+            column: &self.column,
+            subset: &self.tally.subset,
+            pointer: self.pointer_key(),
+            scale: self.scale(),
             y_scale: self.y_scale,
-            y_max: None,
-            ticks,
-            pointer,
-            marks: Vec::new(),
-            dividers: Vec::new(),
-            title,
-            x_title: format!("{} ({} bins)", c.axis(), self.scale().name()),
-            y_title: "sites".into(),
+            axis: self.criterion().axis(),
         }
-        .draw(canvas, x, y, w, h);
+        .draw(canvas, (x, y, w, h), title);
     }
 
     pub(super) fn render_hist(&mut self, frame: &mut Frame, area: Rect) {
