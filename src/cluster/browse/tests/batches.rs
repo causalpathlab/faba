@@ -130,11 +130,11 @@ fn batches_prints_a_line_a_module() {
     );
 }
 
-/// `a` opens the GO pane on the gene module in focus, its terms read on a
+/// `G` opens the GO pane on the gene module in focus, its terms read on a
 /// thread: with 40 genes, gene module 1 the first 20, and a GMT whose `UP`
 /// holds 12 of them, `UP` is gene module 1's term, named by its id.
 #[test]
-fn a_opens_the_gene_modules_terms() {
+fn g_opens_the_gene_modules_terms() {
     use super::super::go::Ask;
     let mut m = loaded();
     m.gene_main = (0..40)
@@ -162,7 +162,7 @@ fn a_opens_the_gene_modules_terms() {
     };
     let mut v = ModulesView::new("test", &m).with_go(ask);
     assert!(
-        screen(&mut v, 140, 30).contains("a GO terms"),
+        screen(&mut v, 140, 30).contains("G GO terms"),
         "in the footer"
     );
     // Gene module 1 in focus.
@@ -174,7 +174,7 @@ fn a_opens_the_gene_modules_terms() {
         }
     }
     assert_eq!(v.module, 0);
-    press(&mut v, KeyCode::Char('a'));
+    press(&mut v, KeyCode::Char('G'));
     let mut s = String::new();
     for _ in 0..500 {
         Screen::tick(&mut v);
@@ -188,9 +188,9 @@ fn a_opens_the_gene_modules_terms() {
         s.contains("GO · gene module M1") && s.contains(" UP "),
         "{s}"
     );
-    press(&mut v, KeyCode::Char('a'));
+    press(&mut v, KeyCode::Esc);
     assert!(
         screen(&mut v, 140, 30).contains("gene modules ·"),
-        "a closes it"
+        "Esc closes it"
     );
 }

@@ -1,11 +1,12 @@
 //! The browser on a test terminal: keys, the mouse and what is drawn.
 
-use super::{cell_of, heads, loaded, mouse, press, screen, typed, wide};
+use super::{cell_of, drawn, heads, loaded, mouse, press, screen, typed, wide};
 use crate::cluster::browse::view::{Look, Pane, Pin, Ramp, Sort};
 use crate::cluster::browse::{Modules, ModulesView};
 use crate::tui::ui::Screen;
 use ratatui::crossterm::event::KeyEvent;
 use ratatui::crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
+use ratatui::style::Color;
 
 #[test]
 fn keys_walk_the_levels_and_back() {
@@ -141,6 +142,8 @@ fn v_cycles_a_grid_and_y_the_percent_scale_and_heatmaps_go_diagonal() {
         .count();
     assert_eq!(numbered, 1, "{s}");
     press(&mut v, KeyCode::Char('v'));
+    assert_eq!(v.looks[0], Look::Hinton);
+    press(&mut v, KeyCode::Char('v'));
     assert_eq!(v.looks[0], Look::Bars);
 }
 
@@ -200,6 +203,7 @@ fn slash_jumps_to_a_gene_as_it_is_typed_and_esc_goes_back() {
 fn the_screen_shows_the_grids_the_counts_and_genes_side_by_side() {
     let m = loaded();
     let mut v = ModulesView::new("test", &m);
+    super::bars(&mut v);
     let s = screen(&mut v, 180, 40);
     // Module M2 first, then M1; each block's methylated %.
     let row = |s: &str, name: &str| -> String {
@@ -409,6 +413,7 @@ fn the_modules_heatmaps_colours_are_worked_out_once_per_scale() {
     let m = loaded();
     let mut v = ModulesView::new("test", &m);
     let kept = |v: &ModulesView| v.module_stretch.key();
+    super::bars(&mut v);
     super::drawn(&mut v, 180, 40);
     assert_eq!(kept(&v), None, "bars need no colours");
     press(&mut v, KeyCode::Char('v'));
@@ -451,6 +456,7 @@ fn cell_modules_in_the_other_order_keep_their_own_reads_names_and_sizes() {
     let m = super::swapped();
     assert_eq!(m.columns, vec![1, 0], "the second cell role first");
     let mut v = ModulesView::new("test", &m);
+    super::bars(&mut v);
     press(&mut v, KeyCode::Down);
     press(&mut v, KeyCode::Enter);
     press(&mut v, KeyCode::Char(' '));
@@ -610,7 +616,7 @@ fn o_reverses_only_once_sorted_and_g_is_kept_free() {
     assert!(s.contains("o sort") && !s.contains("o/O"), "{s}");
     press(&mut v, KeyCode::Char('o'));
     assert!(screen(&mut v, 200, 40).contains("o/O sort/reverse"));
-    // G is GO's full pane to come: nothing yet, in any pane.
+    // G opens GO's full pane: without GO for the view, nothing, in any pane.
     for _ in 0..3 {
         let was = (v.pane, v.module, v.site, v.pins.len());
         press(&mut v, KeyCode::Char('G'));
@@ -624,6 +630,7 @@ fn o_reverses_only_once_sorted_and_g_is_kept_free() {
 fn y_is_named_only_under_the_percent_look() {
     let m = loaded();
     let mut v = ModulesView::new("test", &m);
+    super::bars(&mut v);
     assert!(!screen(&mut v, 200, 40).contains("y % scale"));
     press(&mut v, KeyCode::Char('v'));
     assert_eq!(v.looks[0], Look::Percent);
@@ -728,4 +735,120 @@ fn the_site_label_column_fits_the_widest_label_pinned_or_not() {
         // Worked out once per role: the cache holds the last one asked.
         assert_eq!(v.site_labels.key(), m.members.len().checked_sub(1));
     }
+}
+
+/// How much a cell `w` wide at `(x, y)` holds, two lines of it: a dot
+/// least, a full block most.
+fn ink(s: &str, (x, y): (usize, usize), w: usize) -> usize {
+    let lines: Vec<Vec<char>> = s.lines().map(|l| l.chars().collect()).collect();
+    let weight = |c: char| match c {
+        '·' => 1,
+        '▪' => 2,
+        '■' => 3,
+        '█' => 4,
+        _ => 0,
+    };
+    (y..y + 2)
+        .flat_map(|y| lines[y][x..x + w].iter().map(|&c| weight(c)))
+        .sum()
+}
+
+/// The Hinton look, the modules grid's own when every cell module fits:
+/// each block a square, larger the further its z is from 0, coloured by
+/// its sign; `v` cycles through it.
+#[test]
+fn the_hinton_look_sizes_each_square_by_its_magnitude() {
+    use crate::cluster::browse::standardized;
+    let m = wide();
+    let mut v = ModulesView::new("test", &m);
+    let s = screen(&mut v, 260, 40);
+    assert_eq!(v.looks[0], Look::Hinton, "every cell module fits:\n{s}");
+    assert!(s.contains("Hinton"), "{s}");
+    // Gene module 1's row: the block farthest from the row's mean and the
+    // nearest, by z over the cell modules in the panes' order.
+    let z: Vec<f64> = standardized(m.block(0)).into_iter().flatten().collect();
+    let by = |far: bool| {
+        let mut places: Vec<usize> = (0..z.len()).collect();
+        places.sort_by(|&a, &b| z[a].abs().total_cmp(&z[b].abs()));
+        let p = if far {
+            *places.last().unwrap()
+        } else {
+            places[0]
+        };
+        format!("C{} ", m.columns[p] + 1)
+    };
+    let head = heads(&s);
+    let x_of = |name: &str| head[..head.find(name).unwrap()].chars().count();
+    let y = s.lines().position(|l| l.contains("│M1 ")).unwrap();
+    let far = ink(&s, (x_of(&by(true)), y), 5);
+    let near = ink(&s, (x_of(&by(false)), y), 5);
+    assert!(far > near && near > 0, "{far} against {near}:\n{s}");
+    // From Hinton, `v` comes round to bars.
+    press(&mut v, KeyCode::Char('v'));
+    assert_eq!(v.looks[0], Look::Bars);
+    for look in [Look::Percent, Look::Z, Look::Hinton] {
+        press(&mut v, KeyCode::Char('v'));
+        assert_eq!(v.looks[0], look);
+    }
+    // Where not every cell module fits, the grid opens as bars.
+    let mut v = ModulesView::new("test", &m);
+    screen(&mut v, 120, 40);
+    assert_eq!(v.looks[0], Look::Bars);
+}
+
+/// A square's glyph and size grow with the magnitude: a dot, small and
+/// larger squares, then blocks, as large as the cell.
+#[test]
+fn a_hinton_square_grows_with_its_magnitude() {
+    use crate::cluster::browse::view::square;
+    let area = |t: f64, cell_w: u16| {
+        let q = square(t, cell_w);
+        (q.w * q.h, q.glyph)
+    };
+    let steps: Vec<(u16, char)> = (1..=20).map(|k| area(k as f64 / 20.0, 6)).collect();
+    assert!(steps.windows(2).all(|p| p[0].0 <= p[1].0), "{steps:?}");
+    assert_eq!(area(0.01, 6), (1, '·'));
+    assert_eq!(area(1.0, 6), (8, '█'));
+    assert_eq!(area(1.0, 3), (2, '█'), "a compact cell's most");
+    assert!(area(0.5, 6).0 > area(0.1, 6).0);
+}
+
+/// Until `v` chooses a look, each frame does: Hinton while every cell
+/// module fits, bars while not; once `v` is pressed, its choice stays.
+#[test]
+fn the_default_look_follows_the_width_until_v_chooses() {
+    let m = wide();
+    let mut v = ModulesView::new("test", &m);
+    for (w, look) in [(260, Look::Hinton), (120, Look::Bars), (260, Look::Hinton)] {
+        screen(&mut v, w, 40);
+        assert_eq!(v.looks[0], look, "{w} wide");
+    }
+    press(&mut v, KeyCode::Char('v'));
+    assert_eq!(v.looks[0], Look::Bars);
+    for w in [260, 120, 260] {
+        screen(&mut v, w, 40);
+        assert_eq!(v.looks[0], Look::Bars, "{w} wide, chosen");
+    }
+}
+
+/// The Hinton squares nearest z = 0 keep a colour far enough from white to
+/// read on a light terminal.
+#[test]
+fn the_faintest_hinton_square_is_not_near_white() {
+    let m = wide();
+    let mut v = ModulesView::new("test", &m);
+    let buf = drawn(&mut v, 260, 40);
+    assert_eq!(v.looks[0], Look::Hinton);
+    // Below the header and its mark, whose colours are their own.
+    let palest = (buf.content.iter().skip(2 * 260))
+        .filter(|c| ["·", "▪", "■", "█"].contains(&c.symbol()))
+        .filter_map(|c| match c.fg {
+            Color::Rgb(r, g, b) => Some(r.min(g).min(b)),
+            _ => None,
+        })
+        .max()
+        .expect("Hinton squares");
+    // A square's palest channel at least this far below white.
+    const MARGIN: u8 = 80;
+    assert!(palest <= 255 - MARGIN, "{palest}");
 }

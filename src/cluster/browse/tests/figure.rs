@@ -8,7 +8,7 @@ use crate::figure::size::OWN;
 #[test]
 fn the_modules_grid_is_drawn_under_each_look_and_for_a_size() {
     let m = loaded();
-    for look in [Look::Shift, Look::Percent, Look::Z] {
+    for look in [Look::Shift, Look::Percent, Look::Z, Look::Hinton] {
         let svg = draw(&m, Plot::Modules, look, "a fit", OWN).unwrap();
         assert!(
             svg.contains("M1") && svg.contains("C1") && svg.contains("C2"),
@@ -37,6 +37,51 @@ fn the_modules_grid_is_drawn_under_each_look_and_for_a_size() {
     )
     .unwrap_err();
     assert!(e.contains("needs at least"), "{e}");
+}
+
+/// The Hinton figure draws each block as a true square, centred in its
+/// cell, its area by its |z| against the largest: in gene module 1's row,
+/// the block farthest from the row's mean the largest, the nearest the
+/// least.
+#[test]
+fn the_hinton_figure_sizes_each_square_by_its_magnitude() {
+    let m = super::wide();
+    let svg = draw(&m, Plot::Modules, Look::Hinton, "a fit", OWN).unwrap();
+    let num = |rect: &str, key: &str| -> f64 {
+        let at = rect.find(&format!("{key}=\"")).unwrap() + key.len() + 2;
+        rect[at..].split('"').next().unwrap().parse().unwrap()
+    };
+    // Every square, by the row it centres on, left to right.
+    let mut squares: Vec<(f64, f64, f64)> = (svg.lines())
+        .filter(|l| l.starts_with("<rect"))
+        .map(|r| (num(r, "x"), num(r, "y"), num(r, "width"), num(r, "height")))
+        .filter(|&(.., w, h)| (w - h).abs() < 1e-9)
+        .map(|(x, y, w, _)| ((y + w / 2.0).round(), x + w / 2.0, w))
+        .collect();
+    squares.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
+    let first = squares[0].0;
+    let row: Vec<f64> = (squares.iter())
+        .filter(|s| s.0 == first)
+        .map(|s| s.2)
+        .collect();
+    let g = m.diagonal[0];
+    let z: Vec<f64> = super::super::standardized(m.block(g))
+        .into_iter()
+        .flatten()
+        .collect();
+    assert_eq!(row.len(), z.len(), "{svg}");
+    let (far, near) = (0..z.len()).fold((0, 0), |(f, n), j| {
+        (
+            if z[j].abs() > z[f].abs() { j } else { f },
+            if z[j].abs() < z[n].abs() { j } else { n },
+        )
+    });
+    assert!(row[far] > row[near], "{row:?} by {z:?}");
+    assert!(
+        row.iter().all(|&w| w <= row[far] && w >= row[near]),
+        "{row:?}"
+    );
+    assert!(svg.contains("square area by |z|"), "{svg}");
 }
 
 /// `--fig-width` and `--fig-height` (0.19.0's `--width` and `--height`
