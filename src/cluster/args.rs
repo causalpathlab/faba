@@ -184,9 +184,9 @@ pub struct ClusterArgs {
 
     #[arg(
         long = "within",
-        value_name = "RECORD",
+        value_name = "RECORD|TABLE",
         value_hint = clap::ValueHint::FilePath,
-        help = "Fit within each cell module of a count fit, named by its run record (count_blockmodel.run.json)",
+        help = "Fit within each cell module of a count fit, named by its run record (count_blockmodel.run.json), or within each group of a cell table (.parquet, .tsv, .csv)",
         long_help = "The second round of two: fit the sites within each cell module of a count\n\
                      fit, named by its run record (`count_blockmodel.run.json`, as `faba cluster\n\
                      --modality count` writes it). Each cell goes to its main count module; each\n\
@@ -195,9 +195,39 @@ pub struct ClusterArgs {
                      (default: the count fit's), with `{modality}_within.run.json` naming them all and\n\
                      `{modality}_within_cells.parquet` giving each cell its nested label (`C3.2`).\n\
                      The site matrices default to those beside the count fit's inputs. Open the\n\
-                     result with `faba cluster-view`."
+                     result with `faba cluster-view`.\n\
+                     \n\
+                     A cell table instead (.parquet, .tsv, .csv or .txt): its groups, taken as\n\
+                     given, are fitted as the count fit's modules are, each named by its value\n\
+                     (anything but letters, digits, `.`, `_` and `-` made `_`), into the same\n\
+                     files; `cluster-view --group NAME` opens one. A Parquet table (lupin's\n\
+                     `{out}.cell_annotation.parquet`) has a cell column and a group column (see\n\
+                     --within-column, --within-cell-column); a TSV or CSV is cell, then group, a\n\
+                     line, its header optional. A cell `{barcode}@{batch}` is that barcode of that\n\
+                     batch, less a matrix kind (`b1_count` is batch `b1`, as cells are named when\n\
+                     several matrices are read together), its batch paired with the sites' as a\n\
+                     count fit's is (see --batch-map); a bare barcode is looked for in each site\n\
+                     batch nothing pairs with, and left out where it is in more than one. How many\n\
+                     cells each group matched is said; none matched is refused, naming a cell of\n\
+                     each side. The site matrices default to those in the table's directory."
     )]
     pub(super) within: Option<Box<str>>,
+
+    #[arg(
+        long = "within-column",
+        requires = "within",
+        value_name = "NAME",
+        help = "With --within TABLE: the group column (default: label, else cluster, else the other of two)"
+    )]
+    pub(super) within_column: Option<Box<str>>,
+
+    #[arg(
+        long = "within-cell-column",
+        requires = "within",
+        value_name = "NAME",
+        help = "With --within TABLE: the cell column (default: cell, barcode, cell_barcode or obs_names)"
+    )]
+    pub(super) within_cell_column: Option<Box<str>>,
 
     #[arg(
         long = "within-min-cells",
@@ -212,7 +242,7 @@ pub struct ClusterArgs {
         long = "batch-map",
         requires = "within",
         value_name = "SITES=COUNT",
-        help = "With --within: the sites' batch SITES is the count fit's COUNT (repeat it; SITES= leaves it unmatched)",
+        help = "With --within: the sites' batch SITES is the count fit's (or the cell table's) COUNT (repeat it; SITES= leaves it unmatched)",
         long_help = "With --within: the sites' batch SITES is the count fit's batch COUNT, taken\n\
                      before any pairing by name. Repeat it, once a pair; `SITES=` leaves a batch\n\
                      unmatched. Without it a batch pairs with the count fit's of the same name, or\n\

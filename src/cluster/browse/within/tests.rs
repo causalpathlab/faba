@@ -63,7 +63,7 @@ fn a_within_record_is_found_named_or_in_its_directory() {
         assert_eq!(found.dir(), dir);
         assert_eq!(found.fitted().count(), 1);
         // The count fit beside the record, the one it names being gone.
-        assert_eq!(found.count, dir.join(within::COUNT_RECORD));
+        assert_eq!(found.count, Source::Count(dir.join(within::COUNT_RECORD)));
     }
     let found =
         |inputs: &[&Path], modality| Nested::find(&names(inputs), modality, None).map(Result::ok);

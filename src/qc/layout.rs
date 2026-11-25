@@ -164,7 +164,7 @@ fn classify_matrix_name(name: &str, is_dir: bool) -> Option<(&str, SparseIoBacke
 
 /// `{batch}_{kind}` → `(batch, kind)`, longest known kind first; an unknown
 /// stem becomes `(stem, "")` so it still round-trips under its own name.
-fn split_stem(stem: &str) -> (Box<str>, Box<str>) {
+pub(crate) fn split_stem(stem: &str) -> (Box<str>, Box<str>) {
     for kind in MATRIX_KINDS {
         if let Some(batch) = stem.strip_suffix(&format!("_{kind}")) {
             if !batch.is_empty() {

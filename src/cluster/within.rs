@@ -13,6 +13,10 @@
 //! (`C3.2`: count module 3, site module 2 within it). `faba cluster-view`
 //! opens the record as the count fit with a fit under each of its cell
 //! modules.
+//!
+//! `--within` may name a cell table instead (see [`table`]): its groups,
+//! taken as given and named by its values, are fitted as the count fit's
+//! cell modules are, into the same files.
 
 use super::command::COUNT_MODALITY;
 use super::{args, progress, read, write, ClusterArgs};
@@ -20,7 +24,7 @@ use crate::common::{column, read_record_batch};
 use crate::run_record::RunRecord;
 use anyhow::Context;
 use arrow::array::{Array, Int32Array, StringArray};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -39,7 +43,8 @@ pub(super) fn record_name(m: &str) -> String {
 pub(super) struct Group(pub(super) usize);
 
 impl Group {
-    /// `C3` for the third cell module, as the count fit's view names it.
+    /// `C3` for the third cell module, as the count fit's view names it
+    /// (a cell table's groups are named by [`CountCells::name`]).
     pub(super) fn name(self) -> String {
         format!("C{}", self.0 + 1)
     }
@@ -111,9 +116,9 @@ pub(in crate::cluster) struct GroupFit {
 }
 
 impl GroupFit {
-    fn new(group: Group, cells: usize, status: Status) -> Self {
+    fn new(group: String, cells: usize, status: Status) -> Self {
         Self {
-            group: group.name(),
+            group,
             cells,
             status,
             why: None,
@@ -160,17 +165,23 @@ fn qualifies(long: &str, short: &str) -> bool {
     (long.strip_suffix(short)).is_some_and(|folder| folder.ends_with('/'))
 }
 
-/// A count fit's cells, each with its main cell module and its group.
+/// A count fit's cells, each with its main cell module and its group; or
+/// a cell table's, each in the group it names (see [`table`]).
 #[derive(Debug)]
 pub(super) struct CountCells {
-    /// The count fit's run record, an absolute path.
+    /// The count fit's run record (or the cell table), an absolute path.
     record: PathBuf,
     /// Where it is.
     dir: PathBuf,
-    /// Its contents.
+    /// Its contents (null for a table).
     json: serde_json::Value,
     /// Batch, then barcode: the cell's main module (1..) and its group.
     cells: ByBatch,
+    /// A table's bare barcodes, of no batch: looked for in each site batch
+    /// nothing pairs with.
+    loose: ByBarcode,
+    /// A table's groups and what was read of it; none for a count fit.
+    table: Option<table::Names>,
 }
 
 /// The site cells against the count fit's.
@@ -191,6 +202,55 @@ impl Grouped {
 }
 
 impl CountCells {
+    /// What `--within` names: a cell table (see [`table::is_table`]), its
+    /// columns those `args` name, or else a count fit.
+    fn named(named: &str, args: &ClusterArgs) -> anyhow::Result<Self> {
+        if !table::is_table(named) {
+            anyhow::ensure!(
+                args.within_column.is_none() && args.within_cell_column.is_none(),
+                "--within-column and --within-cell-column name a cell table's columns, \
+                 and --within {named} is no table (.parquet, .tsv, .csv or .txt)"
+            );
+            return Self::read(named);
+        }
+        let mut names = table::Names::read(
+            Path::new(named),
+            args.within_column.as_deref(),
+            args.within_cell_column.as_deref(),
+        )
+        .with_context(|| format!("--within {named}"))?;
+        Ok(Self {
+            record: crate::run_record::absolute(named).into(),
+            dir: crate::run_record::default_output_dir(named),
+            json: serde_json::Value::Null,
+            cells: std::mem::take(&mut names.cells),
+            loose: std::mem::take(&mut names.loose),
+            table: Some(names),
+        })
+    }
+
+    /// Group `g`'s name: the table's, else `C3` (see [`Group::name`]).
+    fn name(&self, g: Group) -> String {
+        match &self.table {
+            Some(t) => t.names[g.0].clone(),
+            None => g.name(),
+        }
+    }
+
+    /// Group `g`'s count module (1..); none for a table's.
+    fn role(&self, g: Group) -> Option<i32> {
+        self.table.is_none().then(|| g.role())
+    }
+
+    /// What the record names the groups' source by: `count_record`, or
+    /// `cell_table`.
+    fn source(&self) -> &'static str {
+        match self.table {
+            Some(_) => "cell_table",
+            None => "count_record",
+        }
+    }
+
     /// The count fit `--within` names (its run record, or the directory it
     /// is in), its cells grouped. Refused when it is not a count fit's
     /// record.
@@ -226,6 +286,8 @@ impl CountCells {
             dir,
             json,
             cells,
+            loose: FxHashMap::default(),
+            table: None,
         })
     }
 
@@ -261,8 +323,12 @@ impl CountCells {
 
     /// Where the count fit's matrices are: the output directories whose
     /// site matrices are fitted when none are named. One that is no longer
-    /// there (the output was moved) is taken to be the record's own.
+    /// there (the output was moved) is taken to be the record's own. A
+    /// table's are in its directory.
     fn folders(&self) -> Vec<Box<str>> {
+        if self.table.is_some() {
+            return vec![self.dir.to_string_lossy().into()];
+        }
         let matrices = self.json.pointer("/inputs/matrices");
         let mut out: Vec<Box<str>> = Vec::new();
         for path in (matrices.and_then(|m| m.as_array()).into_iter().flatten())
@@ -280,28 +346,60 @@ impl CountCells {
     }
 
     /// `cells` (the sites') by their group in the count fit, their batches
-    /// paired with its as `pairing` says (see [`pairing`]). Refused when
-    /// none is among the count fit's cells: the two are of other cells, or
-    /// name them otherwise.
+    /// paired with its as `pairing` says (see [`pairing`]). A table's bare
+    /// barcode is looked for in every site batch that pairs with none, and
+    /// left out where it is in more than one. Refused when none is among
+    /// the count fit's cells: the two are of other cells, or name them
+    /// otherwise.
     fn group(&self, cells: &[read::Cell], pairing: &pairing::Pairing) -> anyhow::Result<Grouped> {
         let batches: FxHashMap<&str, &ByBarcode> = (pairing.pairs.iter())
             .filter_map(|p| Some((&*p.sites, self.cells.get(&*p.count)?)))
             .collect();
+        let paired: FxHashSet<&str> = pairing.pairs.iter().map(|p| &*p.sites).collect();
+        let loose = |cell: &read::Cell| match paired.contains(&*cell.batch) {
+            true => None,
+            false => self.loose.get(&cell.barcode).copied(),
+        };
+        // The site batches each bare barcode is found in.
+        let mut seen: FxHashMap<&str, FxHashSet<&str>> = FxHashMap::default();
+        for cell in cells.iter().filter(|c| loose(c).is_some()) {
+            seen.entry(&cell.barcode).or_default().insert(&cell.batch);
+        }
+        let once = |cell: &read::Cell| seen.get(&*cell.barcode).is_some_and(|b| b.len() == 1);
         let mut out = Grouped::default();
+        let mut twice = 0usize;
         for (i, cell) in cells.iter().enumerate() {
-            let of = (batches.get(&*cell.batch)).and_then(|b| b.get(&cell.barcode).copied());
+            let of = match batches.get(&*cell.batch) {
+                Some(b) => b.get(&cell.barcode).copied(),
+                None => loose(cell).filter(|_| once(cell)),
+            };
+            twice += usize::from(of.is_none() && loose(cell).is_some());
             if let Some(group) = of {
                 out.groups.entry(group).or_default().push(i);
             }
             out.of.push(of);
         }
+        if twice > 0 {
+            log::warn!(
+                "{twice} site cells left out: their bare barcode is in several site batches \
+                 (name them {{barcode}}@{{batch}} in the table)"
+            );
+        }
         if out.groups.is_empty() {
             let theirs = (self.cells.iter())
-                .find_map(|(batch, cells)| Some(format!("{batch} {}", cells.keys().next()?)));
+                .find_map(|(batch, cells)| Some(format!("{batch} {}", cells.keys().next()?)))
+                .or_else(|| Some(format!("{} (no batch)", self.loose.keys().next()?)));
             let ours = cells.first().map(|c| format!("{} {}", c.batch, c.barcode));
+            let (whose, how) = match self.table {
+                Some(_) => (
+                    "the cell table's",
+                    ": a table's cell is matched as {barcode}@{batch}, or a bare barcode",
+                ),
+                None => ("the count fit's", ""),
+            };
             anyhow::bail!(
-                "none of the {} cells with sites is among the count fit's (batch and barcode: \
-                 a site cell is {}, a count cell {})",
+                "none of the {} cells with sites is among {whose} (batch and barcode: \
+                 a site cell is {}, one of {whose} {}){how}",
                 cells.len(),
                 ours.unwrap_or_default(),
                 theirs.unwrap_or_default()
@@ -318,7 +416,7 @@ pub(super) fn run(args: &ClusterArgs) -> anyhow::Result<Option<String>> {
     let named = args.within.as_deref().expect("--within");
     let mut args = args.clone();
     args::check(&args)?;
-    let count = CountCells::read(named)?;
+    let count = CountCells::named(named, &args)?;
     if args.data_files.is_empty() {
         args.data_files = count.folders();
         anyhow::ensure!(
@@ -335,7 +433,7 @@ pub(super) fn run(args: &ClusterArgs) -> anyhow::Result<Option<String>> {
     let start = |dir: &Path| {
         RunRecord::start("cluster", &dir.to_string_lossy())
             .inputs("matrices", &args.data_files)
-            .input("count_record", Some(&count.record.to_string_lossy()))
+            .input(count.source(), Some(&count.record.to_string_lossy()))
             .options(args)
     };
     let record = start(&dir);
@@ -367,17 +465,31 @@ pub(super) fn run(args: &ClusterArgs) -> anyhow::Result<Option<String>> {
         Ok(pairing) => pairing,
         Err(e) => return failed(record, e),
     };
-    let grouped = match count.group(&all.cells, &pairing) {
+    let mut grouped = match count.group(&all.cells, &pairing) {
         Ok(grouped) => grouped,
         Err(e) => return failed(record, e),
     };
+    // A table's group that matched no site cell is listed, and skipped.
+    for g in 0..count.table.as_ref().map_or(0, |t| t.names.len()) {
+        grouped.groups.entry(Group(g)).or_default();
+    }
     let matched = grouped.matched();
     log::info!(
-        "{m}: {} cells read, {} in the count fit's {} groups",
+        "{m}: {} cells read, {} in the {} groups of {}",
         all.cells.len(),
         matched,
-        grouped.groups.len()
+        grouped.groups.len(),
+        count.record.display()
     );
+    if let Some(t) = &count.table {
+        for (g, name) in t.names.iter().enumerate() {
+            let found = grouped.groups.get(&Group(g)).map_or(0, Vec::len);
+            log::info!(
+                "{name}: {found} site cells matched, of {} in the table",
+                t.named[g]
+            );
+        }
+    }
 
     let mut fits: Vec<GroupFit> = Vec::new();
     let mut site_roles: Vec<Option<i32>> = vec![None; all.cells.len()];
@@ -386,11 +498,15 @@ pub(super) fn run(args: &ClusterArgs) -> anyhow::Result<Option<String>> {
     for (&group, cells) in &grouped.groups {
         let fitted = cells.iter().filter(|&&c| all.cells[c].fit).count();
         if halted {
-            fits.push(GroupFit::new(group, cells.len(), Status::NotRun));
+            fits.push(GroupFit::new(
+                count.name(group),
+                cells.len(),
+                Status::NotRun,
+            ));
             continue;
         }
         if fitted < args.within_min_cells {
-            let mut skipped = GroupFit::new(group, cells.len(), Status::Skipped);
+            let mut skipped = GroupFit::new(count.name(group), cells.len(), Status::Skipped);
             skipped.why = Some(format!(
                 "{fitted} cells to fit, fewer than --within-min-cells {}",
                 args.within_min_cells
@@ -398,7 +514,8 @@ pub(super) fn run(args: &ClusterArgs) -> anyhow::Result<Option<String>> {
             fits.push(skipped);
             continue;
         }
-        let rel = format!("within/{m}/{}", group.name());
+        let gname = count.name(group);
+        let rel = format!("within/{m}/{gname}");
         let sub = dir.join(&rel);
         let data = read::SiteData {
             modality: all.modality.clone(),
@@ -407,20 +524,20 @@ pub(super) fn run(args: &ClusterArgs) -> anyhow::Result<Option<String>> {
             reads: all.reads.subset(cells),
         };
         let about = serde_json::json!({
-            "group": group.name(),
+            "group": gname,
             "cells": cells.len(),
-            "count_record": count.record,
+            count.source(): count.record,
             "within_record": crate::run_record::absolute(&dir.join(&name).to_string_lossy()),
         });
         let title = format!(
             "fitting the site blockmodel within {} ({} of {} groups, {} cells) in {}",
-            group.name(),
+            gname,
             fits.len() + 1,
             grouped.groups.len(),
             cells.len(),
             sub.display()
         );
-        log::info!("within {}: {} cells", group.name(), cells.len());
+        log::info!("within {gname}: {} cells", cells.len());
         let (progress, out) = super::watched(args, &title, false, |p| {
             let mut record = start(&sub);
             record.set_result("within_group", &about);
@@ -430,7 +547,7 @@ pub(super) fn run(args: &ClusterArgs) -> anyhow::Result<Option<String>> {
                 |_| (),
             )
         });
-        let mut fit = GroupFit::new(group, cells.len(), Status::Fitted);
+        let mut fit = GroupFit::new(gname.clone(), cells.len(), Status::Fitted);
         match out {
             Ok(written) => {
                 progress::spark::tell(&progress);
@@ -446,7 +563,7 @@ pub(super) fn run(args: &ClusterArgs) -> anyhow::Result<Option<String>> {
             }
             Err(e) if e.is::<progress::Cancelled>() => fit.status = Status::Cancelled,
             Err(e) => {
-                log::warn!("within {}: {e:#}", group.name());
+                log::warn!("within {gname}: {e:#}");
                 fit.status = Status::Failed;
                 fit.why = Some(format!("{e:#}"));
             }
@@ -468,8 +585,8 @@ pub(super) fn run(args: &ClusterArgs) -> anyhow::Result<Option<String>> {
     let rows: Vec<write::NestedRow> = (all.cells.iter().zip(&grouped.of).zip(&site_roles))
         .map(|((cell, of), &site_role)| write::NestedRow {
             cell,
-            count_role: of.map(|g| g.role()),
-            group: of.map(|g| g.name()),
+            count_role: of.and_then(|g| count.role(g)),
+            group: of.map(|g| count.name(g)),
             site_role,
         })
         .collect();
@@ -477,7 +594,8 @@ pub(super) fn run(args: &ClusterArgs) -> anyhow::Result<Option<String>> {
         "within",
         &serde_json::json!({
             "modality": m,
-            "count_record": count.record,
+            count.source(): count.record,
+            "columns": count.table.as_ref().and_then(|t| t.columns.clone()),
             "min_cells": args.within_min_cells,
             "cells": {
                 "read": all.cells.len(),
@@ -513,7 +631,8 @@ pub(super) fn run(args: &ClusterArgs) -> anyhow::Result<Option<String>> {
     record.finish(&outcome);
     outcome?;
     let mut lines = vec![format!(
-        "{m} within the count fit's cell modules, {fitted} of {} groups fitted:",
+        "{m} within the groups of {}, {fitted} of {} fitted:",
+        count.record.display(),
         fits.len()
     )];
     lines.extend(fits.iter().map(|f| format!(" {}", f.line())));
@@ -577,22 +696,31 @@ fn main_roles(path: &Path, cells: usize) -> anyhow::Result<Vec<Option<i32>>> {
     Ok(role.iter().collect())
 }
 
+/// Where a within record's groups came from.
+#[derive(Debug, Clone, PartialEq)]
+pub(in crate::cluster) enum Source {
+    /// The count fit's run record.
+    Count(PathBuf),
+    /// A cell table.
+    Table(PathBuf),
+}
+
 /// What a within record (its contents `json`) lists: its modality, the
-/// count fit's run record, and each group's fit; none when `json` is not
-/// one.
+/// count fit's run record (or the cell table), and each group's fit; none
+/// when `json` is not one.
 pub(in crate::cluster) fn listed(
     json: &serde_json::Value,
-) -> Option<(String, PathBuf, Vec<GroupFit>)> {
+) -> Option<(String, Source, Vec<GroupFit>)> {
     let within = json.pointer("/results/within")?;
     let groups = serde_json::from_value(within["groups"].clone()).ok()?;
-    Some((
-        within["modality"].as_str()?.to_string(),
-        PathBuf::from(within["count_record"].as_str()?),
-        groups,
-    ))
+    let path = |key: &str| within[key].as_str().map(PathBuf::from);
+    let source = (path("count_record").map(Source::Count))
+        .or_else(|| path("cell_table").map(Source::Table))?;
+    Some((within["modality"].as_str()?.to_string(), source, groups))
 }
 
 mod pairing;
+pub(in crate::cluster) mod table;
 
 #[cfg(test)]
 mod tests;

@@ -175,7 +175,7 @@ faba <COMMAND> [OPTIONS]
 | `qc-view`                 | View what a `qc` run kept and dropped in `qc`'s site view, read only: the thresholds it applied (from `qc.run.json`) drawn, every site shown kept or dropped with its reason, each batch's cells; `s` saves the panel on screen, `--html` writes the page, `--plots -o` the figures, `--batch-process` prints the threshold table |
 | `site-plot` (`sp`)        | Draw a directory's site statistics as paper panels, no QC: histograms, chosen pairs with marginals, each quantity on one scale, cells per site from the `_site` matrices; thresholds optional; PDF and PNG |
 | **Clustering: cells by their own sites** ||
-| `cluster`                 | Cluster cells by their site reads: cell and gene modules with a methylation shift per pair, fitted by variational inference. `--modality count` fits cell modules by gene counts instead; `--within` its run record then fits the sites within each of those cell modules |
+| `cluster`                 | Cluster cells by their site reads: cell and gene modules with a methylation shift per pair, fitted by variational inference. `--modality count` fits cell modules by gene counts instead; `--within` its run record then fits the sites within each of those cell modules (or within each group of a cell table, `--within cells.parquet`) |
 | `cluster-view` (`modules`, `blocks`) | View a `cluster` fit from its run record `{m}_blockmodel.run.json`, or from its input directory (it never fits: run `cluster` first): its gene modules against its cell modules, each module's sites, the genes you pin side by side, and a gene's full pileup, one track per cell module; GO terms beside the gene modules on demand; `--html` (Ctrl+E in the browser) writes it as one self-contained page to share, `--json` and `--overview` print its levels, `--figure` draws it. A `--within` record (`{m}_within.run.json`) opens as the list of its fits, the count fit first; `--group C3` opens the one within a cell module |
 | **Inspection & reference** ||
 | `pwm`                     | Build a position weight matrix around genomic sites |
@@ -312,6 +312,32 @@ ordinary one under `within/{m}/{group}/`, with its
 own run record and verdict; `{m}_within.run.json` lists them, and `{m}_within_cells.parquet`
 gives each cell its group and its site module there. `cluster-view --html fit.html` writes the
 count fit's page and `fit.{group}.html` beside it for each fitted group, linked to each other.
+
+**Within a cell table's groups.** `--within` also takes a table of cells and their groups in
+place of a count fit: a Parquet file (lupin's `{out}.cell_annotation.parquet`, with a `cell`
+column and per-cell `cluster` and `label`), or a TSV or CSV of cell, then group, a line, its header
+optional. The groups are taken as given and fitted as the count fit's cell modules are, into the
+same files; each is named by its value, anything but letters, digits, `.`, `_` and `-` made `_`,
+so `cluster-view --group CT1` opens one.
+
+```sh
+faba cluster out/ --within out/t.cell_annotation.parquet --within-column cluster
+```
+
+`--within-column` names the group column (default `label`, else `cluster`, else the other column
+of two) and `--within-cell-column` the cell column (default the first of `cell`, `barcode`,
+`cell_barcode` and `obs_names`; none there is refused, naming the columns found). A cell's name
+is matched to the site matrices' cells as a count fit's are. faba's `{batch}_count` and
+`{batch}_m6a_site` (or `_atoi_site`) matrices of one batch name their cells by the same bare
+barcodes, and a table made from several count matrices read together names them
+`{barcode}@{batch}_count`: so `{barcode}@{tag}` is that barcode of the batch `{tag}` names, less a
+matrix kind (`b1_count` is `b1`), and that batch pairs with the sites' as a count fit's batch does
+(the same name, the one named with its folder, a table of one batch with sites of one, or
+`--batch-map SITES=TAG`). A bare barcode is looked for in each site batch nothing pairs with, and
+left out where it is in more than one. How many site cells each group matched is logged; a table
+none of whose cells is among the sites' is refused, naming a cell of each. The site matrices
+default to those in the table's directory. With no count fit, `cluster-view` of the record lists
+the groups' fits, and `--html` writes a page a fitted group.
 
 **Batch effects, after the fit.** Batches fitted together can come out as modules of their own.
 `cluster-view` reads each cell module's spread over the batches off the cell table, each batch's

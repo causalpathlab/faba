@@ -496,16 +496,16 @@ fn the_nested_table_labels_each_cell_by_group_and_site_module() {
 /// words: its status, its chains' R-hat and verdict, why it has no fit.
 #[test]
 fn a_groups_fit_is_listed_and_said_in_words() {
-    let mut fitted = GroupFit::new(Group(2), 120, Status::Fitted);
+    let mut fitted = GroupFit::new(Group(2).name(), 120, Status::Fitted);
     fitted.dir = Some("within/m6a/C3".into());
     fitted.record = Some("m6a_blockmodel.run.json".into());
     fitted.converged = Some(true);
     let mut early = fitted.clone();
     early.converged = Some(false);
     early.stopped_early = true;
-    let mut skipped = GroupFit::new(Group(4), 7, Status::Skipped);
+    let mut skipped = GroupFit::new(Group(4).name(), 7, Status::Skipped);
     skipped.why = Some("7 cells to fit, fewer than --within-min-cells 50".into());
-    let waiting = GroupFit::new(Group(3), 60, Status::NotRun);
+    let waiting = GroupFit::new(Group(3).name(), 60, Status::NotRun);
     assert_eq!(fitted.what(), "fitted, converged");
     assert_eq!(fitted.line(), "C3\t120 cells\tfitted, converged");
     assert_eq!(early.what(), "fitted, not converged, stopped early");
@@ -528,7 +528,10 @@ fn a_groups_fit_is_listed_and_said_in_words() {
         .is_none());
     let (modality, count, read) = listed(&record).unwrap();
     assert_eq!(modality, "m6a");
-    assert_eq!(count, Path::new("/fits/count_blockmodel.run.json"));
+    assert_eq!(
+        count,
+        Source::Count("/fits/count_blockmodel.run.json".into())
+    );
     assert_eq!(read, fits);
     // Any other record lists none.
     assert!(listed(&json!({ "job": "cluster", "results": { "model": {} } })).is_none());

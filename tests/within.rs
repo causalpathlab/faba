@@ -191,3 +191,54 @@ fn the_second_round_fits_within_the_firsts_cell_modules() {
         assert!(dir.join(format!("fit.{group}.html")).is_file(), "{group}");
     }
 }
+
+/// The second round within a cell table's groups, through the binary: the
+/// cells named as they are when several matrices are read together
+/// (`{barcode}@{batch}_count`), the groups by `label`, and `cluster-view`
+/// opening a group by its name.
+#[test]
+fn the_second_round_fits_within_a_cell_tables_groups() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    fixture(dir);
+    let at = |name: &str| dir.join(name).to_string_lossy().into_owned();
+    let mut table = String::from("cell\tcluster\tlabel\n");
+    for c in 0..CELLS {
+        let label = if c % 2 == 0 { "CT1" } else { "CT2" };
+        table.push_str(&format!("CELL{c:02}-1@b1_count\t{}\t{label}\n", c % 2));
+    }
+    let path = at("cells.tsv");
+    std::fs::write(&path, table).unwrap();
+    faba(&[
+        "cluster",
+        "--within",
+        &path,
+        "--within-min-cells",
+        "5",
+        "--batch-process",
+        "--chains",
+        "1",
+        "--epochs",
+        "20",
+        "--min-cell-sites",
+        "1",
+        "--min-site-cells",
+        "1",
+    ]);
+    let record = at("m6a_within.run.json");
+    let json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&record).unwrap()).unwrap();
+    let nested = &json["results"]["within"];
+    assert_eq!(nested["cells"]["matched"], CELLS, "{nested:#}");
+    assert!(nested["cell_table"].is_string(), "{nested:#}");
+    let groups: Vec<&str> = (nested["groups"].as_array().unwrap().iter())
+        .map(|g| g["group"].as_str().unwrap())
+        .collect();
+    assert_eq!(groups, ["CT1", "CT2"], "{nested:#}");
+    assert!(dir.join("within/m6a/CT1/m6a_blockmodel.run.json").is_file());
+    let one = faba(&["cluster-view", &record, "--group", "CT2", "--batch-process"]);
+    assert!(one.starts_with("module\tmain genes"), "{one}");
+    let printed = faba(&["cluster-view", &record, "--batch-process"]);
+    assert!(printed.starts_with("cell table: "), "{printed}");
+    assert!(printed.contains("m6a within CT1\nmodule"), "{printed}");
+}

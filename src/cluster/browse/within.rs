@@ -9,12 +9,13 @@
 //! fit as any other fit is opened (its levels as text, its page); without
 //! it, the levels asked for are the count fit's, the printout is every
 //! fit's modules, and `--html` writes a page a fit, each linking to the
-//! others.
+//! others. A within record of a cell table's groups has no count fit: its
+//! groups' fits are opened alone.
 
 use super::report::{self, Link};
 use super::{gene_models, text, FitRecord, Modules, ModulesArgs, Opened};
 use crate::cluster::command::is_count;
-use crate::cluster::within::{self, GroupFit, Status};
+use crate::cluster::within::{self, GroupFit, Source, Status};
 use crate::site_analysis::pileup::start_gene_models;
 use crate::tui::ui::{header, help_line, panel, Screen, DIM, HIGHLIGHT, PLAIN};
 use anyhow::Context;
@@ -35,8 +36,8 @@ pub(super) struct Nested {
     name: String,
     /// The modality fitted within the groups.
     modality: String,
-    /// The count fit's run record.
-    count: PathBuf,
+    /// The count fit's run record, or the cell table the groups are of.
+    count: Source,
     groups: Vec<GroupFit>,
     /// `--batch-groups`, for every fit opened.
     batch_groups: std::collections::BTreeMap<String, String>,
@@ -118,10 +119,9 @@ impl Nested {
             return Ok(None);
         };
         let beside = dir.join(within::COUNT_RECORD);
-        let count = if !count.is_file() && beside.is_file() {
-            beside
-        } else {
-            count
+        let count = match count {
+            Source::Count(c) if !c.is_file() && beside.is_file() => Source::Count(beside),
+            other => other,
         };
         Ok(Some(Self {
             dir,
@@ -143,14 +143,13 @@ impl Nested {
         self.groups.iter().filter(|f| f.status == Status::Fitted)
     }
 
-    /// The group named `name`: `C3`, `c3` or `3`.
+    /// The group named `name`, case aside: `CT1`; a count module's `C3`
+    /// also as `3`, unless a group is named `3`.
     pub(super) fn group(&self, name: &str) -> anyhow::Result<&GroupFit> {
-        let wanted = match name.parse::<usize>() {
-            Ok(k) => format!("C{k}"),
-            Err(_) => name.to_string(),
-        };
-        (self.groups.iter())
-            .find(|f| f.group.eq_ignore_ascii_case(&wanted))
+        let named =
+            |wanted: &str| (self.groups.iter()).find(|f| f.group.eq_ignore_ascii_case(wanted));
+        named(name)
+            .or_else(|| named(&format!("C{}", name.parse::<usize>().ok()?)))
             .with_context(|| {
                 let has: Vec<&str> = self.groups.iter().map(|f| f.group.as_str()).collect();
                 format!(
@@ -165,14 +164,22 @@ impl Nested {
     /// `group`, refused when the group has none.
     fn record_of(&self, group: Option<&GroupFit>) -> anyhow::Result<PathBuf> {
         match group {
-            None => {
-                anyhow::ensure!(
-                    self.count.is_file(),
-                    "the count fit's run record, {}, is not there",
-                    self.count.display()
-                );
-                Ok(self.count.clone())
-            }
+            None => match &self.count {
+                Source::Count(count) => {
+                    anyhow::ensure!(
+                        count.is_file(),
+                        "the count fit's run record, {}, is not there",
+                        count.display()
+                    );
+                    Ok(count.clone())
+                }
+                Source::Table(table) => anyhow::bail!(
+                    "the groups are a cell table's ({}), with no fit of their own: open a \
+                     group's fit, --group {}",
+                    table.display(),
+                    self.fitted().next().map_or("NAME", |f| f.group.as_str())
+                ),
+            },
             Some(fit) => match (&fit.dir, &fit.record) {
                 (Some(dir), Some(record)) => Ok(self.dir.join(dir).join(record)),
                 _ => anyhow::bail!("{} has no fit to open ({})", fit.group, fit.what()),
@@ -187,10 +194,12 @@ impl Nested {
         super::resolve(&[record.to_string_lossy().into()], None, None)
     }
 
-    /// The pages `--html` writes, the count fit's being `html`: that one,
-    /// then each fitted group's beside it (see [`group_page`]).
+    /// The pages `--html` writes, the count fit's being `html`: that one
+    /// (none for a cell table's groups), then each fitted group's beside it
+    /// (see [`group_page`]).
     pub(super) fn pages(&self, html: &Path) -> Vec<(Option<&GroupFit>, PathBuf)> {
-        std::iter::once((None, html.to_path_buf()))
+        let whole = matches!(self.count, Source::Count(_)).then(|| (None, html.to_path_buf()));
+        (whole.into_iter())
             .chain(self.fitted().map(|f| (Some(f), group_page(html, &f.group))))
             .collect()
     }
@@ -231,8 +240,14 @@ impl Nested {
             Ok((_, m)) => text::modules(&m),
             Err(e) => vec![format!("cannot be read: {e:#}")],
         };
-        let mut out = vec![format!("count fit: {}", self.count.display())];
-        out.extend(modules(None));
+        let mut out = Vec::new();
+        match &self.count {
+            Source::Count(count) => {
+                out.push(format!("count fit: {}", count.display()));
+                out.extend(modules(None));
+            }
+            Source::Table(table) => out.push(format!("cell table: {}", table.display())),
+        }
         out.push(String::new());
         out.push(format!(
             "{} within its cell modules: {} of {} groups fitted ({})",
@@ -262,9 +277,14 @@ impl Nested {
         let within: Vec<serde_json::Value> = (self.fitted())
             .map(|fit| serde_json::json!({ "group": fit.group, "modules": modules(Some(fit)) }))
             .collect();
+        let (count, table, whole) = match &self.count {
+            Source::Count(c) => (Some(c.display().to_string()), None, modules(None)),
+            Source::Table(t) => (None, Some(t.display().to_string()), serde_json::Value::Null),
+        };
         serde_json::json!({
-            "count_fit": self.count.display().to_string(),
-            "modules": modules(None),
+            "count_fit": count,
+            "cell_table": table,
+            "modules": whole,
             "modality": self.modality,
             "record": self.dir.join(&self.name).display().to_string(),
             "groups": self.groups,
@@ -302,12 +322,15 @@ impl Nested {
     /// fit's page being `html`: the count fit, then every group, those
     /// without a fit named and not linked.
     fn links(&self, html: &Path, here: Option<&GroupFit>) -> Vec<Link> {
-        let mut out = vec![Link {
-            label: "count".into(),
-            href: here.is_some().then(|| href(html)),
-            here: here.is_none(),
-            note: "the count fit: every cell".into(),
-        }];
+        let mut out = Vec::new();
+        if let Source::Count(_) = self.count {
+            out.push(Link {
+                label: "count".into(),
+                href: here.is_some().then(|| href(html)),
+                here: here.is_none(),
+                note: "the count fit: every cell".into(),
+            });
+        }
         out.extend(self.groups.iter().map(|fit| {
             let this = here.is_some_and(|h| h.group == fit.group);
             let linked = fit.status == Status::Fitted && !this;
@@ -436,12 +459,20 @@ impl<'a> List<'a> {
                 Span::styled(what, what_style),
             ])
         };
-        let mut out = vec![line(
-            0,
-            "count",
-            "the count fit: gene modules × cell modules over every cell".into(),
-            true,
-        )];
+        let mut out = vec![match &self.nested.count {
+            Source::Count(_) => line(
+                0,
+                "count",
+                "the count fit: gene modules × cell modules over every cell".into(),
+                true,
+            ),
+            Source::Table(t) => line(
+                0,
+                "table",
+                format!("the cell table the groups are of: {}", t.display()),
+                false,
+            ),
+        }];
         out.extend(self.nested.groups.iter().enumerate().map(|(g, fit)| {
             let what = format!("{:>7} cells   {}", fit.cells, fit.what());
             line(g + 1, &fit.group, what, fit.status == Status::Fitted)
