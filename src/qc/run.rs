@@ -661,6 +661,9 @@ fn prepare(args: &QcArgs, input: &str) -> anyhow::Result<Prepared> {
     }
     let mut site_matrices: Vec<SiteMatrix> = Vec::new();
     let mut site_cells: FxHashMap<Box<str>, FxHashMap<Box<str>, usize>> = FxHashMap::default();
+    // The control arm's own, drawn beside the signal's; no threshold reads it.
+    let control = super::sites::control_batches(std::path::Path::new(input));
+    let mut control_cells: super::sites::SiteCells = FxHashMap::default();
     for m in &layout.matrices {
         let Some(modality) = m.site_modality() else {
             continue;
@@ -681,11 +684,22 @@ fn prepare(args: &QcArgs, input: &str) -> anyhow::Result<Prepared> {
             t.converted_channel(),
             site_cells.entry(modality.into()).or_default(),
         );
+        if control.contains(&m.batch) {
+            accumulate_site_cells(
+                &opened.row_names,
+                &row_nnz,
+                t.converted_channel(),
+                control_cells.entry(modality.into()).or_default(),
+            );
+        }
         site_matrices.push(SiteMatrix {
             m: m.clone(),
             opened,
             cols,
         });
+    }
+    for (m, t) in tables.iter_mut() {
+        super::sites::set_control_cells(t, control_cells.get(m));
     }
     Ok(Prepared {
         layout,
@@ -1013,6 +1027,8 @@ mod tests {
                     edit_ratio: s.edit_ratio.iter().map(|&b| f32::from_bits(b)).collect(),
                     fold: s.fold.iter().map(|&b| f32::from_bits(b)).collect(),
                     raw_log_odds: s.raw_log_odds.iter().map(|&b| f64::from_bits(b)).collect(),
+                    control_cells: None,
+                    control_pv: Default::default(),
                 };
                 (t, s.n_cells)
             })

@@ -465,6 +465,43 @@ impl Modules {
         }
     }
 
+    /// The cell modules shown in the order `first` names (cell roles), the
+    /// rest after them in the order they had: every member's, site's and
+    /// block's reads moved with them. Refused for a role named twice or
+    /// one the fit does not have.
+    pub fn reorder_columns(&mut self, first: &[usize]) -> anyhow::Result<()> {
+        for (k, &c) in first.iter().enumerate() {
+            anyhow::ensure!(
+                c < self.cell_roles,
+                "no cell module C{}: the fit has C1 to C{}",
+                c + 1,
+                self.cell_roles
+            );
+            anyhow::ensure!(!first[..k].contains(&c), "C{} is named twice", c + 1);
+        }
+        let rest = self.columns.iter().filter(|c| !first.contains(c));
+        let columns: Vec<usize> = first.iter().chain(rest).copied().collect();
+        // Each new column's place among the old ones.
+        let from: Vec<usize> = (columns.iter())
+            .map(|c| self.columns.iter().position(|o| o == c).expect("a column"))
+            .collect();
+        let permute = |reads: &mut Vec<Count>| {
+            *reads = from.iter().map(|&k| reads[k]).collect();
+        };
+        for m in self.members.iter_mut().flatten() {
+            permute(&mut m.reads);
+        }
+        self.blocks.iter_mut().for_each(permute);
+        let mut scratch = Vec::with_capacity(self.cell_roles);
+        for reads in self.whole.chunks_exact_mut(self.cell_roles.max(1)) {
+            scratch.clear();
+            scratch.extend(from.iter().map(|&k| reads[k]));
+            reads.copy_from_slice(&scratch);
+        }
+        self.columns = columns;
+        Ok(())
+    }
+
     /// The gene roles with sites by shift range, and the diagonal orders.
     fn set_orders(&mut self) {
         let mut order: Vec<usize> = (0..self.gene_roles)

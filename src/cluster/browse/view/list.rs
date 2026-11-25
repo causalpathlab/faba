@@ -83,7 +83,7 @@ impl ModulesView<'_> {
         }
     }
 
-    pub(super) fn select_module(&mut self, g: usize) {
+    pub(in crate::cluster::browse) fn select_module(&mut self, g: usize) {
         if g != self.module && self.m.order.contains(&g) {
             (self.module, self.site, self.from) = (g, 0, 0);
             self.relist();

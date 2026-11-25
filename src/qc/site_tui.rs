@@ -65,7 +65,7 @@ use annotation::*;
 use arm_hist::*;
 use column::*;
 pub(crate) use draw::{knob_least, knob_room, view_hist};
-use draw::{render_gff, render_leave, KNOB_Y_SCALE, LEGEND};
+use draw::{render_gff, render_leave, LEGEND};
 use genes::*;
 use keys::*;
 use mouse::*;
@@ -290,7 +290,6 @@ struct SitePicker<'a> {
     focus: usize,
     /// x scale per criterion (`c as usize`), an index into its scales.
     x_scale: [usize; 8],
-    y_scale: Scale,
     column: Column,
     tally: Tally,
     /// The focused knob's histogram on both arms, at the thresholds now.
@@ -365,7 +364,6 @@ impl<'a> SitePicker<'a> {
             modality: 0,
             focus: 0,
             x_scale,
-            y_scale: KNOB_Y_SCALE,
             column,
             tally,
             arm_hist,
@@ -420,6 +418,11 @@ impl<'a> SitePicker<'a> {
 
     fn criterion(&self) -> Criterion {
         self.view().criteria[self.focus]
+    }
+
+    /// The focused knob's histogram's y scale (`y` steps it).
+    fn y_scale(&self) -> crate::qc::arms::CountScale {
+        self.arm_look.y.of(Axis::of(self.criterion()))
     }
 
     fn scale(&self) -> Scale {

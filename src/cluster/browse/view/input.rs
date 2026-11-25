@@ -8,7 +8,8 @@ use ratatui::crossterm::event::{
 };
 
 /// Modifiers that turn a press into a drag. Terminals mostly keep Shift
-/// with the mouse for selecting text, so Alt is the one that arrives.
+/// with the mouse for selecting text and macOS terminals keep Option, so
+/// Ctrl is the one that reliably arrives (the help names it).
 const DRAG: KeyModifiers = KeyModifiers::ALT
     .union(KeyModifiers::SHIFT)
     .union(KeyModifiers::CONTROL);
@@ -165,6 +166,12 @@ impl ModulesView<'_> {
             Some(Full::Batches) => return self.batches_key(key),
             Some(Full::Go) => return self.go_key(key),
             None => {}
+        }
+        // `s` saves the screen; its prompt takes every key while open.
+        match self.controls.key(key) {
+            crate::figure::Key::Pass => {}
+            crate::figure::Key::Used => return,
+            crate::figure::Key::Save(prefix) => return self.save_screen(&prefix),
         }
         // The grid in focus, a place in `looks`.
         let grid = (self.pane != Pane::Genes).then(|| self.pane.index());

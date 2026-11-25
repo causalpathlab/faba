@@ -92,14 +92,14 @@ pub struct AtoICountArgs {
 
     #[arg(
         long = "error-rate",
-        default_value_t = 0.01,
+        default_value_t = faba::hypothesis_tests::ERROR_RATE,
         help = "Sequencing-error rate ε for the beta-binomial editing null"
     )]
     pub error_rate: f64,
 
     #[arg(
         long = "overdispersion",
-        default_value_t = 0.1,
+        default_value_t = faba::hypothesis_tests::OVERDISPERSION,
         help = "Beta-binomial overdispersion ρ for the editing null (0 ⇒ binomial)"
     )]
     pub overdispersion: f64,

@@ -171,7 +171,7 @@ impl Live for SitePicker<'_> {
             "thresholds": thresholds,
             "flags": qc_flags(&self.filter),
             "x_scale": x_scale,
-            "y_scale": self.y_scale.name(),
+            "y_scale": self.y_scale().name(),
             "two_d": self.two_d,
             "pairs": pairs,
             "pair_at": self.pair_at,
@@ -247,7 +247,12 @@ impl Live for SitePicker<'_> {
             }
         }
         if let Some(y) = get("y_scale") {
-            self.y_scale = hist_scale(text(y, "y_scale")?)?;
+            use clap::ValueEnum;
+            let y = text(y, "y_scale")?;
+            let s = crate::qc::arms::CountScale::from_str(y, false)
+                .map_err(|_| anyhow::anyhow!("no y_scale {y}: linear, sqrt or log1p"))?;
+            let q = Quantity::of(self.criterion());
+            self.arm_look.y.set(q, s);
         }
         if let Some(f) = get("focus") {
             let c = knob(text(f, "focus")?)?;

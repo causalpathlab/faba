@@ -388,7 +388,7 @@ fn only_is_what_turning_the_threshold_off_keeps() {
     assert!(text.contains("filtered out: sites failing this threshold."));
     // The histogram's key counts its series: the signal arm's kept and
     // filtered sites, the control arm's.
-    for said in ["WT kept ", "WT filtered ", "MUT "] {
+    for said in ["retained (WT) ", "filtered out (WT) ", "background (MUT) "] {
         assert!(text.contains(said), "{said}");
     }
     assert!(!text.contains("rescued"));
@@ -526,18 +526,22 @@ fn a_knob_starts_on_its_quantitys_scale() {
         let svg = p.figure(crate::figure::style::Sheet::OWN).unwrap();
         (p.scale(), svg)
     };
-    // The defaults: -log10 p and the edit ratio linear, counts on a log.
-    let (scale, svg) = at(&mut p, Criterion::MaxPv);
-    assert_eq!(scale, Scale::Linear);
-    assert!(svg.contains("p-value (linear bins)"), "{svg}");
+    // The defaults: the p-value on log-spaced p (its knob's own, unless a
+    // scale is asked), the edit ratio linear, counts on a log.
+    let (scale, _) = at(&mut p, Criterion::MaxPv);
+    assert_eq!(scale, Scale::Log);
     assert_eq!(at(&mut p, Criterion::MinCoverage).0, Scale::Log);
     assert_eq!(at(&mut p, Criterion::MinEditRatio).0, Scale::Linear);
     let scales = Scales::parse(&["pv=log", "coverage=linear", "edit_ratio=log"]).unwrap();
     p.set_scales(scales, 40);
     let (scale, svg) = at(&mut p, Criterion::MaxPv);
     assert_eq!(scale, Scale::Log);
-    assert!(svg.contains("p-value (log bins)"), "{svg}");
+    assert!(svg.contains("p: WT vs MUT (Fisher); MUT vs error"), "{svg}");
     assert_eq!(at(&mut p, Criterion::MinCoverage).0, Scale::Linear);
+    // Linear asked, linear drawn.
+    p.set_scales(Scales::parse(&["pv=linear"]).unwrap(), 40);
+    assert_eq!(at(&mut p, Criterion::MaxPv).0, Scale::Linear);
+    p.set_scales(scales, 40);
     assert_eq!(at(&mut p, Criterion::MaxEditRatio).0, Scale::Log);
     let page = serde_json::to_value(p.report_source().data()).unwrap();
     let knob = (page["criteria"].as_array().unwrap().iter())

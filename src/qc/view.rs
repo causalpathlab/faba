@@ -236,15 +236,20 @@ fn reasons(dropped: &RecordBatch) -> anyhow::Result<Vec<Box<str>>> {
     Ok((0..r.len()).map(|i| r.value(i).into()).collect())
 }
 
+/// Each batch's cells, by name.
+type Names = FxHashMap<Box<str>, FxHashSet<Box<str>>>;
+
 /// Per modality with a table, the cells of `layout`'s `_site` matrices
 /// with a converted read at each site: of each batch, those `keep` names
-/// (every cell with a read where it names none).
+/// (every cell with a read where it names none); and the same over the
+/// `controls` batches alone, the control arm's.
 fn count_site_cells(
     layout: &InputLayout,
     tables: &FxHashMap<Box<str>, SiteTable>,
-    keep: &FxHashMap<Box<str>, FxHashSet<Box<str>>>,
-) -> anyhow::Result<SiteCells> {
+    (keep, controls): (&Names, &FxHashSet<Box<str>>),
+) -> anyhow::Result<(SiteCells, SiteCells)> {
     let mut out: SiteCells = FxHashMap::default();
+    let mut control: SiteCells = FxHashMap::default();
     for m in &layout.matrices {
         let Some(t) = m.site_modality().and_then(|s| tables.get(s)) else {
             continue;
@@ -252,10 +257,15 @@ fn count_site_cells(
         let data = open_matrix(&m.path)?;
         let cols = select_columns(data.as_ref(), &data.column_names()?, keep.get(&m.batch));
         let nnz = row_nnz_over_columns(data.as_ref(), &cols)?;
+        let rows = data.row_names()?;
         let acc = out.entry(t.modality.clone()).or_default();
-        accumulate_site_cells(&data.row_names()?, &nnz, t.converted_channel(), acc);
+        accumulate_site_cells(&rows, &nnz, t.converted_channel(), acc);
+        if controls.contains(&m.batch) {
+            let acc = control.entry(t.modality.clone()).or_default();
+            accumulate_site_cells(&rows, &nnz, t.converted_channel(), acc);
+        }
     }
-    Ok(out)
+    Ok((out, control))
 }
 
 /// The batch a file in a qc output is the `suffix` of, when it is.
@@ -377,13 +387,17 @@ pub fn open(input: &str, gff: Option<&str>) -> anyhow::Result<Opened> {
         }
         tables.insert(Box::from(*m), site_table_of(batch, m)?);
     }
-    let site_cells = match record
+    let controls = super::sites::control_batches(&dir);
+    let (site_cells, control_cells) = match record
         .as_ref()
-        .map(|_| site_cells_of_run(&dir, &layout, &tables))
+        .map(|_| site_cells_of_run(&dir, &layout, &tables, &controls))
     {
         Some(counted) => counted?,
-        None => count_site_cells(&layout, &tables, &FxHashMap::default())?,
+        None => count_site_cells(&layout, &tables, (&FxHashMap::default(), &controls))?,
     };
+    for (m, t) in tables.iter_mut() {
+        super::sites::set_control_cells(t, control_cells.get(m));
+    }
     for (m, (n_kept, why)) in &dropped {
         let t = &tables[m];
         let n = site_cells.get(m).map(|acc| t.cells_per_site(acc));
@@ -427,7 +441,8 @@ fn site_cells_of_run(
     dir: &Path,
     layout: &InputLayout,
     tables: &FxHashMap<Box<str>, SiteTable>,
-) -> anyhow::Result<SiteCells> {
+    controls: &FxHashSet<Box<str>>,
+) -> anyhow::Result<(SiteCells, SiteCells)> {
     let input = crate::run_record::input_of(&dir.join(RECORD), "fileset")
         .map(|p| PathBuf::from(&*p))
         .filter(|p| p.is_dir());
@@ -436,10 +451,10 @@ fn site_cells_of_run(
         .map(|p| scan_input_dir(&p.to_string_lossy()))
         .transpose()?;
     match read {
-        Some(input) => count_site_cells(&input, tables, &kept_cells(layout)?),
+        Some(input) => count_site_cells(&input, tables, (&kept_cells(layout)?, controls)),
         None => {
-            let own = count_site_cells(layout, tables, &FxHashMap::default())?;
-            if !own.is_empty() {
+            let own = count_site_cells(layout, tables, (&FxHashMap::default(), controls))?;
+            if !own.0.is_empty() {
                 log::warn!(
                     "{}: the directory qc read is not on this machine; cells per site are \
                      counted off this one's `_site` matrices, so every dropped site reads 0",
