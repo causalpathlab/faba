@@ -29,7 +29,6 @@ pub(in crate::mcp) fn depth(a: &Arguments, cx: &Call) -> Result<Value> {
     note(cx, a, &bam);
     let out = a.out_or(cx, (&named(&bam[0], "depth"), ""), exists)?;
     let mut argv = vec!["depth".into(), comma("bam", &bam)?];
-    argv.extend(a.numbers(&["resolution_kb"])?);
     if let Some(cells) = a.path_opt("valid_cells")? {
         push_flag(&mut argv, "--valid-cells", &cells);
     }
@@ -92,13 +91,6 @@ pub(in crate::mcp) fn apa(a: &Arguments, cx: &Call) -> Result<Value> {
     if let Some(bed) = &utr_bed {
         push_flag(&mut argv, "--utr-bed", bed);
     }
-    if let Some(method) = a.str("method") {
-        ensure!(
-            method == "mixture" || method == "simple",
-            "`method` is mixture or simple, not {method}"
-        );
-        push_flag(&mut argv, "--method", method);
-    }
     argv.extend(opts);
     let what = format!("alternative polyadenylation of {}", bam.join(", "));
     run_out(a, cx, argv, &out, &what)
@@ -118,12 +110,6 @@ pub(in crate::mcp) fn snp(a: &Arguments, cx: &Call) -> Result<Value> {
     }
     if let Some(known) = a.path_opt("known_snps")? {
         push_flag(&mut argv, "--known-snps", &known);
-    }
-    if a.flag("bulk")? {
-        argv.push("--bulk".into());
-    }
-    if a.flag("skip_discovery")? {
-        argv.push("--skip-discovery".into());
     }
     argv.extend(a.options("snp")?);
     let what = format!("SNP genotypes of {}", bam.join(", "));

@@ -50,7 +50,7 @@ pub struct GeneCountArgs {
     #[arg(
         long,
         default_value = "",
-        help = "Gene biotype filter (empty = all biotypes)",
+        help = "Keep genes of this biotype only (protein_coding, lncRNA, pseudogene); empty keeps all",
         long_help = "Filter genes by biotype. Empty (default) keeps all biotypes.\n\
                      Pass a value to restrict: protein_coding, pseudogene, lncRNA."
     )]

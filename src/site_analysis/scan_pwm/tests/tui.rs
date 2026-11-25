@@ -125,7 +125,12 @@ fn a_logo_of_any_width_is_not_refused() {
     use crate::figure::style::{Sheet, StyleArgs};
     let wide: Vec<DnaBaseCount> = (0..201).map(|i| count(i, 1, 1, 1)).collect();
     let size = crate::figure::SizeArgs::new(Some(1.8), Some(1.4));
-    let sheet = Sheet::new(&size, &StyleArgs::default()).unwrap();
+    let sheet = Sheet::new(
+        crate::figure::size::Figure::Logo,
+        &size,
+        &StyleArgs::default(),
+    )
+    .unwrap();
     let svg = super::figure("sites", &wide, 100, sheet);
     assert_eq!(crate::figure::svg_size(&svg), (129.6, 100.8));
 }

@@ -195,11 +195,12 @@ impl Sheet {
         Self { page, ..Self::OWN }
     }
 
-    /// The page `size` asks for and the look `look` does, both checked.
-    pub fn new(size: &SizeArgs, look: &StyleArgs) -> anyhow::Result<Self> {
+    /// The page `size` asks for `figure` and the look `look` does, both
+    /// checked (see [`size::Figure::page`]).
+    pub fn new(figure: size::Figure, size: &SizeArgs, look: &StyleArgs) -> anyhow::Result<Self> {
         look.check()?;
         Ok(Self {
-            page: size.page()?,
+            page: figure.page(size)?,
             look: *look,
         })
     }
@@ -256,7 +257,7 @@ mod tests {
                 font_size: Some(pt),
                 ..none
             };
-            let e = Sheet::new(&SizeArgs::default(), &bad).unwrap_err();
+            let e = Sheet::new(size::Figure::Qc, &SizeArgs::default(), &bad).unwrap_err();
             assert!(e.to_string().contains("--font-size"), "{e}");
         }
     }

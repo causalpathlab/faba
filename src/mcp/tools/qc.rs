@@ -2,11 +2,10 @@
 //! sites, reading back what a cut kept and dropped, and drawing its site
 //! statistics.
 
-use crate::mcp::args::{push_opt, Arguments};
+use crate::mcp::args::Arguments;
 use crate::mcp::run::{
     absolute, command, exists, fresh, named, pngs, qc_images, run_out, tsv_rows,
 };
-use crate::mcp::schema::SITE_THRESHOLDS;
 use anyhow::Result;
 use legume_mcp::{Call, Content};
 use serde_json::json;
@@ -15,14 +14,6 @@ use std::path::{Path, PathBuf};
 pub(in crate::mcp) fn qc(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
     let input = a.path("input")?;
     let mut argv = vec!["qc".into(), input.clone()];
-    argv.extend(a.numbers(&SITE_THRESHOLDS)?);
-    argv.extend(a.numbers(&["row_nnz_cutoff", "column_nnz_cutoff", "qc_mads"])?);
-    if a.flag("auto_cutoff")? {
-        argv.push("--auto-cutoff".into());
-    }
-    if a.flag("no_cell_qc")? {
-        argv.push("--no-cell-qc".into());
-    }
     argv.extend(a.options("qc")?);
     // A page that exists is refused by `faba qc` before it reads anything.
     let html = a.path_opt("html")?;
@@ -71,8 +62,6 @@ pub(in crate::mcp) fn qc(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
 /// `faba site-plot`'s command line for `a`, short of `-o`.
 fn site_plot_argv(a: &Arguments) -> Result<Vec<String>> {
     let mut argv = vec!["site-plot".into(), a.path("input")?];
-    push_opt(&mut argv, "--modality", a.str("modality"));
-    argv.extend(a.numbers(&SITE_THRESHOLDS)?);
     argv.extend(a.options("site_plot")?);
     Ok(argv)
 }

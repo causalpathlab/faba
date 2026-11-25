@@ -184,7 +184,7 @@ pub struct CountApaArgs {
         long,
         value_enum,
         default_value = "mixture",
-        help = "APA quantification method",
+        help = "APA quantification method: mixture (an EM mixture, as SCAPE) or simple (pileup counts, no EM)",
         long_help = "Algorithm for poly(A) site quantification.\n\
                      \"simple\": pileup-based counting (fast, no EM).\n\
                      \"mixture\": EM mixture model based on SCAPE."
@@ -233,7 +233,7 @@ pub struct CountApaArgs {
     #[arg(
         long,
         value_enum,
-        help = "Gene biotype filter",
+        help = "Keep genes of this biotype only (default: every biotype)",
         long_help = "Filter genes by biotype. Honored in BOTH modes:\n\
                      simple mode subsets the GffRecordMap,\n\
                      mixture mode filters the GFF records while building UTRs. Common values:\n\

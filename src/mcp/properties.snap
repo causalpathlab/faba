@@ -1,0 +1,497 @@
+apa ambient_hi type="integer" minimum=0.0
+apa ambient_lo type="integer" minimum=0.0
+apa apa_em_pdui type="boolean"
+apa apa_max_sites type="integer" minimum=0.0
+apa backend type="string" enum=["hdf5","zarr"]
+apa background type="boolean"
+apa bam type="array" items="string" minItems=1.0
+apa cell_barcode_tag type="string"
+apa cell_fdr type="number"
+apa cell_filter type="string" enum=["empty-drops","min-counts","nnz","ord-mag"]
+apa cell_min_genes type="integer" minimum=0.0
+apa cell_min_umis type="integer" minimum=0.0
+apa cell_sims type="integer" minimum=0.0
+apa column_nnz_cutoff type="integer" minimum=0.0
+apa drop_single_component type="boolean"
+apa expected_cells type="integer" minimum=0.0
+apa gene_barcode_tag type="string"
+apa gene_min_cells type="integer" minimum=0.0
+apa gene_min_counts type="integer" minimum=0.0
+apa gene_type type="string"
+apa gff type="string"
+apa include_missing_barcode type="boolean"
+apa keep_mito type="boolean"
+apa max_beta type="number"
+apa max_mito_frac type="number"
+apa max_threads type="integer" minimum=0.0
+apa merge_beta_mult type="number"
+apa merge_distance type="number"
+apa method type="string" enum=["mixture","simple"]
+apa min_beta type="number"
+apa min_coverage type="integer" minimum=0.0
+apa min_fragments type="integer" minimum=0.0
+apa min_mapping_quality type="integer" minimum=0.0
+apa min_utr_length type="integer" minimum=0.0
+apa min_ws type="number"
+apa mito_chr type="string"
+apa mixture type="boolean"
+apa mu_f type="number"
+apa no_mito_cell_qc type="boolean"
+apa no_pdui type="boolean"
+apa no_umi_dedup type="boolean"
+apa no_zip type="boolean"
+apa options type="array" items="string"
+apa out type="string"
+apa polya_internal_prime_count type="integer" minimum=0.0
+apa polya_internal_prime_window type="integer" minimum=0.0
+apa polya_max_non_a_or_t type="integer" minimum=0.0
+apa polya_min_tail_length type="integer" minimum=0.0
+apa pre_sites type="string"
+apa resolution_bp type="integer" minimum=0.0
+apa row_nnz_cutoff type="integer" minimum=0.0
+apa sigma_f type="number"
+apa skip_gene_qc type="boolean"
+apa skirt_eta type="number"
+apa skirt_mult type="number"
+apa source type="string"
+apa theta_step type="integer" minimum=0.0
+apa umi_tag type="string"
+apa utr_bed type="string"
+apa valid_cells type="string"
+apa valid_genes type="string"
+atoi ambient_hi type="integer" minimum=0.0
+atoi ambient_lo type="integer" minimum=0.0
+atoi backend type="string" enum=["hdf5","zarr"]
+atoi background type="boolean"
+atoi bam type="array" items="string" minItems=1.0
+atoi cell_barcode_tag type="string"
+atoi cell_fdr type="number"
+atoi cell_filter type="string" enum=["empty-drops","min-counts","nnz","ord-mag"]
+atoi cell_membership type="string"
+atoi cell_min_genes type="integer" minimum=0.0
+atoi cell_min_umis type="integer" minimum=0.0
+atoi cell_sims type="integer" minimum=0.0
+atoi drop_single_component type="boolean"
+atoi error_rate type="number"
+atoi exact_barcode_match type="boolean"
+atoi expected_cells type="integer" minimum=0.0
+atoi gene_barcode_tag type="string"
+atoi gene_min_cells type="integer" minimum=0.0
+atoi gene_min_counts type="integer" minimum=0.0
+atoi gene_type type="string"
+atoi genome type="string"
+atoi gff type="string"
+atoi include_missing_barcode type="boolean"
+atoi keep_mito type="boolean"
+atoi max_mito_frac type="number"
+atoi max_threads type="integer" minimum=0.0
+atoi membership_barcode_col type="integer" minimum=0.0
+atoi membership_celltype_col type="integer" minimum=0.0
+atoi min_base_quality type="integer" minimum=0.0
+atoi min_conversion type="integer" minimum=0.0
+atoi min_coverage type="integer" minimum=0.0
+atoi min_mapping_quality type="integer" minimum=0.0
+atoi mito_chr type="string"
+atoi mixture type="boolean"
+atoi mixture_bandwidth type="number"
+atoi mixture_max_k type="integer" minimum=0.0
+atoi mixture_min_sites type="integer" minimum=0.0
+atoi mixture_prior_alpha type="number"
+atoi mixture_prior_beta type="number"
+atoi mixture_weight type="string" enum=["converted","posterior"]
+atoi no_mito_cell_qc type="boolean"
+atoi no_umi_dedup type="boolean"
+atoi no_zip type="boolean"
+atoi options type="array" items="string"
+atoi out type="string"
+atoi overdispersion type="number"
+atoi skip_gene_qc type="boolean"
+atoi source type="string"
+atoi umi_tag type="string"
+atoi valid_cells type="string"
+atoi valid_genes type="string"
+cluster background type="boolean"
+cluster batch_map anyOf=2
+cluster batch_size type="integer" minimum=1.0
+cluster cell_roles type="integer" minimum=1.0
+cluster cell_sd type="number"
+cluster chains type="integer" minimum=1.0
+cluster count_genes type="integer" minimum=0.0
+cluster data type="array" items="string"
+cluster epochs type="integer" minimum=1.0
+cluster fit type="string"
+cluster gene_alpha type="number"
+cluster gene_roles type="integer" minimum=1.0
+cluster membership_alpha type="number"
+cluster min_cell_sites type="integer" minimum=0.0
+cluster min_site_cells type="integer" minimum=0.0
+cluster modality type="string" enum=["atoi","count","m6a"]
+cluster no_batch_correction type="boolean"
+cluster options type="array" items="string"
+cluster out type="string"
+cluster seed type="integer" minimum=0.0
+cluster shift_sd type="number"
+cluster svi_epochs type="integer" minimum=0.0
+cluster tol type="number" minimum=0.0
+cluster within type="string"
+cluster within_min_cells type="integer" minimum=0.0
+cluster_view batch_groups type="string"
+cluster_view batches type="boolean"
+cluster_view cells type="boolean"
+cluster_view data type="string"
+cluster_view figure type="string"
+cluster_view font_size type="number"
+cluster_view gaf type="string"
+cluster_view gene type="string"
+cluster_view gmt type="string"
+cluster_view go type="boolean"
+cluster_view go_min_weight type="number" minimum=0.0 maximum=1.0
+cluster_view go_q type="number" exclusiveMinimum=0.0 maximum=1.0
+cluster_view grid type="boolean"
+cluster_view group type="string"
+cluster_view gtf type="string"
+cluster_view height type="number" minimum=0.75
+cluster_view html type="string"
+cluster_view look type="string" enum=["hinton","percent","shift","z"]
+cluster_view modality type="string" enum=["atoi","count","m6a"]
+cluster_view module type="string"
+cluster_view obo type="string"
+cluster_view options type="array" items="string"
+cluster_view overview type="boolean"
+cluster_view palette type="string" enum=["colour","gray"]
+cluster_view panel_only type="boolean"
+cluster_view plot type="string" enum=["batches","modules","trace"]
+cluster_view plots type="array" items="string" enum=["batches","modules","trace"] minItems=1.0
+cluster_view settings type="boolean"
+cluster_view trace type="boolean"
+cluster_view width type="number" minimum=1.0
+count ambient_hi type="integer" minimum=0.0
+count ambient_lo type="integer" minimum=0.0
+count backend type="string" enum=["hdf5","zarr"]
+count background type="boolean"
+count bam type="array" items="string" minItems=1.0
+count cell_barcode_tag type="string"
+count cell_fdr type="number"
+count cell_filter type="string" enum=["empty-drops","min-counts","nnz","ord-mag"]
+count cell_min_umis type="integer" minimum=0.0
+count cell_sims type="integer" minimum=0.0
+count column_nnz_cutoff type="integer" minimum=0.0
+count expected_cells type="integer" minimum=0.0
+count gene_barcode_tag type="string"
+count gene_type type="string"
+count gff type="string"
+count keep_mito type="boolean"
+count max_mito_frac type="number"
+count min_mapping_quality type="integer" minimum=0.0
+count mito_chr type="string"
+count no_mito_cell_qc type="boolean"
+count no_umi_dedup type="boolean"
+count no_zip type="boolean"
+count options type="array" items="string"
+count out type="string"
+count row_nnz_cutoff type="integer" minimum=0.0
+count source type="string"
+count umi_tag type="string"
+dartseq ambient_hi type="integer" minimum=0.0
+dartseq ambient_lo type="integer" minimum=0.0
+dartseq backend type="string" enum=["hdf5","zarr"]
+dartseq background type="boolean"
+dartseq bam type="array" items="string" minItems=1.0
+dartseq cell_barcode_tag type="string"
+dartseq cell_fdr type="number"
+dartseq cell_filter type="string" enum=["empty-drops","min-counts","nnz","ord-mag"]
+dartseq cell_membership type="string"
+dartseq cell_min_genes type="integer" minimum=0.0
+dartseq cell_min_umis type="integer" minimum=0.0
+dartseq cell_scan_control_tail type="number"
+dartseq cell_scan_min_coverage type="integer" minimum=0.0
+dartseq cell_scan_tolerance type="number"
+dartseq cell_sims type="integer" minimum=0.0
+dartseq control type="array" items="string" minItems=1.0
+dartseq drop_single_component type="boolean"
+dartseq exact_barcode_match type="boolean"
+dartseq expected_cells type="integer" minimum=0.0
+dartseq gene_barcode_tag type="string"
+dartseq gene_min_cells type="integer" minimum=0.0
+dartseq gene_min_counts type="integer" minimum=0.0
+dartseq gene_type type="string"
+dartseq genome type="string"
+dartseq gff type="string"
+dartseq include_missing_barcode type="boolean"
+dartseq keep_mito type="boolean"
+dartseq max_mito_frac type="number"
+dartseq max_threads type="integer" minimum=0.0
+dartseq membership_barcode_col type="integer" minimum=0.0
+dartseq membership_celltype_col type="integer" minimum=0.0
+dartseq min_base_quality type="integer" minimum=0.0
+dartseq min_conversion type="integer" minimum=0.0
+dartseq min_coverage type="integer" minimum=0.0
+dartseq min_mapping_quality type="integer" minimum=0.0
+dartseq mito_chr type="string"
+dartseq mixture type="boolean"
+dartseq mixture_bandwidth type="number"
+dartseq mixture_max_k type="integer" minimum=0.0
+dartseq mixture_min_sites type="integer" minimum=0.0
+dartseq mixture_prior_alpha type="number"
+dartseq mixture_prior_beta type="number"
+dartseq mixture_weight type="string" enum=["converted","posterior"]
+dartseq no_check_r_site type="boolean"
+dartseq no_mito_cell_qc type="boolean"
+dartseq no_umi_dedup type="boolean"
+dartseq no_zip type="boolean"
+dartseq options type="array" items="string"
+dartseq out type="string"
+dartseq output_bed_file type="boolean"
+dartseq output_cell_types type="boolean"
+dartseq quantify_competent_only type="boolean"
+dartseq reader_genes type="array" items="string"
+dartseq skip_gene_qc type="boolean"
+dartseq source type="string"
+dartseq umi_tag type="string"
+dartseq valid_cells type="string"
+dartseq valid_genes type="string"
+dartseq writer_genes type="array" items="string"
+depth backend type="string" enum=["hdf5","zarr"]
+depth background type="boolean"
+depth bam type="array" items="string" minItems=1.0
+depth block_size_mb type="integer" minimum=0.0
+depth cell_barcode_tag type="string"
+depth column_nnz_cutoff type="integer" minimum=0.0
+depth no_zip type="boolean"
+depth options type="array" items="string"
+depth out type="string"
+depth resolution_kb type="number" exclusiveMinimum=0.0
+depth row_nnz_cutoff type="integer" minimum=0.0
+depth source type="string"
+depth valid_cells type="string"
+docs query type="array" items="string"
+metagene bins type="integer" minimum=1.0
+metagene data type="array" items="string" minItems=1.0
+metagene dist_measures type="string"
+metagene figure type="boolean"
+metagene font_size type="number"
+metagene gff type="string"
+metagene height type="number" minimum=0.75
+metagene include_non_coding type="boolean"
+metagene isoforms type="string" enum=["all","weighted"]
+metagene max_width type="integer" minimum=0.0
+metagene modality type="string" enum=["atoi","m6a"]
+metagene options type="array" items="string"
+metagene out type="string"
+metagene palette type="string" enum=["colour","gray"]
+metagene panel_only type="boolean"
+metagene sites type="string"
+metagene width type="number" minimum=1.0
+pileup ascii_height type="integer" minimum=0.0
+pileup bam type="array" items="string"
+pileup bins type="integer" minimum=0.0
+pileup cell_barcode_tag type="string"
+pileup cell_membership type="string"
+pileup data type="array" items="string" minItems=1.0
+pileup depth type="array" items="string"
+pileup dpi type="integer" minimum=0.0
+pileup exact_barcode_match type="boolean"
+pileup figure type="boolean"
+pileup genes type="array" items="string"
+pileup gtf type="string"
+pileup height type="number" minimum=1.5
+pileup membership_barcode_col type="integer" minimum=0.0
+pileup membership_celltype_col type="integer" minimum=0.0
+pileup modality type="string" enum=["atoi","m6a"]
+pileup options type="array" items="string"
+pileup out type="string"
+pileup palette type="string" enum=["auto","category10","category20","dark2","okabeito","paired","set1","set2","set3"]
+pileup quiet type="boolean"
+pileup raster_threshold type="integer" minimum=0.0
+pileup regions type="array" items="string"
+pileup separate type="boolean"
+pileup signal type="string" enum=["log10-sum","nnz","sum"]
+pileup site_signal type="string" enum=["count","mut-coverage","neg-log10-pv","wt-coverage"]
+pileup sites_parquet type="string"
+pileup top_modality type="array" items="string"
+pileup track type="array" items="string"
+pileup width type="number" minimum=2.0
+pwm data type="array" items="string" minItems=1.0
+pwm figure type="boolean"
+pwm font_size type="number"
+pwm genome type="string"
+pwm height type="number" minimum=0.75
+pwm modality type="string" enum=["atoi","m6a"]
+pwm options type="array" items="string"
+pwm out type="string"
+pwm palette type="string" enum=["colour","gray"]
+pwm panel_only type="boolean"
+pwm sites type="string"
+pwm source type="string" enum=["reads","reference"]
+pwm threads type="integer" minimum=0.0
+pwm width type="number" minimum=1.0
+pwm window type="integer" minimum=0.0
+qc auto_cutoff type="boolean"
+qc background type="boolean"
+qc bins type="integer" minimum=0.0
+qc block_size type="integer" minimum=0.0
+qc column_nnz_cutoff type="integer" minimum=0.0
+qc dry_run type="boolean"
+qc font_size type="number"
+qc genes type="array" items="string"
+qc gff type="string"
+qc height type="number" minimum=0.75
+qc hist type="array" items="string"
+qc html type="string"
+qc input type="string"
+qc marginals type="array" items="string"
+qc no_cell_qc type="boolean"
+qc no_zip type="boolean"
+qc options type="array" items="string"
+qc out type="string"
+qc pairs type="array" items="string"
+qc palette type="string" enum=["colour","gray"]
+qc panel_only type="boolean"
+qc plots type="boolean"
+qc qc_mads type="number" exclusiveMinimum=0.0
+qc qc_min_cell_nnz type="integer" minimum=0.0
+qc row_nnz_cutoff type="integer" minimum=0.0
+qc scale type="array" items="string"
+qc show_histogram type="boolean"
+qc site_max_edit_ratio type="number"
+qc site_max_pv type="number"
+qc site_min_cells type="integer" minimum=0.0
+qc site_min_converted type="integer" minimum=0.0
+qc site_min_coverage type="integer" minimum=0.0
+qc site_min_edit_ratio type="number"
+qc site_min_fold type="number"
+qc site_min_log_odds type="number"
+qc width type="number" minimum=1.0
+qc_view bins type="integer" minimum=0.0
+qc_view font_size type="number"
+qc_view genes type="array" items="string"
+qc_view gff type="string"
+qc_view height type="number" minimum=0.75
+qc_view hist type="array" items="string"
+qc_view html type="string"
+qc_view input type="string"
+qc_view marginals type="array" items="string"
+qc_view options type="array" items="string"
+qc_view out type="string"
+qc_view pairs type="array" items="string"
+qc_view palette type="string" enum=["colour","gray"]
+qc_view panel_only type="boolean"
+qc_view plots type="boolean"
+qc_view scale type="array" items="string"
+qc_view width type="number" minimum=1.0
+run ambient_hi type="integer" minimum=0.0
+run ambient_lo type="integer" minimum=0.0
+run apa_em_pdui type="boolean"
+run apa_max_sites type="integer" minimum=0.0
+run apa_min_coverage type="integer" minimum=0.0
+run atoi_min_conversion type="integer" minimum=0.0
+run atoi_min_coverage type="integer" minimum=0.0
+run backend type="string" enum=["hdf5","zarr"]
+run background type="boolean"
+run bam type="array" items="string" minItems=1.0
+run cell_barcode_tag type="string"
+run cell_fdr type="number"
+run cell_filter type="string" enum=["empty-drops","min-counts","nnz","ord-mag"]
+run cell_min_genes type="integer" minimum=0.0
+run cell_min_umis type="integer" minimum=0.0
+run cell_scan_control_tail type="number"
+run cell_scan_min_coverage type="integer" minimum=0.0
+run cell_scan_tolerance type="number"
+run cell_sims type="integer" minimum=0.0
+run control type="array" items="string" minItems=1.0
+run depth_resolution_kb type="number"
+run drop_single_component type="boolean"
+run edit_error_rate type="number"
+run edit_overdispersion type="number"
+run expected_cells type="integer" minimum=0.0
+run gene_barcode_tag type="string"
+run gene_min_cells type="integer" minimum=0.0
+run gene_min_counts type="integer" minimum=0.0
+run gene_type type="string"
+run genome type="string"
+run gff type="string"
+run keep_mito type="boolean"
+run known_snps type="string"
+run m6a_min_conversion type="integer" minimum=0.0
+run m6a_min_coverage type="integer" minimum=0.0
+run max_mito_frac type="number"
+run max_threads type="integer" minimum=0.0
+run min_base_quality type="integer" minimum=0.0
+run min_mapping_quality type="integer" minimum=0.0
+run mito_chr type="string"
+run mixture type="boolean"
+run mixture_prior_alpha type="number"
+run mixture_prior_beta type="number"
+run mixture_weight type="string" enum=["converted","posterior"]
+run no_apa_pdui type="boolean"
+run no_mito_cell_qc type="boolean"
+run no_umi_dedup type="boolean"
+run no_zip type="boolean"
+run options type="array" items="string"
+run out type="string"
+run polya_min_tail_length type="integer" minimum=0.0
+run quantify_competent_only type="boolean"
+run reader_genes type="array" items="string"
+run skip_apa type="boolean"
+run skip_atoi type="boolean"
+run skip_count type="boolean"
+run skip_m6a type="boolean"
+run skip_snp type="boolean"
+run snp_min_alt_count type="integer" minimum=0.0
+run snp_min_alt_freq type="number"
+run snp_min_coverage type="integer" minimum=0.0
+run snp_min_depth type="integer" minimum=0.0
+run snp_min_gq type="number"
+run source type="string"
+run umi_tag type="string"
+run writer_genes type="array" items="string"
+site_plot bins type="integer" minimum=0.0
+site_plot font_size type="number"
+site_plot height type="number" minimum=0.75
+site_plot hist type="array" items="string"
+site_plot input type="string"
+site_plot marginals type="array" items="string"
+site_plot modality type="string" enum=["atoi","m6a"]
+site_plot options type="array" items="string"
+site_plot out type="string"
+site_plot pairs type="array" items="string"
+site_plot palette type="string" enum=["colour","gray"]
+site_plot panel_only type="boolean"
+site_plot scale type="array" items="string"
+site_plot site_max_edit_ratio type="number"
+site_plot site_max_pv type="number"
+site_plot site_min_cells type="integer" minimum=0.0
+site_plot site_min_converted type="integer" minimum=0.0
+site_plot site_min_coverage type="integer" minimum=0.0
+site_plot site_min_edit_ratio type="number"
+site_plot site_min_fold type="number"
+site_plot site_min_log_odds type="number"
+site_plot width type="number" minimum=1.0
+snp backend type="string" enum=["hdf5","zarr"]
+snp background type="boolean"
+snp bam type="array" items="string" minItems=1.0
+snp base_error_rate type="number"
+snp bulk type="boolean"
+snp cell_barcode_tag type="string"
+snp gene_barcode_tag type="string"
+snp gene_type type="string"
+snp genome type="string"
+snp gff type="string"
+snp include_missing_barcode type="boolean"
+snp known_snps type="string"
+snp max_threads type="integer" minimum=0.0
+snp min_alt_count type="integer" minimum=0.0
+snp min_alt_freq type="number"
+snp min_base_quality type="integer" minimum=0.0
+snp min_coverage type="integer" minimum=0.0
+snp min_depth type="integer" minimum=0.0
+snp min_gq type="number"
+snp min_mapping_quality type="integer" minimum=0.0
+snp no_base_quality type="boolean"
+snp no_umi_dedup type="boolean"
+snp no_zip type="boolean"
+snp options type="array" items="string"
+snp out type="string"
+snp skip_discovery type="boolean"
+snp source type="string"
+snp umi_tag type="string"

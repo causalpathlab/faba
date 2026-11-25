@@ -357,6 +357,44 @@ fn cluster_view_returns_json_levels_and_several_figures() {
     }
 }
 
+/// `cluster_view` with `html` writes the page of every level; a level
+/// beside it is refused by the tool before the command runs, saying why,
+/// and no page is written.
+#[test]
+fn cluster_view_writes_the_page_and_refuses_a_level_beside_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let record = count_fit(dir.path());
+    let mut c = Client::start(dir.path());
+    c.request("initialize", json!({}));
+    let refused = dir.path().join("refused.html");
+    for level in [
+        json!({ "go": true }),
+        json!({ "module": "M1", "trace": true }),
+    ] {
+        let mut args = json!({ "data": record, "html": refused.to_string_lossy() });
+        for (k, v) in level.as_object().unwrap() {
+            args[k] = v.clone();
+        }
+        let err = c.call("cluster_view", args).unwrap_err();
+        assert!(err.contains("the page shows every level"), "{err}");
+        assert!(err.contains("drop `html`"), "{err}");
+        assert!(
+            !err.contains("cannot be used with"),
+            "clap's, not the tool's: {err}"
+        );
+    }
+    assert!(!refused.exists());
+    let page = dir.path().join("p.html");
+    let written = c
+        .call(
+            "cluster_view",
+            json!({ "data": record, "html": page.to_string_lossy(), "go": false }),
+        )
+        .unwrap();
+    assert!(page.is_file(), "{written:#}");
+    assert!(written["written"].as_str().unwrap().ends_with("p.html"));
+}
+
 /// A within record in `dir` over the count fit `count`: group C1's fit is
 /// that count fit itself, group C2 skipped.
 fn within_record(dir: &Path, count: &str) -> String {
