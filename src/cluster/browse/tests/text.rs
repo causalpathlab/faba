@@ -88,3 +88,31 @@ fn the_cell_modules_and_settings_print_in_order() {
         "{lines:?}"
     );
 }
+
+/// `--go-q` sets the q a GO term needs to be listed, 0.05 when not given,
+/// and reaches what `--go` and the browser ask; a cutoff outside (0, 1] is
+/// refused.
+#[test]
+fn the_go_q_cutoff_is_a_setting_in_zero_to_one() {
+    use clap::Parser;
+    #[derive(Parser)]
+    struct Line {
+        #[command(flatten)]
+        shown: Shown,
+        #[arg(id = "html", long = "html", hide = true)]
+        _html: Option<String>,
+    }
+    let parse =
+        |args: &[&str]| Line::try_parse_from(std::iter::once("faba").chain(args.iter().copied()));
+    assert_eq!(Shown::default().go_ask().q, 0.05);
+    let at = parse(&["--go-q", "0.1"]).unwrap().shown;
+    assert_eq!(at.go_ask().q, 0.1);
+    assert_eq!(parse(&["--go-q", "1"]).unwrap().shown.go_ask().q, 1.0);
+    for bad in ["0", "-0.1", "1.5", "NaN", "x"] {
+        // `--go-q=VALUE`, so -0.1 is read as the flag's value.
+        let e = parse(&[&format!("--go-q={bad}")])
+            .err()
+            .unwrap_or_else(|| panic!("{bad} taken"));
+        assert!(e.to_string().contains("--go-q"), "{bad}: {e}");
+    }
+}
