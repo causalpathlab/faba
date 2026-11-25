@@ -20,7 +20,7 @@ pub enum Scale {
 }
 
 impl Scale {
-    fn parse(s: &str) -> anyhow::Result<Self> {
+    pub fn parse(s: &str) -> anyhow::Result<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
             "linear" => Ok(Scale::Linear),
             "log" => Ok(Scale::Log),
@@ -60,15 +60,23 @@ impl Scales {
                 anyhow::bail!("--scale {item}: write it as QUANTITY=linear|log, e.g. pv=log");
             };
             let (q, s) = (Quantity::parse(q)?, Scale::parse(s)?);
-            anyhow::ensure!(
-                s == Scale::Linear || q.can_log(),
-                "--scale {item}: {} is signed and has no log scale; use linear",
-                q.key()
-            );
-            out.0[q as usize] = s;
-            out.1[q as usize] = true;
+            out.set(q, s)
+                .map_err(|e| anyhow::anyhow!("--scale {item}: {e}"))?;
         }
         Ok(out)
+    }
+
+    /// `q` read on `s`, as asked for. Log is refused where it cannot
+    /// apply (signed log odds).
+    pub fn set(&mut self, q: Quantity, s: Scale) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            s == Scale::Linear || q.can_log(),
+            "{} is signed and has no log scale; use linear",
+            q.key()
+        );
+        self.0[q as usize] = s;
+        self.1[q as usize] = true;
+        Ok(())
     }
 }
 

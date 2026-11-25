@@ -20,7 +20,18 @@ pub const OUTLINE: &str = crate::figure::INK;
 pub const THRESHOLD: &str = "#e2461c";
 
 /// Which arm is drawn in front (`--front`, `f` in the view).
-#[derive(clap::ValueEnum, Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(
+    clap::ValueEnum,
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Front {
     /// The signal arm over the control's.
@@ -50,7 +61,18 @@ impl Front {
 
 /// How the p-value's ticks read (`--p-axis`, `u` in the view): the bars
 /// sit on `-log10 p` either way.
-#[derive(clap::ValueEnum, Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(
+    clap::ValueEnum,
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum PAxis {
     /// The p-value itself: 1, 0.2, 1e-3.
@@ -89,7 +111,18 @@ impl PAxis {
 /// How a count is spread along an axis or a shade (`--yscale`,
 /// `--marginal-scale`, `--count-scale`): as it is, on its square root, or
 /// on `ln(1 + n)`, so a tall background and a small series both read.
-#[derive(clap::ValueEnum, Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(
+    clap::ValueEnum,
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum CountScale {
     Linear,
@@ -207,7 +240,18 @@ impl YScales {
 }
 
 /// Where the view style's key goes (`--key-at`).
-#[derive(clap::ValueEnum, Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(
+    clap::ValueEnum,
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum KeyAt {
     /// Beside the plot, at its right: the plot narrows by the key's width;

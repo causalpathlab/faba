@@ -353,11 +353,19 @@ fn asked_state(args: &ModulesArgs, base: &State, m: &Modules) -> anyhow::Result<
     Ok(state)
 }
 
-/// A saved view's state.
+/// A saved view's state: the browser's `s`'s, or a live view's export's
+/// (its `view` and `command` said beside the state, see
+/// [`crate::tui::live::snapshot`]).
 fn read_state(path: &Path) -> anyhow::Result<State> {
     let text = std::fs::read_to_string(path).with_context(|| format!("{}", path.display()))?;
-    serde_json::from_str(&text)
-        .with_context(|| format!("{} is no saved view state", path.display()))
+    let mut v: serde_json::Value = serde_json::from_str(&text)
+        .with_context(|| format!("{} is no saved view state", path.display()))?;
+    crate::tui::live::check_view(&v, "cluster_view")?;
+    if let Some(m) = v.as_object_mut() {
+        m.remove("view");
+        m.remove("command");
+    }
+    serde_json::from_value(v).with_context(|| format!("{} is no saved view state", path.display()))
 }
 
 /// The fits `args` draw screens of: every fit under `--each-fit`, every

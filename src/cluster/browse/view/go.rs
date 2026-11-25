@@ -65,7 +65,7 @@ impl ModulesView<'_> {
 
     /// Start reading the terms unless they are read or being read: whether
     /// this view has GO to read (if not, the footer says so).
-    fn read_go(&mut self) -> bool {
+    pub(super) fn read_go(&mut self) -> bool {
         let Some(ask) = self.go_ask.clone() else {
             self.status = Some("no GO for this view".into());
             return false;

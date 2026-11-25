@@ -21,6 +21,7 @@ mod pairs;
 mod panels;
 mod read_only;
 mod report;
+mod state;
 mod thresholds;
 mod view_style;
 

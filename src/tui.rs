@@ -7,6 +7,7 @@
 pub mod browser;
 pub mod busy;
 pub mod help;
+pub mod live;
 #[cfg(test)]
 pub mod screenshot;
 
@@ -265,8 +266,23 @@ pub fn child_env() -> legume_tui::ChildEnv {
 /// path ([`Screen::quit`]) and then ends it with
 /// [`legume_tui::view::Stopped`].
 pub fn run_view<V: View>(view: &mut V) -> anyhow::Result<()> {
+    run_helped(&mut Helped::new(view))
+}
+
+fn run_helped<V: View>(helped: &mut Helped<V>) -> anyhow::Result<()> {
+    Ok(legume_tui::view::run_view(&TOOL, &LOOK, helped, feed)?)
+}
+
+/// [`run_view`] for a view that answers from outside it ([`live`]): in a
+/// named session, its state read and its figure drawn on its socket
+/// while it runs.
+pub fn run_live_view<V: View + live::Live>(view: &mut V) -> anyhow::Result<()> {
+    let control = live::Control::start();
     let mut helped = Helped::new(view);
-    Ok(legume_tui::view::run_view(&TOOL, &LOOK, &mut helped, feed)?)
+    if let Some(control) = &control {
+        helped = helped.serving(control, |c, v| c.serve(v));
+    }
+    run_helped(&mut helped)
 }
 
 /// Run `f`, the command's own work between or after its views, on the

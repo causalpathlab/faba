@@ -28,7 +28,7 @@ impl ModulesView<'_> {
             cell_order: m.columns.iter().map(|c| format!("C{}", c + 1)).collect(),
             module: self.role().map(|g| format!("M{}", g + 1)),
             side: if go { Beside::Go } else { Beside::Sites },
-            go_terms: None,
+            go_terms: self.go_terms,
             pins: self.pins.iter().map(gene).collect(),
         }
     }
@@ -36,9 +36,23 @@ impl ModulesView<'_> {
     /// The screen as a figure, the size of the terminal it was last drawn
     /// on (no smaller than [`LEAST`]).
     pub fn screen_svg(&self) -> Result<String, String> {
+        self.screen_on(self.screen_sheet())
+    }
+
+    /// The sheet a saved screen takes: the terminal's size, no smaller
+    /// than [`LEAST`], in the figures' own look.
+    pub(super) fn screen_sheet(&self) -> Sheet {
+        let page = self.controls.page(self.area, LEAST).unwrap_or(LEAST);
+        Sheet {
+            page: (Some(page.0), Some(page.1)),
+            ..Sheet::OWN
+        }
+    }
+
+    /// The screen as a figure on `sheet`.
+    pub(super) fn screen_on(&self, sheet: Sheet) -> Result<String, String> {
         let state = self.screen_state();
         let placed = state.place(self.m).map_err(|e| format!("{e:#}"))?;
-        let page = self.controls.page(self.area, LEAST).unwrap_or(LEAST);
         let go = match &self.go_table {
             Some(Ok(t)) => Some(t),
             _ => None,
@@ -49,10 +63,7 @@ impl ModulesView<'_> {
             grid: &GridArgs::default(),
             region: Region::All,
             title: self.figure_title.as_deref().unwrap_or(&self.title),
-            sheet: Sheet {
-                page: (Some(page.0), Some(page.1)),
-                ..Sheet::OWN
-            },
+            sheet,
         };
         screen::draw(self.m, &placed, &ask)
     }

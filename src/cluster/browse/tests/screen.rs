@@ -654,3 +654,71 @@ fn the_screen_reads_as_the_browser() {
     let png = crate::figure::png(&svg, 2.0).unwrap();
     std::fs::write(std::path::Path::new(&dir).join("screen_export.png"), png).unwrap();
 }
+
+/// The browser as a live view: its state is the screen's, set again on a
+/// fresh browser it draws the same figure `s` saves, and a live export's
+/// state (its view and command beside it) draws it again with `--screen
+/// --state`; what the view cannot show is refused, saying why.
+#[test]
+fn a_live_browser_sets_and_exports_its_screen() {
+    use crate::tui::live::{sheet_of, snapshot, Live, Look};
+    let m = loaded();
+    let mut v = ModulesView::new("t", &m);
+    drawn(&mut v, 160, 40);
+    let first = v.view_state();
+    v.set_view_state(&serde_json::json!({
+        "preset": "blocks",
+        "module": "M1",
+        "pins": ["GENE1"],
+        "go_terms": 2,
+        "unknown": true,
+    }))
+    .unwrap();
+    let state = v.view_state();
+    assert_eq!(state["preset"], "blocks");
+    assert_eq!(state["module"], "M1");
+    assert_eq!(state["pins"], serde_json::json!(["GENE1"]));
+    assert_eq!(state["go_terms"], 2);
+    assert_eq!(state["cell_order"], first["cell_order"]);
+    let sheet = sheet_of(&v, &Look::default()).unwrap();
+    let svg = v.saved_figure(sheet).unwrap();
+    assert_eq!(svg, v.screen_svg().unwrap(), "the export is `s`'s");
+    assert!(svg.contains("GENE1 M1") && svg.contains("by shift range"));
+
+    let mut fresh = ModulesView::new("t", &m);
+    drawn(&mut fresh, 160, 40);
+    assert_ne!(fresh.screen_svg().unwrap(), svg);
+    fresh.set_view_state(&state).unwrap();
+    assert_eq!(fresh.view_state(), state);
+    assert_eq!(fresh.screen_svg().unwrap(), svg);
+
+    for (bad, says) in [
+        (serde_json::json!({ "side": "none" }), "side none"),
+        (serde_json::json!({ "side": "go" }), "no GO"),
+        (serde_json::json!({ "pins": ["GENE9"] }), "GENE9"),
+        (
+            serde_json::json!({ "cell_order": ["C2"] }),
+            "order it opened with",
+        ),
+    ] {
+        let mut again = ModulesView::new("t", &m);
+        drawn(&mut again, 160, 40);
+        let e = format!("{:#}", again.set_view_state(&bad).unwrap_err());
+        assert!(e.contains(says), "{bad}: {e}");
+    }
+
+    // The state a live export keeps draws the same screen with --screen.
+    let tmp = tempfile::tempdir().unwrap();
+    tables(tmp.path());
+    let kept = tmp.path().join("live.view.json");
+    std::fs::write(&kept, snapshot(&v).to_string()).unwrap();
+    let out = tmp.path().join("again");
+    let (dir, kept, out) = (
+        tmp.path().to_string_lossy(),
+        kept.to_string_lossy(),
+        out.to_string_lossy(),
+    );
+    cluster_view(&[&dir, "--screen", &out, "--state", &kept, "--format", "svg"]).unwrap();
+    let again = std::fs::read_to_string(format!("{out}.svg")).unwrap();
+    assert!(again.contains("GENE1 M1") && again.contains("by shift range"));
+}
