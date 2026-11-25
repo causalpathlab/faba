@@ -20,6 +20,9 @@ use crate::cluster::browse::{Count, Modules};
 use crate::figure::size::Page;
 use crate::figure::{svg, Anchor, Canvas, FAINT, INK, MUTED};
 
+/// The outline of each Hinton square: gray90, very thin.
+const HINTON_EDGE: (&str, f64) = ("#e5e5e5", 0.1);
+
 /// What a margin's bars show.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Strip {
@@ -500,7 +503,8 @@ pub(super) fn placed(
                     let side = (cell - 2.0) * (v.abs() / top.max(1e-12)).min(1.0).sqrt();
                     let (colour, dark) = square_fill(*v);
                     let (cx, cy) = centre;
-                    c.rect(cx - side / 2.0, cy - side / 2.0, side, side, &colour);
+                    let at = (cx - side / 2.0, cy - side / 2.0, side, side);
+                    c.outlined(at, &colour, HINTON_EDGE);
                     if let Some(t) = asked {
                         let under = dark && side >= width(&t, f) + 2.0 && side >= 1.2 * f;
                         let text_ink = if under { "#ffffff" } else { INK };
@@ -738,7 +742,10 @@ pub(super) fn placed(
                 y,
                 f * 1.2,
                 sh / steps as f64 + 0.5,
-                &ink.fill(v, top, diverging).0,
+                &match look {
+                    Look::Hinton => square_fill(v).0,
+                    _ => ink.fill(v, top, diverging).0,
+                },
             );
         }
         let mid = (top + low) / 2.0;
