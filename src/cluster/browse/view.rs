@@ -38,6 +38,7 @@ mod go;
 mod grid;
 mod input;
 mod list;
+mod live;
 mod pins;
 mod save;
 mod strip;
@@ -210,6 +211,9 @@ pub struct ModulesView<'a> {
     go_column: bool,
     go_w: u16,
     go_no_room: bool,
+    /// The GO terms a row of a saved screen shows at most, as a live
+    /// view's state set it (see [`live`]); none, the figure's own.
+    go_terms: Option<usize>,
     /// `s`: the save prompt, and the area the last frame drew on, the
     /// size a saved screen takes.
     pub(super) controls: crate::figure::Controls,
@@ -265,6 +269,7 @@ impl<'a> ModulesView<'a> {
             go_column: false,
             go_w: 0,
             go_no_room: false,
+            go_terms: None,
             controls: crate::figure::Controls::new("cluster_screen"),
             area: Rect::default(),
             done: false,

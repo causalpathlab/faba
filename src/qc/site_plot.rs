@@ -252,7 +252,17 @@ impl Titles {
 }
 
 /// How the site panels are drawn (`--style`).
-#[derive(clap::ValueEnum, Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+#[derive(
+    clap::ValueEnum,
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum PanelStyle {
     /// The paper panel: kept and removed stacked, the thresholds as edges.

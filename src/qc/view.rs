@@ -122,8 +122,9 @@ pub struct QcViewArgs {
         long_help = "Arrange the view as FILE says: the JSON state a live view's export kept\n\
                      beside its figure ({prefix}.view.json), or one an agent read from a live\n\
                      view: the modality, the knob in focus, each threshold, each knob's scale,\n\
-                     the 2D panels and the one in focus, the arms' look, the axis titles. A key\n\
-                     left out stays as the view opens. With --figure, the figure is drawn from\n\
+                     each count scale, the 2D panels and the one in focus, the arms' look, the\n\
+                     key and where it goes, the axis titles, the panel style and marginals. A\n\
+                     key left out stays as the view opens. With --figure, the figure is drawn from\n\
                      it without the view."
     )]
     pub view_state: Option<Box<str>>,

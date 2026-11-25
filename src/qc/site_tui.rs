@@ -581,10 +581,7 @@ impl<'a> SitePicker<'a> {
             style: plan.style,
             marginal_size: plan.marginal_size,
             // The arms as the view shows them now (`f`, `u`).
-            look: ArmLook {
-                key: plan.look.key,
-                ..self.arm_look
-            },
+            look: self.arm_look,
             scales: v.cache.scales,
             // The view style draws on the view's own bins unless asked.
             bins: match plan.style {

@@ -8,22 +8,32 @@
 //! threshold's key, its flag without dashes: `site_max_pv`),
 //! `thresholds` each knob's value (null when off; `flags` the same as
 //! `faba qc` flags), `x_scale` each knob's histogram scale (log, sqrt,
-//! linear) and `y_scale` the counts', `two_d` the 2D panels shown,
+//! linear), `y_scale` each quantity's histogram counts' (linear, sqrt,
+//! log1p: `y` steps the focused knob's), `marginal_scale` and
+//! `count_scale` the 2D marginals' and squares' counts', `two_d` the 2D
+//! panels shown,
 //! `pairs` the panels chosen per modality (each `[x, y]`, quantities as
 //! `--pairs` names them; none, Auto's), `pair_at` the panel in focus,
-//! `front` (wt, mut) and `p_axis` (p, neglog10) the arms' look, `titles`
+//! `front` (wt, mut) and `p_axis` (p, neglog10) the arms' look, `key`
+//! (the key kept with the plot alone) and `key_at` (right, top, inside,
+//! alone) the key's, `titles`
 //! the axis titles (`x` and `y` by quantity, `sites` the counts'),
 //! `weight` (coverage, converted, sites) the gene and metagene bars',
 //! `scales` each quantity's 2D scale (linear, log) and `bins` the
-//! rulers' bins. Read only: `saves`, the panel `s` saves now, and `gene`,
+//! rulers' bins. In `faba qc-view`, also how `s` draws its panel:
+//! `style` (panel, view), `marginals` (none, top, right, both) and
+//! `marginal_size`, a fraction of the plot's shorter side. Read only: `saves`, the panel `s` saves now, and `gene`,
 //! the gene selected.
 
 use super::*;
 use crate::figure::size::Figure as Floor;
+use crate::qc::arms::CountScale;
 use crate::qc::pairs::Axis as Quantity;
 use crate::qc::scale::Scales;
+use crate::qc::site_plot::PanelStyle;
 use crate::tui::live::Live;
 use anyhow::Context;
+use data_beans::figure::panel::Marginals;
 use serde_json::{json, Map, Value};
 
 /// A knob's key in a state: its flag without dashes (`site_max_pv`).
@@ -61,6 +71,26 @@ fn hist_scale(s: &str) -> anyhow::Result<Scale> {
         .into_iter()
         .find(|x| x.name() == s)
         .with_context(|| format!("no scale {s}: log, sqrt or linear"))
+}
+
+fn marginals_name(m: Marginals) -> &'static str {
+    match (m.top, m.right) {
+        (false, false) => "none",
+        (true, false) => "top",
+        (false, true) => "right",
+        (true, true) => "both",
+    }
+}
+
+fn marginals_named(s: &str) -> anyhow::Result<Marginals> {
+    let (top, right) = match s {
+        "none" => (false, false),
+        "top" => (true, false),
+        "right" => (false, true),
+        "both" => (true, true),
+        other => anyhow::bail!("no marginals {other}: none, top, right or both"),
+    };
+    Ok(Marginals { top, right })
 }
 
 /// `v` as a string, or why not.
@@ -131,6 +161,37 @@ impl SitePicker<'_> {
     }
 }
 
+impl SitePicker<'_> {
+    /// How `s` draws its panel in `faba qc-view`, as `get` names it:
+    /// `style`, `marginals`, `marginal_size`; refused in `faba qc`, whose
+    /// `s` saves no panel.
+    fn set_drawing<'v>(&mut self, get: &impl Fn(&str) -> Option<&'v Value>) -> anyhow::Result<()> {
+        let asked = ["style", "marginals", "marginal_size"].map(get);
+        if asked.iter().all(Option::is_none) {
+            return Ok(());
+        }
+        let Some((plan, _)) = &mut self.viewing else {
+            anyhow::bail!("style, marginals and marginal_size draw faba qc-view's panel only");
+        };
+        let [style, marginals, size] = asked;
+        if let Some(s) = style {
+            plan.style = named::<PanelStyle>(s, "style")?;
+        }
+        if let Some(m) = marginals {
+            plan.marginals = marginals_named(text(m, "marginals")?)?;
+        }
+        if let Some(f) = size {
+            let f = f.as_f64().context("marginal_size is a number")?;
+            anyhow::ensure!(
+                f > 0.0 && f < 1.0,
+                "marginal_size {f}: a fraction of the plot's shorter side, above 0 and below 1"
+            );
+            plan.marginal_size = f;
+        }
+        Ok(())
+    }
+}
+
 impl Live for SitePicker<'_> {
     fn view_name(&self) -> &'static str {
         match self.read_only() {
@@ -150,6 +211,9 @@ impl Live for SitePicker<'_> {
         let x_scale: Map<String, Value> = (SHOWN.into_iter())
             .map(|c| (key(c), json!(c.scales()[self.x_scale[c as usize]].name())))
             .collect();
+        let y_scale: Map<String, Value> = (Quantity::ALL.into_iter())
+            .map(|q| (q.key().to_string(), json!(self.arm_look.y.of(q))))
+            .collect();
         let pairs: Map<String, Value> = (self.views.iter())
             .filter(|v| !v.pairs.is_empty())
             .map(|v| {
@@ -162,7 +226,7 @@ impl Live for SitePicker<'_> {
             .collect();
         let gene =
             (self.list.selected()).and_then(|g| Some(v.genes.as_ref()?.symbol(g).to_string()));
-        json!({
+        let mut state = json!({
             "title": self.title,
             "modality": v.table.modality,
             "modalities": self.views.iter().map(|v| &v.table.modality).collect::<Vec<_>>(),
@@ -171,19 +235,29 @@ impl Live for SitePicker<'_> {
             "thresholds": thresholds,
             "flags": qc_flags(&self.filter),
             "x_scale": x_scale,
-            "y_scale": self.y_scale().name(),
+            "y_scale": y_scale,
+            "marginal_scale": self.arm_look.marginal,
+            "count_scale": self.arm_look.count,
             "two_d": self.two_d,
             "pairs": pairs,
             "pair_at": self.pair_at,
             "front": self.arm_look.front,
             "p_axis": self.arm_look.p_axis,
+            "key": self.arm_look.key,
+            "key_at": self.arm_look.key_at,
             "titles": self.titles_json(),
             "weight": weight_name(self.weight),
             "scales": scales,
             "bins": v.cache.bins,
             "saves": self.saves(),
             "gene": gene,
-        })
+        });
+        if let Some((plan, _)) = &self.viewing {
+            state["style"] = json!(plan.style);
+            state["marginals"] = json!(marginals_name(plan.marginals));
+            state["marginal_size"] = json!(plan.marginal_size);
+        }
+        state
     }
 
     fn set_view_state(&mut self, state: &Value) -> anyhow::Result<()> {
@@ -222,15 +296,23 @@ impl Live for SitePicker<'_> {
         }
         if get("scales").is_some() || get("bins").is_some() {
             let v = self.view();
-            let scales = match get("scales") {
-                Some(given) => {
-                    let items: Vec<String> = (object(given, "scales")?.iter())
-                        .map(|(q, s)| Ok(format!("{q}={}", text(s, "a scale")?)))
-                        .collect::<anyhow::Result<_>>()?;
-                    Scales::parse(&items)?
+            // Only a scale changed counts as asked for, so a state read
+            // back sets the view as it was.
+            let mut scales = v.cache.scales;
+            for (q, s) in get("scales")
+                .map(|g| object(g, "scales"))
+                .transpose()?
+                .into_iter()
+                .flatten()
+            {
+                let (q, s) = (
+                    Quantity::parse(q)?,
+                    crate::qc::scale::Scale::parse(text(s, "a scale")?)?,
+                );
+                if scales.of(q) != s {
+                    scales.set(q, s).context("scales")?;
                 }
-                None => v.cache.scales,
-            };
+            }
             let bins = match get("bins") {
                 Some(b) => b.as_u64().context("bins is a whole number")? as usize,
                 None => v.cache.bins,
@@ -247,13 +329,24 @@ impl Live for SitePicker<'_> {
             }
         }
         if let Some(y) = get("y_scale") {
-            use clap::ValueEnum;
-            let y = text(y, "y_scale")?;
-            let s = crate::qc::arms::CountScale::from_str(y, false)
-                .map_err(|_| anyhow::anyhow!("no y_scale {y}: linear, sqrt or log1p"))?;
-            let q = Quantity::of(self.criterion());
-            self.arm_look.y.set(q, s);
+            for (q, s) in object(y, "y_scale")? {
+                let s: CountScale = named(s, "y_scale")?;
+                self.arm_look.y.set(Quantity::parse(q)?, s);
+            }
         }
+        if let Some(m) = get("marginal_scale") {
+            self.arm_look.marginal = named(m, "marginal_scale")?;
+        }
+        if let Some(c) = get("count_scale") {
+            self.arm_look.count = named(c, "count_scale")?;
+        }
+        if let Some(k) = get("key") {
+            self.arm_look.key = k.as_bool().context("key is true or false")?;
+        }
+        if let Some(k) = get("key_at") {
+            self.arm_look.key_at = named(k, "key_at")?;
+        }
+        self.set_drawing(&get)?;
         if let Some(f) = get("focus") {
             let c = knob(text(f, "focus")?)?;
             let at = self.view().criteria.iter().position(|&x| x == c);

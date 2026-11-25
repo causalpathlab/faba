@@ -196,6 +196,14 @@ fn a_view_opened_over_mcp_is_arranged_by_the_user_and_drawn_as_arranged() {
         st["focus"] == "site_min_cells" && st["thresholds"]["site_min_cells"] == 1.0
     });
     assert_eq!(arranged["front"], "mut");
+    // `y` steps the knob's count scale, and the agent sets where the key
+    // goes and the marginals' scale: `s` and the export draw them alike.
+    let before = arranged["y_scale"]["cells"].clone();
+    t.type_(b"y");
+    let set = json!({ "key_at": "inside", "marginal_scale": "linear" });
+    let after = s.ok("view_state", json!({ "session": id, "set": set }));
+    assert_eq!(after["state"]["key_at"], "inside");
+    let arranged = state_until(&mut s, &id, |st| st["y_scale"]["cells"] != before);
     assert_eq!(
         s.ok("view_state", json!({ "session": "t1" }))["attached"],
         true
@@ -244,7 +252,15 @@ fn a_view_opened_over_mcp_is_arranged_by_the_user_and_drawn_as_arranged() {
     let kept: Value =
         serde_json::from_str(&std::fs::read_to_string(format!("{prefix}.view.json")).unwrap())
             .unwrap();
-    for k in ["focus", "thresholds", "front", "x_scale", "saves"] {
+    for k in [
+        "focus",
+        "thresholds",
+        "front",
+        "x_scale",
+        "y_scale",
+        "key_at",
+        "saves",
+    ] {
         assert_eq!(kept[k], arranged[k], "{k}");
     }
     let again = s

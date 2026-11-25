@@ -728,7 +728,7 @@ fn browse(
         );
     let mut settings = Default::default();
     loop {
-        crate::tui::run_view(&mut view)?;
+        crate::tui::run_live_view(&mut view)?;
         let Some(key) = view.take_open() else {
             return Ok(());
         };

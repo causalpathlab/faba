@@ -76,13 +76,11 @@ modules by gene counts (it writes count_blockmodel.run.json); then, with \
 `within` naming that record, m6a or atoi within each of its cell modules. \
 The second round writes {m}_within.run.json, which cluster_view opens: the \
 list of its fits, and with `group` the fit within one cell module.
-6. To let the user choose how a figure looks, view_open puts the view in \
-front of them (qc_view and the other views, as a session they attach to \
-with the command it returns). They arrange it (thresholds, scales, the \
-panel, the look) and tell you; view_state reads what they chose, and \
-view_export draws the figure the view's `s` saves from exactly that, at \
-the size and style you ask, keeping its state beside it for `view_state` \
-in qc_view to draw again. view_list lists the live views.
+6. When the user wants to arrange a figure by eye: view_open (qc_view or \
+cluster_view) returns an `attach` line such as `faba attach faba-qc-view-1`; \
+give it to the user to run in their terminal. When they say they are done, \
+view_state reads what they chose and view_export draws that figure. \
+view_list lists the live views.
 
 The producers (count, depth, atoi, dartseq, apa, snp, run, qc, cluster) take \
 `background`: on large BAMs set it, and the call returns a job id at once.

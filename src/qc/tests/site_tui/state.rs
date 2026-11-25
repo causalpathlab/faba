@@ -121,3 +121,119 @@ fn a_state_sets_what_it_names_and_refuses_what_it_cannot() {
         .to_string();
     assert!(e.contains("cluster_view's, not qc_view's"), "{e}");
 }
+
+/// A view `s` draws in the view style with `args` over it, both
+/// marginals on.
+fn styled(t: &SiteTable, args: PanelArgs) -> SitePicker<'_> {
+    let mut p = picker(t, Some(vec![3; t.len()]), SiteFilterArgs::default_values());
+    let args = PanelArgs {
+        style: crate::qc::site_plot::PanelStyle::View,
+        marginals: vec!["both".into()],
+        ..args
+    };
+    p.view_only(args.plan().unwrap(), Sheet::OWN);
+    p
+}
+
+/// Each count scale, the key and the panel's drawing set through a state
+/// draws what the view opened with the flag draws, `s` saving the same
+/// figure, and says it back; set again on a fresh view, the same.
+#[test]
+fn a_state_sets_the_count_scales_and_the_key_as_their_flags_do() {
+    use crate::qc::arms::{CountScale, KeyAt};
+    let t = table(M6A, 300);
+    let base = || styled(&t, PanelArgs::default());
+    let cases: Vec<(PanelArgs, Value, bool)> = vec![
+        (
+            PanelArgs {
+                yscale: vec!["pv=linear".into()],
+                ..PanelArgs::default()
+            },
+            json!({ "y_scale": { "pv": "linear" } }),
+            false,
+        ),
+        (
+            PanelArgs {
+                key_at: Some(KeyAt::Inside),
+                ..PanelArgs::default()
+            },
+            json!({ "key_at": "inside" }),
+            false,
+        ),
+        (
+            PanelArgs {
+                marginal_scale: Some(CountScale::Linear),
+                ..PanelArgs::default()
+            },
+            json!({ "marginal_scale": "linear" }),
+            true,
+        ),
+        (
+            PanelArgs {
+                count_scale: Some(CountScale::Sqrt),
+                ..PanelArgs::default()
+            },
+            json!({ "count_scale": "sqrt" }),
+            true,
+        ),
+        (
+            PanelArgs {
+                marginal_size: Some(0.35),
+                ..PanelArgs::default()
+            },
+            json!({ "marginal_size": 0.35 }),
+            true,
+        ),
+    ];
+    for (args, state, two_d) in cases {
+        let mut flagged = styled(&t, args);
+        let (mut set, mut fresh) = (base(), base());
+        if two_d {
+            press(&mut flagged, KeyCode::Char('v'));
+            press(&mut fresh, KeyCode::Char('v'));
+            set.set_view_state(&json!({ "two_d": true })).unwrap();
+        }
+        let before = saved(&set);
+        set.set_view_state(&state).unwrap();
+        assert_ne!(saved(&set), before, "{state} changes the figure");
+        assert_eq!(saved(&set), saved(&flagged), "{state} as its flag");
+        assert_eq!(set.view_state(), flagged.view_state(), "{state}");
+        for (k, v) in state.as_object().unwrap() {
+            match v.as_object() {
+                Some(by) => (by.iter()).for_each(|(q, s)| assert_eq!(&set.view_state()[k][q], s)),
+                None => assert_eq!(&set.view_state()[k], v),
+            }
+        }
+        assert_ne!(saved(&fresh), saved(&set));
+        fresh.set_view_state(&set.view_state()).unwrap();
+        assert_eq!(saved(&fresh), saved(&set), "{state} again");
+    }
+
+    // `y` steps the focused knob's y scale, which the state says.
+    let mut p = base();
+    press(&mut p, KeyCode::Char('y'));
+    assert_eq!(p.view_state()["y_scale"]["pv"], "log1p");
+    let mut q = base();
+    q.set_view_state(&p.view_state()).unwrap();
+    assert_eq!(saved(&q), saved(&p));
+
+    // The key kept with the plot alone; the panel style and the
+    // marginals, which `s` draws in faba qc-view only.
+    let mut p = base();
+    p.set_view_state(&json!({ "key": true, "style": "panel", "marginals": "top" }))
+        .unwrap();
+    let s = p.view_state();
+    assert_eq!(
+        (&s["key"], &s["style"], &s["marginals"]),
+        (&json!(true), &json!("panel"), &json!("top"))
+    );
+    for (bad, says) in [
+        (json!({ "key_at": "below" }), "key_at"),
+        (json!({ "y_scale": { "pv": "log" } }), "y_scale"),
+        (json!({ "marginal_size": 1.5 }), "above 0 and below 1"),
+        (json!({ "marginals": "left" }), "no marginals left"),
+    ] {
+        let e = format!("{:#}", p.set_view_state(&bad).unwrap_err());
+        assert!(e.contains(says), "{bad}: {e}");
+    }
+}

@@ -292,7 +292,7 @@ fn view_tools() -> Vec<ToolSpec> {
     vec![
         ToolSpec::new(
             "view_open",
-            "Put a view in front of the user (`faba qc-view` and the other views, without `--batch-process`): it starts as a detached session, reading its inputs, and the call returns its `session` and `attach`, the command the user runs in a terminal to see it (`open_window` opens a Terminal window on it, on macOS). The user arranges it there (thresholds, scales, the panel in focus, the look; `?` lists the keys) and tells you when; view_state then reads what they chose and view_export draws the figure from exactly that. `args` are the arguments of the tool `view` names, as that tool takes them (`input` for qc_view, `data` for the others, and every typed flag), but those that write in place of the view (`html`, `plots`, `out`, `figure`). `view_state` in `args` opens the view arranged as a state file says. Only qc_view answers view_state and view_export yet; the others open for the user to look at. The session ends when the user leaves the view (q).",
+            "Use when the user wants to arrange a figure by eye (thresholds, scales, the panel, the look) rather than describe it in words. Starts the view as a detached session and returns at once with `session` and `attach`, the exact command for the user to run in their own terminal, of the form `faba attach faba-qc-view-1` (faba's full path; `LEGUME_TUI_DIR=...` in front when sessions live elsewhere). Give them that line verbatim. They arrange the view and tell you (Ctrl+Alt+D detaches and keeps it; q ends it, and then nothing can be read); then view_state reads what they chose and view_export draws the figure. qc_view and cluster_view answer view_state and view_export; pileup, metagene and pwm open for looking only. `args` are the arguments of the tool `view` names (`input` for qc_view, `data` for the others), without those that write files instead (`html`, `plots`, `out`, `figure`, `screen`). `open_window` (macOS) also tries a Terminal window for a few seconds; if macOS blocks it, `window` is false, `window_note` says why, and the session is still there to attach to.",
             schema(
                 json!({
                     "view": { "type": "string", "enum": views, "description": "Which view" },
@@ -311,7 +311,7 @@ fn view_tools() -> Vec<ToolSpec> {
         .read_only(),
         ToolSpec::new(
             "view_state",
-            "What the user arranged in a live view, as JSON: for qc_view the modality on screen, the `panel` Tab is on, the knob in `focus`, each threshold (`thresholds`, null when off; `flags` as `qc` takes them), each knob's histogram scale (`x_scale`) and the counts' (`y_scale`), `two_d` with the `pairs` chosen and the one in focus (`pair_at`), the arms' look (`front`, `p_axis`), the axis titles, the bars' `weight`, the 2D `scales` and `bins`, `saves` (the panel `s` saves now) and the `gene` selected; `command` is the view's command line. With `set`, arrange the view so first (keys left out stay; the user sees it change) and return the state after.",
+            "Read what the user arranged in a live view (from view_open), as JSON; with `set`, change it first (keys left out stay; the user sees it change) and return the state after. qc_view: `modality`, `panel`, `focus` (the knob), `thresholds` (null: off), `x_scale` per knob, `y_scale` per quantity, `marginal_scale`, `count_scale`, `two_d`, `pairs`, `pair_at`, `front`, `p_axis`, `key`, `key_at`, `titles`, `weight`, `scales`, `bins`, `style`, `marginals`, `marginal_size`; read only: `saves` (what `s` saves now), `gene`, `flags`. cluster_view: `preset`, `cell_order` (read only), `module`, `side` (sites, go), `go_terms`, `pins`. `command` is the view's command line.",
             schema(
                 json!({
                     "session": session(),
@@ -322,7 +322,7 @@ fn view_tools() -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "view_export",
-            "Draw the figure a live view's `s` saves, from its state now (the panel on screen as the user arranged it), as `formats` (default pdf and png) under the prefix `out`, at `width` by `height` inches, `font_size`, `panel_only` and `palette` over the view's own (what is not given is the view's). Its state is kept beside it as {out}.view.json, which `--view-state` (qc_view's `view_state`) reads back: `replay` is the command that draws the same figure without the view. Returns the paths written, the state, the sheet drawn on, and the figure as an image. Nothing is replaced: a file there is refused.",
+            "Draw the figure the live view's own `s` key saves, from what is on screen now, to `out` (formats default pdf and png); `width`, `height` (inches), `font_size`, `panel_only`, `palette` override the view's own. Writes the state beside it as {out}.view.json and returns `replay`, the batch command that draws the same figure again without the view, plus the paths, the state and the image. Never replaces a file.",
             schema(
                 json!({
                     "session": session(),

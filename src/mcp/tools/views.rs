@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 /// `view_export` yet.
 pub(in crate::mcp) const VIEWS: [(&str, &str, bool); 5] = [
     ("qc_view", "qc-view", true),
-    ("cluster_view", "cluster-view", false),
+    ("cluster_view", "cluster-view", true),
     ("pileup", "pileup", false),
     ("metagene", "metagene", false),
     ("pwm", "pwm", false),
@@ -30,7 +30,7 @@ pub(in crate::mcp) const VIEWS: [(&str, &str, bool); 5] = [
 fn batch_only(view: &str) -> &'static [&'static str] {
     match view {
         "qc_view" => &["html", "plots", "out", "figure", "format"],
-        "cluster_view" => &["html", "figure", "plot", "plots"],
+        "cluster_view" => &["html", "figure", "plot", "plots", "screen"],
         "pileup" => &["figure", "out"],
         "metagene" => &["out", "dist_measures", "figure"],
         "pwm" => &["out", "figure"],
@@ -118,29 +118,74 @@ fn quoted(s: &str) -> String {
     }
 }
 
-/// Open a Terminal window on macOS running `line`.
-fn open_window(line: &str) -> Result<()> {
-    ensure!(
-        cfg!(target_os = "macos"),
-        "`open_window` opens a Terminal window on macOS only: attach with {line}"
-    );
+/// How long `view_open` waits for Terminal to take `open_window`'s
+/// script: macOS may hold it on a permission prompt for minutes.
+const WINDOW_WAIT: Duration = Duration::from_secs(3);
+
+/// What to do where macOS keeps faba from opening a window.
+const AUTOMATION: &str =
+    "allow the app that runs `faba mcp` (your terminal or agent app) to control \
+     Terminal in System Settings > Privacy & Security > Automation";
+
+/// Open a Terminal window on macOS running `line`, waiting at most
+/// [`WINDOW_WAIT`]; why no window opened, if none did.
+fn open_window(line: &str) -> Option<String> {
+    if !cfg!(target_os = "macos") {
+        return Some("`open_window` opens a Terminal window on macOS only".into());
+    }
     let script = line.replace('\\', r"\\").replace('"', "\\\"");
-    let status = std::process::Command::new("osascript")
-        .args([
-            "-e",
-            &format!("tell application \"Terminal\" to do script \"{script}\""),
-            "-e",
-            "tell application \"Terminal\" to activate",
-        ])
+    let mut osascript = std::process::Command::new("osascript");
+    osascript.args([
+        "-e",
+        &format!("tell application \"Terminal\" to do script \"{script}\""),
+        "-e",
+        "tell application \"Terminal\" to activate",
+    ]);
+    run_opener(osascript, WINDOW_WAIT)
+}
+
+/// Run `opener` for at most `wait`; why it did not open a window, if it
+/// did not. One still running then is left to finish on its own (a
+/// window may open once the user allows it) and reaped when it does.
+fn run_opener(mut opener: std::process::Command, wait: Duration) -> Option<String> {
+    use std::io::Read;
+    let child = opener
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .status()
-        .context("running osascript")?;
-    ensure!(
-        status.success(),
-        "osascript failed to open a Terminal window"
-    );
-    Ok(())
+        .stderr(std::process::Stdio::piped())
+        .spawn();
+    let mut child = match child {
+        Ok(c) => c,
+        Err(e) => return Some(format!("no window opened: running osascript: {e}")),
+    };
+    let start = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return None,
+            Ok(Some(status)) => {
+                let mut said = String::new();
+                if let Some(mut e) = child.stderr.take() {
+                    let _ = e.read_to_string(&mut said);
+                }
+                let said = said.trim();
+                let why = if said.is_empty() {
+                    status.to_string()
+                } else {
+                    said.to_string()
+                };
+                return Some(format!("no window opened ({why}): {AUTOMATION}"));
+            }
+            Ok(None) if start.elapsed() < wait => std::thread::sleep(Duration::from_millis(50)),
+            Ok(None) => {
+                std::thread::spawn(move || child.wait());
+                return Some(format!(
+                    "no window opened: Terminal did not answer within {}s, likely held on a permission prompt; {AUTOMATION}",
+                    wait.as_secs_f64()
+                ));
+            }
+            Err(e) => return Some(format!("no window opened: {e}")),
+        }
+    }
 }
 
 /// faba's live sessions.
@@ -221,10 +266,11 @@ pub(in crate::mcp) fn view_open(a: &Arguments, cx: &Call) -> Result<Vec<Content>
         .start_detached(&screen, label, program)
         .with_context(|| format!("starting the {view} view"))?;
     let attach = attach_line(&id);
-    let window = a.flag("open_window")?;
-    if window {
-        open_window(&attach)?;
-    }
+    let no_window = match a.flag("open_window")? {
+        true => open_window(&attach),
+        false => Some(String::new()),
+    };
+    let window = no_window.is_none();
     let mut v = json!({
         "session": id,
         "attach": attach,
@@ -237,6 +283,9 @@ pub(in crate::mcp) fn view_open(a: &Arguments, cx: &Call) -> Result<Vec<Content>
             if window { " (a Terminal window is open on it)" } else { "" }
         ),
     });
+    if let Some(why) = no_window.filter(|w| !w.is_empty()) {
+        v["window_note"] = json!(why);
+    }
     if !answers {
         v["note"] = json!(format!(
             "{}; this view does not answer view_state or view_export yet",
@@ -314,7 +363,7 @@ const LOOK_FLAGS: [&str; 5] = [
 
 /// The flags of a view's session and of what it writes in place of the
 /// view, left out of a replay's command.
-const SESSION_FLAGS: [&str; 7] = [
+const SESSION_FLAGS: [&str; 10] = [
     "--session",
     "--no-detach",
     "--view-state",
@@ -322,14 +371,26 @@ const SESSION_FLAGS: [&str; 7] = [
     "--format",
     "--html",
     "--plots",
+    "--screen",
+    "--state",
+    "--region",
 ];
+
+/// The flags a view's batch command draws its figure with: the state
+/// file it reads, and the prefix it writes.
+fn replay_flags(view: &str) -> (&'static str, &'static str) {
+    match view {
+        "cluster_view" => ("--state", "--screen"),
+        _ => ("--view-state", "--figure"),
+    }
+}
 
 /// The batch command that draws the figure `view_export` wrote, without
 /// the view: the view's own command line (`command`), less its session
 /// and look flags, with `--view-state` and the look the export drew at
 /// (`sheet`).
 fn replay(
-    command: &[String],
+    (view, command): (&str, &[String]),
     state_file: &str,
     prefix: &str,
     formats: &[String],
@@ -349,9 +410,10 @@ fn replay(
         }
         argv.push(w.clone());
     }
+    let (state_flag, figure_flag) = replay_flags(view);
     argv.extend([
-        format!("--view-state={state_file}"),
-        format!("--figure={prefix}"),
+        format!("{state_flag}={state_file}"),
+        format!("{figure_flag}={prefix}"),
     ]);
     argv.push(format!("--format={}", formats.join(",")));
     if let Some(w) = sheet["width"].as_f64() {
@@ -410,7 +472,14 @@ pub(in crate::mcp) fn view_export(a: &Arguments, cx: &Call) -> Result<Vec<Conten
         serde_json::from_value(v["state"]["command"].clone()).unwrap_or_default();
     let state_file = v["state_file"].as_str().unwrap_or_default().to_string();
     let names: Vec<String> = formats.iter().map(|f| f.extension().to_string()).collect();
-    v["replay"] = json!(replay(&command, &state_file, &prefix, &names, &v["sheet"]));
+    let view = v["state"]["view"].as_str().unwrap_or_default().to_string();
+    v["replay"] = json!(replay(
+        (&view, &command),
+        &state_file,
+        &prefix,
+        &names,
+        &v["sheet"]
+    ));
     v["session"] = json!(l.name);
     let mut content = vec![Content::Json(v.clone())];
     let png = format!("{prefix}.png");
@@ -475,7 +544,13 @@ mod tests {
         .map(String::from)
         .to_vec();
         let sheet = json!({ "width": 3.5, "height": null, "font_size": 7.0, "panel_only": false, "palette": "gray" });
-        let r = replay(&command, "f.view.json", "f", &["svg".into()], &sheet);
+        let r = replay(
+            ("qc_view", &command),
+            "f.view.json",
+            "f",
+            &["svg".into()],
+            &sheet,
+        );
         assert_eq!(
             r,
             [
@@ -493,6 +568,66 @@ mod tests {
         );
         let line = r.into_iter();
         assert!(crate::matches(&mut crate::faba_command(), line).is_ok());
+
+        let command: Vec<String> = ["cluster-view", "fit/", "--session", "S1"]
+            .map(String::from)
+            .to_vec();
+        let sheet = json!({ "width": 8.0, "height": 6.0, "font_size": null, "panel_only": false, "palette": null });
+        let r = replay(
+            ("cluster_view", &command),
+            "g.view.json",
+            "g",
+            &["pdf".into()],
+            &sheet,
+        );
+        assert_eq!(
+            r,
+            [
+                "faba",
+                "cluster-view",
+                "fit/",
+                "--state=g.view.json",
+                "--screen=g",
+                "--format=pdf",
+                "--fig-width=8",
+                "--fig-height=6"
+            ]
+        );
+        let line = r.into_iter();
+        assert!(crate::matches(&mut crate::faba_command(), line).is_ok());
+    }
+
+    /// An opener that opens, fails, or hangs on a prompt: the call waits
+    /// no longer than asked, and says why no window opened.
+    #[test]
+    fn a_window_opener_never_holds_the_call() {
+        let sh = |script: &str| {
+            let mut c = std::process::Command::new("sh");
+            c.args(["-c", script]);
+            c
+        };
+        let wait = Duration::from_millis(300);
+        assert_eq!(run_opener(sh("exit 0"), wait), None);
+        let failed = run_opener(sh("echo 'TEXT1 (-1743)' >&2; exit 1"), wait).unwrap();
+        assert!(
+            failed.contains("TEXT1 (-1743)") && failed.contains("Automation"),
+            "{failed}"
+        );
+        let start = Instant::now();
+        let hung = run_opener(sh("sleep 30"), wait).unwrap();
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            start.elapsed()
+        );
+        assert!(
+            hung.contains("did not answer") && hung.contains("Automation"),
+            "{hung}"
+        );
+        let missing = std::process::Command::new("/nonexistent/opener");
+        assert!(run_opener(missing, wait)
+            .unwrap()
+            .contains("no window opened"));
     }
 
     #[test]

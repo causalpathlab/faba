@@ -111,7 +111,18 @@ impl PAxis {
 /// How a count is spread along an axis or a shade (`--yscale`,
 /// `--marginal-scale`, `--count-scale`): as it is, on its square root, or
 /// on `ln(1 + n)`, so a tall background and a small series both read.
-#[derive(clap::ValueEnum, Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(
+    clap::ValueEnum,
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum CountScale {
     Linear,
@@ -229,7 +240,18 @@ impl YScales {
 }
 
 /// Where the view style's key goes (`--key-at`).
-#[derive(clap::ValueEnum, Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(
+    clap::ValueEnum,
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum KeyAt {
     /// Beside the plot, at its right: the plot narrows by the key's width;
