@@ -450,7 +450,23 @@ impl<'a> List<'a> {
     }
 }
 
+/// The list's footer keys.
+const LIST_FOOTER: [(&str, &str); 4] = [
+    ("↑/↓", "move"),
+    ("Enter/→/Ctrl+R", "open the fit"),
+    ("q", "quit"),
+    ("?", "keys"),
+];
+
 impl crate::tui::View for List<'_> {
+    /// Past a status, which names none.
+    #[cfg(test)]
+    fn footer_keys(&self) -> Option<crate::tui::KeyList> {
+        self.status
+            .is_none()
+            .then(|| crate::tui::keys(&LIST_FOOTER))
+    }
+
     /// The apply key opens the fit, as Enter does.
     fn takes_apply(&self) -> bool {
         true
@@ -521,12 +537,7 @@ impl Screen for List<'_> {
         frame.render_widget(Paragraph::new(lines), inner);
         let footer = match &self.status {
             Some(msg) => crate::figure::status_line(msg),
-            None => help_line(&[
-                ("↑/↓", "move"),
-                ("Enter/→/Ctrl+R", "open the fit"),
-                ("q", "quit"),
-                ("?", "keys"),
-            ]),
+            None => help_line(&LIST_FOOTER),
         };
         frame.render_widget(Paragraph::new(footer), foot);
     }

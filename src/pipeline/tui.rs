@@ -554,14 +554,23 @@ impl View for App {
         }
     }
 
-    /// None while a line is typed, a file or reference is picked, or the
-    /// BAM list (where letters find) has the keys.
+    /// None while a line is typed, a file is picked, a source's releases
+    /// or species are narrowed by typing, or the BAM list (where letters
+    /// find) has the keys; the sources themselves are a list, where
+    /// letters do nothing.
     fn help(&self) -> Option<crate::tui::KeyList> {
         let typing = self.editing.is_some()
             || self.picking.is_some()
-            || self.catalogue.is_some()
-            || (self.page == Page::Inputs && self.inputs.focus == inputs::InputsFocus::Bams);
+            || self.catalogue.as_ref().is_some_and(|c| c.source.is_some())
+            || (!self.popped()
+                && self.page == Page::Inputs
+                && self.inputs.focus == inputs::InputsFocus::Bams);
         (!typing).then(|| crate::tui::keys(&draw::help_keys(self)))
+    }
+
+    #[cfg(test)]
+    fn footer_keys(&self) -> Option<crate::tui::KeyList> {
+        draw::footer_keys(self).map(|k| crate::tui::keys(&k))
     }
 }
 

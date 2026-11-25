@@ -395,10 +395,13 @@ impl<'a> ModulesView<'a> {
 }
 
 impl crate::tui::View for ModulesView<'_> {
-    /// The report's chord, where the panes take keys: never while a gene
-    /// is typed or a full pane is open.
+    /// The report's chord, where the panes take keys and there is a
+    /// report to write: never while a gene is typed or a full pane is open.
     fn takes_chord(&self, key: &KeyEvent) -> bool {
-        crate::tui::is_report(key) && self.find.is_none() && self.full.is_none()
+        crate::tui::is_report(key)
+            && self.report.is_some()
+            && self.find.is_none()
+            && self.full.is_none()
     }
 
     fn help(&self) -> Option<crate::tui::KeyList> {
@@ -406,6 +409,11 @@ impl crate::tui::View for ModulesView<'_> {
             return None;
         }
         Some(crate::tui::keys(&self.help_keys()))
+    }
+
+    #[cfg(test)]
+    fn footer_keys(&self) -> Option<crate::tui::KeyList> {
+        Some(crate::tui::keys(&self.footer_pairs()?))
     }
 }
 

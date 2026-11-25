@@ -438,7 +438,28 @@ impl PwmView {
     }
 }
 
+impl PwmView {
+    /// The footer's keys.
+    fn footer_pairs(&self) -> Vec<(&'static str, &'static str)> {
+        let mut keys = vec![
+            ("←/→", "position"),
+            ("Home/End", "ends"),
+            ("0", "site"),
+            ("v", "bits/frequency"),
+        ];
+        self.controls.help_keys(&mut keys);
+        keys.extend([("q", "quit"), ("?", "keys")]);
+        keys
+    }
+}
+
 impl crate::tui::View for PwmView {
+    /// Past the save prompt or its outcome, which name none.
+    #[cfg(test)]
+    fn footer_keys(&self) -> Option<crate::tui::KeyList> {
+        (self.controls.footer().is_none()).then(|| crate::tui::keys(&self.footer_pairs()))
+    }
+
     /// The apply key submits the save name being typed.
     fn takes_apply(&self) -> bool {
         self.controls.prompting()
@@ -501,17 +522,7 @@ impl Screen for PwmView {
 
     fn render(&mut self, frame: &mut Frame) {
         self.controls.refresh();
-        let help = self.controls.footer().unwrap_or_else(|| {
-            let mut keys = vec![
-                ("←/→", "position"),
-                ("Home/End", "ends"),
-                ("0", "site"),
-                ("v", "bits/frequency"),
-            ];
-            self.controls.help_keys(&mut keys);
-            keys.extend([("q", "quit"), ("?", "keys")]);
-            help_line(&keys)
-        });
+        let help = (self.controls.footer()).unwrap_or_else(|| help_line(&self.footer_pairs()));
         let help = crate::tui::wrap_help(help, frame.area().width);
         let [top, body, stats, footer] = Layout::vertical([
             Constraint::Length(1),

@@ -341,6 +341,15 @@ impl<'a> PileupView<'a> {
 }
 
 impl crate::tui::View for PileupView<'_> {
+    /// Past the search, a status, the save prompt or its outcome, which
+    /// name none.
+    #[cfg(test)]
+    fn footer_keys(&self) -> Option<crate::tui::KeyList> {
+        let quiet = self.search.text().is_none() && self.status.is_none();
+        (quiet && self.controls.footer().is_none())
+            .then(|| crate::tui::keys(&self.footer_pairs(self.rows_hidden())))
+    }
+
     /// The apply key submits the search or the save name being typed.
     fn takes_apply(&self) -> bool {
         self.search.active() || self.controls.prompting()

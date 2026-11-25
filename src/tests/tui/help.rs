@@ -95,3 +95,75 @@ fn a_long_list_takes_columns_on_a_short_screen() {
         assert!(text.contains(&format!("does {i}")), "k{i}: {text}");
     }
 }
+
+#[test]
+fn a_label_names_its_keys() {
+    let ctrl = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+    let shift_tab = KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT);
+    let chars = |s: &str| s.chars().map(|c| key(KeyCode::Char(c))).collect::<Vec<_>>();
+    let mut arrows = vec![key(KeyCode::Up), key(KeyCode::Down)];
+    arrows.extend(chars("kj"));
+    assert_eq!(named("↑/↓ k/j"), arrows);
+    assert_eq!(named("Tab/Shift+Tab"), vec![key(KeyCode::Tab), shift_tab]);
+    assert_eq!(named("0-9 e"), chars("0123456789e"));
+    assert_eq!(named("-/+ , . ="), chars("-+,.="));
+    assert_eq!(named("[ ] /"), chars("[]/"));
+    assert_eq!(named("Ctrl+E"), vec![ctrl('e')]);
+    assert_eq!(
+        named("g/Esc"),
+        vec![key(KeyCode::Char('g')), key(KeyCode::Esc)]
+    );
+    assert!(named("click").is_empty());
+}
+
+/// Takes `q`, and `x` only while `x_on`; lists `x` when `lists_x`.
+struct Two {
+    x_on: bool,
+    lists_x: bool,
+    done: bool,
+    x: usize,
+}
+
+impl Screen for Two {
+    fn render(&mut self, f: &mut Frame) {
+        f.render_widget(Line::from(format!("x {}", self.x)), f.area());
+    }
+    fn handle_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('q') => self.done = true,
+            KeyCode::Char('x') if self.x_on => self.x += 1,
+            _ => {}
+        }
+    }
+    fn interrupt(&mut self) {}
+    fn done(&self) -> bool {
+        self.done
+    }
+}
+
+impl View for Two {
+    fn help(&self) -> Option<KeyList> {
+        let mut k = vec![("q", "quit")];
+        if self.lists_x {
+            k.push(("x", "more"));
+        }
+        Some(keys(&k))
+    }
+}
+
+#[test]
+fn the_check_finds_a_key_listed_but_inert_and_one_bound_but_unlisted() {
+    let two = |x_on, lists_x| {
+        move || Two {
+            x_on,
+            lists_x,
+            done: false,
+            x: 0,
+        }
+    };
+    assert_lists_its_keys("both", two(true, true));
+    assert_lists_its_keys("neither", two(false, false));
+    let x = || vec!["Char('x')".to_string()];
+    assert_eq!(disagree(two(false, true)), (x(), vec![]));
+    assert_eq!(disagree(two(true, false)), (vec![], x()));
+}

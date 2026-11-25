@@ -71,8 +71,31 @@ impl ModulesView<'_> {
         if let Some(find) = &self.find {
             return vec![self.find_line(find)];
         }
-        if let Some(msg) = &self.status {
-            return vec![crate::figure::status_line(msg)];
+        match (&self.status, self.footer_pairs()) {
+            (Some(msg), _) => vec![crate::figure::status_line(msg)],
+            (None, keys) => crate::tui::wrap_help(help_line(&keys.unwrap_or_default()), width),
+        }
+    }
+
+    /// The footer's keys where the focus is, a full pane's own or the
+    /// panes': none while a gene is typed or (but over the trace and GO)
+    /// a status shows.
+    pub(super) fn footer_pairs(&self) -> Option<Vec<(&'static str, &'static str)>> {
+        let close = [("q", "quit"), ("?", "keys")];
+        // The trace and GO panes say no status.
+        match self.full {
+            _ if self.find.is_some() => return None,
+            Some(Full::Trace) => return Some([&[("t/Esc", "close")][..], &close].concat()),
+            Some(Full::Go) => {
+                let go = [("↑/↓", "gene module"), ("G/Esc", "close")];
+                return Some([&go[..], &close].concat());
+            }
+            _ if self.status.is_some() => return None,
+            Some(Full::Batches) => {
+                let batches = [("b/Esc", "close"), ("B", "filter"), ("↑/↓", "scroll")];
+                return Some([&batches[..], &close].concat());
+            }
+            None => {}
         }
         let grid = |look: Look| {
             let mut keys = vec![("v", "bars/%/z/Hinton")];
@@ -83,11 +106,13 @@ impl ModulesView<'_> {
         };
         let mut keys: Vec<(&str, &str)> = match self.pane {
             Pane::Modules => [vec![("↑/↓", "module")], grid(self.looks[0])].concat(),
-            Pane::Sites => [
-                vec![
-                    ("↑/↓", "site"),
-                    ("Space", "pin gene"),
-                    ("Del", "unpin"),
+            Pane::Sites => {
+                let mut keys = vec![("↑/↓", "site"), ("Space", "pin gene")];
+                let pinned = self.pin_of(self.site).filter(|p| self.pins.contains(p));
+                if pinned.is_some() {
+                    keys.push(("Del", "unpin"));
+                }
+                keys.extend([
                     ("Alt-drag", "pin onto genes"),
                     ("PgUp/PgDn", "page"),
                     if self.sort == Sort::Module {
@@ -95,28 +120,33 @@ impl ModulesView<'_> {
                     } else {
                         ("o/O", "sort/reverse")
                     },
-                ],
-                grid(self.looks[1]),
-            ]
-            .concat(),
-            Pane::Genes => vec![
-                ("←/→ n/N", "site"),
-                ("↑/↓", "pinned gene"),
-                ("Del", "unpin"),
-                ("Alt-drag", "move, off to unpin"),
-            ],
+                ]);
+                [keys, grid(self.looks[1])].concat()
+            }
+            Pane::Genes => {
+                let mut keys = Vec::new();
+                if !self.pins.is_empty() {
+                    keys.push(("←/→ n/N", "site"));
+                }
+                if self.pins.len() > 1 {
+                    keys.push(("↑/↓", "pinned gene"));
+                }
+                if !self.pins.is_empty() {
+                    keys.extend([("Del", "unpin"), ("Alt-drag", "move, off to unpin")]);
+                }
+                keys
+            }
         };
         if !self.pins.is_empty() {
             keys.push(("X", "clear pins"));
         }
-        keys.push((
-            "Enter",
-            match self.pane {
-                Pane::Modules => "its sites",
-                Pane::Sites => "the pinned genes",
-                Pane::Genes => "open the gene",
-            },
-        ));
+        // Into the genes pane with none pinned, there is no gene to open.
+        match self.pane {
+            Pane::Modules => keys.push(("Enter", "its sites")),
+            Pane::Sites => keys.push(("Enter", "the pinned genes")),
+            Pane::Genes if !self.pins.is_empty() => keys.push(("Enter", "open the gene")),
+            Pane::Genes => {}
+        }
         if self.pane != Pane::Modules {
             keys.push(("Esc", "back"));
         }
@@ -133,8 +163,9 @@ impl ModulesView<'_> {
         if self.go_ask.is_some() {
             keys.extend([("a", "GO column"), ("G", "GO terms")]);
         }
-        keys.extend([("t", "trace"), ("q", "quit"), ("?", "keys")]);
-        crate::tui::wrap_help(help_line(&keys), width)
+        keys.extend([("t", "trace")]);
+        keys.extend(close);
+        Some(keys)
     }
 
     /// Every key where the focus is, for the `?` pop-up: a full pane's
@@ -159,50 +190,73 @@ impl ModulesView<'_> {
             }
             None => {}
         }
-        let mut keys = vec![
-            ("Tab/Shift+Tab", "next/previous pane"),
-            ("Enter", "into the next pane; open a pinned gene"),
-            ("Esc", "back a pane"),
-            ("↑/↓ k/j", "module, site or pinned gene"),
-        ];
+        let mut keys = vec![("Tab/Shift+Tab", "next/previous pane")];
         match self.pane {
-            Pane::Modules => {}
-            Pane::Sites => keys.extend([
-                ("PgUp/PgDn", "a page of sites"),
-                ("Home/End", "first/last site"),
-                ("Space", "pin the site's gene"),
-                ("Del/Backspace", "unpin it"),
-                ("o", "sort by the next column, reads, cells"),
-                ("O", "reverse the sort"),
-            ]),
-            Pane::Genes => keys.extend([
-                ("←/→ h/l n/N", "previous/next site"),
-                ("Del/Backspace", "unpin the gene"),
-            ]),
+            Pane::Modules => keys.extend([("↑/↓ k/j", "gene module"), ("Enter", "into its sites")]),
+            Pane::Sites => {
+                keys.extend([
+                    ("↑/↓ k/j", "site"),
+                    ("PgUp/PgDn", "a page of sites"),
+                    ("Home/End", "first/last site"),
+                    ("Space", "pin the site's gene"),
+                ]);
+                let pinned = self.pin_of(self.site).filter(|p| self.pins.contains(p));
+                if pinned.is_some() {
+                    keys.push(("Del/Backspace", "unpin it"));
+                }
+                keys.push(("o", "sort by the next column, reads, cells"));
+                // In the module's order there is no other way round.
+                if self.sort != Sort::Module {
+                    keys.push(("O", "reverse the sort"));
+                }
+                keys.extend([("Enter", "into the pinned genes"), ("Esc", "back")]);
+            }
+            Pane::Genes => {
+                if self.pins.len() > 1 {
+                    keys.push(("↑/↓ k/j", "pinned gene"));
+                }
+                if !self.pins.is_empty() {
+                    keys.extend([
+                        ("←/→ h/l n/N", "previous/next site"),
+                        ("Del/Backspace", "unpin the gene"),
+                        ("Enter", "open the gene"),
+                    ]);
+                }
+                keys.push(("Esc", "back"));
+            }
         }
-        keys.extend([
-            ("X", "clear every pin (asks)"),
-            ("v", "bars, %, z or Hinton (squares sized by |z|)"),
-            ("y", "% scale, under the % look"),
-            ("[ ]", "scroll the cell modules"),
-            ("/", "find a gene"),
-            ("t", "trace"),
-        ]);
+        if !self.pins.is_empty() {
+            keys.push(("X", "clear every pin (asks)"));
+        }
+        // The genes pane has no grid to draw another way.
+        if self.pane != Pane::Genes {
+            keys.push(("v", "bars, %, z or Hinton (squares sized by |z|)"));
+            if self.looks[self.pane.index()] == Look::Percent {
+                keys.push(("y", "% scale"));
+            }
+        }
+        if self.col_fit < self.shown.len() {
+            keys.push(("[ ]", "scroll the cell modules"));
+        }
+        keys.extend([("/", "find a gene"), ("t", "trace")]);
         if self.report.is_some() {
             keys.push((crate::tui::REPORT_KEY, "export the report"));
         }
-        if self.m.batches.is_some() {
-            keys.extend([("b", "batches"), ("B", "batch filter")]);
-        }
-        if self.go_ask.is_some() {
-            keys.extend([
+        // Without them, the keys say why there are none.
+        keys.extend(match self.m.batches {
+            Some(_) => &[("b", "batches"), ("B", "batch filter")][..],
+            None => &[("b/B", "batches: the cells are of one batch")],
+        });
+        keys.extend(match self.go_ask {
+            Some(_) => &[
                 (
                     "a",
                     "GO column beside the gene modules: read GO, then show or hide it",
                 ),
                 ("G", "every GO term of the gene module in focus"),
-            ]);
-        }
+            ][..],
+            None => &[("a/G", "GO: none for this view")],
+        });
         keys.extend([("q", "quit"), ("?", "these keys")]);
         keys
     }

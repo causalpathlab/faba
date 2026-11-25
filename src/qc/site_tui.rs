@@ -580,19 +580,18 @@ impl View for SitePicker<'_> {
         if self.controls.prompting() {
             return None;
         }
-        let keys: Vec<(&str, &str)> = match &self.mode {
-            Mode::Confirm => vec![(APPLY_KEYS, "apply and write"), ("Esc/n", "back")],
-            Mode::Leave(picked) => vec![
-                match picked {
-                    Picked::PrintOnly(_) => ("p", "print the flags and leave"),
-                    _ => ("q", "leave without writing"),
-                },
-                ("Esc/n", "back"),
-            ],
+        let keys = match &self.mode {
+            // The footer has them all.
+            Mode::Confirm | Mode::Leave(_) => self.mode_keys()?,
             Mode::Browse => self.browse_help(),
             Mode::Edit(_) | Mode::Find | Mode::Gff(_) | Mode::Writing => return None,
         };
         Some(crate::tui::keys(&keys))
+    }
+
+    #[cfg(test)]
+    fn footer_keys(&self) -> Option<crate::tui::KeyList> {
+        Some(crate::tui::keys(&self.footer_pairs()?))
     }
 }
 

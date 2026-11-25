@@ -302,3 +302,13 @@ fn the_default_logo_is_unchanged() {
     let svg = super::figure("sites", &pwm(), 2, crate::figure::style::Sheet::OWN);
     assert_eq!(crate::figure::fingerprint(&svg), 4045831948546200367);
 }
+
+#[test]
+fn the_keys_listed_are_the_keys_bound() {
+    // Off the site, so `0`, Home and End each move.
+    crate::tui::help::assert_lists_its_keys("a position off the site", || {
+        let mut v = PwmView::new("x", &pwm(), 2);
+        press(&mut v, KeyCode::Left);
+        v
+    });
+}

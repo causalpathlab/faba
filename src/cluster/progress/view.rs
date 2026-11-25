@@ -180,7 +180,19 @@ fn restart_bar(done: usize, total: usize, warmup: usize, width: usize) -> Vec<Sp
     .collect()
 }
 
+/// The footer's keys while the fit goes on.
+const FITTING_FOOTER: [(&str, &str); 3] =
+    [("q", "cancel"), ("Ctrl+C", "stop early"), ("?", "keys")];
+
 impl<T> View for Fitting<'_, T> {
+    /// While the fit goes on, past any status; once it is done any key
+    /// leaves, which names none.
+    #[cfg(test)]
+    fn footer_keys(&self) -> Option<crate::tui::KeyList> {
+        (self.status.is_none() && self.pending.out().is_none())
+            .then(|| crate::tui::keys(&FITTING_FOOTER))
+    }
+
     /// None once the fit is done, where any key, `?` among them, leaves.
     fn help(&self) -> Option<crate::tui::KeyList> {
         self.pending.out().is_none().then(|| {
@@ -235,7 +247,7 @@ impl<T> Screen for Fitting<'_, T> {
         let footer = match self.status {
             Some(s) => Line::from(Span::styled(format!(" {s}"), HIGHLIGHT)),
             None if self.pending.out().is_some() => help_line(&[("any key", "leave")]),
-            None => help_line(&[("q", "cancel"), ("Ctrl+C", "stop early"), ("?", "keys")]),
+            None => help_line(&FITTING_FOOTER),
         };
         frame.render_widget(Paragraph::new(footer), foot);
     }

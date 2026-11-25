@@ -380,6 +380,8 @@ pub(in crate::cluster) enum Answer {
 /// meant, or none, in a [`Menu`]; Esc cancels the run.
 pub(in crate::cluster) struct Question {
     menu: Menu<Answer>,
+    /// How many rows the menu has, each with its key: `1` on.
+    rows: usize,
     /// The answer; `Some(None)` when cancelled.
     pub decision: Option<Option<Answer>>,
 }
@@ -402,6 +404,7 @@ impl Question {
             Answer::Neither,
         ));
         Self {
+            rows: items.len(),
             menu: Menu::new(a.said(), numbered(items)),
             decision: None,
         }
@@ -409,13 +412,23 @@ impl Question {
 }
 
 impl View for Question {
+    /// The rows' keys as there are rows: `1-3` for three; past nine,
+    /// letters.
     fn help(&self) -> Option<crate::tui::KeyList> {
+        let digits = match self.rows.min(9) {
+            1 => "1".to_string(),
+            n => format!("1-{n}"),
+        };
+        let what = match self.rows > 9 {
+            true => "take that one (then letters)",
+            false => "take that one",
+        };
         Some(crate::tui::keys(&[
             ("↑/↓", "move"),
             ("PgUp/PgDn", "a page up/down"),
             ("Home/End", "first/last"),
             ("Enter", "take it"),
-            ("1-9", "take that one"),
+            (&digits, what),
             ("Esc/q", "cancel the run"),
             ("?", "these keys"),
         ]))

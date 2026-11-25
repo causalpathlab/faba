@@ -92,29 +92,52 @@ impl SitePicker<'_> {
         }
     }
 
-    /// Every key while browsing, for the `?` pop-up.
+    /// Every key while browsing the panel focused, for the `?` pop-up.
     pub(super) fn browse_help(&self) -> Vec<(&'static str, &'static str)> {
-        let mut keys = vec![
-            ("Tab/Shift+Tab", "next/previous panel"),
-            ("↑/↓ k/j", "knob; gene in the genes; panel in 2D"),
-            ("←/→ h/l", "bin; panel in 2D"),
-            ("PgUp/PgDn", "ten genes up/down, in the genes"),
-            ("-/+ , .", "threshold down/up a step (= as +)"),
+        let mut keys = vec![("Tab/Shift+Tab", "next/previous panel")];
+        keys.extend_from_slice(match self.panel {
+            Panel::Thresholds => &[("↑/↓ k/j", "knob"), ("←/→ h/l", "bin")][..],
+            Panel::Genes => &[
+                ("↑/↓ k/j", "gene"),
+                ("PgUp/PgDn", "ten genes up/down"),
+                ("←/→ h/l", "bin"),
+            ],
+            Panel::Pairs => &[
+                ("x/y", "the panel's x/y axis"),
+                ("X/Y", "the panel's x/y axis back"),
+            ],
+        });
+        // The arrows step from panel to panel, where there are two.
+        if self.panel == Panel::Pairs && self.view().pairs.len() > 1 {
+            keys.push(("↑/↓ k/j ←/→ h/l", "panel"));
+        }
+        keys.extend([
+            ("-/+ , . =", "threshold down/up a step"),
             ("0-9 e", "type a threshold"),
             ("o", "threshold off"),
             ("r", "reset the threshold"),
-            ("x/y", "x/y scale; in 2D the panel's axes"),
-            ("X/Y", "in 2D, the panel's axes back"),
-            ("v", "2D panels or histograms"),
-        ];
-        if self.two_d {
-            keys.push(("A", "auto pairs"));
+        ]);
+        // On the panels `x` and `y` are the axes; `x` steps the knob's
+        // scale only where it has more than one.
+        if self.panel != Panel::Pairs {
+            keys.push(match self.criterion().scales().len() > 1 {
+                true => ("x/y", "x/y scale"),
+                false => ("y", "y scale"),
+            });
+        }
+        // `d` as it was before `v` cycled every view's look.
+        keys.push(("v/d", "2D panels or histograms"));
+        // In 2D the weight's plots are hidden: `w` changes nothing seen.
+        match self.two_d {
+            true => keys.push(("A", "auto pairs")),
+            false => keys.push(("w", "weight: coverage, converted reads or sites")),
+        }
+        if self.views.len() > 1 {
+            keys.push(("m/M", "next/previous modality"));
         }
         keys.extend([
-            ("m/M", "next/previous modality"),
             ("[ ]", "previous/next gene"),
             ("/", "find a gene"),
-            ("w", "weight: coverage, converted reads or sites"),
             ("a", "read an annotation"),
         ]);
         self.controls.help_keys(&mut keys);
@@ -163,8 +186,9 @@ impl SitePicker<'_> {
             KeyCode::Char('X') if self.panel == Panel::Pairs => self.step_axis(true, -1),
             KeyCode::Char('y') if self.panel == Panel::Pairs => self.step_axis(false, 1),
             KeyCode::Char('Y') if self.panel == Panel::Pairs => self.step_axis(false, -1),
-            KeyCode::Char('m') => self.switch_modality(1),
-            KeyCode::Char('M') => self.switch_modality(-1),
+            // With one modality there is none to switch to: the gene stays.
+            KeyCode::Char('m') if self.views.len() > 1 => self.switch_modality(1),
+            KeyCode::Char('M') if self.views.len() > 1 => self.switch_modality(-1),
             KeyCode::Char('[') => self.step_gene(-1),
             KeyCode::Char(']') => self.step_gene(1),
             KeyCode::Char('/') => self.start_find(),

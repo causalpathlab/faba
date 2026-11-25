@@ -180,6 +180,12 @@ impl<'a> MetageneView<'a> {
         !self.hist.counts[NCRNA].is_empty()
     }
 
+    /// Whether there are a coding and an ncRNA track to switch between:
+    /// only then does Tab act.
+    fn two_tracks(&self) -> bool {
+        self.has_non_coding() && has_coding(self.hist)
+    }
+
     fn bars(&self) -> Vec<Bar> {
         bars(self.hist, self.track, self.shown_merge, self.show)
     }
@@ -369,7 +375,7 @@ impl<'a> MetageneView<'a> {
 
 impl MetageneView<'_> {
     /// The footer's keys.
-    fn footer_keys(&self) -> Vec<(&'static str, &'static str)> {
+    fn footer_pairs(&self) -> Vec<(&'static str, &'static str)> {
         let mut keys = vec![
             ("←/→", "bar"),
             ("Home/End", "first/last"),
@@ -381,7 +387,7 @@ impl MetageneView<'_> {
         if self.hist.has_reads() {
             keys.push(("c", "reads"));
         }
-        if self.has_non_coding() {
+        if self.two_tracks() {
             keys.push(("Tab", "track"));
         }
         self.controls.help_keys(&mut keys);
@@ -392,6 +398,12 @@ impl MetageneView<'_> {
 }
 
 impl crate::tui::View for MetageneView<'_> {
+    /// Past the save prompt or its outcome, which name none.
+    #[cfg(test)]
+    fn footer_keys(&self) -> Option<crate::tui::KeyList> {
+        (self.controls.footer().is_none()).then(|| crate::tui::keys(&self.footer_pairs()))
+    }
+
     /// The apply key submits the save name being typed.
     fn takes_apply(&self) -> bool {
         self.controls.prompting()
@@ -413,7 +425,7 @@ impl crate::tui::View for MetageneView<'_> {
         if self.hist.has_reads() {
             keys.push(("c", "converted, unconverted, both or sites"));
         }
-        if self.has_non_coding() {
+        if self.two_tracks() {
             keys.push(("Tab/Shift+Tab", "coding or ncRNA track"));
         }
         self.controls.help_keys(&mut keys);
@@ -447,7 +459,7 @@ impl Screen for MetageneView<'_> {
             KeyCode::Right | KeyCode::Char('l') => self.move_cursor(1),
             KeyCode::Home => self.cursor_to_start(),
             KeyCode::End => self.cursor_to_end(),
-            KeyCode::Tab | KeyCode::BackTab => self.switch_track(),
+            KeyCode::Tab | KeyCode::BackTab if self.two_tracks() => self.switch_track(),
             // As pileup's zoom: `+` finer (fewer bins a bar), `-` coarser.
             KeyCode::Char(']' | '+' | '=') => self.set_merge(-1),
             KeyCode::Char('[' | '-') => self.set_merge(1),
@@ -462,7 +474,7 @@ impl Screen for MetageneView<'_> {
     fn render(&mut self, frame: &mut Frame) {
         self.controls.refresh();
         self.drawn = frame.area();
-        let keys = self.footer_keys();
+        let keys = self.footer_pairs();
         let help = self.controls.footer().unwrap_or_else(|| help_line(&keys));
         let help = crate::tui::wrap_help(help, frame.area().width);
         let [top, body, stats, summary, footer] = Layout::vertical([

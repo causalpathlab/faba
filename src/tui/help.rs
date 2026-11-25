@@ -199,6 +199,230 @@ pub fn shown<V: View>(view: &mut V, w: u16, h: u16) -> Option<String> {
     helped.open.then(|| super::screen_text(&mut helped, w, h))
 }
 
+/// The keys `label` names as a pop-up writes them: words apart, keys in a
+/// word apart by `/` (`↑/↓ k/j`, `Tab/Shift+Tab`, `[ ]`), a range of
+/// digits (`0-9`), a chord (`Ctrl+E`). `click`, `Alt-drag` and `type`
+/// name no key; `arrows` the four.
+#[cfg(test)]
+pub fn named(label: &str) -> Vec<KeyEvent> {
+    let plain = |c| KeyEvent::new(c, KeyModifiers::NONE);
+    let mut out = Vec::new();
+    for word in label.split_whitespace() {
+        // A `/` alone is the key; within a word it parts two.
+        let parts: Vec<&str> = match word {
+            "/" => vec!["/"],
+            _ => word.split('/').collect(),
+        };
+        for part in parts {
+            let code = match part {
+                "click" | "type" | "Alt-drag" => continue,
+                "arrows" => {
+                    let arrows = [KeyCode::Up, KeyCode::Down, KeyCode::Left, KeyCode::Right];
+                    out.extend(arrows.map(plain));
+                    continue;
+                }
+                "Shift+Tab" => {
+                    out.push(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+                    continue;
+                }
+                _ if part.starts_with("Ctrl+") && part.chars().count() == 6 => {
+                    let c = part.chars().last().unwrap().to_ascii_lowercase();
+                    out.push(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL));
+                    continue;
+                }
+                _ if part.len() == 3 && part.as_bytes()[1] == b'-' && part != "-" => {
+                    let b = part.as_bytes();
+                    out.extend((b[0]..=b[2]).map(|c| plain(KeyCode::Char(char::from(c)))));
+                    continue;
+                }
+                "↑" => KeyCode::Up,
+                "↓" => KeyCode::Down,
+                "←" => KeyCode::Left,
+                "→" => KeyCode::Right,
+                "Tab" => KeyCode::Tab,
+                "Esc" => KeyCode::Esc,
+                "Enter" => KeyCode::Enter,
+                "Space" => KeyCode::Char(' '),
+                "Backspace" => KeyCode::Backspace,
+                "Del" => KeyCode::Delete,
+                "Home" => KeyCode::Home,
+                "End" => KeyCode::End,
+                "PgUp" => KeyCode::PageUp,
+                "PgDn" => KeyCode::PageDown,
+                _ if part.chars().count() == 1 => KeyCode::Char(part.chars().next().unwrap()),
+                _ => panic!("{part:?} in {label:?} names no key"),
+            };
+            out.push(plain(code));
+        }
+    }
+    out
+}
+
+/// Every key a test tries on a view: the printable characters but `?`
+/// (the pop-up's), the named keys, and Ctrl with each letter but `c`.
+#[cfg(test)]
+fn every_key() -> Vec<KeyEvent> {
+    let plain = |c| KeyEvent::new(c, KeyModifiers::NONE);
+    let mut keys: Vec<KeyEvent> = (' '..='~')
+        .filter(|&c| c != '?')
+        .map(|c| plain(KeyCode::Char(c)))
+        .collect();
+    keys.extend(
+        [
+            KeyCode::Esc,
+            KeyCode::Enter,
+            KeyCode::Tab,
+            KeyCode::Backspace,
+            KeyCode::Delete,
+            KeyCode::Up,
+            KeyCode::Down,
+            KeyCode::Left,
+            KeyCode::Right,
+            KeyCode::Home,
+            KeyCode::End,
+            KeyCode::PageUp,
+            KeyCode::PageDown,
+        ]
+        .map(plain),
+    );
+    keys.push(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+    // Ctrl+C is the session's: it interrupts every view.
+    keys.extend(
+        ('a'..='z')
+            .filter(|&c| c != 'c')
+            .map(|c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)),
+    );
+    keys
+}
+
+/// How [`super::enter_hint`] starts.
+#[cfg(test)]
+const HINT: &str = "Enter does nothing here";
+
+/// What a key can be seen to have done to a view: what it draws (each
+/// cell's look too: a focus may be a colour only), says and is about to
+/// do.
+#[cfg(test)]
+pub fn seen<V: View>(view: &mut V) -> String {
+    let backend = ratatui::backend::TestBackend::new(160, 50);
+    let mut t = ratatui::Terminal::new(backend).expect("a test backend draws");
+    t.draw(|f| view.render(f)).expect("a test backend draws");
+    let notice = view.take_notice();
+    format!(
+        "{:?} {} {:?} {:?} {notice:?}",
+        t.backend().buffer(),
+        view.done(),
+        view.status(),
+        view.pending_work()
+    )
+}
+
+/// The keys of the view `make` builds, as it is then, that its `?` list
+/// or its footer ([`View::footer_keys`]) and its key handler disagree on:
+/// listed (in either) but doing nothing, then bound but not in the `?`
+/// list. A key is bound when it changes what `look` sees of the view,
+/// each tried on a view of its own (the apply key too, which is no chord
+/// to a view); a chord when the view takes it. The keys `untried` names
+/// (as a pop-up writes them: one that downloads, say) are taken as bound,
+/// unpressed. While the view lists nothing (it is typing) only its footer
+/// is checked; panics when it names no key at all there, or `look` sees
+/// it change by itself.
+#[cfg(test)]
+pub fn disagree_by<V: View>(
+    mut make: impl FnMut() -> V,
+    look: impl Fn(&mut V) -> String,
+    untried: &str,
+) -> (Vec<String>, Vec<String>) {
+    let untried = named(untried);
+    let first = make();
+    let names = |list: Option<KeyList>| -> Option<Vec<KeyEvent>> {
+        list.map(|l| {
+            l.iter()
+                .flat_map(|(k, _)| named(k))
+                .filter(|k| !is_help(k))
+                .collect()
+        })
+    };
+    let help = names(first.help());
+    let footer = names(first.footer_keys()).unwrap_or_default();
+    assert!(
+        help.is_some() || !footer.is_empty(),
+        "the view lists its keys here"
+    );
+    let mut steady = make();
+    assert_eq!(look(&mut steady), look(&mut steady), "draws the same twice");
+    let (mut inert, mut unlisted) = (Vec::new(), Vec::new());
+    for key in every_key() {
+        let in_help = help.as_ref().is_some_and(|h| h.contains(&key));
+        let listed = in_help || footer.contains(&key);
+        // Typing, every key types: only the footer's are asked after.
+        if help.is_none() && !listed {
+            continue;
+        }
+        let mut view = make();
+        let bound = if untried.contains(&key) {
+            true
+        } else if super::is_stray(&key) {
+            view.takes_chord(&key)
+        } else {
+            let before = look(&mut view);
+            super::feed(&mut view, key);
+            let after = look(&mut view);
+            // Saying Enter does nothing is not doing something.
+            after != before && !after.contains(HINT)
+        };
+        if listed && !bound {
+            inert.push(said(&key));
+        } else if bound && !in_help && help.is_some() {
+            unlisted.push(said(&key));
+        }
+    }
+    (inert, unlisted)
+}
+
+/// [`disagree_by`] what the view draws, says and is about to do.
+#[cfg(test)]
+pub fn disagree<V: View>(make: impl FnMut() -> V) -> (Vec<String>, Vec<String>) {
+    disagree_by(make, seen, "")
+}
+
+/// A key as a test says it: its code, and `+Ctrl` for a chord.
+#[cfg(test)]
+fn said(key: &KeyEvent) -> String {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    format!("{:?}{}", key.code, if ctrl { "+Ctrl" } else { "" })
+}
+
+/// Assert the view `make` builds lists every key it takes as it is then,
+/// and no key it does not (see [`disagree`]); `what` names the state.
+#[cfg(test)]
+#[track_caller]
+pub fn assert_lists_its_keys<V: View>(what: &str, make: impl FnMut() -> V) {
+    agree(what, "", disagree(make));
+}
+
+/// [`assert_lists_its_keys`] on a view at an end of a list too short to
+/// be anywhere else: the keys `end` names (as a pop-up writes them) may
+/// do nothing there.
+#[cfg(test)]
+#[track_caller]
+pub fn assert_lists_its_keys_at_an_end<V: View>(what: &str, end: &str, make: impl FnMut() -> V) {
+    agree(what, end, disagree(make));
+}
+
+/// Fail on what [`disagree`] found in state `what`, but the keys `end`
+/// names doing nothing.
+#[cfg(test)]
+#[track_caller]
+pub fn agree(what: &str, end: &str, (mut inert, unlisted): (Vec<String>, Vec<String>)) {
+    let ends: Vec<String> = named(end).iter().map(said).collect();
+    inert.retain(|k| !ends.contains(k));
+    assert!(
+        inert.is_empty() && unlisted.is_empty(),
+        "{what}: listed but doing nothing {inert:?}; bound but not listed {unlisted:?}"
+    );
+}
+
 #[cfg(test)]
 #[path = "../tests/tui/help.rs"]
 mod tests;

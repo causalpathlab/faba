@@ -852,3 +852,53 @@ fn the_faintest_hinton_square_is_not_near_white() {
     const MARGIN: u8 = 80;
     assert!(palest <= 255 - MARGIN, "{palest}");
 }
+
+/// `m`'s view, drawn as the check draws it, after `keys`.
+fn after<'a>(m: &'a Modules, keys: &[KeyCode]) -> ModulesView<'a> {
+    let mut v = ModulesView::new("test", m);
+    drawn(&mut v, 160, 50);
+    for &k in keys {
+        press(&mut v, k);
+    }
+    v
+}
+
+/// The moves a list as short as the fixtures' may be at the end of.
+pub(super) const ENDS: &str = "↑/↓ k/j PgUp/PgDn Home/End ←/→ h/l n/N";
+
+/// Each pane with no pins, then with two (the sites pane on the first
+/// pinned gene's site, the second in focus), in each look, and each full
+/// pane but the trace (see trace.rs): what `?` lists is bound.
+#[test]
+fn the_keys_listed_are_the_keys_bound_in_each_pane() {
+    use crate::tui::help::assert_lists_its_keys_at_an_end as check;
+    use KeyCode::{Char, Down, Esc, Tab, Up};
+    let m = wide();
+    let space = Char(' ');
+    let pin_two = [Tab, space, Esc, Down, Tab, space, Esc, Up, Tab];
+    let with = |more: &[KeyCode]| [&pin_two[..], more].concat();
+    for (what, keys) in [
+        ("modules", vec![]),
+        ("sites", vec![Tab]),
+        ("genes", vec![Tab, Tab]),
+        ("sites, two pinned", pin_two.to_vec()),
+        ("genes, two pinned", with(&[Tab])),
+        ("modules, two pinned", with(&[Tab, Tab])),
+        ("sorted", vec![Tab, Char('o')]),
+    ] {
+        check(what, ENDS, || after(&m, &keys));
+    }
+    // The % look, the one with a scale to step, in either grid.
+    for (what, pane) in [("% modules", 0), ("% sites", 1)] {
+        check(what, ENDS, || {
+            let mut v = after(&m, &vec![Tab; pane]);
+            while v.looks[pane] != Look::Percent {
+                press(&mut v, Char('v'));
+            }
+            v
+        });
+    }
+    let b = super::batches::batched();
+    check("batches", ENDS, || after(&b, &[Char('b')]));
+    check("batched modules", ENDS, || after(&b, &[]));
+}

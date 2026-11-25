@@ -257,3 +257,13 @@ fn a_vi_fit_reads_its_verdict_in_either_shape() {
         assert!(s.contains("restart 0") && !s.contains("chain 0"), "{s}");
     }
 }
+
+#[test]
+fn the_trace_lists_the_keys_it_takes() {
+    let m = load(false, true);
+    crate::tui::help::assert_lists_its_keys("the trace", || {
+        let mut v = ModulesView::new("test", &m);
+        press(&mut v, KeyCode::Char('t'));
+        v
+    });
+}

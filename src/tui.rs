@@ -200,6 +200,14 @@ pub trait View: Screen {
     fn help(&self) -> Option<KeyList> {
         None
     }
+
+    /// The keys the footer names as the view is now, each one that acts
+    /// here (the checks in [`help`] press them); none where it names none
+    /// (a prompt, a notice), and by default.
+    #[cfg(test)]
+    fn footer_keys(&self) -> Option<KeyList> {
+        None
+    }
 }
 
 /// Hand `key` to `view` by the rules every view shares: Enter held with
