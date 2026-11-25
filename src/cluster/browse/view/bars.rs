@@ -10,7 +10,7 @@ use ratatui::style::{Modifier, Style};
 const RISING: [&str; 9] = [" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
 
 /// The taller side of the tallest of `reads`, the top of their scale.
-pub(super) fn peak<'r>(reads: impl IntoIterator<Item = &'r Count>) -> f64 {
+pub(in crate::cluster::browse) fn peak<'r>(reads: impl IntoIterator<Item = &'r Count>) -> f64 {
     reads
         .into_iter()
         .map(|r| r.up().max(r.off()))

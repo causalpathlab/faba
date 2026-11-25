@@ -171,6 +171,23 @@ impl Canvas {
         );
     }
 
+    /// A filled rectangle `(x, y, w, h)` outlined `width` points in
+    /// `stroke`; empty ones skipped, as [`Self::rect`] skips them.
+    pub fn outlined(
+        &mut self,
+        (x, y, w, h): (f64, f64, f64, f64),
+        fill: &str,
+        (stroke, width): (&str, f64),
+    ) {
+        if !(w >= 0.005 && h >= 0.005 && w.is_finite() && h.is_finite()) {
+            return;
+        }
+        let _ = writeln!(
+            self.body,
+            r#"<rect x="{x:.2}" y="{y:.2}" width="{w:.2}" height="{h:.2}" fill="{fill}" stroke="{stroke}" stroke-width="{width:.2}"/>"#
+        );
+    }
+
     pub fn line(&mut self, x1: f64, y1: f64, x2: f64, y2: f64, stroke: &str, width: f64) {
         let _ = writeln!(
             self.body,

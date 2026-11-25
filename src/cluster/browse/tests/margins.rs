@@ -11,10 +11,10 @@ use crate::figure::style::{Palette, Sheet, StyleArgs};
 
 /// 4.6 by 2.6 inches, in points.
 const PAPER: (Option<f64>, Option<f64>) = (Some(331.2), Some(187.2));
-const F: f64 = 7.0;
+pub(super) const F: f64 = 7.0;
 
 /// The paper's panel: 7-point text, the plot alone, in `palette`.
-fn paper(palette: Palette) -> Sheet {
+pub(super) fn paper(palette: Palette) -> Sheet {
     Sheet {
         page: PAPER,
         look: StyleArgs {
@@ -36,15 +36,15 @@ fn num(line: &str, key: &str) -> f64 {
 }
 
 #[derive(Debug, Clone)]
-struct Box_ {
-    x: f64,
-    y: f64,
-    w: f64,
-    h: f64,
-    fill: String,
+pub(super) struct Box_ {
+    pub(super) x: f64,
+    pub(super) y: f64,
+    pub(super) w: f64,
+    pub(super) h: f64,
+    pub(super) fill: String,
 }
 
-fn rects(svg: &str) -> Vec<Box_> {
+pub(super) fn rects(svg: &str) -> Vec<Box_> {
     (svg.lines())
         .filter(|l| l.starts_with("<rect"))
         .map(|l| Box_ {
@@ -58,15 +58,15 @@ fn rects(svg: &str) -> Vec<Box_> {
 }
 
 #[derive(Debug, Clone)]
-struct Text {
-    x: f64,
-    y: f64,
-    size: f64,
-    anchor: String,
-    s: String,
+pub(super) struct Text {
+    pub(super) x: f64,
+    pub(super) y: f64,
+    pub(super) size: f64,
+    pub(super) anchor: String,
+    pub(super) s: String,
 }
 
-fn texts(svg: &str) -> Vec<Text> {
+pub(super) fn texts(svg: &str) -> Vec<Text> {
     (svg.lines())
         .filter(|l| l.starts_with("<text x="))
         .map(|l| Text {
@@ -84,18 +84,23 @@ fn texts(svg: &str) -> Vec<Text> {
 
 /// The grid's geometry off its labels: each column's centre (by the
 /// columns' order), each row's centre (by the rows'), and the cell.
-struct Grid {
-    cols: Vec<f64>,
-    rows: Vec<f64>,
-    cell: f64,
+pub(super) struct Grid {
+    pub(super) cols: Vec<f64>,
+    pub(super) rows: Vec<f64>,
+    pub(super) cell: f64,
 }
 
 fn grid_of(svg: &str, m: &super::Modules) -> Grid {
+    grid_by(svg, m, &m.diagonal)
+}
+
+/// [`grid_of`], the rows the gene modules `order`.
+pub(super) fn grid_by(svg: &str, m: &super::Modules, order: &[usize]) -> Grid {
     let t = texts(svg);
     let cols: Vec<f64> = (m.columns.iter())
         .map(|&c| t.iter().find(|t| t.s == format!("C{}", c + 1)).unwrap().x)
         .collect();
-    let rows: Vec<f64> = (m.diagonal.iter())
+    let rows: Vec<f64> = (order.iter())
         .map(|&g| {
             let label = (t.iter().find(|t| t.s.starts_with(&format!("M{} (", g + 1)))).unwrap();
             label.y - label.size / 2.5
@@ -110,10 +115,10 @@ fn grid_of(svg: &str, m: &super::Modules) -> Grid {
 }
 
 impl Grid {
-    fn left(&self) -> f64 {
+    pub(super) fn left(&self) -> f64 {
         self.cols[0] - self.cell / 2.0
     }
-    fn right(&self) -> f64 {
+    pub(super) fn right(&self) -> f64 {
         self.cols[self.cols.len() - 1] + self.cell / 2.0
     }
     fn top(&self) -> f64 {
@@ -134,7 +139,7 @@ fn proportional(lens: &[f64], values: &[f64]) -> bool {
     lens.len() == values.len() && scale.iter().all(|s| (s - scale[0]).abs() < 0.02 * scale[0])
 }
 
-fn grid(f: impl FnOnce(&mut GridArgs)) -> GridArgs {
+pub(super) fn grid(f: impl FnOnce(&mut GridArgs)) -> GridArgs {
     let mut g = GridArgs::default();
     f(&mut g);
     g
@@ -519,7 +524,7 @@ fn values_are_printed_in_each_block() {
                 let want = match look {
                     Look::Hinton | Look::Z => z[j].map(|v| format!("{v:+.1}")),
                     Look::Shift => Some(format!("{:+.2}", m.shift(c, g))),
-                    Look::Percent => m.block(g)[j].number(),
+                    Look::Percent | Look::Bars => m.block(g)[j].number(),
                 };
                 let Some(want) = want else { continue };
                 let (x, y) = (at.cols[j], at.rows[i] + F / 2.5);
