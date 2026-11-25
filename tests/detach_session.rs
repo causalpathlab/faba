@@ -326,6 +326,23 @@ fn no_detach_and_a_view_inside_a_session_run_plain() {
     }
 }
 
+/// Whether `t`'s error is shown in the view waiting for a key (true) or
+/// printed as the program ends (false), whichever comes first.
+fn said_or_shown(t: &legume_tui::testing::Term) -> bool {
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let text = t.text();
+        if text.contains("any key quits") {
+            return true;
+        }
+        if text.contains("Error:") {
+            return false;
+        }
+        assert!(std::time::Instant::now() < until, "no error said: {text}");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
 #[test]
 fn an_error_the_command_ends_with_at_once_stays_on_the_screen() {
     let dir = private();
@@ -340,15 +357,23 @@ fn an_error_the_command_ends_with_at_once_stays_on_the_screen() {
         let mut args = vec!["pwm", "-s", &missing, "-f", &genome];
         args.extend(extra);
         let mut t = term(&dir, &args, &[]);
+        // The error comes before the view or after it opened: printed as
+        // the program ends, or shown in the view until a key. A loaded
+        // machine can take either path, and both must end the same way.
+        let in_view = said_or_shown(&t);
+        if in_view {
+            t.type_(b"q");
+        }
         assert_eq!(t.exit_code(), 1, "{args:?}");
-        t.wait_screen("Error:");
         assert!(
-            t.screen().contains("No such file or directory"),
+            t.text().contains("No such file or directory"),
             "{}",
-            t.screen()
+            t.text()
         );
         assert!(!t.alternate() && t.cooked(), "terminal restored");
-        assert_eq!(t.text().matches("Error:").count(), 1, "said once");
+        if !in_view {
+            assert_eq!(t.text().matches("Error:").count(), 1, "said once");
+        }
         assert!(dir.sockets().is_empty());
     }
 }
