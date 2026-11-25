@@ -119,6 +119,45 @@ fn the_hinton_figure_sizes_each_square_by_its_magnitude() {
     assert!(svg.contains("square area by |z|"), "{svg}");
 }
 
+/// The Hinton figure colours each square as the browser's Hinton look
+/// does: red above the row's mean and blue below, never paler than the
+/// browser's floor, full red or blue at its top |z|; not the other looks'
+/// pale palette.
+#[test]
+fn the_hinton_figure_colours_each_square_as_the_browser_does() {
+    use super::super::view::{Ramp, Stretch};
+    use ratatui::style::Color;
+    let m = super::wide();
+    let svg = draw(
+        &m,
+        Plot::Modules,
+        Look::Hinton,
+        "a fit",
+        Sheet::OWN,
+        &AxisTitles::default(),
+    )
+    .unwrap();
+    let stretch = Stretch::of(m.order.iter().map(|&g| m.block(g)), Ramp::Sqrt);
+    let hex = |c: Color| match c {
+        Color::Rgb(r, g, b) => format!("#{r:02x}{g:02x}{b:02x}"),
+        c => panic!("{c:?}"),
+    };
+    let browser: Vec<String> = (m.diagonal.iter())
+        .flat_map(|&g| super::super::standardized(m.block(g)))
+        .flatten()
+        .map(|z| hex(stretch.hinton(z).0))
+        .collect();
+    let squares: Vec<String> = (super::margins::rects(&svg).into_iter())
+        .filter(|b| (b.w - b.h).abs() < 1e-9 && b.w > 0.0)
+        .map(|b| b.fill)
+        .collect();
+    assert_eq!(squares.len(), browser.len(), "{svg}");
+    for fill in &squares {
+        assert!(browser.contains(fill), "{fill} not the browser's");
+    }
+    assert!(squares.iter().any(|f| f == "#ff0000") && squares.iter().any(|f| f == "#0000ff"));
+}
+
 /// `--fig-width` and `--fig-height` (0.19.0's `--width` and `--height`
 /// too), and the look (`--font-size`, `--panel-only`, `--palette`), only
 /// with `--figure`.

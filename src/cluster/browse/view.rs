@@ -39,16 +39,17 @@ mod grid;
 mod input;
 mod list;
 mod pins;
+mod save;
 mod strip;
 mod trace;
 
 pub(super) use bars::peak;
 #[cfg(test)]
 pub use bars::{eighths, hanging};
+pub use grid::Stretch;
 #[cfg(test)]
-pub use grid::{box_size, square, Stretch};
+pub use grid::{box_size, square};
 pub use grid::{Look, Ramp};
-#[cfg(test)]
 pub use strip::{columns, pack, segment_width};
 
 use find::{Entry, Find};
@@ -130,6 +131,8 @@ pub struct ModulesView<'a> {
     /// Which cell modules the panes show, by how they spread over batches.
     pub(super) filter: batches::Filter,
     title: String,
+    /// The title a saved screen takes (see [`Self::with_figure_title`]).
+    figure_title: Option<String>,
     pub(super) pane: Pane,
     /// The gene role in focus.
     pub(super) module: usize,
@@ -165,7 +168,7 @@ pub struct ModulesView<'a> {
     /// Sorted high to low (the module's order: as it is).
     pub(super) descending: bool,
     /// The annotation while it is still loading.
-    pending: Option<SharedModels>,
+    pub(super) pending: Option<SharedModels>,
     /// The sites' genes' models, by gene, shared with a report being written.
     models: Arc<FxHashMap<Box<str>, GeneModel>>,
     catalog: Vec<Entry>,
@@ -207,6 +210,10 @@ pub struct ModulesView<'a> {
     go_column: bool,
     go_w: u16,
     go_no_room: bool,
+    /// `s`: the save prompt, and the area the last frame drew on, the
+    /// size a saved screen takes.
+    pub(super) controls: crate::figure::Controls,
+    area: Rect,
     done: bool,
 }
 
@@ -217,6 +224,7 @@ impl<'a> ModulesView<'a> {
             shown: (0..m.cell_roles).collect(),
             filter: batches::Filter::All,
             title: title.to_string(),
+            figure_title: None,
             pane: Pane::Modules,
             module: m.order.first().copied().unwrap_or(0),
             site: 0,
@@ -257,10 +265,19 @@ impl<'a> ModulesView<'a> {
             go_column: false,
             go_w: 0,
             go_no_room: false,
+            controls: crate::figure::Controls::new("cluster_screen"),
+            area: Rect::default(),
             done: false,
         };
         view.relist();
         view
+    }
+
+    /// The title a saved screen takes, as the fit's figures are titled;
+    /// the header's without one.
+    pub fn with_figure_title(mut self, title: String) -> Self {
+        self.figure_title = Some(title);
+        self
     }
 
     /// GO terms of the gene modules, as `ask` asks, on `a`.
@@ -450,6 +467,7 @@ impl Screen for ModulesView<'_> {
     fn render(&mut self, frame: &mut Frame) {
         self.hits.clear();
         let area = frame.area();
+        self.area = area;
         let gene_modules = self.m.order.len();
         let mut extra = format!(
             "{gene_modules} gene modules × {} cell modules",
@@ -522,5 +540,6 @@ impl Screen for ModulesView<'_> {
         self.draw_genes(buf, inner[2]);
         frame.render_widget(Paragraph::new(self.stats_line(stats.width)), stats);
         frame.render_widget(Paragraph::new(help), footer);
+        self.controls.render_save(frame, area);
     }
 }

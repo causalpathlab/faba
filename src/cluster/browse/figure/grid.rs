@@ -10,11 +10,12 @@
 //! the bars are as large as the page allows, the page kept as asked.
 
 use super::{
-    cells, fill, values, width, GridArgs, Ink, Look, Refused, Side, BLOCK_EDGE, BLOCK_OFF,
-    BLOCK_OFF_GRAY, BLOCK_UP, BLOCK_UP_GRAY, READ_OFF, READ_OFF_GRAY, READ_UP, READ_UP_GRAY,
-    SIZE_BAR,
+    cells, fill, hinton_fill, values, width, GridArgs, Ink, Look, Refused, Side, BLOCK_EDGE,
+    BLOCK_OFF, BLOCK_OFF_GRAY, BLOCK_UP, BLOCK_UP_GRAY, READ_OFF, READ_OFF_GRAY, READ_UP,
+    READ_UP_GRAY, SIZE_BAR,
 };
 use crate::cluster::browse::go::{q_said, Table};
+use crate::cluster::browse::view::{Ramp, Stretch};
 use crate::cluster::browse::{Count, Modules};
 use crate::figure::size::Page;
 use crate::figure::{svg, Anchor, Canvas, FAINT, INK, MUTED};
@@ -151,9 +152,10 @@ fn shortened(s: &str, room: f64, f: f64) -> String {
 /// The widest the GO terms beside the grid are kept, in characters, when
 /// the page leaves less beside the grid.
 const GO_CHARS: f64 = 28.0;
-/// A GO term's line, in font sizes, and the least, when a row is shallow.
+/// A GO term's line, in font sizes; and the gap kept between one row's
+/// lines and the next's, at least.
 const GO_LINE: f64 = 1.15;
-const GO_LINE_LEAST: f64 = 1.0;
+const GO_GAP: f64 = 0.5;
 /// A line's capitals' height, in font sizes.
 const CAP: f64 = 0.75;
 
@@ -172,14 +174,16 @@ fn go_terms(table: &Table, rows: &[usize], n: usize) -> Terms {
 }
 
 /// How many of `n` lines a row `cell` points deep holds in `f`-point text,
-/// and their spacing: the lines' capitals within the row, no closer than
-/// the font; one at least.
+/// and their spacing: each line no less than the font, and [`GO_GAP`]
+/// between the row's lines and the next row's, so that rows never run
+/// into each other; fewer lines where `n` do not fit; one at least.
 fn go_lines(cell: f64, f: f64, n: usize) -> (usize, f64) {
-    let held = ((cell - CAP * f) / (GO_LINE_LEAST * f)).floor().max(0.0) as usize + 1;
+    let room = cell - GO_GAP * f;
+    let held = (room / f).floor().max(1.0) as usize;
     let shown = n.min(held).max(1);
     let spacing = match shown {
         1 => 0.0,
-        k => (GO_LINE * f).min((cell - CAP * f) / (k - 1) as f64),
+        k => (GO_LINE * f).min(room / k as f64),
     };
     (shown, spacing)
 }
@@ -274,6 +278,13 @@ impl Bars {
     }
 }
 
+/// Where a drawn grid put what a screen places beside it: the left edge
+/// of the GO terms, when they are drawn.
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) struct Placed {
+    pub go_x: Option<f64>,
+}
+
 /// The figure of `m` under `look` with `grid`'s extras, `go` the terms for
 /// `--go-labels`, titled `title`, laid out for `size`.
 pub(super) fn heatmap(
@@ -285,6 +296,19 @@ pub(super) fn heatmap(
     size: Page,
     ink: Ink,
 ) -> Result<String, Refused> {
+    placed(m, look, grid, go, title, size, ink).map(|(svg, _)| svg)
+}
+
+/// [`heatmap`], and where it put the GO terms.
+pub(super) fn placed(
+    m: &Modules,
+    look: Look,
+    grid: &GridArgs,
+    go: Option<&Table>,
+    title: &str,
+    size: Page,
+    ink: Ink,
+) -> Result<(String, Placed), Refused> {
     let (rows, values) = values(m, look);
     let all: Vec<f64> = values.iter().flatten().flatten().copied().collect();
     let diverging = !matches!(look, Look::Percent | Look::Bars);
@@ -293,6 +317,13 @@ pub(super) fn heatmap(
     let top = match diverging {
         true => all.iter().fold(0.0f64, |a, v| a.max(v.abs())),
         false => all.iter().fold(0.0f64, |a, &v| a.max(v)),
+    };
+    // The Hinton squares coloured as the browser's are, full red or blue
+    // at its top |z|; in grays as the other looks.
+    let z_top = Stretch::of(rows.iter().map(|&g| m.block(g)), Ramp::Sqrt).z_top;
+    let square_fill = |v: f64| match ink.gray {
+        true => fill(v, top, diverging),
+        false => hinton_fill(v, z_top),
     };
     let what = match (look, m.per_cell()) {
         (Look::Shift, true) => "log rate",
@@ -379,12 +410,12 @@ pub(super) fn heatmap(
             .fold(0.0, f64::max)
     });
     // Each row's shift range right of the grid, as the browser has it,
-    // when the bars are drawn.
-    let ranges: Vec<String> = match bars {
-        Some(_) => (rows.iter())
+    // when the bars are drawn (or the screen asks for it).
+    let ranges: Vec<String> = match bars.is_some() || grid.ranges {
+        true => (rows.iter())
             .map(|&g| format!("Δ{:.2}", m.shift_range(g)))
             .collect(),
-        None => Vec::new(),
+        false => Vec::new(),
     };
     let range_w = (ranges.iter())
         .map(|s| 0.6 * f + width(s, f))
@@ -414,7 +445,10 @@ pub(super) fn heatmap(
         true => (READ_UP_GRAY, READ_OFF_GRAY),
         false => (READ_UP, READ_OFF),
     };
-    Ok(svg(w, h, |c: &mut Canvas| {
+    let placed = Placed {
+        go_x: go_w.map(|_| right + range_w + 0.6 * f),
+    };
+    let drawn = svg(w, h, |c: &mut Canvas| {
         ink.heading(c, title, w);
         for (j, &role) in m.columns.iter().enumerate() {
             let x = gx + cell * (j as f64 + 0.5);
@@ -455,7 +489,7 @@ pub(super) fn heatmap(
                         }
                         (Look::Hinton, Some(v)) => {
                             let side = (cell - 2.0) * (v.abs() / top.max(1e-12)).min(1.0).sqrt();
-                            let colour = fill(v * UNDER_BARS, top, diverging).0;
+                            let colour = square_fill(v * UNDER_BARS).0;
                             let (cx, cy) = (centre.0 - side / 2.0, centre.1 - side / 2.0);
                             c.rect(cx, cy, side, side, &colour);
                         }
@@ -486,7 +520,7 @@ pub(super) fn heatmap(
                     // A true square, centred, none for a block without reads.
                     let Some(v) = v else { continue };
                     let side = (cell - 2.0) * (v.abs() / top.max(1e-12)).min(1.0).sqrt();
-                    let (colour, dark) = fill(*v, top, diverging);
+                    let (colour, dark) = square_fill(*v);
                     let (cx, cy) = centre;
                     c.rect(cx - side / 2.0, cy - side / 2.0, side, side, &colour);
                     if let Some(t) = asked {
@@ -665,7 +699,7 @@ pub(super) fn heatmap(
             for k in 0..steps {
                 let v = low + (top - low) * (k as f64 + 0.5) / steps as f64;
                 let colour = match look {
-                    Look::Hinton => fill(v * shade, top, diverging).0,
+                    Look::Hinton => square_fill(v * shade).0,
                     _ => ink.fill(v * shade, top, diverging).0,
                 };
                 let step = rw / steps as f64;
@@ -701,13 +735,7 @@ pub(super) fn heatmap(
                     for (v, s) in refs[from..].iter().zip(&sides[from..]) {
                         let slot = room(v, s) - 0.8 * f;
                         let cx = at + slot / 2.0;
-                        c.rect(
-                            cx - s / 2.0,
-                            ky,
-                            *s,
-                            *s,
-                            &fill(*v * shade, top, diverging).0,
-                        );
+                        c.rect(cx - s / 2.0, ky, *s, *s, &square_fill(*v * shade).0);
                         c.text(cx, label_y, &format!("{v}"), f, Anchor::Middle, MUTED);
                         at += slot + 0.8 * f;
                     }
@@ -751,5 +779,6 @@ pub(super) fn heatmap(
             );
         }
         c.text(label, h - f, what, f, Anchor::Start, MUTED);
-    }))
+    });
+    Ok((drawn, placed))
 }

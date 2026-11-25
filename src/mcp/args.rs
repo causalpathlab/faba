@@ -393,7 +393,9 @@ mod tests {
                 break;
             };
             for m in missing.clone() {
-                let flag = m.split(' ').next().unwrap_or(&m).to_string();
+                // A group's first flag stands for it: `<--figure <P>|--screen <P>>`.
+                let m = m.trim_start_matches('<');
+                let flag = m.split(' ').next().unwrap_or(m).to_string();
                 let arg = (sub.get_arguments())
                     .find(|a| a.get_long().is_some_and(|l| flag == format!("--{l}")));
                 line.push(flag);
