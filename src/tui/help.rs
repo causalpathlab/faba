@@ -201,7 +201,7 @@ pub fn shown<V: View>(view: &mut V, w: u16, h: u16) -> Option<String> {
 
 /// The keys `label` names as a pop-up writes them: words apart, keys in a
 /// word apart by `/` (`↑/↓ k/j`, `Tab/Shift+Tab`, `[ ]`), a range of
-/// digits (`0-9`), a chord (`Ctrl+E`). `click`, `Alt-drag` and `type`
+/// digits (`0-9`), a chord (`Ctrl+E`). `click`, `Ctrl-drag` and `type`
 /// name no key; `arrows` the four.
 #[cfg(test)]
 pub fn named(label: &str) -> Vec<KeyEvent> {
@@ -215,7 +215,7 @@ pub fn named(label: &str) -> Vec<KeyEvent> {
         };
         for part in parts {
             let code = match part {
-                "click" | "type" | "Alt-drag" => continue,
+                "click" | "type" | "Ctrl-drag" => continue,
                 "arrows" => {
                     let arrows = [KeyCode::Up, KeyCode::Down, KeyCode::Left, KeyCode::Right];
                     out.extend(arrows.map(plain));

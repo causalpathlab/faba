@@ -99,7 +99,7 @@ fn a_drag_needs_a_modifier_to_pin_move_or_unpin() {
     mouse(&mut v, up, genes, KeyModifiers::NONE);
     assert!(v.pins.is_empty());
     assert_eq!(v.site, 2, "but the site is selected");
-    // Alt-drag a site row onto the strip: its gene is pinned.
+    // Ctrl-drag a site row onto the strip: its gene is pinned.
     mouse(&mut v, down, site, KeyModifiers::ALT);
     mouse(&mut v, up, genes, KeyModifiers::ALT);
     assert_eq!(v.pins, vec![Pin { role: 0, gene: 1 }]);
@@ -111,7 +111,7 @@ fn a_drag_needs_a_modifier_to_pin_move_or_unpin() {
     mouse(&mut v, down, (pinned.0 + 2, pinned.1), KeyModifiers::NONE);
     mouse(&mut v, up, (5, 5), KeyModifiers::NONE);
     assert_eq!(v.pins.len(), 1, "a click never unpins");
-    // Alt-drag it off the strip: unpinned.
+    // Ctrl-drag it off the strip: unpinned.
     mouse(&mut v, down, (pinned.0 + 2, pinned.1), KeyModifiers::ALT);
     mouse(&mut v, up, (5, 5), KeyModifiers::ALT);
     assert!(v.pins.is_empty());

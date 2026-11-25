@@ -330,7 +330,7 @@ Example:\n  \
             cells. 1 gene modules: every gene module against every cell module. 2 sites: the\n\
             sites of the module in focus, each with its reads, converted, unconverted and\n\
             cells over every cell read. 3 genes: the genes you pin (Space on a site, or\n\
-            Alt-drag its row down), side by side under their gene models, an all-cells track\n\
+            Ctrl-drag its row down), side by side under their gene models, an all-cells track\n\
             above one track per cell module. Levels 1 to 3 list each gene in its main gene\n\
             module with its reads there. 4 pileup: one pinned gene's full pileup, its reads\n\
             over every gene module ({modality}_site_cells), on the chromosome with most of\n\
