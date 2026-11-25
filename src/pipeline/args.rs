@@ -319,7 +319,7 @@ pub struct PipelineArgs {
         help_heading = "ATOI",
         long = "edit-error-rate",
         alias = "error-rate",
-        default_value_t = 0.01,
+        default_value_t = faba::hypothesis_tests::ERROR_RATE,
         help = "Sequencing-error rate ε: the beta-binomial null mean",
         long_help = "Sequencing-error rate ε. It is the beta-binomial null mean.\n\
                      The edited fraction is tested against it. The test is reference-anchored,\n\
@@ -331,7 +331,7 @@ pub struct PipelineArgs {
         help_heading = "ATOI",
         long = "edit-overdispersion",
         alias = "overdispersion",
-        default_value_t = 0.1,
+        default_value_t = faba::hypothesis_tests::OVERDISPERSION,
         help = "Beta-binomial overdispersion ρ for the editing null (0 ⇒ binomial)"
     )]
     pub edit_overdispersion: f64,

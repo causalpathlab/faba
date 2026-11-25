@@ -434,6 +434,35 @@ pub fn text_width(s: &str, size: f64) -> f64 {
     data_beans::figure::text_width(s, size)
 }
 
+/// A character's width at `size` points, Helvetica's advance rounded up
+/// (a name in capitals sets wider than one in lower case, so one width
+/// for all would leave the one short and the other running over).
+pub fn glyph_width(c: char, size: f64) -> f64 {
+    let em = match c {
+        'i' | 'j' | 'l' | 'I' | '.' | ',' | ':' | ';' | '\'' | '!' | '|' | ' ' => 0.28,
+        'f' | 't' | 'r' | '(' | ')' | '[' | ']' | '-' | '/' => 0.34,
+        'c' | 'k' | 's' | 'v' | 'x' | 'y' | 'z' | 'J' => 0.5,
+        'm' | 'M' => 0.84,
+        'w' => 0.73,
+        'W' => 0.95,
+        'L' => 0.56,
+        'F' | 'T' | 'Z' => 0.62,
+        'C' | 'D' | 'H' | 'N' | 'R' | 'U' => 0.73,
+        'G' | 'O' | 'Q' => 0.78,
+        '…' => 1.0,
+        c if c.is_uppercase() => 0.67,
+        _ => 0.56,
+    };
+    em * size
+}
+
+/// How wide `s` sets at `size` points, character by character (see
+/// [`glyph_width`]): closer than [`text_width`] where texts sit side by
+/// side.
+pub fn set_width(s: &str, size: f64) -> f64 {
+    s.chars().map(|c| glyph_width(c, size)).sum()
+}
+
 /// `s` as it fits `room` points across at `size`: as it is, else without
 /// a parenthetical at its end, else without what follows a colon too,
 /// else cut short with an ellipsis.

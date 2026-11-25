@@ -11,10 +11,11 @@
 use super::args::SiteFilterArgs;
 use super::arms::{self, ArmColumn, ArmLook, Front};
 pub use super::density::BINS;
+use super::density::SIZE as TICK_SIZE;
 use super::density::{Plot, Squares};
 use super::scale::{along, edge, spread, Ruler, Scale, Scales};
 use super::sites::{Criterion, SiteTable};
-use crate::figure::{mixed, rgb, Anchor, Canvas, INK, MUTED};
+use crate::figure::{mixed, rgb, Anchor, Canvas, FAINT, INK, MUTED};
 use data_beans::figure::panel::Marginals;
 
 /// Panels a view shows.
@@ -101,13 +102,17 @@ impl<'a> Sites<'a> {
     /// Axis `a`'s ruler as the view style's 2D panels read it: over its
     /// column and, where it has a value on each arm, both arms' values too
     /// (the coverage's column, signal and control added, spans either
-    /// arm's own already).
+    /// arm's own already); the p-value to its cap ([`arms::p_cap_of`]).
     pub fn arm_ruler(&self, a: Axis, f: &SiteFilterArgs) -> Ruler {
         let own = self.column(a).spread;
-        let spread = match (own, self.arm_column(a).and_then(|c| c.spread)) {
+        let mut spread = match (own, self.arm_column(a).and_then(|c| c.spread)) {
             (Some((l1, h1)), Some((l2, h2))) => Some((l1.min(l2), h1.max(h2))),
             (own, arms) => own.or(arms),
         };
+        // The p-value ends at the histogram's cap.
+        if let (Axis::Pvalue, Some((lo, _)), Some(cap)) = (a, spread, arms::p_cap_of(self, f)) {
+            spread = Some((lo, cap));
+        }
         self.ruler_over(a, f, spread)
     }
 }
@@ -631,12 +636,22 @@ impl Grid {
     /// Square `at` of each arm as drawn, none where it is empty: on the
     /// signal arm, in `palette`'s kept colour where most of it is kept,
     /// else white outlined, deeper as it holds more of the busiest square
-    /// of either arm; on the control arm, light gray.
-    pub fn tones(&self, at: usize, palette: crate::figure::style::Palette) -> [Option<Tone>; 2] {
-        let top = (self.top() as f64).ln_1p();
+    /// of either arm on `count`'s scale; on the control arm, light gray.
+    pub fn tones(
+        &self,
+        at: usize,
+        palette: crate::figure::style::Palette,
+        count: arms::CountScale,
+    ) -> [Option<Tone>; 2] {
+        let top = count.of(self.top() as f64);
         // The signal arm's from well past the control's light gray, so the
-        // sparsest kept square still reads dark.
-        let depth = |n: u32| 0.6 + 0.4 * (n as f64).ln_1p() / top;
+        // sparsest kept square still reads dark: in gray, from darker still,
+        // the kept ink being gray too.
+        let least = match palette {
+            crate::figure::style::Palette::Gray => GRAY_LEAST,
+            _ => 0.6,
+        };
+        let depth = |n: u32| least + (1.0 - least) * count.of(n as f64) / top;
         let white = (255.0, 255.0, 255.0);
         let (k, o) = (self.squares.kept[at], self.squares.other[at]);
         let wt = (k + o > 0).then(|| {
@@ -657,9 +672,9 @@ impl Grid {
         &self,
         at: usize,
         palette: crate::figure::style::Palette,
-        front: Front,
+        (front, count): (Front, arms::CountScale),
     ) -> Option<Tone> {
-        let [wt, mutant] = self.tones(at, palette);
+        let [wt, mutant] = self.tones(at, palette, count);
         match front {
             Front::Wt => wt.or(mutant),
             Front::Mut => mutant.or(wt),
@@ -668,7 +683,7 @@ impl Grid {
 
     /// The squares over `plot`, in the canvas' palette: the arm behind
     /// first, then the one in front over it.
-    fn draw_squares(&self, c: &mut Canvas, plot: &Plot, front: Front) {
+    fn draw_squares(&self, c: &mut Canvas, plot: &Plot, (front, count): (Front, arms::CountScale)) {
         let palette = c.style().palette;
         let n = self.squares.bins;
         let (cw, ch) = (plot.pw / n as f64, plot.ph / n as f64);
@@ -679,7 +694,7 @@ impl Grid {
         for arm in order {
             for by in 0..n {
                 for bx in 0..n {
-                    let Some(tone) = self.tones(by * n + bx, palette)[arm] else {
+                    let Some(tone) = self.tones(by * n + bx, palette, count)[arm] else {
                         continue;
                     };
                     let (x, y) = (
@@ -726,8 +741,8 @@ impl Grid {
         if !title.is_empty() {
             canvas.text(plot.px, y + 10.0, title, 10.0, Anchor::Start, INK);
         }
-        self.draw_squares(canvas, plot, how.arms.front);
-        self.marginals(canvas, &lay, how.arms.front);
+        self.draw_squares(canvas, plot, (how.arms.front, how.arms.count));
+        self.marginals(canvas, &lay, (how.arms.front, how.arms.marginal));
         // The box where both drawn thresholds pass.
         let (x0, y1) = plot.at(self.xbox.0, self.ybox.0);
         let (x1, y0) = plot.at(self.xbox.1, self.ybox.1);
@@ -775,7 +790,7 @@ impl Grid {
     /// The marginals `lay` has room for: each column's sites above, each
     /// row's to the right, the signal arm's kept under its removed (white,
     /// outlined), the control arm's light gray behind (or in front).
-    fn marginals(&self, c: &mut Canvas, lay: &Framed, front: Front) {
+    fn marginals(&self, c: &mut Canvas, lay: &Framed, (front, scale): (Front, arms::CountScale)) {
         let roles = c.style().palette.roles();
         let n = self.squares.bins;
         let (cols, rows) = self.margins();
@@ -786,7 +801,12 @@ impl Grid {
                 .chain(m.iter().copied())
                 .fold(1.0, f64::max)
         };
-        let (most_cols, most_rows) = (busiest(&cols, &mcols), busiest(&rows, &mrows));
+        // Each marginal's count axis ends at a round count over its busiest
+        // bar of either arm.
+        let end = |most: f64| scale.ticks(most).last().copied().unwrap_or(1.0);
+        let (most_cols, most_rows) = (end(busiest(&cols, &mcols)), end(busiest(&rows, &mrows)));
+        // A count's depth along the marginal, on its scale, of its end.
+        let depth = |n: f64, most: f64| scale.of(n) / scale.of(most);
         let plot = &lay.plot;
         let outline = 0.3;
         // A bar's foot and depth, from 0 to 1 of the marginal's, placed
@@ -794,18 +814,19 @@ impl Grid {
         type Place<'p> = &'p dyn Fn(f64, f64) -> (f64, f64, f64, f64);
         let bars = |c: &mut Canvas, (wt, m): (Margin, f64), most: f64, place: Place| {
             let (kept, other) = wt;
+            let (k, all) = (depth(kept, most), depth(kept + other, most));
             let draw_wt = |c: &mut Canvas| {
-                let (x, y, w, h) = place(0.0, kept / most);
+                let (x, y, w, h) = place(0.0, k);
                 c.rect(x, y, w, h, roles.kept);
                 // Too thin to show white inside its outline: none.
-                let (_, _, ow, oh) = place(kept / most, other / most);
+                let (_, _, ow, oh) = place(k, all - k);
                 if ow.min(oh) > 2.0 * outline {
-                    let at = place(kept / most, other / most);
+                    let at = place(k, all - k);
                     c.outlined(at, arms::FILTERED_FILL, (arms::OUTLINE, outline));
                 }
             };
             let draw_mut = |c: &mut Canvas| {
-                let (x, y, w, h) = place(0.0, m / most);
+                let (x, y, w, h) = place(0.0, depth(m, most));
                 c.rect(x, y, w, h, arms::MUT_FILL);
             };
             match front {
@@ -819,6 +840,25 @@ impl Grid {
                 }
             }
         };
+        // Each marginal's count axis beside it, as the plot's own axes are
+        // drawn, ticked at its end, its count in the corner beside it, clear
+        // of the plot's own ticks: the top one's up its left side, its count
+        // in the y ticks' column; the right one's along its top, its count
+        // over it, ending at its end.
+        let size = TICK_SIZE;
+        if let Some((_, ty, _, th)) = lay.top {
+            c.line(plot.px, ty, plot.px, ty + th, FAINT, 0.8);
+            c.line(plot.px - 3.0, ty, plot.px, ty, FAINT, 0.8);
+            let said = crate::tui::ui::compact(most_cols);
+            let at = (plot.px - size * 0.5, ty + size * 0.35);
+            c.text(at.0, at.1, &said, size, Anchor::End, MUTED);
+        }
+        if let Some((rx, ry, rw, _)) = lay.right {
+            c.line(rx, ry, rx + rw, ry, FAINT, 0.8);
+            c.line(rx + rw, ry - 3.0, rx + rw, ry, FAINT, 0.8);
+            let said = crate::tui::ui::compact(most_rows);
+            c.text(rx + rw, ry - size * 0.5, &said, size, Anchor::End, MUTED);
+        }
         if let Some((_, ty, _, th)) = lay.top {
             let cw = plot.pw / n as f64;
             for (k, (wt, m)) in cols.into_iter().zip(mcols).enumerate() {
@@ -866,6 +906,11 @@ impl Grid {
         (cols, rows)
     }
 }
+
+/// In gray, where a kept square's shade starts, of the way from white to
+/// the kept ink: clearly darker than the control arm's light gray, with
+/// room for a gradient that reads up to the ink itself.
+const GRAY_LEAST: f64 = 0.5;
 
 /// A marginal bar's sites, `(kept, removed)`.
 pub type Margin = (f64, f64);

@@ -31,6 +31,8 @@ pub fn site_table(
         edit_ratio: Vec::new(),
         fold: Vec::new(),
         raw_log_odds: Vec::new(),
+        control_cells: None,
+        control_pv: Default::default(),
     };
     for (i, &(pv, cov, conv, ctl_cov, ctl_conv)) in rows.iter().enumerate() {
         let rate = |a: u64, n: u64| if n == 0 { 0.0 } else { a as f32 / n as f32 };

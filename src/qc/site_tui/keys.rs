@@ -300,7 +300,10 @@ impl SitePicker<'_> {
             KeyCode::Char('o') => self.set_off(),
             KeyCode::Char('r') => self.reset(),
             KeyCode::Char('x') => self.cycle_x_scale(),
-            KeyCode::Char('y') => self.y_scale = self.y_scale.next(),
+            KeyCode::Char('y') => {
+                let q = Axis::of(self.criterion());
+                self.arm_look.y.set(q, self.arm_look.y.of(q).next());
+            }
             KeyCode::Char('e') => self.mode = Mode::Edit(String::new()),
             KeyCode::Char(ch) if ch.is_ascii_digit() => self.mode = Mode::Edit(ch.to_string()),
             // Esc backs out of every pop-up, so it never leaves the view.

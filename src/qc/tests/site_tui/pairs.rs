@@ -371,7 +371,12 @@ fn the_qc_figures_on_one_page_share_one_label_size() {
 /// filtered out white and outlined, the thresholds' lines orange-red with
 /// their words, the p-value read as p); the knob and the pairs on each
 /// quantity's one scale (see `crate::qc::scale`), as the site panels draw
-/// it: the p-value's knob on linear bins.
+/// it; the knob since it draws each arm of the p-value and the cells on a
+/// square-root count axis, the p-value on log-spaced p, with its key; the
+/// knob since its p-value draws WT on the p its threshold reads, MUT on
+/// its own, its count axis ends at a round count over its tallest bar and
+/// its ticks are as many as fit; the knob since its thresholds' words are
+/// placed by each character's width.
 #[test]
 fn the_default_qc_figures_are_unchanged() {
     let t = table("m6a", 800);
@@ -396,7 +401,7 @@ fn the_default_qc_figures_are_unchanged() {
     assert_eq!(
         shown,
         [
-            5043419926204361356,
+            11615018299291195097,
             3768601236476313695,
             1460898763073091392
         ]

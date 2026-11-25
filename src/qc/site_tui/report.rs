@@ -461,7 +461,7 @@ impl SitePicker<'_> {
             focus: self.criterion() as usize,
             gene: self.gene(),
             unit: self.weight.unit(),
-            y_scale: self.y_scale.name(),
+            y_scale: self.y_scale().name(),
             legend: LEGEND,
             regions: coding(REGION_NAMES),
             colours: coding(REGION_COLOURS),
