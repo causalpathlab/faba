@@ -11,9 +11,9 @@ RNA modifications (DART-seq m6A, A-to-I editing), alternative polyadenylation
 Run in a terminal, `run`, `qc`, `qc-view`, `pileup`, `metagene`, `pwm` and `cluster-view` open full-screen
 views; `--batch-process` skips them for scripts and clusters.
 
-Each view runs as a detachable session: Ctrl+Alt+D leaves it running (as does a dropped
+Each view runs as a detachable session: Ctrl+] leaves it running (as does a dropped
 connection), and starting the command again with nothing named, or `faba attach`, returns
-to it; Ctrl+Alt+S switches to another session. `faba sessions` lists them, `faba kill`
+to it; Ctrl+\ switches to another session. `faba sessions` lists them, `faba kill`
 stops one as its quit key does (a write under way finishes first) and `faba rename`
 labels one. `--no-detach` runs a view in the terminal only.
 

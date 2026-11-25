@@ -107,7 +107,7 @@ fn a_figure_is_drawn_again_for_the_terminal_that_attaches() {
     first.wait_for("\x1b_G");
     dir.wait_listed("faba-pwm-1\tattached");
     let pid = dir.program_pid();
-    first.type_(b"\x1b\x04");
+    first.type_(&legume_tui::Key::DETACH.bytes());
     first.answer(1, b"\r");
     assert_eq!(first.exit_code(), 0);
     dir.wait_listed("faba-pwm-1\tdetached");
@@ -159,7 +159,7 @@ fn a_kill_leaves_the_qc_view_without_writing() {
         &[],
     );
     t.wait_screen("apply");
-    t.wait_screen("ctrl+alt+d detach");
+    t.wait_screen(&format!("{} detach", legume_tui::detach_key()));
     let listed = dir.wait_listed("picking site thresholds for");
     assert!(listed.contains("faba-qc-1\tattached"), "{listed:?}");
     let pid = dir.program_pid();
@@ -196,7 +196,7 @@ fn a_named_input_starts_a_new_session_and_a_bare_start_offers_the_live_ones() {
 
     let mut first = term(&dir, &args, &[]);
     first.wait_screen("21 positions");
-    first.type_(b"\x1b\x04");
+    first.type_(&legume_tui::Key::DETACH.bytes());
     first.answer(1, b"\r");
     assert_eq!(first.exit_code(), 0);
     dir.wait_listed("faba-pwm-1\tdetached");
@@ -242,7 +242,10 @@ fn no_detach_and_a_view_inside_a_session_run_plain() {
         assert!(!plain.cooked());
         assert!(dir.sockets().is_empty(), "{args:?} {env:?}");
         assert!(dir.run(&["sessions"]).contains("no live faba sessions"));
-        assert!(!plain.text().contains("ctrl+alt+d"), "no session keys");
+        assert!(
+            !plain.text().contains(&legume_tui::detach_key()),
+            "no session keys"
+        );
         assert!(!plain.text().contains(PROMPT));
         plain.type_(b"q");
         assert_eq!(plain.exit_code(), 0);
