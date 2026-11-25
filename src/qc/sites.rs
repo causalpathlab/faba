@@ -213,7 +213,12 @@ fn col<'a, T: Array + 'static>(batch: &'a RecordBatch, name: &str) -> anyhow::Re
 }
 
 pub fn read_site_table(path: &str, modality: &str) -> anyhow::Result<SiteTable> {
-    let batch = crate::common::read_record_batch(path)?;
+    site_table_of(crate::common::read_record_batch(path)?, modality)
+}
+
+/// The site table of `batch`'s rows, read as [`read_site_table`] reads a
+/// file's.
+pub fn site_table_of(batch: RecordBatch, modality: &str) -> anyhow::Result<SiteTable> {
     let n = batch.num_rows();
 
     let chr: &StringArray = col(&batch, "chr")?;
@@ -521,6 +526,10 @@ impl SiteFilterArgs {
             .collect()
     }
 }
+
+/// Per modality, the cells with a converted read at each site, by the
+/// site's key, as [`accumulate_site_cells`] pools them.
+pub type SiteCells = FxHashMap<Box<str>, FxHashMap<Box<str>, usize>>;
 
 /// Per-site kept-cell counts from one `_site` matrix: the nnz (over kept
 /// cells) of each site's converted-channel row, keyed by the `{chr}:{pos}`

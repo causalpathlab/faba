@@ -260,10 +260,13 @@ fn dry_plots_problem(args: &QcArgs) -> anyhow::Result<()> {
 }
 
 /// A dry run's figures: each modality's knobs and pairs, each batch's
-/// cells, and the site panels, under `-o DIR/qc_plots` (checked new or empty before anything
-/// was read, see [`dry_plots_problem`]).
-fn write_dry_plots(args: &QcArgs, batch: &mut Batch, (plan, sheet): Figures) -> anyhow::Result<()> {
-    let out = args.output.as_deref().unwrap_or_default();
+/// cells, and the site panels, under `out/qc_plots` (`-o DIR`, checked new or empty before
+/// anything was read, see [`dry_plots_problem`]).
+pub(super) fn write_dry_plots(
+    out: &str,
+    batch: &mut Batch,
+    (plan, sheet): Figures,
+) -> anyhow::Result<()> {
     let figures = batch.figures(Some(plan), sheet)?;
     let failed = save_figures(out, &figures, &Progress::default());
     if let Some((stem, e)) = failed.first() {
@@ -295,8 +298,8 @@ fn scales_of((plan, sheet): Figures) -> (crate::qc::scale::Scales, usize) {
 
 /// `--html`'s page, at the thresholds given, its folder made first; never
 /// over a file (see [`html_problem`]).
-fn write_html(args: &QcArgs, batch: &mut Batch) -> anyhow::Result<()> {
-    let Some(html) = args.html.as_deref() else {
+pub(super) fn write_html(html: Option<&str>, batch: &mut Batch) -> anyhow::Result<()> {
+    let Some(html) = html else {
         return Ok(());
     };
     let path = std::path::Path::new(html);
@@ -367,20 +370,10 @@ fn dry_run(args: &QcArgs, figures: Figures) -> anyhow::Result<()> {
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("`faba qc --dry-run` needs INPUT_DIR"))?;
     let prep = prepare(args, input)?;
-    let mut out = String::from("level\tname\trule\tthreshold\tremoves\tonly_this\tkept\tof\n");
-    for d in &prep.decisions {
-        let (n, kept) = (d.names.len(), d.kept.len());
-        out.push_str(&format!(
-            "cells\t{}\tcell QC\t{}\t{}\t\t{kept}\t{n}\n",
-            d.batch,
-            if args.no_cell_qc {
-                "floor only".to_string()
-            } else {
-                format!("{} MADs", args.qc_mads)
-            },
-            n - kept,
-        ));
-    }
+    let rule = cell_rule(args.no_cell_qc, args.qc_mads);
+    let kept: Vec<(&str, usize, usize)> = (prep.decisions.iter())
+        .map(|d| (&*d.batch, d.kept.len(), d.names.len()))
+        .collect();
     let gff = explicit_or_recorded(args.gff.as_deref(), input, "gff", "annotation");
     let mut batch = Batch::new(
         input,
@@ -390,6 +383,41 @@ fn dry_run(args: &QcArgs, figures: Figures) -> anyhow::Result<()> {
         (gff.as_deref(), &args.genes),
         (cells_of(&prep.decisions), Some(scales_of(figures))),
     )?;
+    print!("{}", counts_table((&rule, &kept), &batch));
+    if args.plots {
+        write_dry_plots(
+            args.output.as_deref().unwrap_or_default(),
+            &mut batch,
+            figures,
+        )?;
+    }
+    write_html(args.html.as_deref(), &mut batch)
+}
+
+/// How the cell QC decided, as the counts table says: the near-empty
+/// floor alone under `--no-cell-qc`, else the MAD band too.
+pub(super) fn cell_rule(no_cell_qc: bool, mads: f32) -> String {
+    match no_cell_qc {
+        true => "floor only".into(),
+        false => format!("{mads} MADs"),
+    }
+}
+
+/// The counts `faba qc --dry-run` prints, as TSV: each batch's cells kept
+/// of all (`cells`, by the cell QC's `rule`), each site threshold's
+/// counts per modality; then, after a blank line, the pairs Auto picks to
+/// show two at a time, a TSV of their own.
+pub(super) fn counts_table(
+    (rule, cells): (&str, &[(&str, usize, usize)]),
+    batch: &Batch,
+) -> String {
+    let mut out = String::from("level\tname\trule\tthreshold\tremoves\tonly_this\tkept\tof\n");
+    for &(name, kept, n) in cells {
+        out.push_str(&format!(
+            "cells\t{name}\tcell QC\t{rule}\t{}\t\t{kept}\t{n}\n",
+            n - kept,
+        ));
+    }
     let (counts, pairs) = batch.counts();
     for t in counts {
         out.push_str(&format!(
@@ -409,17 +437,17 @@ fn dry_run(args: &QcArgs, figures: Figures) -> anyhow::Result<()> {
             p.split
         ));
     }
-    print!("{out}");
-    if args.plots {
-        write_dry_plots(args, &mut batch, figures)?;
-    }
-    write_html(args, &mut batch)
+    out
 }
 
 /// `figures` saved under `out/qc_plots/` as PDF and PNG (a stem's
 /// folder made first), in parallel, each a step on `progress`; those not
 /// saved, and why.
-fn save_figures(out: &str, figures: &[Figure], progress: &Progress) -> Vec<(String, String)> {
+pub(super) fn save_figures(
+    out: &str,
+    figures: &[Figure],
+    progress: &Progress,
+) -> Vec<(String, String)> {
     use rayon::prelude::*;
     if figures.is_empty() {
         return Vec::new();
@@ -506,7 +534,7 @@ fn filter_fileset(
             &Progress::default(),
         )?;
         if let Some(b) = &mut batch {
-            write_html(args, b)?;
+            write_html(args.html.as_deref(), b)?;
         }
         return Ok(Some(args.site.clone()));
     }

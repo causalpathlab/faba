@@ -21,6 +21,7 @@ pub mod scale;
 pub mod site_plot;
 pub mod site_tui;
 pub mod sites;
+pub mod view;
 
 #[cfg(test)]
 #[path = "tests/fixtures.rs"]
