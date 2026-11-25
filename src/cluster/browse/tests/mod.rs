@@ -17,6 +17,7 @@ mod figure;
 mod gene;
 mod go_column;
 mod json;
+mod margins;
 mod model;
 mod posterior;
 mod report;

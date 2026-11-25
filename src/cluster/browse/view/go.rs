@@ -189,16 +189,6 @@ fn said(s: String, style: Style) -> Line<'static> {
     Line::from(Span::styled(format!(" {s}"), style))
 }
 
-/// A term's name: a GO term's own; a GMT's name column is its description
-/// (a URL, or `-`), so its id names it.
-fn named(h: &Hit) -> &str {
-    if h.namespace.is_empty() {
-        &h.id
-    } else {
-        &h.name
-    }
-}
-
 /// Gene module `g`'s lines of `table`, `width` columns wide.
 fn go_lines(table: &Table, g: usize, width: u16) -> Vec<Line<'static>> {
     let Some(m) = table.of(g) else {
@@ -227,7 +217,7 @@ fn go_lines(table: &Table, g: usize, width: u16) -> Vec<Line<'static>> {
     ));
     let room = (width as usize).saturating_sub(4);
     for (i, h) in m.hits.iter().enumerate() {
-        let name: String = named(h).chars().take(46).collect();
+        let name: String = h.named().chars().take(46).collect();
         let text = format!(
             "{:>2}  {:<2} {:<46} {:>9} {:>6.2} {:>8.1e}  {}",
             i + 1,
@@ -255,7 +245,7 @@ type Piece = (String, Style);
 /// and its q.
 fn term(h: &Hit, w: usize) -> Vec<Piece> {
     let q = format!(" {:.1e}", h.q);
-    let name = named(h);
+    let name = h.named();
     let room = w.saturating_sub(q.chars().count());
     let name = match name.chars().count() > room {
         true => (name.chars().take(room.saturating_sub(1)))

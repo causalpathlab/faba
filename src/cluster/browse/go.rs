@@ -164,6 +164,18 @@ pub struct Hit {
     pub genes: Vec<String>,
 }
 
+impl Hit {
+    /// Its name: a GO term's own; a GMT's name column is its description
+    /// (a URL, or `-`), so its id names it.
+    pub fn named(&self) -> &str {
+        if self.namespace.is_empty() {
+            &self.id
+        } else {
+            &self.name
+        }
+    }
+}
+
 /// One gene module's terms: its genes before and after the weight cut (in
 /// the universe), and the terms listed.
 #[derive(Debug, Clone, PartialEq)]
