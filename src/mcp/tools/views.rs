@@ -279,8 +279,9 @@ pub(in crate::mcp) fn view_open(a: &Arguments, cx: &Call) -> Result<Vec<Content>
         "answers": answers,
         "note": format!(
             "the view runs detached until the user attaches: ask them to run `{attach}` in a terminal{}; \
-             Ctrl+Alt+D detaches again, q leaves the view (and ends the session)",
-            if window { " (a Terminal window is open on it)" } else { "" }
+             {} detaches again, q leaves the view (and ends the session)",
+            if window { " (a Terminal window is open on it)" } else { "" },
+            legume_tui::detach_key(),
         ),
     });
     if let Some(why) = no_window.filter(|w| !w.is_empty()) {
