@@ -20,7 +20,7 @@ const TRACK_LABEL: u16 = 12;
 
 /// What the strip says before anything is pinned.
 const EMPTY: &str =
-    "Space on a site pins its gene here, or Alt-drag its row down; pins can come from any module";
+    "Space on a site pins its gene here, or Ctrl-drag its row down; pins can come from any module";
 
 /// How the strip's rows fall: a model row (when models are drawn), the
 /// tracks, `lines` rows a side each, then the pointer and the names.
