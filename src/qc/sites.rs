@@ -37,6 +37,9 @@ pub struct SiteTable {
     pub coverage: Vec<u64>,
     pub converted: Vec<u64>,
     pub control_coverage: Vec<u64>,
+    /// Converted reads on the control arm, for drawing that arm's own
+    /// values beside the signal's; no threshold reads it.
+    pub control_converted: Vec<u64>,
     /// `converted / coverage` on the signal arm.
     pub edit_ratio: Vec<f32>,
     /// Signal edit rate over control edit rate; `+inf` at a clean control.
@@ -282,6 +285,7 @@ pub fn site_table_of(batch: RecordBatch, modality: &str) -> anyhow::Result<SiteT
         coverage: coverage.values().to_vec(),
         converted: converted.values().to_vec(),
         control_coverage: control_coverage.values().to_vec(),
+        control_converted: control_converted.values().to_vec(),
         edit_ratio,
         fold,
         raw_log_odds,

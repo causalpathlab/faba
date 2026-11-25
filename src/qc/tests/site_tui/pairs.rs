@@ -130,7 +130,7 @@ fn the_figure_draws_each_pair() {
         &picked,
         &f,
         (720.0, 640.0),
-        "m6a sites, two thresholds at a time",
+        ("m6a sites, two thresholds at a time", Default::default()),
         &Default::default(),
     );
     assert!(
@@ -175,7 +175,14 @@ fn the_pairs_panels_alone_in_gray() {
         look,
     };
     let style = sheet.style((360.0, 320.0));
-    let svg = pairs::figure(&s, &picked, &f, (360.0, 320.0), "TITLE1", &style);
+    let svg = pairs::figure(
+        &s,
+        &picked,
+        &f,
+        (360.0, 320.0),
+        ("TITLE1", Default::default()),
+        &style,
+    );
     let first = format!("{} by {}", picked[0].1.short(), picked[0].0.short());
     for gone in [
         "TITLE1",
@@ -187,14 +194,18 @@ fn the_pairs_panels_alone_in_gray() {
     ] {
         assert!(!svg.contains(gone), "{gone}");
     }
-    assert!(svg.contains(picked[0].0.name()), "axis titles stay");
+    let x_title = match picked[0].0 {
+        Axis::Pvalue => crate::qc::arms::PAxis::P.name(),
+        a => a.name(),
+    };
+    assert!(svg.contains(x_title), "axis titles stay");
     assert!(all_gray(&svg), "{svg}");
     assert!(!all_gray(&pairs::figure(
         &s,
         &picked,
         &f,
         (360.0, 320.0),
-        "T",
+        ("T", Default::default()),
         &Default::default()
     )));
 }
@@ -355,7 +366,10 @@ fn the_qc_figures_on_one_page_share_one_label_size() {
 
 /// The knob, pairs and cells figures at their own size, no font asked for,
 /// are drawn as they always were (the pairs and the cells since their
-/// labels took the figure's font, as the knob's do); the knob and the pairs on each
+/// labels took the figure's font, as the knob's do; the knob and the pairs
+/// since they draw the control arm behind the signal's, the signal's
+/// filtered out white and outlined, the thresholds' lines orange-red with
+/// their words, the p-value read as p); the knob and the pairs on each
 /// quantity's one scale (see `crate::qc::scale`), as the site panels draw
 /// it: the p-value's knob on linear bins.
 #[test]
@@ -382,8 +396,8 @@ fn the_default_qc_figures_are_unchanged() {
     assert_eq!(
         shown,
         [
-            1047802977818497795,
-            8772720758665631927,
+            5043419926204361356,
+            3768601236476313695,
             1460898763073091392
         ]
     );

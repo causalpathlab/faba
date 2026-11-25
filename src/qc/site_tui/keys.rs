@@ -48,6 +48,91 @@ impl SitePicker<'_> {
         }
     }
 
+    /// The arms drawn as `change` says (`f`, `u`): every image drawn
+    /// again.
+    pub(super) fn restyle(&mut self, change: impl FnOnce(&mut crate::qc::arms::ArmLook)) {
+        change(&mut self.arm_look);
+        self.redraw_pairs();
+    }
+
+    /// Every 2D panel's image drawn again at its next draw.
+    fn redraw_pairs(&mut self) {
+        self.pair_drawn = Default::default();
+        self.meta_plot.invalidate();
+    }
+
+    /// What `t` titles: the panel `s` saves, the focused pair in 2D (its x
+    /// and y), else the focused knob's histogram (its quantity, then its
+    /// counts: `None`).
+    pub(super) fn titled(&self) -> (Axis, Option<Axis>) {
+        let pair = (self.two_d)
+            .then(|| {
+                self.view()
+                    .shown_pairs()
+                    .get(self.pair_at)
+                    .map(|p| (p.0, p.1))
+            })
+            .flatten();
+        match pair {
+            Some((x, y)) => (x, Some(y)),
+            None => (Axis::of(self.criterion()), None),
+        }
+    }
+
+    /// `t`: type the x title, then the y title, of the panel `s` saves,
+    /// starting from those asked for.
+    fn start_titles(&mut self) {
+        let (x, _) = self.titled();
+        let buf = self.titles.given(x, false).unwrap_or_default().to_string();
+        self.mode = Mode::Title {
+            y: false,
+            buf,
+            x: None,
+        };
+    }
+
+    /// A key while typing an axis title: Enter takes the x title and asks
+    /// for the y, then sets both; Esc leaves them as they were.
+    pub(super) fn title_key(&mut self, key: KeyEvent) {
+        let (x_axis, y_axis) = self.titled();
+        let Mode::Title { y, buf, x } = &mut self.mode else {
+            return;
+        };
+        match key.code {
+            _ if is_apply(&key) || key.code == KeyCode::Enter => {
+                let typed = std::mem::take(buf).trim().to_string();
+                let typed = (!typed.is_empty()).then_some(typed);
+                if !*y {
+                    let own = match y_axis {
+                        Some(a) => self.titles.given(a, true),
+                        None => self.titles.given_sites(),
+                    };
+                    let buf = own.unwrap_or_default().to_string();
+                    self.mode = Mode::Title {
+                        y: true,
+                        buf,
+                        x: typed,
+                    };
+                    return;
+                }
+                let x = x.take();
+                self.titles.set(x_axis, false, x);
+                match y_axis {
+                    Some(a) => self.titles.set(a, true, typed),
+                    None => self.titles.set_sites(typed),
+                }
+                self.mode = Mode::Browse;
+                self.redraw_pairs();
+            }
+            KeyCode::Char(ch) if buf.chars().count() < 80 => buf.push(ch),
+            KeyCode::Backspace => {
+                buf.pop();
+            }
+            KeyCode::Esc => self.mode = Mode::Browse,
+            _ => {}
+        }
+    }
+
     /// A key while typing into the gene list's filter. Letters type, so
     /// only the arrow keys move through the matches.
     pub(super) fn find_key(&mut self, key: KeyEvent) {
@@ -127,6 +212,11 @@ impl SitePicker<'_> {
         }
         // `d` as it was before `v` cycled every view's look.
         keys.push(("v/d", "2D panels or histograms"));
+        keys.extend([
+            ("f", "WT or MUT in front"),
+            ("u", "p axis: p or -log10 p"),
+            ("t", "x and y titles of the panel s saves"),
+        ]);
         // In 2D the weight's plots are hidden: `w` changes nothing seen.
         match self.two_d {
             true => keys.push(("A", "auto pairs")),
@@ -177,6 +267,9 @@ impl SitePicker<'_> {
             }
             // `d` as it was before `v` cycled every view's look.
             KeyCode::Char('v' | 'd') => self.toggle_two_d(),
+            KeyCode::Char('f') => self.restyle(|l| l.front = l.front.next()),
+            KeyCode::Char('u') => self.restyle(|l| l.p_axis = l.p_axis.next()),
+            KeyCode::Char('t') => self.start_titles(),
             KeyCode::Char('A') if self.two_d => self.auto_pairs(),
             KeyCode::Left | KeyCode::Char('h') if self.panel == Panel::Pairs => self.step_pair(-1),
             KeyCode::Right | KeyCode::Char('l') if self.panel == Panel::Pairs => self.step_pair(1),

@@ -121,7 +121,7 @@ impl SitePicker<'_> {
             said,
         );
         if !images {
-            draw_cells(frame, plot, &g);
+            draw_cells(frame, plot, &g, self.arm_look.front);
             return;
         }
         // Its image is drawn again only when what it shows changed.
@@ -130,9 +130,14 @@ impl SitePicker<'_> {
             self.pair_drawn[k] = Some(key);
         }
         let mut image = std::mem::take(&mut self.pair_plots[k]);
+        let how = pairs::PairLook {
+            arms: self.arm_look,
+            titles: Some(&self.titles),
+        };
+        let none = (Default::default(), 0.0);
         if let Some(picker) = self.controls.images() {
             image.render(frame, plot, picker, |w, h| {
-                figure::svg(w, h, |c| g.draw(c, (0.0, 0.0, w, h), ""))
+                figure::svg(w, h, |c| g.draw_with(c, (0.0, 0.0, w, h), "", none, &how))
             });
         }
         self.pair_plots[k] = image;
@@ -173,15 +178,17 @@ impl SitePicker<'_> {
             &v.shown_pairs(),
             &self.filter,
             size,
-            &title,
+            (&title, self.arm_look),
             &style,
         )
     }
 }
 
 /// The panel drawn in the terminal's own cells, without images: a square
-/// a cell, kept or removed by its colour and deeper as it holds more.
-fn draw_cells(frame: &mut Frame, area: Rect, g: &pairs::Grid) {
+/// a cell, the arm in front first (see [`pairs::Grid::front_tone`]): the
+/// signal arm's kept solid in its colour, its removed shaded, the control
+/// arm's solid gray, each deeper as it holds more.
+fn draw_cells(frame: &mut Frame, area: Rect, g: &pairs::Grid, front: crate::qc::arms::Front) {
     let (w, h) = (area.width as usize, area.height as usize);
     if w < 4 || h < 2 {
         return;
@@ -191,12 +198,22 @@ fn draw_cells(frame: &mut Frame, area: Rect, g: &pairs::Grid) {
         for col in 0..w {
             let bx = col * g.squares.bins / w;
             let by = (h - 1 - row) * g.squares.bins / h;
-            if let Some((r, gr, b)) = g.squares.colour(by * g.squares.bins + bx) {
-                let cell = &mut buf[(area.x + col as u16, area.y + row as u16)];
-                cell.set_char('█').set_fg(Color::Rgb(r, gr, b));
-            }
+            let at = by * g.squares.bins + bx;
+            let palette = crate::figure::style::Palette::Colour;
+            let (glyph, (r, gr, b)) = match g.front_tone(at, palette, front) {
+                Some(pairs::Tone::Fill(rgb)) => ('█', rgb),
+                Some(pairs::Tone::Outlined(rgb)) => ('░', invert(rgb)),
+                None => continue,
+            };
+            let cell = &mut buf[(area.x + col as u16, area.y + row as u16)];
+            cell.set_char(glyph).set_fg(Color::Rgb(r, gr, b));
         }
     }
+}
+
+/// A dark outline's colour as a dark terminal shows it: as light.
+fn invert((r, g, b): (u8, u8, u8)) -> (u8, u8, u8) {
+    (255 - r, 255 - g, 255 - b)
 }
 
 /// The view's figures add each modality's 2D panels.

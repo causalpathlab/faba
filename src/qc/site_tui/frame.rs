@@ -20,6 +20,19 @@ impl SitePicker<'_> {
                 buf,
                 &[("Enter", "set"), ("Esc", "back")],
             ),
+            Mode::Title { y, buf, .. } => {
+                let (x_axis, y_axis) = self.titled();
+                let (what, next) = match (y, y_axis) {
+                    (false, _) => (format!("x title of {}", x_axis.short()), "next"),
+                    (true, Some(a)) => (format!("y title of {}", a.short()), "set"),
+                    (true, None) => ("y title of the counts".into(), "set"),
+                };
+                input_line(
+                    &format!("{what} (empty: its own): "),
+                    buf,
+                    &[("Enter", next), ("Esc", "back")],
+                )
+            }
             Mode::Writing => help_line(&[("", "writing; the view closes when done")]),
             Mode::Find => input_line(
                 "gene: ",
@@ -68,7 +81,7 @@ impl SitePicker<'_> {
                 ("Esc", "clear find / back"),
             ],
             Mode::Browse => self.browse_footer(),
-            Mode::Edit(_) | Mode::Find | Mode::Writing => return None,
+            Mode::Edit(_) | Mode::Title { .. } | Mode::Find | Mode::Writing => return None,
         })
     }
 
@@ -112,6 +125,7 @@ impl SitePicker<'_> {
             });
         }
         keys.push(("v", if self.two_d { "histograms" } else { "2D" }));
+        keys.extend([("f", "front"), ("u", "p axis"), ("t", "titles")]);
         // In 2D the weight's plots are hidden: `w` changes nothing seen.
         match self.two_d {
             true => keys.push(("A", "auto pairs")),
@@ -136,9 +150,11 @@ impl SitePicker<'_> {
         .areas(frame.area());
 
         let scales = format!(
-            "x {} · y {}{}",
+            "x {} · y {} · {} in front · p axis {}{}",
             self.scale().name(),
             self.y_scale.name(),
+            self.arm_look.front.name(),
+            self.arm_look.p_axis.name(),
             self.controls.tag()
         );
         let badge = if self.read_only() { "qc-view" } else { "qc" };

@@ -555,3 +555,36 @@ fn a_small_figure_keeps_its_notes_on_the_page() {
         }
     }
 }
+
+/// Below 2.4 inches the x axis' title stays on the panel, not run off its
+/// right edge: at 2.0 by 1.8 inches at 7 points shortened (what the scale
+/// is dropped), narrower still on it; at 2.4 as before.
+#[test]
+fn the_x_title_fits_a_narrow_panel() {
+    let h = hist_with_reads();
+    let (ht, font) = (1.8 * 72.0, 7.0);
+    let title_at = |w: f64| {
+        let sheet = Sheet {
+            page: (Some(w), Some(ht)),
+            look: StyleArgs {
+                font_size: Some(font),
+                ..Default::default()
+            },
+        };
+        let svg = super::figure("TITLE1", &h, sheet, &AxisTitles::default());
+        let em = font / 8.0;
+        let title: Vec<_> = (crate::figure::text_boxes(&svg).into_iter())
+            .filter(|(_, s)| s.starts_with("metagene position"))
+            .collect();
+        assert_eq!(title.len(), 1, "{title:?}");
+        let ((left, _, right, _), said) = title[0].clone();
+        assert!(
+            left * em >= -0.01 && right * em <= w + 0.01,
+            "{said} at {left}..{right} off {w}"
+        );
+        said
+    };
+    assert_eq!(title_at(2.0 * 72.0), "metagene position");
+    assert!(title_at(1.2 * 72.0).starts_with("metagene"));
+    assert_eq!(title_at(2.4 * 72.0), "metagene position (MetaPlotR scale)");
+}
