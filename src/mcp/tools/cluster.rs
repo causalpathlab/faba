@@ -211,7 +211,7 @@ fn drawn(prefix: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use crate::mcp::args::{known_keys, typed_flags, with_typed, Arguments};
+    use crate::mcp::args::{known_keys, push_opt, typed_flags, with_typed, Arguments};
 
     use crate::mcp::schema::tools;
 
@@ -303,6 +303,32 @@ mod tests {
             props["size_bars"]["items"]["enum"],
             json!(["left", "top", "bottom"])
         );
+    }
+
+    /// `look` "bars" and `block_bars` reach `faba cluster-view` as it
+    /// parses them: the look named in the hand-written enum, the switch
+    /// made from its flag.
+    #[test]
+    fn cluster_view_takes_the_bars_look_and_block_bars() {
+        let props = properties("cluster_view").unwrap();
+        let looks = props["look"]["enum"].as_array().unwrap();
+        assert!(looks.contains(&json!("bars")), "{looks:?}");
+        assert_eq!(props["block_bars"]["type"], json!("boolean"));
+        for (look, block_bars) in [("bars", false), ("hinton", true)] {
+            let a = Arguments(json!({ "look": look, "block_bars": block_bars, "figure": "f" }));
+            let mut argv: Vec<String> = ["faba", "cluster-view", "fit.run.json", "--figure", "f"]
+                .into_iter()
+                .map(String::from)
+                .collect();
+            push_opt(&mut argv, "--look", a.str("look"));
+            argv.extend(typed_flags("cluster_view", &a).unwrap());
+            let cli = <crate::Cli as clap::Parser>::try_parse_from(argv).unwrap();
+            let crate::Commands::ClusterView(args) = cli.commands else {
+                panic!("not cluster-view");
+            };
+            assert_eq!(args.grid.block_bars, block_bars);
+            assert_eq!(format!("{:?}", args.look).to_lowercase(), look);
+        }
     }
 
     /// With `html` every level asked for is refused by name, saying the

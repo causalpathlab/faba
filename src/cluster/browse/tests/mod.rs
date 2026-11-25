@@ -12,6 +12,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, Mou
 use ratatui::Terminal;
 
 mod batches;
+mod block_bars;
 mod data;
 mod figure;
 mod gene;

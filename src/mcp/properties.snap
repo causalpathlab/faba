@@ -137,6 +137,7 @@ cluster within type="string"
 cluster within_min_cells type="integer" minimum=0.0
 cluster_view batch_groups type="string"
 cluster_view batches type="boolean"
+cluster_view block_bars type="boolean"
 cluster_view cells type="boolean"
 cluster_view data type="string"
 cluster_view figure type="string"
@@ -154,7 +155,7 @@ cluster_view gtf type="string"
 cluster_view height type="number" minimum=0.75
 cluster_view html type="string"
 cluster_view key type="boolean"
-cluster_view look type="string" enum=["hinton","percent","shift","z"]
+cluster_view look type="string" enum=["bars","hinton","percent","shift","z"]
 cluster_view marginal_size type="number" exclusiveMinimum=0.0 maximum=1.0
 cluster_view modality type="string" enum=["atoi","count","m6a"]
 cluster_view module type="string"

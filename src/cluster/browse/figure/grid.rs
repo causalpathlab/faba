@@ -10,13 +10,14 @@
 //! the bars are as large as the page allows, the page kept as asked.
 
 use super::{
-    cells, fill, values, width, GridArgs, Ink, Look, Refused, Side, READ_OFF, READ_OFF_GRAY,
-    READ_UP, READ_UP_GRAY, SIZE_BAR,
+    cells, fill, values, width, GridArgs, Ink, Look, Refused, Side, BLOCK_EDGE, BLOCK_OFF,
+    BLOCK_OFF_GRAY, BLOCK_UP, BLOCK_UP_GRAY, READ_OFF, READ_OFF_GRAY, READ_UP, READ_UP_GRAY,
+    SIZE_BAR,
 };
 use crate::cluster::browse::go::Table;
 use crate::cluster::browse::{Count, Modules};
 use crate::figure::size::Page;
-use crate::figure::{svg, Anchor, Canvas, INK, MUTED};
+use crate::figure::{svg, Anchor, Canvas, FAINT, INK, MUTED};
 
 /// What a margin's bars show.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -146,7 +147,76 @@ fn value_text(m: &Modules, look: Look, v: f64, g: usize, j: usize) -> String {
     match look {
         Look::Z | Look::Hinton => format!("{v:+.1}"),
         Look::Shift => format!("{v:+.2}"),
-        Look::Percent => m.block(g)[j].number().unwrap_or_default(),
+        Look::Percent | Look::Bars => m.block(g)[j].number().unwrap_or_default(),
+    }
+}
+
+/// How far toward its full colour a block under the bars is drawn.
+const UNDER_BARS: f64 = 0.4;
+
+/// A block's bars: their width a share of the cell, their full height a
+/// share of half of it, so a row's bars never touch the next row's.
+const BAR_WIDTH: f64 = 0.4;
+const BAR_REACH: f64 = 0.92;
+
+/// The blocks' mirror bars, as the browser draws them: converted reads
+/// rising above a zero line, unconverted hanging below, each row on its
+/// own scale, as the browser's rows are: its `peaks` reads (the taller
+/// side of its tallest) filling a side.
+struct Bars {
+    peaks: Vec<f64>,
+    up: &'static str,
+    off: &'static str,
+}
+
+impl Bars {
+    /// The bars over `rows`, in grays or the accent.
+    fn of(m: &Modules, rows: &[usize], gray: bool) -> Self {
+        let peaks = (rows.iter())
+            .map(|&g| super::super::view::peak(m.block(g)))
+            .collect();
+        let (up, off) = match gray {
+            true => (BLOCK_UP_GRAY, BLOCK_OFF_GRAY),
+            false => (BLOCK_UP, BLOCK_OFF),
+        };
+        Self { peaks, up, off }
+    }
+
+    /// The bar width in a `cell`.
+    fn width(cell: f64) -> f64 {
+        BAR_WIDTH * (cell - 2.0)
+    }
+
+    /// Block `r`'s bar in row `i`, in the cell at `(x, y)`, `cell` points
+    /// a side, its left edge at `bx`, its zero line across the cell's
+    /// middle.
+    fn draw(&self, c: &mut Canvas, (i, r): (usize, Count), (bx, y): (f64, f64), cell: f64) {
+        let (bw, zero) = (Self::width(cell), y + cell / 2.0);
+        let side = BAR_REACH * (cell - 2.0) / 2.0 / self.peaks[i].max(1e-12);
+        let (up, off) = (side * r.up(), side * r.off());
+        c.rect(bx, zero - up, bw, up, self.up);
+        c.outlined((bx, zero, bw, off), self.off, BLOCK_EDGE);
+    }
+
+    /// The key to the bars from `(x, y)`: each side's swatch and what it
+    /// is, and their scale.
+    fn key(&self, c: &mut Canvas, (x, y): (f64, f64), f: f64, per_cell: bool) {
+        let s = 0.8 * f;
+        let mut at = x;
+        let sides: &[(&str, bool)] = match per_cell {
+            true => &[("UMIs per cell", true)],
+            false => &[("converted", true), ("unconverted", false)],
+        };
+        for &(said, up) in sides {
+            match up {
+                true => c.rect(at, y, s, s, self.up),
+                false => c.outlined((at, y, s, s), self.off, BLOCK_EDGE),
+            }
+            at += s + 0.3 * f;
+            c.text(at, y + s, said, f, Anchor::Start, MUTED);
+            at += width(said, f) + 0.8 * f;
+        }
+        c.text(at, y + s, "one scale a row", f, Anchor::Start, MUTED);
     }
 }
 
@@ -163,7 +233,9 @@ pub(super) fn heatmap(
 ) -> Result<String, Refused> {
     let (rows, values) = values(m, look);
     let all: Vec<f64> = values.iter().flatten().flatten().copied().collect();
-    let diverging = look != Look::Percent;
+    let diverging = !matches!(look, Look::Percent | Look::Bars);
+    // The blocks' reads as bars: the look's own, or over another's.
+    let bars = (look == Look::Bars || grid.block_bars).then(|| Bars::of(m, &rows, ink.gray));
     let top = match diverging {
         true => all.iter().fold(0.0f64, |a, v| a.max(v.abs())),
         false => all.iter().fold(0.0f64, |a, &v| a.max(v)),
@@ -175,6 +247,7 @@ pub(super) fn heatmap(
         (Look::Percent, false) => "methylated %",
         (Look::Z, _) => "z across the cell modules",
         (Look::Hinton, _) => "z across the cell modules; square area by |z|",
+        (Look::Bars, _) => "reads in each block",
     };
     let f = ink.f;
     let names: Vec<String> = (rows.iter())
@@ -195,10 +268,15 @@ pub(super) fn heatmap(
         .map(|n| width(n, f))
         .fold(0.0, f64::max)
         + f;
-    // The plot alone: no title over it, no scale beside it, no note under.
+    // The plot alone: no title over it, no scale beside it, no note under;
+    // the bars alone have no colour scale.
     let (mut head, scale, mut foot) = (
         2.0 * f + ink.room(2.0 * f),
-        ink.room(6.0 * f),
+        if look == Look::Bars {
+            0.0
+        } else {
+            ink.room(6.0 * f)
+        },
         f + ink.room(2.0 * f),
     );
     // Each margin is `depth` cells deep, a gap from the grid and the next.
@@ -227,8 +305,14 @@ pub(super) fn heatmap(
         _ => Vec::new(),
     };
     let key_cells = refs.last().map_or(0.0, |v| (v / top.max(1e-12)).sqrt());
-    if small_key {
+    if small_key && look != Look::Bars {
         foot += 2.3 * f;
+    }
+    // The bars' key, a line: under the plot alone with `--key`, else
+    // over the note.
+    let bars_key = bars.is_some() && (small_key || !ink.panel_only);
+    if bars_key {
+        foot += 1.4 * f;
     }
     let terms = grid.go_labels.zip(go).map(|(k, t)| go_terms(t, &rows, k));
     let none = go.map_or(String::new(), |t| format!("none at q <= {}", t.q));
@@ -239,7 +323,18 @@ pub(super) fn heatmap(
             .fold(0.0, f64::max);
         widest.min(width("x", f) * GO_CHARS)
     });
-    let beside = go_w.map_or(0.0, |w| 0.6 * f + w);
+    // Each row's shift range right of the grid, as the browser has it,
+    // when the bars are drawn.
+    let ranges: Vec<String> = match bars {
+        Some(_) => (rows.iter())
+            .map(|&g| format!("Δ{:.2}", m.shift_range(g)))
+            .collect(),
+        None => Vec::new(),
+    };
+    let range_w = (ranges.iter())
+        .map(|s| 0.6 * f + width(s, f))
+        .fold(0.0, f64::max);
+    let beside = range_w + go_w.map_or(0.0, |w| 0.6 * f + w);
     let fixed = (label + nl * gap + beside + scale, head + foot);
     let units = (
         cols as f64 + nl * depth,
@@ -289,6 +384,43 @@ pub(super) fn heatmap(
                     .filter(|_| grid.values)
                     .map(|v| value_text(m, look, v, rows[i], j))
                     .filter(|t| width(t, f) <= cell - 3.0 && 1.2 * f <= cell - 2.0);
+                if let Some(b) = &bars {
+                    // Under the bars, the look's own block lightened; under
+                    // the bars alone, their zero line.
+                    match (look, v) {
+                        (Look::Bars, _) => {
+                            let (x0, x1) = (x + 1.0, x + cell - 1.0);
+                            c.line(x0, centre.1, x1, centre.1, FAINT, 0.4);
+                        }
+                        (Look::Hinton, Some(v)) => {
+                            let side = (cell - 2.0) * (v.abs() / top.max(1e-12)).min(1.0).sqrt();
+                            let colour = fill(v * UNDER_BARS, top, diverging).0;
+                            let (cx, cy) = (centre.0 - side / 2.0, centre.1 - side / 2.0);
+                            c.rect(cx, cy, side, side, &colour);
+                        }
+                        (Look::Hinton, None) => {}
+                        (_, v) => {
+                            let colour = v.map_or("#ffffff".into(), |v| {
+                                ink.fill(v * UNDER_BARS, top, diverging).0
+                            });
+                            c.rect(x + 1.0, y + 1.0, cell - 2.0, cell - 2.0, &colour);
+                        }
+                    }
+                    // The bar centred, or left of its value where that fits
+                    // beside it.
+                    let bw = Bars::width(cell);
+                    let beside = asked.filter(|t| width(t, f) + bw + 2.5 <= cell - 2.0);
+                    let bx = match beside {
+                        Some(_) => x + 1.5,
+                        None => centre.0 - bw / 2.0,
+                    };
+                    b.draw(c, (i, m.block(rows[i])[j]), (bx, y), cell);
+                    if let Some(t) = beside {
+                        let tx = x + cell - 1.5;
+                        c.text(tx, centre.1 + f / 2.5, &t, f, Anchor::End, INK);
+                    }
+                    continue;
+                }
                 if look == Look::Hinton {
                     // A true square, centred, none for a block without reads.
                     let Some(v) = v else { continue };
@@ -317,7 +449,9 @@ pub(super) fn heatmap(
                         match look {
                             Look::Shift | Look::Z | Look::Hinton => format!("{v:+.2}"),
                             // As the grid writes it: a whole %, or UMIs per cell.
-                            Look::Percent => m.block(rows[i])[j].number().unwrap_or_default(),
+                            Look::Percent | Look::Bars => {
+                                m.block(rows[i])[j].number().unwrap_or_default()
+                            }
                         },
                         font,
                     ),
@@ -399,10 +533,15 @@ pub(super) fn heatmap(
                 c.text(gx - gap, y, &said, f, Anchor::End, MUTED);
             }
         }
-        // Each gene module's top GO terms on its row, right of the grid,
-        // as many lines as the row holds.
+        // Each row's shift range right of the grid.
+        for (i, said) in ranges.iter().enumerate() {
+            let y = head + cell * (i as f64 + 0.5) + f / 2.5;
+            c.text(right + 0.6 * f, y, said, f, Anchor::Start, MUTED);
+        }
+        // Each gene module's top GO terms on its row, right of the grid
+        // and the ranges, as many lines as the row holds.
         if let (Some(terms), Some(go_w)) = (&terms, go_w) {
-            let x = right + 0.6 * f;
+            let x = right + range_w + 0.6 * f;
             if !ink.panel_only {
                 let q = go.map_or(0.0, |t| t.q);
                 c.text(
@@ -437,22 +576,34 @@ pub(super) fn heatmap(
             Look::Z | Look::Hinton => format!("{v:.1}"),
             _ => format!("{v:.2}"),
         };
-        if small_key {
+        let below = (!left.is_empty() && !labels_over).then_some(nl * 1.1 * f);
+        let ky = bottom + nb * (d + gap) + below.unwrap_or(0.0) + 0.6 * f;
+        let x0 = 0.5 * f;
+        if let Some(b) = bars.as_ref().filter(|_| bars_key) {
+            // Under the colour key, or over the note, or in its place.
+            let y = match (ink.panel_only, look) {
+                (false, _) => h - 3.0 * f,
+                (true, Look::Bars) => ky,
+                // Under the Hinton key's squares and their labels too.
+                (true, _) => ky + (2.3 * f).max(key_cells * (cell - 2.0) + 1.4 * f),
+            };
+            b.key(c, (x0, y), f, per_cell);
+        }
+        if small_key && look != Look::Bars {
             // Under everything, from the page's left: the colour scale
             // (labelled at its ends and middle), then for the Hinton look
             // squares at reference |z|, each its area as in the grid.
-            let below = (!left.is_empty() && !labels_over).then_some(nl * 1.1 * f);
-            let ky = bottom + nb * (d + gap) + below.unwrap_or(0.0) + 0.6 * f;
-            let x0 = 0.5 * f;
             let ends = [tick(low), tick((top + low) / 2.0), tick(top)];
             let said = ends.iter().map(|t| width(t, f)).sum::<f64>() + 2.0 * f;
             let rw = said.max(6.0 * f).min(right - x0);
+            // Lightened as the blocks are under the bars.
+            let shade = if bars.is_some() { UNDER_BARS } else { 1.0 };
             let steps = 24;
             for k in 0..steps {
                 let v = low + (top - low) * (k as f64 + 0.5) / steps as f64;
                 let colour = match look {
-                    Look::Hinton => fill(v, top, diverging).0,
-                    _ => ink.fill(v, top, diverging).0,
+                    Look::Hinton => fill(v * shade, top, diverging).0,
+                    _ => ink.fill(v * shade, top, diverging).0,
                 };
                 let step = rw / steps as f64;
                 c.rect(x0 + step * k as f64, ky, step + 0.3, 0.7 * f, &colour);
@@ -487,7 +638,13 @@ pub(super) fn heatmap(
                     for (v, s) in refs[from..].iter().zip(&sides[from..]) {
                         let slot = room(v, s) - 0.8 * f;
                         let cx = at + slot / 2.0;
-                        c.rect(cx - s / 2.0, ky, *s, *s, &fill(*v, top, diverging).0);
+                        c.rect(
+                            cx - s / 2.0,
+                            ky,
+                            *s,
+                            *s,
+                            &fill(*v * shade, top, diverging).0,
+                        );
                         c.text(cx, label_y, &format!("{v}"), f, Anchor::Middle, MUTED);
                         at += slot + 0.8 * f;
                     }
@@ -495,6 +652,10 @@ pub(super) fn heatmap(
             }
         }
         if ink.panel_only {
+            return;
+        }
+        if look == Look::Bars {
+            c.text(label, h - f, what, f, Anchor::Start, MUTED);
             return;
         }
         // The scale: a column of steps from the top value down to its other

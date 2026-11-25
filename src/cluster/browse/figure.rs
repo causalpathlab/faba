@@ -233,6 +233,13 @@ pub struct GridArgs {
         help = "Label each gene module's row, right of the grid, with its top N GO terms (or --gmt sets) and their q, as the browser's GO column lists them (--gaf, --obo, --gmt, --go-q, --go-min-weight)"
     )]
     pub go_labels: Option<usize>,
+
+    #[arg(
+        long = "block-bars",
+        requires = "figure",
+        help = "Draw each block's reads as --look bars draws them (converted up, unconverted down, one scale) over the look's own block, lightened"
+    )]
+    pub block_bars: bool,
 }
 
 /// The margin bars' depth when `--marginal-size` is not given.
@@ -247,6 +254,7 @@ impl Default for GridArgs {
             key: false,
             values: false,
             go_labels: None,
+            block_bars: false,
         }
     }
 }
@@ -285,6 +293,14 @@ pub const READ_OFF: &str = MUTED;
 /// The same in grays: dark, and light.
 const READ_UP_GRAY: &str = "#262626";
 const READ_OFF_GRAY: &str = "#b3b3b3";
+/// The blocks' bars: converted reads in the accent, unconverted in a light
+/// tone outlined so it reads on white paper; in grays, dark and light.
+pub const BLOCK_UP: &str = crate::figure::ACCENT;
+pub const BLOCK_OFF: &str = "#f2efe9";
+pub const BLOCK_UP_GRAY: &str = READ_UP_GRAY;
+pub const BLOCK_OFF_GRAY: &str = "#d9d9d9";
+/// The light bars' outline, and its width in points.
+const BLOCK_EDGE: (&str, f64) = (MUTED, 0.5);
 
 /// The GO terms `--go-labels` puts on the grid, read as `ask` says; none
 /// read without it.
@@ -435,6 +451,10 @@ pub enum Look {
     /// That z as a Hinton diagram: a square per block, its area by |z|
     /// against the largest, coloured as `z`.
     Hinton,
+    /// Its reads as the browser's mirror bars: converted rising above a
+    /// zero line, unconverted hanging below, every block on one scale;
+    /// the rows by shift range, as the browser orders them.
+    Bars,
 }
 
 /// The diverging pair and its neutral midpoint, and the sequential ramp's
@@ -457,15 +477,19 @@ fn fill(v: f64, top: f64, diverging: bool) -> (String, bool) {
 }
 
 /// Each gene module's value in each cell module under `look`, rows the
-/// gene modules with sites in the diagonal order, columns as the panes show
-/// them; none for a block without reads.
+/// gene modules with sites in the diagonal order (by shift range for the
+/// bars, as the browser orders them), columns as the panes show them;
+/// none for a block without reads.
 fn values(m: &Modules, look: Look) -> (Vec<usize>, Vec<Vec<Option<f64>>>) {
-    let rows = m.diagonal.clone();
+    let rows = match look {
+        Look::Bars => m.order.clone(),
+        _ => m.diagonal.clone(),
+    };
     let values = rows
         .iter()
         .map(|&g| match look {
             Look::Shift => (m.columns.iter()).map(|&c| Some(m.shift(c, g))).collect(),
-            Look::Percent => (m.block(g).iter())
+            Look::Percent | Look::Bars => (m.block(g).iter())
                 .map(|r| {
                     r.fraction()
                         .map(|f| if m.per_cell() { f } else { 100.0 * f })

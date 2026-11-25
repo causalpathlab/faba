@@ -42,6 +42,7 @@ mod pins;
 mod strip;
 mod trace;
 
+pub(super) use bars::peak;
 #[cfg(test)]
 pub use bars::{eighths, hanging};
 #[cfg(test)]
