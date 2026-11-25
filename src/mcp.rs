@@ -22,6 +22,7 @@ mod schema;
 mod tools;
 
 use crate::mcp::args::{known_keys, with_typed, Arguments};
+use crate::mcp::run::Binary;
 use crate::mcp::schema::tools;
 use crate::mcp::tools::cluster::{cluster, cluster_view};
 use crate::mcp::tools::docs::docs;
@@ -86,7 +87,11 @@ tool's command is an argument of the tool, typed, named after the flag \
 opening a view; `options` remains for anything else, as `faba <command> \
 --help` lists it, and a flag given both ways is refused. Results \
 give the paths written and what the run recorded (`results`: a fit's ELBO \
-verdict, its cluster sizes).";
+verdict, its cluster sizes). \
+docs gives this server's `version`. A call is refused when the faba it \
+would run is another version than the server's, or is the server's own \
+file rebuilt since it started: the server then needs a restart or a \
+reconnect.";
 
 pub fn run_mcp(_args: &McpArgs) -> Result<()> {
     let info = ServerInfo {
@@ -94,10 +99,17 @@ pub fn run_mcp(_args: &McpArgs) -> Result<()> {
         version: env!("CARGO_PKG_VERSION").into(),
         instructions: Some(INSTRUCTIONS.into()),
     };
-    legume_mcp::serve(info, Faba)
+    legume_mcp::serve(
+        info,
+        Faba {
+            binary: Binary::this_server(),
+        },
+    )
 }
 
-struct Faba;
+struct Faba {
+    binary: Binary,
+}
 
 impl Handler for Faba {
     fn tools(&self) -> Vec<ToolSpec> {
@@ -112,6 +124,8 @@ impl Handler for Faba {
         };
         // Before anything is resolved (`out` may make today's folder).
         known_keys(name, &args)?;
+        // Every tool runs faba: refused when it is not this server's.
+        self.binary.check()?;
         let a = Arguments(with_typed(name, args)?);
         let v = match name {
             "docs" => return docs(&a, cx),

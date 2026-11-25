@@ -2,20 +2,162 @@
 //! call's result.
 
 use crate::mcp::args::Arguments;
-use anyhow::{ensure, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use legume_mcp::{Call, Content};
 use serde_json::{json, Map, Value};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::SystemTime;
 
 /// `faba -v` with `argv`. `-v` so the child's log lines come back as
-/// progress. The binary is this server's own, so a `cargo install` that
-/// replaces it while the server runs still reaches the running image.
+/// progress. The binary is this server's own path: where the file there is
+/// replaced while the server runs (a `cargo install`), macOS runs the new
+/// file, and Linux, its path read from `/proc/self/exe` now naming a
+/// deleted file, runs the server's own image. [`Binary::check`] refuses a
+/// new file that is not the server's build.
 pub(super) fn command(argv: &[String]) -> Result<Command> {
     let mut args = Vec::with_capacity(argv.len() + 1);
     args.push("-v".to_string());
     args.extend(argv.iter().cloned());
     legume_mcp::own_command(args)
+}
+
+/// The executable [`command`] runs.
+fn exe() -> Result<PathBuf> {
+    Ok(PathBuf::from(command(&[])?.get_program()))
+}
+
+/// What tells one file from another at a path: its modified time, size
+/// and inode.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Stamp {
+    modified: Option<SystemTime>,
+    len: u64,
+    inode: u64,
+}
+
+fn stamp(path: &Path) -> Option<Stamp> {
+    let m = std::fs::metadata(path).ok()?;
+    #[cfg(unix)]
+    let inode = std::os::unix::fs::MetadataExt::ino(&m);
+    #[cfg(not(unix))]
+    let inode = 0;
+    Some(Stamp {
+        modified: m.modified().ok(),
+        len: m.len(),
+        inode,
+    })
+}
+
+/// The faba a call runs, checked against this server's version and, when it
+/// is the server's own file, its build: a server started from another faba
+/// has another tool schema, so its calls would drop or refuse flags the
+/// binary has.
+pub(super) struct Binary {
+    version: String,
+    /// The server's own executable and its stamp when the server started.
+    started: Option<(PathBuf, Stamp)>,
+    /// Each executable's version, by its stamp when asked.
+    seen: HashMap<PathBuf, (Option<Stamp>, String)>,
+}
+
+impl Binary {
+    /// A check for a server of `version`, its start unknown.
+    fn new(version: &str) -> Self {
+        Self {
+            version: version.into(),
+            started: None,
+            seen: HashMap::new(),
+        }
+    }
+
+    /// A check for a server of `version` started from the executable `exe`.
+    fn started_from(version: &str, exe: &Path) -> Self {
+        Self {
+            started: stamp(exe).map(|s| (exe.to_path_buf(), s)),
+            ..Self::new(version)
+        }
+    }
+
+    /// This server's, started from the executable [`command`] runs.
+    pub(super) fn this_server() -> Self {
+        let version = env!("CARGO_PKG_VERSION");
+        match exe() {
+            Ok(exe) => Self::started_from(version, &exe),
+            Err(_) => Self::new(version),
+        }
+    }
+
+    /// Refused when the faba a call would run is not this server's version,
+    /// or is the server's own file rebuilt since the server started.
+    pub(super) fn check(&mut self) -> Result<()> {
+        self.check_exe(&exe()?)
+    }
+
+    /// [`Binary::check`] for the executable `exe`. Its `--version` is asked
+    /// once per file: again only when the file at `exe` changes.
+    fn check_exe(&mut self, exe: &Path) -> Result<()> {
+        let now = stamp(exe);
+        let theirs = match self.seen.get(exe) {
+            Some((s, v)) if *s == now => v.clone(),
+            _ => {
+                let v = version_of(exe)?;
+                self.seen
+                    .insert(exe.to_path_buf(), (now.clone(), v.clone()));
+                v
+            }
+        };
+        let since_start = match &self.started {
+            Some((path, s)) => path == exe && now.as_ref() != Some(s),
+            None => false,
+        };
+        if theirs != self.version {
+            let replaced = if since_start {
+                " (that file was replaced since this server started)"
+            } else {
+                ""
+            };
+            bail!(
+                "this MCP server is faba {ours}, but the faba it runs, {exe}, is faba \
+                 {theirs}{replaced}: the server's tool schema is out of date for it, so \
+                 arguments could be dropped or refused. Nothing was run. Ask the user to \
+                 restart or reconnect the faba MCP server, then call again.",
+                ours = self.version,
+                exe = exe.display(),
+            );
+        }
+        // Same version, another build (a rebuild that adds flags without a
+        // bump): its schema may differ all the same.
+        ensure!(
+            !since_start,
+            "the faba this MCP server runs, {exe}, is faba {theirs} too, but it was \
+             rebuilt since this server started, so the server's tool schema may be out \
+             of date for it. Nothing was run. Ask the user to restart or reconnect the \
+             faba MCP server, then call again.",
+            exe = exe.display(),
+        );
+        Ok(())
+    }
+}
+
+/// The version `exe --version` prints (`faba 0.20.0` is `0.20.0`).
+fn version_of(exe: &Path) -> Result<String> {
+    let out = Command::new(exe)
+        .arg("--version")
+        .output()
+        .with_context(|| format!("running {} --version", exe.display()))?;
+    ensure!(
+        out.status.success(),
+        "{} --version failed: {}",
+        exe.display(),
+        String::from_utf8_lossy(&out.stderr).trim()
+    );
+    let text = String::from_utf8_lossy(&out.stdout);
+    text.split_whitespace()
+        .last()
+        .map(str::to_string)
+        .with_context(|| format!("{} --version printed nothing", exe.display()))
 }
 
 pub(super) fn absolute(p: &str) -> String {
@@ -280,10 +422,108 @@ pub(super) fn qc_images(out: &str) -> Result<Vec<Content>> {
 #[cfg(test)]
 mod tests {
 
-    use super::{qc_images, recorded_results, tsv_rows, QC_IMAGES, RESULTS_INLINE};
+    use super::{qc_images, recorded_results, tsv_rows, Binary, QC_IMAGES, RESULTS_INLINE};
     use legume_mcp::Content;
     use serde_json::json;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
+
+    /// An executable at `dir/name` that prints `faba {version}` for
+    /// `--version` and counts its runs in `dir/runs`.
+    #[cfg(unix)]
+    fn fake_faba(dir: &Path, name: &str, version: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join(name);
+        let runs = dir.join("runs");
+        let script = format!(
+            "#!/bin/sh\necho run >> '{}'\necho 'faba {version}'\n",
+            runs.display()
+        );
+        std::fs::write(&path, script).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[cfg(unix)]
+    fn runs(dir: &Path) -> usize {
+        std::fs::read_to_string(dir.join("runs")).map_or(0, |t| t.lines().count())
+    }
+
+    /// A faba of another version, older or newer, is refused, naming both
+    /// versions and what to do; the same version runs.
+    #[cfg(unix)]
+    #[test]
+    fn a_faba_of_another_version_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        for theirs in ["0.1.0", "99.0.0"] {
+            let exe = fake_faba(dir.path(), &format!("faba-{theirs}"), theirs);
+            let err = Binary::new("0.20.0")
+                .check_exe(&exe)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("0.20.0"), "{err}");
+            assert!(err.contains(theirs), "{err}");
+            assert!(err.contains("restart or reconnect"), "{err}");
+            assert!(!err.contains("replaced"), "{err}");
+        }
+        let exe = fake_faba(dir.path(), "faba-same", "0.20.0");
+        Binary::new("0.20.0").check_exe(&exe).unwrap();
+    }
+
+    /// `--version` runs once per executable until the file changes.
+    #[cfg(unix)]
+    #[test]
+    fn the_version_is_asked_once_per_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = fake_faba(dir.path(), "faba", "0.20.0");
+        let mut b = Binary::new("0.20.0");
+        for _ in 0..3 {
+            b.check_exe(&exe).unwrap();
+        }
+        assert_eq!(runs(dir.path()), 1);
+        // Replaced (a new file renamed over it): asked again, and refused.
+        let next = fake_faba(dir.path(), "next", "0.21.0");
+        std::fs::rename(&next, &exe).unwrap();
+        assert!(b.check_exe(&exe).is_err());
+        assert!(b.check_exe(&exe).is_err());
+        assert_eq!(runs(dir.path()), 2);
+    }
+
+    /// The server's own executable replaced since it started is said so.
+    #[cfg(unix)]
+    #[test]
+    fn a_replaced_own_executable_is_named() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = fake_faba(dir.path(), "faba", "0.20.0");
+        let mut b = Binary::started_from("0.20.0", &exe);
+        b.check_exe(&exe).unwrap();
+        let next = fake_faba(dir.path(), "next", "0.21.0");
+        std::fs::rename(&next, &exe).unwrap();
+        let err = b.check_exe(&exe).unwrap_err().to_string();
+        assert!(err.contains("replaced since this server started"), "{err}");
+        assert!(err.contains("0.21.0") && err.contains("0.20.0"), "{err}");
+    }
+
+    /// The server's own executable rebuilt at the same version since it
+    /// started is refused as rebuilt; a server that did not start from it
+    /// runs it.
+    #[cfg(unix)]
+    #[test]
+    fn a_rebuild_of_the_same_version_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = fake_faba(dir.path(), "faba", "0.20.0");
+        let mut b = Binary::started_from("0.20.0", &exe);
+        b.check_exe(&exe).unwrap();
+        // Another build of 0.20.0: another file, another size.
+        let next = dir.path().join("next");
+        std::fs::write(&next, "#!/bin/sh\n# another build\necho 'faba 0.20.0'\n").unwrap();
+        std::fs::set_permissions(&next, std::fs::metadata(&exe).unwrap().permissions()).unwrap();
+        std::fs::rename(&next, &exe).unwrap();
+        let err = b.check_exe(&exe).unwrap_err().to_string();
+        assert!(err.contains("rebuilt since this server started"), "{err}");
+        assert!(err.contains("restart or reconnect"), "{err}");
+        assert!(!err.contains("replaced"), "{err}");
+        Binary::new("0.20.0").check_exe(&exe).unwrap();
+    }
     #[test]
     fn a_dry_run_table_reads_as_rows() {
         let rows = tsv_rows(
