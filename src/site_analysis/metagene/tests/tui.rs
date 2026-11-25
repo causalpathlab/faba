@@ -309,7 +309,9 @@ fn enter_stays_and_plus_is_finer() {
 fn a_panel_sized_page_is_not_refused() {
     let size = crate::figure::SizeArgs::new(Some(1.8), Some(1.4));
     let style = crate::figure::style::StyleArgs::default();
-    let sheet = crate::figure::style::Sheet::new(&size, &style).unwrap();
+    let sheet =
+        crate::figure::style::Sheet::new(crate::figure::size::Figure::Metagene, &size, &style)
+            .unwrap();
     let svg = super::figure("TITLE1", &hist(true), sheet);
     assert_eq!(crate::figure::svg_size(&svg), (129.6, 100.8));
     let labels = crate::figure::labels(&svg);

@@ -41,31 +41,20 @@ pub(in crate::mcp) fn cluster(a: &Arguments, cx: &Call) -> Result<Value> {
     let out = a.out_or(cx, (&named(from, tool), ""), exists)?;
     let mut argv = vec!["cluster".into()];
     argv.extend(data.iter().cloned());
-    push_opt(&mut argv, "--modality", a.str("modality"));
-    push_opt(&mut argv, "--fit", a.str("fit"));
     for pair in batch_map(a)? {
         // As one word: a batch named `-x` is not read as a flag.
         argv.push(format!("--batch-map={pair}"));
     }
-    argv.extend(a.numbers(&[
-        "cell_roles",
-        "gene_roles",
-        "chains",
-        "svi_epochs",
-        "batch_size",
-        "epochs",
-        "tol",
-    ])?);
     argv.extend(a.options("cluster")?);
     run_out(a, cx, argv, &out, &what)
 }
 
-/// `cluster_view`'s numbers for `go`, each passed as its flag.
-const GO_NUMBERS: [&str; 2] = ["go_min_weight", "go_q"];
-
 pub(in crate::mcp) fn cluster_view(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
     let data = a.path("data")?;
     let html = a.path_opt("html")?;
+    if html.is_some() {
+        no_levels_with_html(a)?;
+    }
     // What cannot be opened as it is is refused before the command runs;
     // the pages are those `html` writes, a within record's one a fit.
     let opens = crate::cluster::opens(
@@ -76,19 +65,8 @@ pub(in crate::mcp) fn cluster_view(a: &Arguments, cx: &Call) -> Result<Vec<Conte
     )?;
     let pages = opens.pages;
     let mut argv = vec!["cluster-view".into(), data.clone()];
-    push_opt(&mut argv, "--modality", a.str("modality"));
-    push_opt(&mut argv, "--group", a.str("group"));
-    push_opt(&mut argv, "--batch-groups", a.str("batch_groups"));
-    for file in ["gaf", "obo", "gmt"] {
-        if let Some(path) = a.path_opt(file)? {
-            push_flag(&mut argv, &format!("--{file}"), &path);
-        }
-    }
-    argv.extend(a.numbers(&GO_NUMBERS)?);
-    if let Some(gtf) = a.path_opt("gtf")? {
-        push_flag(&mut argv, "--gtf", &gtf);
-    }
-    // A fitting option is refused by the command itself, naming `faba cluster`.
+    // The levels, GO's files and cutoffs and the fit opened are among the
+    // typed options. A fitting option is refused by the command itself, naming `faba cluster`.
     argv.extend(a.options("cluster_view")?);
     argv.push("--batch-process".into());
     // Several figures may be asked for without a prefix: today's results
@@ -119,35 +97,51 @@ pub(in crate::mcp) fn cluster_view(a: &Arguments, cx: &Call) -> Result<Vec<Conte
             pages => json!({ "written": pages[0], "pages": pages }),
         })]);
     }
-    argv.extend(levels(a, opens.whole)?);
+    argv.extend(levels(a, opens.whole));
     let printed = cx.run_reading(command(&argv)?)?;
     let v: Value = serde_json::from_str(&printed)
         .with_context(|| format!("`faba cluster-view --json` printed no JSON: {printed}"))?;
     Ok(vec![Content::Json(v)])
 }
 
-/// The levels `cluster_view` takes as switches, in the order the command
-/// prints them.
-const LEVELS: [&str; 7] = [
-    "overview", "grid", "cells", "batches", "go", "trace", "settings",
+/// The levels `cluster_view` takes, each among the typed options.
+const LEVELS: [&str; 9] = [
+    "overview", "grid", "module", "gene", "cells", "batches", "go", "trace", "settings",
 ];
 
-/// The levels asked for, as `faba cluster-view`'s flags, printed as JSON;
-/// when none is, the overview of one fit, or a within record's listing
+/// Whether `a` asks for `level`: a switch set, or a module or gene named.
+fn asked(a: &Arguments, level: &str) -> bool {
+    !matches!(
+        a.0.get(level),
+        None | Some(Value::Null | Value::Bool(false))
+    )
+}
+
+/// Refuses a level with `html`, whose page shows every level, before the
+/// command runs, so no level flag reaches the page's command line.
+fn no_levels_with_html(a: &Arguments) -> Result<()> {
+    let given: Vec<String> = (LEVELS.into_iter())
+        .filter(|level| asked(a, level))
+        .map(|level| format!("`{level}`"))
+        .collect();
+    ensure!(
+        given.is_empty(),
+        "{} cannot be given with `html`: the page shows every level; leave the level \
+         arguments out, or drop `html` to get them as JSON",
+        given.join(", ")
+    );
+    Ok(())
+}
+
+/// `--json`, so the levels asked for are printed as JSON; when none is,
+/// with the overview of one fit, or alone for a within record's listing
 /// when it is opened `whole`. GO is read only for `go`.
-fn levels(a: &Arguments, whole: bool) -> Result<Vec<String>> {
+fn levels(a: &Arguments, whole: bool) -> Vec<String> {
     let mut argv = vec!["--json".to_string()];
-    push_opt(&mut argv, "--module", a.str("module"));
-    push_opt(&mut argv, "--gene", a.str("gene"));
-    for level in LEVELS {
-        if a.flag(level)? {
-            argv.push(format!("--{level}"));
-        }
-    }
-    if argv.len() == 1 && !whole {
+    if !whole && !LEVELS.into_iter().any(|level| asked(a, level)) {
         argv.push("--overview".into());
     }
-    Ok(argv)
+    argv
 }
 
 /// The figures asked for (`plots`, else `plot`, else the modules grid),
@@ -217,11 +211,11 @@ fn drawn(prefix: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use crate::mcp::args::{known_keys, with_typed, Arguments};
+    use crate::mcp::args::{known_keys, typed_flags, with_typed, Arguments};
 
     use crate::mcp::schema::tools;
 
-    use super::{batch_map, figures, levels, GO_NUMBERS};
+    use super::{batch_map, figures, levels, no_levels_with_html};
     use crate::mcp::schema::properties;
     use serde_json::json;
     use std::path::{Path, PathBuf};
@@ -229,22 +223,29 @@ mod tests {
     /// `cluster_view` has `faba cluster-view` print JSON, the overview
     /// when no level is named (a within record opened whole: its listing,
     /// no level at all); `json` is the tool's, not offered and refused in
-    /// `options`. Every level and the figures' look are arguments; what the
-    /// tool asks for parses as the command does.
+    /// `options`. Every level and the figures' look are arguments, the
+    /// levels as their flags; what the tool asks for parses as the command
+    /// does.
     #[test]
     fn cluster_view_asks_for_json_and_the_overview_unless_a_level_is_named() {
-        let argv = |args| levels(&Arguments(args), false).unwrap();
-        let whole = |args| levels(&Arguments(args), true).unwrap();
+        let argv = |args: serde_json::Value| {
+            let a = Arguments(args);
+            let mut argv = typed_flags("cluster_view", &a).unwrap();
+            argv.extend(levels(&a, false));
+            argv
+        };
+        let whole = |args| levels(&Arguments(args), true);
         assert_eq!(argv(json!({})), ["--json", "--overview"]);
+        assert_eq!(argv(json!({ "grid": false })), ["--json", "--overview"]);
         assert_eq!(whole(json!({})), ["--json"]);
-        assert_eq!(whole(json!({ "cells": true })), ["--json", "--cells"]);
+        assert_eq!(whole(json!({ "cells": true })), ["--json"]);
         assert_eq!(
             argv(json!({ "module": "M2" })),
-            ["--json", "--module", "M2"]
+            ["--module", "M2", "--json"]
         );
         assert_eq!(
             argv(json!({ "go": true, "grid": true, "overview": true })),
-            ["--json", "--overview", "--grid", "--go"]
+            ["--overview", "--grid", "--go", "--json"]
         );
         for args in [
             json!({}),
@@ -271,6 +272,21 @@ mod tests {
         let a = Arguments(json!({ "options": ["--json"] }));
         let err = a.options("cluster_view").unwrap_err().to_string();
         assert!(err.contains("adds it itself"), "{err}");
+    }
+
+    /// With `html` every level asked for is refused by name, saying the
+    /// page shows them all; a level switched off or null is not asked for.
+    #[test]
+    fn cluster_view_refuses_a_level_with_html() {
+        let check = |args| no_levels_with_html(&Arguments(args)).map_err(|e| e.to_string());
+        assert!(check(json!({ "html": "p.html" })).is_ok());
+        assert!(check(json!({ "go": false, "module": null })).is_ok());
+        let err = check(json!({ "go": true, "gene": "GENE1" })).unwrap_err();
+        assert!(
+            err.starts_with("`gene`, `go` cannot be given with `html`"),
+            "{err}"
+        );
+        assert!(err.contains("the page shows every level"), "{err}");
     }
 
     /// One figure is written under `figure`, several each under
@@ -480,9 +496,7 @@ mod tests {
             (q["exclusiveMinimum"].as_f64(), q["maximum"].as_f64()),
             (Some(0.0), Some(1.0))
         );
-        let flags = Arguments(json!({ "go_q": 0.1 }))
-            .numbers(&GO_NUMBERS)
-            .unwrap();
+        let flags = typed_flags("cluster_view", &Arguments(json!({ "go_q": 0.1 }))).unwrap();
         let argv = ["faba", "cluster-view", "fit.run.json"]
             .into_iter()
             .map(String::from)

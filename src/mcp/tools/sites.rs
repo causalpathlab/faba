@@ -1,7 +1,7 @@
 //! `pileup`, `metagene` and `pwm`: a directory's sites read back as
 //! tables and figures.
 
-use crate::mcp::args::{comma, no_comma, push_flag, push_opt, Arguments};
+use crate::mcp::args::{comma, no_comma, push_flag, Arguments};
 use crate::mcp::run::{
     absolute, command, exists, figure_prefix, fresh, named, outcome, run_text, svg_png,
     text_outcome, with_figure,
@@ -32,7 +32,6 @@ pub(in crate::mcp) fn pileup_argv(a: &Arguments) -> Result<(Vec<String>, bool)> 
     if !regions.is_empty() {
         push_flag(&mut argv, "--regions", &comma("regions", &regions)?);
     }
-    push_opt(&mut argv, "--modality", a.str("modality"));
     argv.extend(a.options("pileup")?);
     argv.push("--batch-process".into());
     if figure {
@@ -84,8 +83,6 @@ pub(in crate::mcp) fn metagene(a: &Arguments, cx: &Call) -> Result<Vec<Content>>
     if let Some(gff) = a.path_opt("gff")? {
         push_flag(&mut argv, "-g", &gff);
     }
-    push_opt(&mut argv, "--modality", a.str("modality"));
-    argv.extend(a.numbers(&["bins"])?);
     argv.extend(a.options("metagene")?);
     argv.push("--batch-process".into());
     argv.push("--print".into());
@@ -132,15 +129,6 @@ pub(in crate::mcp) fn pwm(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
     if let Some(genome) = a.path_opt("genome")? {
         push_flag(&mut argv, "-f", &genome);
     }
-    push_opt(&mut argv, "--modality", a.str("modality"));
-    if let Some(source) = a.str("source") {
-        ensure!(
-            source == "reference" || source == "reads",
-            "`source` is reference or reads, not {source}"
-        );
-        push_flag(&mut argv, "--source", source);
-    }
-    argv.extend(a.numbers(&["window"])?);
     argv.extend(a.options("pwm")?);
     argv.push("--batch-process".into());
     let tsv = a.out_or(cx, (&named(&data[0], "pwm"), ".tsv"), exists)?;

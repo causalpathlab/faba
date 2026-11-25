@@ -434,7 +434,7 @@ fn problems(args: &QcViewArgs, sheet: &Sheet) -> anyhow::Result<()> {
 
 pub fn run_qc_view(args: &QcViewArgs) -> anyhow::Result<()> {
     let plan = args.panels.plan()?;
-    let sheet = Sheet::new(&args.size, &args.style)?;
+    let sheet = Sheet::new(crate::figure::size::Figure::Qc, &args.size, &args.style)?;
     problems(args, &sheet)?;
     let o = open(&args.input_dir, args.gff.as_deref())?;
     if !o.applied {

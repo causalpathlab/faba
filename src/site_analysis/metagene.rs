@@ -100,7 +100,7 @@ pub struct MetageneArgs {
         long = "isoforms",
         value_enum,
         default_value = "weighted",
-        help = "How a site in several coding isoforms is counted",
+        help = "How a site in k coding isoforms is counted: 1/k on each (weighted) or 1 on each (all)",
         long_help = "How a site in several coding isoforms is counted.\n\
                      Sites are placed on every coding transcript that contains them.\n\
                      \n\
@@ -979,7 +979,11 @@ pub fn run_metagene(args: &MetageneArgs) -> anyhow::Result<()> {
     };
     let batch = crate::tui::batch(args.batch_process, "metagene");
     // The figure's page and look, checked before the sites are read.
-    let sheet = crate::figure::style::Sheet::new(&args.size, &args.style)?;
+    let sheet = crate::figure::style::Sheet::new(
+        crate::figure::size::Figure::Metagene,
+        &args.size,
+        &args.style,
+    )?;
     // In the view a spinner shows while the sites are placed.
     let what = format!("profiling {} site table(s)", site_files.len());
     let histogram = crate::tui::busy(!batch, "metagene", &what, || profile(args, &site_files))?;

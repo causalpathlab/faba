@@ -16,10 +16,68 @@ pub const MIN: (f64, f64) = (1.0, 0.75);
 
 /// The smallest a figure whose margins do not shrink with its text takes,
 /// in inches: pileup's Miami figure, cluster-view's trace and batches.
-pub const FIXED_MIN: (f64, f64) = (2.0, 1.5);
+const FIXED_MIN: (f64, f64) = (2.0, 1.5);
 
-/// [`FIXED_MIN`] in points, as [`at_least`] takes it.
-pub const FIXED_LEAST: (f64, f64) = (FIXED_MIN.0 * PT, FIXED_MIN.1 * PT);
+/// A figure faba draws, by its floor: the least size it is laid out at,
+/// which its command checks and MCP's `width` and `height` state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Figure {
+    /// `faba pileup`'s Miami figure.
+    Pileup,
+    /// `faba cluster-view`'s modules grid.
+    Modules,
+    /// `faba cluster-view`'s trace.
+    Trace,
+    /// `faba cluster-view`'s cell modules against the batches.
+    Batches,
+    /// `faba metagene`'s profile.
+    Metagene,
+    /// `faba pwm`'s sequence logo.
+    Logo,
+    /// `faba qc`'s and `faba qc-view`'s figures: each knob's, the pairs,
+    /// each batch's cells.
+    Qc,
+    /// The site panels, of `faba site-plot` and `faba qc --plots`.
+    SitePanels,
+}
+
+impl Figure {
+    /// The least size, in inches: [`MIN`], its text and margins shrinking
+    /// with the font, but for pileup's figure and cluster-view's trace and
+    /// batches, whose margins do not ([`FIXED_MIN`]). A figure may need
+    /// more as it is laid out (a qc figure's table, pileup's tracks), and
+    /// says so as it is drawn.
+    pub const fn least(self) -> (f64, f64) {
+        match self {
+            Self::Pileup | Self::Trace | Self::Batches => FIXED_MIN,
+            _ => MIN,
+        }
+    }
+
+    /// What a refusal calls it.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Pileup => "a pileup figure",
+            Self::Modules => "the modules figure",
+            Self::Trace => "the trace figure",
+            Self::Batches => "the batches figure",
+            Self::Metagene => "a metagene figure",
+            Self::Logo => "a sequence logo",
+            Self::Qc => "a qc figure",
+            Self::SitePanels => "a site panel",
+        }
+    }
+
+    /// The page `size` asks for (see [`SizeArgs::page`]), refused when a
+    /// side asked for is less than [`Figure::least`]: checked before a
+    /// command's work.
+    pub fn page(self, size: &SizeArgs) -> anyhow::Result<Page> {
+        let page = size.page()?;
+        let (w, h) = self.least();
+        at_least(page, (w * PT, h * PT), self.name())?;
+        Ok(page)
+    }
+}
 
 /// `--fig-width` and `--fig-height`.
 #[derive(Args, Debug, Clone, Copy, Default, PartialEq, serde::Serialize)]
@@ -99,14 +157,6 @@ impl SizeArgs {
         Ok((w.map(|w| w * PT), h.map(|h| h * PT)))
     }
 
-    /// [`SizeArgs::page`], refused when a side asked for is less than
-    /// `least` points (see [`at_least`]): checked before a command's work.
-    pub fn page_at_least(&self, least: (f64, f64), what: &str) -> anyhow::Result<Page> {
-        let page = self.page()?;
-        at_least(page, least, what)?;
-        Ok(page)
-    }
-
     /// Of `w` and `h` inches, for a test.
     #[cfg(test)]
     pub fn new(w: Option<f64>, h: Option<f64>) -> Self {
@@ -148,11 +198,16 @@ mod tests {
         assert!(at_least((Some(300.0), None), (360.0, 200.0), "a profile").is_err());
         assert!(at_least((None, Some(250.0)), (360.0, 200.0), "a profile").is_ok());
         // A figure whose margins do not shrink keeps the old floor.
-        let fixed = SizeArgs::new(Some(1.9), None).page_at_least(FIXED_LEAST, "a track");
+        let fixed = Figure::Trace.page(&SizeArgs::new(Some(1.9), None));
         let e = fixed.unwrap_err().to_string();
-        assert!(e.contains("a track is at least 2.0 by 1.5 inches"), "{e}");
-        let fits = SizeArgs::new(Some(2.0), Some(1.5)).page_at_least(FIXED_LEAST, "a track");
+        assert!(
+            e.contains("the trace figure is at least 2.0 by 1.5 inches"),
+            "{e}"
+        );
+        let fits = Figure::Pileup.page(&SizeArgs::new(Some(2.0), Some(1.5)));
         assert_eq!(fits.unwrap(), (Some(2.0 * PT), Some(1.5 * PT)));
+        let grid = Figure::Modules.page(&SizeArgs::new(Some(1.0), Some(0.75)));
+        assert_eq!(grid.unwrap(), (Some(PT), Some(0.75 * PT)));
         let e = at_least((Some(288.0), None), (360.0, 200.0), "a profile");
         assert!(e
             .unwrap_err()

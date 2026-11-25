@@ -275,7 +275,7 @@ pub struct PipelineArgs {
         help_heading = "count",
         long,
         default_value = "",
-        help = "Gene biotype to quantify; empty keeps all",
+        help = "Keep genes of this biotype only (protein_coding, lncRNA, pseudogene); empty keeps all",
         long_help = "Gene biotype to quantify. Empty is the default, and keeps all biotypes.\n\
                      Pass a value to restrict: protein_coding, lncRNA, pseudogene.\n\
                      \n\
