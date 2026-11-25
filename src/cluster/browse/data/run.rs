@@ -54,7 +54,7 @@ pub(in crate::cluster) fn read(dir: &Path, name: &str) -> Result<serde_json::Val
 
 /// Why there are no site blockmodel settings to draw.
 #[derive(Debug, Clone, PartialEq)]
-pub(in crate::cluster) enum Unsettled {
+pub(crate) enum Unsettled {
     /// A count fit's record: its model is not the site blockmodel's.
     CountFit,
     /// No record, or none that says them, in one line.

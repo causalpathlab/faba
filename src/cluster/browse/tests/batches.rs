@@ -159,6 +159,7 @@ fn g_opens_the_gene_modules_terms() {
         gmt: Some(gmt.to_string_lossy().into()),
         obo: None,
         min_weight: 0.5,
+        q: super::super::go::DEFAULT_Q,
     };
     let mut v = ModulesView::new("test", &m).with_go(ask);
     assert!(

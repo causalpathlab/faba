@@ -418,3 +418,214 @@ fn the_pileup_mirrors_its_first_two_alike_tracks() {
     assert_eq!(flags(&apart), [(false, false); 2]);
     assert_eq!(flags(&loaded(vec![track("a", None)])), [(false, false)]);
 }
+
+/// A site matrix at `dir/name`: `GENE1`'s methylated and unmethylated rows
+/// at chr1:100 then chr1:200, over cells `c1` and `c2`, holding `entries`
+/// as `(row, cell, value)`.
+fn site_matrix(dir: &std::path::Path, name: &str, entries: &[(u64, u64, f32)]) -> Box<str> {
+    site_matrix_of(dir, name, "ENSG1_GENE1", "chr1", entries)
+}
+
+/// [`site_matrix`]'s rows for gene key `gene` on `chr`.
+fn site_matrix_of(
+    dir: &std::path::Path,
+    name: &str,
+    gene: &str,
+    chr: &str,
+    entries: &[(u64, u64, f32)],
+) -> Box<str> {
+    use crate::common::{backend_meta, ToBackend, TripletsRowsCols};
+    use data_beans::aux::feature_rows::{feature_row, M6A};
+    let path = dir.join(name).to_string_lossy().into_owned();
+    let row = |pos: i64, ch| feature_row(gene, M6A, ch, Some(&format!("{chr}:{pos}")));
+    let triplets = TripletsRowsCols {
+        triplets: entries.to_vec(),
+        rows: vec![
+            row(100, METHYLATED),
+            row(100, UNMETHYLATED),
+            row(200, METHYLATED),
+            row(200, UNMETHYLATED),
+        ],
+        cols: vec!["c1".into(), "c2".into()],
+    };
+    drop(
+        triplets
+            .to_backend(&path, &backend_meta("dartseq", "x"))
+            .unwrap(),
+    );
+    path.into()
+}
+
+/// Tracks given by pattern give the figure a panel each, each summing its
+/// own matrices' methylated sites.
+#[test]
+fn pattern_tracks_give_the_figure_a_panel_each() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    let wt = [(0, 0, 1.0), (0, 1, 2.0), (1, 0, 7.0), (2, 0, 4.0)];
+    let wt = site_matrix(dir, "b1_wt_m6a_site.zarr", &wt);
+    let mt = [(0, 0, 10.0), (2, 0, 5.0), (2, 1, 20.0), (3, 1, 9.0)];
+    let mt = site_matrix(dir, "b2_mut_m6a_site.zarr", &mt);
+    let given: [&[&str]; 2] = [
+        &["--track", "wt=*_wt_*", "--track", "mut=*_mut_*"],
+        &["--track", "wt=*_wt_*,mut=*_mut_*"],
+    ];
+    for tracks in given {
+        let mut cmd = vec![&*wt, &*mt, "--genes", "GENE1", "--svg", "--batch-process"];
+        cmd.extend_from_slice(tracks);
+        let (args, groups) = resolve(&cmd);
+        let selector = Selector::build(&args.genes, &args.regions).unwrap();
+        let sites = figure_sites(&args, &groups, &selector, None).unwrap();
+        // One cell type: one colour in every track.
+        assert_eq!(
+            panel_rows(&sites),
+            [
+                ("wt", 0, 0, &[(100, 3.0), (200, 4.0)][..]),
+                ("mut", 1, 0, &[(100, 10.0), (200, 25.0)][..]),
+            ],
+            "{tracks:?}"
+        );
+        assert_eq!(&*sites.chr, "chr1");
+    }
+}
+
+/// A figure panel's label, track, hue and sites.
+type PanelRow<'a> = (&'a str, usize, usize, &'a [(i64, f64)]);
+
+/// The panels' [`PanelRow`]s.
+fn panel_rows(sites: &FigureSites) -> Vec<PanelRow<'_>> {
+    sites
+        .panels
+        .iter()
+        .map(|p| (&*p.label, p.track, p.hue, &*p.sites))
+        .collect()
+}
+
+/// Without `--track` the figure pools every file into one track, even
+/// where the browser and the ASCII pileup give each its own (`--separate`).
+#[test]
+fn the_figure_pools_its_files_without_track() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    let wt = [(0, 0, 1.0), (0, 1, 2.0), (2, 0, 4.0)];
+    let wt = site_matrix(dir, "b1_wt_m6a_site.zarr", &wt);
+    let mt = [(0, 0, 10.0), (2, 0, 5.0), (2, 1, 20.0)];
+    let mt = site_matrix(dir, "b2_mut_m6a_site.zarr", &mt);
+    let cmd = [
+        &*wt,
+        &*mt,
+        "--separate",
+        "--genes",
+        "GENE1",
+        "--svg",
+        "--batch-process",
+    ];
+    let (args, groups) = resolve(&cmd);
+    assert_eq!(
+        labels(&groups),
+        ["b1_wt", "b2_mut"],
+        "--separate keeps its tracks"
+    );
+    let tracks = figure_tracks(&args, &groups).unwrap();
+    let selector = Selector::build(&args.genes, &args.regions).unwrap();
+    let sites = figure_sites(&args, &tracks, &selector, None).unwrap();
+    assert_eq!(
+        panel_rows(&sites),
+        [("", 0, 0, &[(100, 13.0), (200, 29.0)][..])]
+    );
+}
+
+/// The figure names the genes and chromosome of every track's files, not
+/// the first track's alone.
+#[test]
+fn the_figure_is_named_by_every_track() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    let one = [(0, 0, 1.0)];
+    let wt = site_matrix_of(dir, "b1_wt_m6a_site.zarr", "ENSG1_GENE1", "chr1", &one);
+    let mt = site_matrix_of(dir, "b2_mut_m6a_site.zarr", "ENSG2_GENE2", "chr2", &one);
+    let cmd = [
+        &*wt,
+        &*mt,
+        "--genes",
+        "GENE1,GENE2",
+        "--svg",
+        "--batch-process",
+        "--track",
+        "wt=*_wt_*,mut=*_mut_*",
+    ];
+    let (args, groups) = resolve(&cmd);
+    let selector = Selector::build(&args.genes, &args.regions).unwrap();
+    let sites = figure_sites(&args, &groups, &selector, None).unwrap();
+    assert_eq!(&*sites.gene, "2 genes: ENSG1_GENE1,ENSG2_GENE2");
+    assert_eq!(&*sites.chr, "*");
+}
+
+/// A comma splits `--track` only where another `LABEL=` starts.
+#[test]
+fn a_track_pattern_may_hold_a_comma() {
+    assert_eq!(split_tracks("a=*rep1,2*"), ["a=*rep1,2*"]);
+    assert_eq!(
+        split_tracks("wt=*_wt_*,mut=*_mut_*"),
+        ["wt=*_wt_*", "mut=*_mut_*"]
+    );
+    assert_eq!(split_tracks("a=x,y,b=z"), ["a=x,y", "b=z"]);
+    let args = pileup_args(&["s_rep1,2_x", "--track", "a=*rep1,2*"]);
+    let files = ["s_rep1,2_x".into()];
+    let g = track_files(&files, &args.tracks).unwrap();
+    assert_eq!(labels(&g), ["a"]);
+    assert_eq!(g[0].files.len(), 1);
+    let args = pileup_args(&["x", "--track", "wt=*_wt_*,mut=*_mut_*"]);
+    let files = ["b1_wt_x".into(), "b2_mut_x".into()];
+    let g = track_files(&files, &args.tracks).unwrap();
+    assert_eq!(labels(&g), ["wt", "mut"]);
+}
+
+/// Each pattern track reads depth from the BAMs its pattern matches; a
+/// pooled track from all of them.
+#[test]
+fn each_track_reads_depth_from_its_own_bams() {
+    let files: Vec<Box<str>> = ["b1_wt_x", "b2_mut_x"].map(Into::into).to_vec();
+    let bams: Vec<Box<str>> = ["b1_wt.bam", "b2_mut.bam", "b3_wt.bam"]
+        .map(Into::into)
+        .to_vec();
+    let specs: Vec<Box<str>> = ["mut=*_mut*", "wt=*_wt*"].map(Into::into).to_vec();
+    let g = track_files(&files, &specs).unwrap();
+    let names = |v: Vec<Vec<Box<str>>>| -> Vec<Vec<String>> {
+        v.into_iter()
+            .map(|b| b.iter().map(|s| s.to_string()).collect())
+            .collect()
+    };
+    assert_eq!(
+        names(track_bams(&g, &bams)),
+        [vec!["b2_mut.bam"], vec!["b1_wt.bam", "b3_wt.bam"]]
+    );
+    let none: Vec<Box<str>> = ["b1_wt.bam"].map(Into::into).to_vec();
+    assert_eq!(
+        names(track_bams(&g, &none)),
+        [vec![], vec!["b1_wt.bam".to_string()]]
+    );
+    let pooled = track_files(&files, &[]).unwrap();
+    assert_eq!(names(track_bams(&pooled, &bams)).concat().len(), 3);
+
+    // A panel draws its own track's depth of its cell type.
+    let panel = |track: usize, celltype: &str| FigurePanel {
+        label: celltype.into(),
+        track,
+        celltype: celltype.into(),
+        hue: 0,
+        sites: Vec::new(),
+    };
+    let depth_of = |ct: &str, v: f64| -> FxHashMap<Box<str>, Vec<f64>> {
+        [(Box::from(ct), vec![v; 2])].into_iter().collect()
+    };
+    let depth = [
+        depth_of("CT1", 1.0),
+        FxHashMap::default(),
+        depth_of("CT1", 3.0),
+    ];
+    let panels = [panel(0, "CT1"), panel(1, "CT1"), panel(2, "CT1")];
+    let drawn = panel_data(panels.into(), &depth, 2, false);
+    let bins: Vec<&[f64]> = drawn.iter().map(|p| &*p.depth_bins).collect();
+    assert_eq!(bins, [&[1.0, 1.0][..], &[0.0, 0.0], &[3.0, 3.0]]);
+}
