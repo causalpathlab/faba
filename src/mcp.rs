@@ -262,6 +262,7 @@ fn tools() -> Vec<ToolSpec> {
                     "obo": { "type": "string", "description": "The GO graph for `gaf` (default: lupin's cached go-basic.obo)" },
                     "gmt": { "type": "string", "description": "Gene sets to test for `go` instead of GO, a GMT file" },
                     "go_min_weight": { "type": "number", "minimum": 0, "maximum": 1, "description": "A gene counts in its main gene module for `go` at this weight or more (default 0.5)" },
+                    "go_q": { "type": "number", "exclusiveMinimum": 0, "maximum": 1, "description": "A term (or `gmt` set) is listed for `go` at this BH q or less (default 0.05)" },
                     "batch_groups": { "type": "string", "description": "Which condition each batch is a replicate of, as rep1_mut=mut,rep2_mut=mut; the rest are read off their names" },
                     "trace": { "type": "boolean", "description": "Print each restart's trace, the verdict and its advice" },
                     "settings": { "type": "boolean", "description": "Print the settings the fit ran with" },
@@ -1352,6 +1353,9 @@ fn cluster(a: &Arguments, cx: &Call) -> Result<Value> {
     run_out(a, cx, argv, &out, &what)
 }
 
+/// `cluster_view`'s numbers for `go`, each passed as its flag.
+const GO_NUMBERS: [&str; 2] = ["go_min_weight", "go_q"];
+
 fn cluster_view(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
     let data = a.path("data")?;
     let html = a.path_opt("html")?;
@@ -1372,7 +1376,7 @@ fn cluster_view(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
             push_flag(&mut argv, &format!("--{file}"), &path);
         }
     }
-    argv.extend(a.numbers(&["go_min_weight"])?);
+    argv.extend(a.numbers(&GO_NUMBERS)?);
     if let Some(gtf) = a.path_opt("gtf")? {
         push_flag(&mut argv, "--gtf", &gtf);
     }
@@ -1570,7 +1574,8 @@ fn exists(path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        pileup_argv, recorded_results, tools, tsv_rows, typed_flags, with_typed, Arguments, TYPED,
+        pileup_argv, recorded_results, tools, tsv_rows, typed_flags, with_typed, Arguments,
+        GO_NUMBERS, TYPED,
     };
     use clap::CommandFactory;
     use serde_json::json;
@@ -1723,6 +1728,32 @@ sites	m6A	10	2
             };
             assert!(said, "{option:?}: {err}");
         }
+    }
+
+    /// `go_q` is in `cluster_view`'s schema as a number in (0, 1], and
+    /// reaches `faba cluster-view` as the `--go-q` it parses.
+    #[test]
+    fn cluster_view_takes_the_go_q_cutoff() {
+        let specs = tools();
+        let spec = specs.iter().find(|s| s.name == "cluster_view").unwrap();
+        let q = &spec.input_schema["properties"]["go_q"];
+        assert_eq!(q["type"], "number", "{q}");
+        assert_eq!(
+            (q["exclusiveMinimum"].as_f64(), q["maximum"].as_f64()),
+            (Some(0.0), Some(1.0))
+        );
+        let flags = Arguments(json!({ "go_q": 0.1 }))
+            .numbers(&GO_NUMBERS)
+            .unwrap();
+        let argv = ["faba", "cluster-view", "fit.run.json"]
+            .into_iter()
+            .map(String::from)
+            .chain(flags);
+        let cli = <crate::Cli as clap::Parser>::try_parse_from(argv).unwrap();
+        let crate::Commands::ClusterView(args) = cli.commands else {
+            panic!("not cluster-view");
+        };
+        assert_eq!(args.shown.go_ask().q, 0.1);
     }
 
     /// `cluster_view` opens a fit's record or its tables, never anything
