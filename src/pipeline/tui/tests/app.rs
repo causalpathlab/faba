@@ -1180,8 +1180,15 @@ fn a_kill_interrupts_a_run_and_lets_it_wrap_up() {
     assert!(a.quit);
     let job = a.job.as_mut().unwrap();
     let start = Instant::now();
-    job.wind_up(Some(std::time::Duration::from_secs(20)));
-    assert!(start.elapsed() < std::time::Duration::from_secs(10));
+    // A grace far longer than an interrupt needs, even on a loaded
+    // machine: the run must end on the interrupt, well before the grace
+    // and before its own 30 s sleep, so the kill never comes into it.
+    job.wind_up(Some(std::time::Duration::from_secs(120)));
+    let took = start.elapsed();
+    assert!(
+        took < std::time::Duration::from_secs(25),
+        "the interrupt took {took:?}: the run waited out its sleep"
+    );
     let log = job.log.lock().unwrap();
     assert_eq!(log.ended, Some(Err(Failed::Stopped)));
     assert!(
@@ -1221,7 +1228,10 @@ fn a_run_ends_with_the_view_when_it_was_not_stopped() {
 
 #[test]
 fn the_mark_stands_clear_of_the_session_keys() {
-    let (_t, mut a) = app_with_bams();
+    // A short folder of its own: the header names it, and a long temporary
+    // folder (macOS's default) would crowd the mark off the row.
+    let tmp = tempfile::Builder::new().tempdir_in("/tmp").unwrap();
+    let mut a = app_in(tmp.path());
     let keys = vec![
         ("ctrl+alt+d".to_string(), "detach".to_string()),
         ("ctrl+alt+s".to_string(), "switch".to_string()),

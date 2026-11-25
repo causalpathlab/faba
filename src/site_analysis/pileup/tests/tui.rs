@@ -1025,3 +1025,85 @@ fn the_keys_listed_are_the_keys_bound() {
         v
     });
 }
+
+/// The README's picture of the browser: made-up reads at sites over a
+/// two-gene stretch, three batches (two samples mirrored, a control), the
+/// gene models under them. Written where `FABA_SCREENSHOTS_DIR` names.
+#[test]
+#[ignore = "writes the README's screenshot; run by hand"]
+fn readme_screenshots_pileup() {
+    const LO: i64 = 2_400_000;
+    const HI: i64 = 2_436_000;
+    // A fixed stream of numbers in [0, 1), so the picture never changes.
+    let mut state = 0x2545_f491_u64;
+    let mut next = move || {
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1);
+        (state >> 33) as f64 / f64::from(1u32 << 31)
+    };
+    let sites: Vec<i64> = (0..140)
+        .map(|_| LO + 600 + (next().powf(0.6) * (HI - LO - 1200) as f64) as i64)
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    // Coverage and the share converted, per site, by batch: the samples
+    // alike but for a few sites, the control seldom converted.
+    let batch = |gain: f64, next: &mut dyn FnMut() -> f64| {
+        let mut converted = Vec::new();
+        let mut total = Vec::new();
+        for &p in &sites {
+            let depth = (8.0 + 90.0 * next() * (p - LO) as f64 / (HI - LO) as f64).round();
+            let share = (gain * next() * next()).min(1.0);
+            converted.push((p, (depth * share).round()));
+            total.push((p, depth));
+        }
+        (converted, total)
+    };
+    let (s1, s1_total) = batch(0.9, &mut next);
+    let (s2, s2_total) = batch(0.55, &mut next);
+    let (ctrl1, ctrl1_total) = batch(0.08, &mut next);
+    let name = "methylated / unmethylated (sum)";
+    let mut tracks = vec![
+        Track::single("s1", name, &s1, false).with_total(&s1_total),
+        Track::single("s2", name, &s2, false).with_total(&s2_total),
+        Track::single("ctrl1", name, &ctrl1, false).with_total(&ctrl1_total),
+    ];
+    tracks[0].mirror_with_next = true;
+    let mut v = PileupView::new("GENE1", "chr1", tracks, (LO, HI));
+    let model = |symbol: &str, lo: i64, hi: i64, forward: bool, exons: &[(i64, i64)]| GeneModel {
+        chr: "chr1".into(),
+        lo,
+        hi,
+        forward,
+        exons: exons.to_vec(),
+        symbol: symbol.into(),
+        key: format!("ID1_{symbol}").into(),
+    };
+    v.genes = vec![
+        model(
+            "GENE1",
+            LO + 400,
+            HI - 900,
+            true,
+            &[
+                (LO + 400, LO + 1_300),
+                (LO + 7_800, LO + 8_100),
+                (LO + 14_000, LO + 14_250),
+                (LO + 21_500, LO + 21_900),
+                (LO + 27_000, HI - 900),
+            ],
+        ),
+        model(
+            "GENE2",
+            HI - 6_000,
+            HI + 9_000,
+            false,
+            &[(HI - 6_000, HI - 3_800), (HI + 2_000, HI + 2_600)],
+        ),
+    ];
+    v.keys = None;
+    let mut term = Terminal::new(TestBackend::new(160, 44)).unwrap();
+    term.draw(|f| v.render(f)).unwrap();
+    crate::tui::screenshot::save("pileup", term.backend().buffer());
+}

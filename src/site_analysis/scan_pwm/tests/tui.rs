@@ -321,3 +321,42 @@ fn the_keys_listed_are_the_keys_bound() {
         v
     });
 }
+
+/// The README's picture of the logo view: made-up counts around 2,000
+/// sites, a motif at the site in a window of 10 either side, a leaning
+/// base elsewhere. Written where `FABA_SCREENSHOTS_DIR` names.
+#[test]
+#[ignore = "writes the README's screenshot; run by hand"]
+fn readme_screenshots_pwm() {
+    let motif: [[usize; 4]; 5] = [
+        [820, 120, 700, 360],
+        [900, 40, 1060, 0],
+        [2000, 0, 0, 0],
+        [0, 2000, 0, 0],
+        [880, 620, 60, 440],
+    ];
+    let pwm: Vec<DnaBaseCount> = (-10i64..=10)
+        .map(
+            |rel| match usize::try_from(rel + 2).ok().and_then(|i| motif.get(i)) {
+                Some(&[a, c, g, t]) => count(a, c, g, t),
+                None => {
+                    // A leaning base, stronger nearer the site.
+                    let i = (rel + 10) as usize;
+                    let lean = 1100 - 80 * rel.unsigned_abs() as usize;
+                    let mut c = [
+                        300 + i * 37 % 120,
+                        260 + i * 53 % 90,
+                        280,
+                        320 - i * 29 % 70,
+                    ];
+                    c[[0, 3, 2, 0, 3, 1][i % 6]] += lean;
+                    count(c[0], c[1], c[2], c[3])
+                }
+            },
+        )
+        .collect();
+    let mut v = PwmView::new("demo_m6a_sites", &pwm, 10);
+    let mut term = Terminal::new(TestBackend::new(160, 40)).unwrap();
+    term.draw(|f| v.render(f)).unwrap();
+    crate::tui::screenshot::save("pwm", term.backend().buffer());
+}

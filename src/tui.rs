@@ -7,6 +7,8 @@
 pub mod browser;
 pub mod busy;
 pub mod help;
+#[cfg(test)]
+pub mod screenshot;
 
 pub use busy::{busy, busy_counting};
 pub use help::{keys, Helped, KeyList};

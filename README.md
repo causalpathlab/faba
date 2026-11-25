@@ -17,6 +17,13 @@ to it; Ctrl+Alt+S switches to another session. `faba sessions` lists them, `faba
 stops one as its quit key does (a write under way finishes first) and `faba rename`
 labels one. `--no-detach` runs a view in the terminal only.
 
+The views share one set of keys. `q` quits; Esc goes back one level (out of a pop-up, a find or a
+pane) and never quits a top-level view. `?` lists every key the view takes where it is, and the
+footer the ones that act there. `s` saves the figure on screen, `i` switches image and text,
+Ctrl+E writes the view's page, Ctrl+R applies or starts, `/` finds, `v` cycles the look, `x` and
+`y` the scales, and Tab moves between panes. `faba run` stops a run with `S` (it asks; again
+kills it), and refuses `q` while one runs; where leaving would lose work, `q` asks first.
+
 **`faba run`**: pick the BAMs (signal and control), steps and flags, preview the command, and run it.
 
 ![faba run](docs/screenshots/run.png)
@@ -70,15 +77,19 @@ cargo install faba --features hdf5
 
 ### Install from GitHub
 
+The current work is on `main`, ahead of the crates.io release: `site-plot`, `qc-view`, the
+figure options below, the shared keys and the MCP arguments made from each command's flags. To
+get it:
+
 ```sh
-cargo install --git https://github.com/causalpathlab/faba.git
+cargo install --git https://github.com/causalpathlab/faba
 ```
 
 Pin to a specific tag or branch if you need a reproducible build:
 
 ```sh
-cargo install --git https://github.com/causalpathlab/faba.git --tag v0.14.0
-cargo install --git https://github.com/causalpathlab/faba.git --branch main
+cargo install --git https://github.com/causalpathlab/faba --tag v0.19.4
+cargo install --git https://github.com/causalpathlab/faba --branch main
 ```
 
 ### Build from a local clone
@@ -103,7 +114,7 @@ GPU.
 Add them with `--features`:
 
 ```sh
-cargo install --git https://github.com/causalpathlab/legume-rs.git faba --features hdf5
+cargo install --git https://github.com/causalpathlab/faba --features hdf5
 ```
 
 ### Verify
@@ -160,17 +171,17 @@ faba <COMMAND> [OPTIONS]
 | `count` (`genes`)         | Count reads per gene and call cells (single-cell or bulk RNA-seq) |
 | `depth` (`rd`)            | Compute read depth over genomic intervals |
 | `snp` (`genotype`)        | Discover and genotype SNP variants from BAM pileup |
-| `run` | Set up the pipeline in a view (inputs, steps, flags), preview and save the command, and run it: SNP → count → ATOI → m6A → APA |
+| `run` | Set up the pipeline in a view (inputs, steps, flags), preview and save the command, and run it: SNP → count → ATOI → m6A → APA; `S` stops a run |
 | **QC — choose and apply thresholds after profiling** ||
 | `qc`                      | Pick thresholds in a full-screen view, then filter a faba output directory into a new fileset |
-| `qc-view`                 | View what a `qc` run kept and dropped in its site view, read only: the thresholds it applied drawn, every site shown kept or dropped, each batch's cells; `s` saves the panel on screen, `--html` writes the page, `--batch-process` prints the threshold table |
-| `site-plot` (`sp`)        | Draw a directory's site statistics as paper panels, no QC: histograms, chosen pairs with marginals, each quantity on one scale; thresholds optional |
+| `qc-view`                 | View what a `qc` run kept and dropped in `qc`'s site view, read only: the thresholds it applied (from `qc.run.json`) drawn, every site shown kept or dropped with its reason, each batch's cells; `s` saves the panel on screen, `--html` writes the page, `--plots -o` the figures, `--batch-process` prints the threshold table |
+| `site-plot` (`sp`)        | Draw a directory's site statistics as paper panels, no QC: histograms, chosen pairs with marginals, each quantity on one scale, cells per site from the `_site` matrices; thresholds optional; PDF and PNG |
 | **Clustering: cells by their own sites** ||
 | `cluster`                 | Cluster cells by their site reads: cell and gene modules with a methylation shift per pair, fitted by variational inference. `--modality count` fits cell modules by gene counts instead; `--within` its run record then fits the sites within each of those cell modules |
-| `cluster-view` (`modules`, `blocks`) | View a `cluster` fit from its run record `{m}_blockmodel.run.json`, or from its input directory (it never fits: run `cluster` first): its gene modules against its cell modules, each module's sites, the genes you pin side by side, and a gene's full pileup, one track per cell module; `--html` writes it as one self-contained page to share. A `--within` record (`{m}_within.run.json`) opens as the list of its fits, the count fit first; `--group C3` opens the one within a cell module |
+| `cluster-view` (`modules`, `blocks`) | View a `cluster` fit from its run record `{m}_blockmodel.run.json`, or from its input directory (it never fits: run `cluster` first): its gene modules against its cell modules, each module's sites, the genes you pin side by side, and a gene's full pileup, one track per cell module; GO terms beside the gene modules on demand; `--html` (Ctrl+E in the browser) writes it as one self-contained page to share, `--json` and `--overview` print its levels, `--figure` draws it. A `--within` record (`{m}_within.run.json`) opens as the list of its fits, the count fit first; `--group C3` opens the one within a cell module |
 | **Inspection & reference** ||
 | `pwm`                     | Build a position weight matrix around genomic sites |
-| `pileup` (`inspect`)      | ASCII pileup, or a faceted Miami plot, for one gene |
+| `pileup` (`inspect`)      | Browse a gene's sites, or print an ASCII pileup, or draw a faceted Miami plot (a panel per `--track`) |
 | `metagene` (`mg`)         | Metagene histogram of site positions across gene features |
 | `docs`                    | Print the method write-ups compiled into this binary |
 | `mcp`                     | Serve the commands to an agent over the Model Context Protocol |
@@ -229,12 +240,19 @@ legume-mcp adds where the records are and the background jobs below. The project
 | `docs` | the method write-ups |
 | `count`, `atoi`, `dartseq`, `apa`, `depth`, `snp` | one modality each, into a new directory |
 | `run` | the pipeline (SNP, then count, A-to-I, m6A, APA) into one directory |
-| `qc` | filters a directory into a new one |
+| `qc` | filters a directory into a new one; with `plots`, returns its figures and site panels as images |
 | `qc_view` | reads back what a `qc` run kept and dropped: its threshold table, and its figures and page when asked |
 | `cluster` | fits cells by their own site reads, by gene counts (`modality` count), or by site reads within a count fit's cell modules (`within`); writes its tables to a new directory |
-| `pileup`, `metagene`, `pwm`, `cluster_view` | read what was written |
-| `site_plot` | draws a directory's site statistics as paper panels into a new directory |
+| `pileup`, `metagene`, `pwm` | read a directory's sites; `metagene` and `pwm` return their figure as an image, `pileup` with `figure` |
+| `cluster_view` | reads a fit as JSON levels, the overview when none is named; GO terms only with `go`; several figures per call with `plots` |
+| `site_plot` | draws a directory's site statistics as paper panels into a new directory, returned as images |
 | `job_status`, `job_wait`, `job_cancel` | from legume-mcp |
+
+Each tool's arguments are made from its command's own flags, so a new flag is a new typed
+argument (`--site-max-pv` is `site_max_pv`; a figure's `--fig-width` and `--fig-height` are
+`width` and `height`). `options` takes anything else, as `faba <command> --help` lists it. A key
+a tool does not take is refused, naming the nearest one it does, and a flag given both as an
+argument and in `options` is refused.
 
 ### Long runs in the background
 
@@ -326,6 +344,15 @@ full (↑/↓ steps the module, `G` or Esc closes it). MCP's `cluster_view` take
 faba cluster-view out/m6a_blockmodel.run.json --go
 ```
 
+**The look of a grid.** In the browser `v` cycles each grid through mirror bars, a % heatmap, a
+heatmap of each row's z across the cell modules, and a Hinton diagram of that z (a square per
+block, its area by |z| against the largest). `--figure` takes the same as `--look shift`,
+`percent`, `z` or `hinton`. Ctrl+E writes the browser's page, as `--html` does.
+
+```bash
+faba cluster-view out/m6a_blockmodel.run.json --figure grid --look hinton --fig-width 3.5
+```
+
 **The levels for a program.** `--overview` prints the fit at a glance: the verdict, how many gene
 and cell modules, each cell module's size, and each gene module's genes and top genes by weight. It
 reads no GO; `--go` beside it does. `--grid` prints the modules grid beside the levels named (it is
@@ -359,27 +386,38 @@ support: try fewer `--cell-roles` or `--gene-roles`, or more `--chains`.
 
 Every figure faba writes takes its size on the page in inches: `--fig-width` and `--fig-height`,
 either or both (the other is then the figure's own). It is laid out for that size, its text set in
-points as it prints, rather than scaled. This holds for `cluster-view --figure` (where 0.19.0's
-`--width` and `--height` still work), `metagene --figure`, `pwm --figure`, `qc --plots`, and
-`pileup`'s Miami plot (8 inches wide unless given; its tracks share the height given). Over MCP,
-each of these tools takes `width` and `height`, from 1 by 0.75 inches. A few figures keep a floor
-and refuse a smaller size, saying the least they need: `qc`'s full knob figure (its table and
-plots: 10 inches across, and a height that grows with the gene and metagene boxes) unless
-`--panel-only` draws the plot alone, `pileup`'s Miami plot, and `cluster-view`'s `--plot trace`
-and `--plot batches` (2 by 1.5 inches, their margins fixed). The others lay out their text and
-margins to fit the size given; `cluster-view`'s modules grid still says so when its cells cannot
-fit. `cluster-view --figure` takes the panel look too: `--font-size`, `--panel-only` (no title,
-colour scale, restarts' names or conditions) and `--palette gray` (blocks and lines in grays). MCP's
-`cluster_view` draws several of its figures in one call (`plots`: modules, trace, batches), each
-returned as an image at the `width` and `height` given.
+points as it prints, and its outer size is kept exactly as asked, down to 1 by 0.75 inches. This
+holds for `metagene --figure`, `pwm --figure`, `qc --plots` (and `qc-view`), `site-plot`,
+`cluster-view --figure` (where `--width` and `--height` still work) and `pileup`'s Miami plot (8
+inches wide unless given; its tracks share the height given). A few figures keep a larger floor
+and say the least they need when asked for less: `pileup`'s Miami plot and `cluster-view`'s
+`--plot trace` and `--plot batches` (2 by 1.5 inches, their margins fixed), and `qc`'s full knob
+figure (its table and plots: 10 inches across) unless `--panel-only` draws the plot alone.
+
+The figures but `pileup`'s take the same look: `--font-size` sets every label in points (by default
+the text is fit to the page; a font above 8 points needs a page grown alike, and a page too small
+for it is refused, naming the size it needs), `--panel-only` draws the plot, its axes and their
+titles only (no title, file name, key or notes), and `--palette colour|gray` draws kept and removed
+(or a grid's blocks) in colour or in grays. Each is written as PDF, its labels as text, and PNG.
+`pileup` writes SVG and PDF (`--png` for a PNG too) and takes its own `--palette` for the cell
+types. Over MCP, each figure tool takes `width` and `height`, and all but `pileup` take `font_size`,
+`panel_only` and `palette`. MCP's `cluster_view` draws several of its figures in one call
+(`plots`: modules, trace, batches), each returned as an image at the `width` and `height` given.
 
 `faba site-plot DIR -o OUT` draws one modality's site statistics as panels and nothing else:
 `--hist` quantities (pv, fold, log_odds, coverage, converted, edit_ratio, cells), `--pairs x:y,...`
-two at a time (default: the pairs `qc` picks), `--marginals top,right` on the pair's own axes. Each
-quantity is read on one scale, range and set of bins in every figure (`--scale pv=log,fold=linear`
-to change one), so ticks line up across panels. Thresholds, named as `qc`'s, are optional: given
-ones are drawn as dashed lines and the sites they remove drawn apart. `--font-size`, `--panel-only`
-and `--palette gray` set the look; `qc --plots` writes the same panels under `qc_plots/panels/`.
+two at a time (default: the pairs `qc` picks), `--marginals top,right` on the pair's own axes, and
+`--bins` along each axis. The cells per site are read off the `{batch}_{modality}_site` matrices,
+over every cell, with no cell QC. Each quantity is read on one scale, range and set of bins in
+every figure (`--scale pv=log,fold=linear` to change one), so ticks line up across panels.
+Thresholds, the `--site-*` flags named as `qc`'s, are optional: given ones are drawn as dashed
+lines, and the sites they remove are shaded apart from those kept; with none, every site is kept.
+`qc --plots` takes the same options and writes the same panels, at its thresholds, under
+`qc_plots/panels/`; in `qc-view`, `s` saves the panel on screen.
+
+`pileup --track LABEL=PATTERN,...` groups its input files into tracks, and the figure draws a
+panel each (per cell type with `--cell-membership`), each with its read depth from the BAMs its
+pattern matches. Without `--track` the figure pools every file.
 
 ```bash
 # A column-wide modules grid and a page-wide logo
@@ -388,6 +426,11 @@ faba pwm out/ -f genome.fa --batch-process --figure logo --fig-width 7
 # Panels 1.8 inches square, text at 6 points, plot and axes only, in gray
 faba site-plot out/ -o panels/ --hist pv,cells --pairs pv:cells --marginals top,right \
   --fig-width 1.8 --fig-height 1.8 --font-size 6 --panel-only --palette gray --site-max-pv 0.05
+# The same panels from a qc output, at the thresholds it applied
+faba qc-view out_qc/ --plots -o figures/ --hist pv,cells --panel-only
+# A Miami plot with a panel per condition
+faba pileup out/ -q GENE1 --batch-process --gtf genes.gtf --bam s1_wt_rep1.bam s1_mut_rep1.bam \
+  --track 'wt=*_wt_*,mut=*_mut_*' --out gene1_miami --png
 ```
 
 ## Methods
@@ -435,4 +478,4 @@ faba qc out/ -o out_qc/ --batch-process --site-max-pv 0.05 --site-min-cells 10 -
 
 ## License
 
-MIT — see the [workspace license](https://github.com/causalpathlab/legume-rs).
+MIT: see [LICENSE](LICENSE).
