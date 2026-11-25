@@ -288,8 +288,51 @@ fn a_zero_p_value_does_not_stretch_the_axis() {
     );
 }
 
+/// The knob, pairs and cells figures on one page take their font from it
+/// alike: every axis title in the three prints at one size.
+#[test]
+fn the_qc_figures_on_one_page_share_one_label_size() {
+    use crate::figure::style::Sheet;
+    let t = table("m6a", 800);
+    let p = picker(&t, Some(cells(800)), SiteFilterArgs::default_values());
+    let sheet = Sheet::of((Some(720.0), Some(800.0)));
+    let knob = p.figure(sheet).unwrap();
+    let pairs = p.pairs_figure(0, sheet);
+    let (x, y, _) = p.view().shown_pairs()[0].clone();
+    let report = data_beans::qc_lib::QcReport {
+        train_keep: vec![true, true, false, true],
+        near_empty: vec![false, false, false, true],
+        feature_keep: vec![],
+        n_genes: vec![900.0, 700.0, 9000.0, 1.0],
+        total_counts: vec![3000.0, 2000.0, 60000.0, 2.0],
+        mito_frac: None,
+        ribo_frac: None,
+        n_cells_dropped: 1,
+        n_features_dropped: 0,
+    };
+    let batch = [crate::qc::cells_plot::Cells::of("B1", &report)];
+    let cells = &crate::qc::site_tui::cell_figures(&batch, sheet)[0].svg;
+    let sizes = |svg: &str, titles: &[&str]| -> Vec<String> {
+        let labels = crate::figure::labels(svg);
+        let sizes: Vec<String> = (labels.into_iter())
+            .filter(|l| titles.contains(&l.1.as_str()))
+            .map(|l| l.0)
+            .collect();
+        assert!(sizes.len() >= titles.len(), "{titles:?}: {sizes:?}");
+        sizes
+    };
+    let shown = [
+        sizes(&knob, &["sites"]),
+        sizes(&pairs, &[x.name(), y.name()]),
+        sizes(cells, &["barcode rank", "genes detected"]),
+    ];
+    let all: rustc_hash::FxHashSet<&String> = shown.iter().flatten().collect();
+    assert_eq!(all.len(), 1, "{shown:?}");
+}
+
 /// The knob, pairs and cells figures at their own size, no font asked for,
-/// are drawn as they always were; the knob and the pairs on each
+/// are drawn as they always were (the pairs and the cells since their
+/// labels took the figure's font, as the knob's do); the knob and the pairs on each
 /// quantity's one scale (see `crate::qc::scale`), as the site panels draw
 /// it: the p-value's knob on linear bins.
 #[test]
@@ -317,8 +360,8 @@ fn the_default_qc_figures_are_unchanged() {
         shown,
         [
             1047802977818497795,
-            12215480049523947226,
-            12252359045459261505
+            8772720758665631927,
+            1460898763073091392
         ]
     );
 }
@@ -367,4 +410,128 @@ fn a_nan_p_value_is_left_out_of_the_panels() {
     let g = pairs::grid(&s, (Axis::Coverage, Axis::Pvalue), &f, pairs::BINS);
     let binned: u32 = g.squares.kept.iter().chain(&g.squares.other).sum();
     assert_eq!(binned as usize, t.len() - 1);
+}
+
+/// Every coordinate `svg` writes (each point, a rectangle's far corner
+/// too), as printed under its scale, that lies off its page.
+fn off_page(svg: &str) -> Vec<String> {
+    let (w, h) = crate::figure::svg_size(svg);
+    let mut scale = 1.0;
+    let mut out = Vec::new();
+    let num = |s: &str| s.parse::<f64>().ok();
+    for l in svg.lines() {
+        if let Some(s) = l.strip_prefix(r#"<g transform="scale("#) {
+            scale = s.split(')').next().and_then(num).unwrap_or(1.0);
+            continue;
+        }
+        if l == "</g>" {
+            scale = 1.0;
+        }
+        let attr = |key: &str| -> Option<f64> {
+            let rest = l.split(&format!(" {key}=\"")).nth(1)?;
+            num(rest.split('"').next()?)
+        };
+        let mut points = Vec::new();
+        for (kx, ky) in [("x", "y"), ("x1", "y1"), ("x2", "y2")] {
+            if let (Some(x), Some(y)) = (attr(kx), attr(ky)) {
+                points.push((x, y));
+            }
+        }
+        if let (Some(x), Some(y), Some(rw), Some(rh)) =
+            (attr("x"), attr("y"), attr("width"), attr("height"))
+        {
+            points.push((x + rw, y + rh));
+        }
+        if let Some(t) = l.split("translate(").nth(1) {
+            let mut xy = t.split([' ', ')']).filter_map(num);
+            if let (Some(x), Some(y)) = (xy.next(), xy.next()) {
+                points.push((x, y));
+            }
+        }
+        if let Some(p) = l.split(" points=\"").nth(1) {
+            for xy in p.split('"').next().unwrap_or("").split(' ') {
+                let mut v = xy.split(',').filter_map(num);
+                if let (Some(x), Some(y)) = (v.next(), v.next()) {
+                    points.push((x, y));
+                }
+            }
+        }
+        let off = |v: f64, side: f64| v * scale < -0.01 || v * scale > side + 0.01;
+        if points.iter().any(|&(x, y)| off(x, w) || off(y, h)) {
+            out.push(l.to_string());
+        }
+    }
+    out
+}
+
+/// At a font above the figures' 8 points, the knob, pairs and cells
+/// figures need a page as much larger: each is drawn with every point it
+/// writes on its page (its own page grown as much), or the page is
+/// refused before anything is drawn; never run past it.
+#[test]
+fn a_larger_font_needs_a_larger_page_or_is_refused() {
+    use crate::figure::style::{Sheet, StyleArgs};
+    let t = with_genes(table("m6a", 800));
+    let p = picker(&t, Some(cells(800)), SiteFilterArgs::default_values());
+    let report = data_beans::qc_lib::QcReport {
+        train_keep: vec![true, true, false, true],
+        near_empty: vec![false, false, false, true],
+        feature_keep: vec![],
+        n_genes: vec![900.0, 700.0, 9000.0, 1.0],
+        total_counts: vec![3000.0, 2000.0, 60000.0, 2.0],
+        mito_frac: None,
+        ribo_frac: None,
+        n_cells_dropped: 1,
+        n_features_dropped: 0,
+    };
+    let batch = [crate::qc::cells_plot::Cells::of("B1", &report)];
+    let look = StyleArgs {
+        font_size: Some(16.0),
+        ..StyleArgs::default()
+    };
+    let own = [
+        p.figure(Sheet::OWN).unwrap(),
+        p.pairs_figure(0, Sheet::OWN),
+        crate::qc::site_tui::cell_figures(&batch, Sheet::OWN)[0]
+            .svg
+            .clone(),
+    ];
+    for svg in &own {
+        assert_eq!(off_page(svg), Vec::<String>::new());
+    }
+    let size = crate::figure::svg_size;
+    let mut drawn = 0;
+    for page in [(Some(720.0), None), (None, None), (Some(1440.0), None)] {
+        let sheet = Sheet { page, look };
+        let checked = crate::qc::site_tui::knob_room(
+            &sheet,
+            crate::qc::site_tui::knob_least(&sheet, None),
+            "a qc figure",
+        )
+        .and_then(|()| p.page_problem(&sheet));
+        if page.0 == Some(720.0) {
+            let e = checked.unwrap_err().to_string();
+            assert!(e.contains("--font-size 16") && e.contains("smaller"), "{e}");
+            assert!(p.figure(sheet).is_err());
+            continue;
+        }
+        checked.unwrap();
+        let figures = [
+            p.figure(sheet).unwrap(),
+            p.pairs_figure(0, sheet),
+            crate::qc::site_tui::cell_figures(&batch, sheet)[0]
+                .svg
+                .clone(),
+        ];
+        for (svg, own) in figures.iter().zip(&own) {
+            if page == (None, None) {
+                let (w, h) = size(own);
+                assert_eq!(size(svg), (2.0 * w, 2.0 * h), "the own page, grown");
+            }
+            let off = off_page(svg);
+            assert!(off.is_empty(), "{page:?}: {:?}", &off[..off.len().min(5)]);
+            drawn += 1;
+        }
+    }
+    assert_eq!(drawn, 6);
 }

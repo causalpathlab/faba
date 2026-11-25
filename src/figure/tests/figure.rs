@@ -352,58 +352,82 @@ fn a_pdf_keeps_its_labels_as_text() {
     );
 }
 
-/// A canvas styled for a font scales its labels from the 8 points they
-/// were laid out for, or sets every one at the size asked for; a
+/// A canvas styled for a font draws at its 8-point layout on a page
+/// shrunk or grown by the font, inside one scale: its labels print scaled
+/// from the 8 points they were laid out for, or every one at the size asked
+/// for; its strokes scale with them, its outer size stays as asked, and a
 /// sequence-logo letter keeps filling its box.
 #[test]
-fn a_styled_canvas_sizes_its_labels_from_the_font() {
+fn a_styled_canvas_draws_its_layout_at_one_scale() {
     let draw = |style: &style::Style| {
         let mut c = Canvas::styled(100.0, 50.0, style);
+        let page = c.page();
         c.text(1.0, 10.0, "T1", 8.0, Anchor::Start, INK);
         c.bold(1.0, 20.0, "T2", 11.0, Anchor::Start, INK);
         c.vtext(1.0, 30.0, "T3", 9.0, INK);
         c.rotated(1.0, 40.0, "T4", 8.0, Anchor::End, INK);
+        c.line(0.0, 0.0, 10.0, 0.0, INK, 0.5);
         c.glyph(50.0, 10.0, 20.0, 30.0, 'A', INK);
-        (c.em(), c.finish())
+        (page, c.finish())
     };
     let fit = style::Style {
         font: 6.0,
         ..Default::default()
     };
-    let (em, scaled) = draw(&fit);
-    assert_eq!(em, 0.75);
-    let sizes: Vec<String> = labels(&scaled).into_iter().map(|l| l.0).collect();
-    assert_eq!(sizes, ["6", "8.25", "6.75", "6"], "{scaled}");
+    let (page, scaled) = draw(&fit);
+    assert_eq!(page, (100.0 / 0.75, 50.0 / 0.75));
+    assert_eq!(svg_size(&scaled), (100.0, 50.0));
+    assert_eq!(scaled.matches("<g ").count(), 1, "{scaled}");
+    assert!(
+        scaled.contains(r#"<g transform="scale(0.75)">"#),
+        "{scaled}"
+    );
+    // The background fills the page as asked, outside the scale.
+    let ground = r##"<rect x="0.00" y="0.00" width="100.00" height="50.00" fill="#ffffff"/>"##;
+    assert!(scaled.contains(ground), "{scaled}");
+    // Written at the layout's sizes and places, printed scaled.
+    let bold = r#"font-size="11" font-weight="bold""#;
+    assert!(scaled.contains(bold), "{scaled}");
+    assert!(scaled.contains(r#"stroke-width="0.5""#), "{scaled}");
+    let printed = |svg: &str| -> Vec<String> { labels(svg).into_iter().map(|l| l.0).collect() };
+    assert_eq!(printed(&scaled), ["6", "8.25", "6.75", "6"], "{scaled}");
+    assert_eq!(labels(&scaled)[0].2, Some(7.5), "a baseline as printed");
     let asked = style::Style {
         uniform: true,
         ..fit
     };
     let (_, uniform) = draw(&asked);
-    assert!(labels(&uniform).iter().all(|l| l.0 == "6"), "{uniform}");
+    assert!(printed(&uniform).iter().all(|l| l == "6"), "{uniform}");
     for svg in [&scaled, &uniform] {
         assert!(
             svg.contains(r#"font-size="100" font-weight="bold""#),
             "{svg}"
         );
     }
-    assert_eq!(draw(&style::Style::default()).1, {
+    let (page, own) = draw(&style::Style::default());
+    assert_eq!(page, (100.0, 50.0));
+    assert!(!own.contains("<g "), "no scale at 8 points: {own}");
+    assert_eq!(own, {
         let mut c = Canvas::new(100.0, 50.0);
         c.text(1.0, 10.0, "T1", 8.0, Anchor::Start, INK);
         c.bold(1.0, 20.0, "T2", 11.0, Anchor::Start, INK);
         c.vtext(1.0, 30.0, "T3", 9.0, INK);
         c.rotated(1.0, 40.0, "T4", 8.0, Anchor::End, INK);
+        c.line(0.0, 0.0, 10.0, 0.0, INK, 0.5);
         c.glyph(50.0, 10.0, 20.0, 30.0, 'A', INK);
         c.finish()
     });
 }
 
-/// Bars lay out from the font: at 6 points their margins are three
-/// quarters of those at 8, and the panel alone draws no title.
+/// Bars lay out at 8 points on the canvas' page: at 6 points the page is a
+/// third larger and their margins are those at 8, all scaled by three
+/// quarters; the panel alone draws no title.
 #[test]
-fn bars_lay_out_from_the_font() {
+fn bars_lay_out_on_the_canvas_page() {
     let values = [1.0, 3.0, 2.0];
     let draw = |style: &style::Style| {
         let mut c = Canvas::styled(200.0, 100.0, style);
+        let (w, h) = c.page();
         Bars {
             rotated: false,
             values: &values,
@@ -420,7 +444,7 @@ fn bars_lay_out_from_the_font() {
             x_title: "value".into(),
             y_title: "n".into(),
         }
-        .draw(&mut c, 0.0, 0.0, 200.0, 100.0);
+        .draw(&mut c, 0.0, 0.0, w, h);
         c.finish()
     };
     let small = style::Style {
@@ -428,8 +452,13 @@ fn bars_lay_out_from_the_font() {
         ..Default::default()
     };
     let svg = draw(&small);
-    // The y axis at 52 x 0.75 from the left, from 20 x 0.75 down.
-    assert!(svg.contains(r#"x1="39.00" y1="15.00" x2="39.00""#), "{svg}");
+    // The y axis 52 from the left, from 20 down to 38 above the bottom of
+    // a page 133.33 high; scaled by 0.75.
+    assert!(svg.contains(r#"<g transform="scale(0.75)">"#), "{svg}");
+    assert!(
+        svg.contains(r#"x1="52.00" y1="20.00" x2="52.00" y2="95.33""#),
+        "{svg}"
+    );
     assert!(svg.contains("PANEL1"));
     let panel = style::Style {
         panel_only: true,
@@ -439,7 +468,7 @@ fn bars_lay_out_from_the_font() {
     let svg = draw(&panel);
     assert!(!svg.contains("PANEL1"), "{svg}");
     // Room for the top label only, not a title.
-    assert!(svg.contains(r#"x1="39.00" y1="6.00" x2="39.00""#), "{svg}");
+    assert!(svg.contains(r#"x1="52.00" y1="8.00" x2="52.00""#), "{svg}");
     // Gray: what a threshold drops in light gray, the pointer in ink.
     let removed = style::Palette::Gray.roles().removed;
     assert!(svg.contains(&format!(r#"fill="{removed}""#)), "{svg}");

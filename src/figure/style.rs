@@ -140,18 +140,6 @@ impl Style {
     pub fn em(&self) -> f64 {
         self.font / OWN_FONT
     }
-
-    /// This look for a figure that fits its text to its own boxes: the size
-    /// asked for kept, else its labels left as the boxes fit them.
-    pub fn for_boxes(self) -> Self {
-        match self.uniform {
-            true => self,
-            false => Self {
-                font: OWN_FONT,
-                ..self
-            },
-        }
-    }
 }
 
 impl StyleArgs {
@@ -223,6 +211,20 @@ impl Sheet {
         size::fill(self.page, own)
     }
 
+    /// What a size laid out for 8-point text grows by on this sheet, to
+    /// print at its font: the font asked for over 8 points, never below 1
+    /// (a smaller font's page has room to spare, as a fit font's does).
+    pub fn grow(&self) -> f64 {
+        (self.look.font_size).map_or(1.0, |pt| (pt / OWN_FONT).max(1.0))
+    }
+
+    /// [`Self::fill`] from a figure's own size laid out for 8-point text,
+    /// grown to its font ([`Self::grow`]).
+    pub fn fill_own(&self, (w, h): (f64, f64)) -> (f64, f64) {
+        let g = self.grow();
+        self.fill(|| (w * g, h * g))
+    }
+
     /// The look on the figure's size `(w, h)`, its text fit to it when a
     /// side was asked for.
     pub fn style(&self, (w, h): (f64, f64)) -> Style {
@@ -250,8 +252,6 @@ mod tests {
         };
         let s = asked.style((1000.0, 800.0), true);
         assert_eq!((s.font, s.uniform, s.em()), (7.0, true, 0.875));
-        assert_eq!(s.for_boxes(), s);
-        assert_eq!(fit.for_boxes().font, OWN_FONT);
         for pt in [0.0, -1.0, f64::NAN] {
             let bad = StyleArgs {
                 font_size: Some(pt),

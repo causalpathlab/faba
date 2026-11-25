@@ -161,11 +161,12 @@ impl SitePicker<'_> {
     }
 
     /// The 2D figure of modality `m` at the thresholds now, laid out for
-    /// `sheet`.
+    /// `sheet`: its own size grown to the font, a side asked for checked
+    /// as a knob figure's is ([`super::knob_least`]).
     pub(super) fn pairs_figure(&self, m: usize, sheet: Sheet) -> String {
         let v = &self.views[m];
         let title = format!("{} sites, two thresholds at a time", v.table.modality);
-        let size = sheet.fill(|| OWN_SIZE);
+        let size = sheet.fill_own(OWN_SIZE);
         let style = sheet.style(size);
         pairs::figure(
             &v.sites(),
