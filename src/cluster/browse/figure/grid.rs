@@ -14,7 +14,7 @@ use super::{
     BLOCK_OFF_GRAY, BLOCK_UP, BLOCK_UP_GRAY, READ_OFF, READ_OFF_GRAY, READ_UP, READ_UP_GRAY,
     SIZE_BAR,
 };
-use crate::cluster::browse::go::Table;
+use crate::cluster::browse::go::{q_said, Table};
 use crate::cluster::browse::{Count, Modules};
 use crate::figure::size::Page;
 use crate::figure::{svg, Anchor, Canvas, FAINT, INK, MUTED};
@@ -99,35 +99,89 @@ fn margins(m: &Modules, rows: &[usize]) -> (Margin, Margin) {
     (genes, cells)
 }
 
-/// `s` shortened with an ellipsis to fit `room` points of `f`-point text,
-/// a character taken as wide as a capital (a term is often in capitals).
-fn fit(s: &str, room: f64, f: f64) -> String {
-    let fits = (room / (0.66 * f)).floor().max(0.0) as usize;
-    match s.chars().count() > fits {
-        true => (s.chars().take(fits.saturating_sub(1)))
-            .chain(['…'])
-            .collect(),
-        false => s.to_string(),
-    }
+/// A character's width in `f`-point GO text, Helvetica's advance rounded
+/// up (a set's name is often in capitals, a term's in lower case, so one
+/// width for all would leave the one short and the other running over).
+fn char_width(c: char, f: f64) -> f64 {
+    let em = match c {
+        'i' | 'j' | 'l' | 'I' | '.' | ',' | ':' | ';' | '\'' | '!' | '|' | ' ' => 0.28,
+        'f' | 't' | 'r' | '(' | ')' | '[' | ']' | '-' | '/' => 0.34,
+        'c' | 'k' | 's' | 'v' | 'x' | 'y' | 'z' | 'J' => 0.5,
+        'm' | 'M' => 0.84,
+        'w' => 0.73,
+        'W' => 0.95,
+        'L' => 0.56,
+        'F' | 'T' | 'Z' => 0.62,
+        'C' | 'D' | 'H' | 'N' | 'R' | 'U' => 0.73,
+        'G' | 'O' | 'Q' => 0.78,
+        '…' => 1.0,
+        c if c.is_uppercase() => 0.67,
+        _ => 0.56,
+    };
+    em * f
 }
 
-/// The widest the GO terms beside the grid are, in characters.
-const GO_CHARS: f64 = 28.0;
-/// A GO term's line, in font sizes.
-const GO_LINE: f64 = 1.15;
+/// `s`'s width in `f`-point GO text.
+pub(in crate::cluster::browse) fn go_width(s: &str, f: f64) -> f64 {
+    s.chars().map(|c| char_width(c, f)).sum()
+}
 
-/// The GO terms on each row: each term's name and q, up to `n`.
+/// `s` as it fits `room` points of `f`-point GO text: whole, or cut at the
+/// end of a word (a space, `_` or `-` after it) with an ellipsis, cut
+/// within a word only when no word's end keeps half of what fits.
+fn shortened(s: &str, room: f64, f: f64) -> String {
+    if go_width(s, f) <= room {
+        return s.to_string();
+    }
+    let chars: Vec<char> = s.chars().collect();
+    let mut used = go_width("…", f);
+    let fits = (chars.iter())
+        .take_while(|&&c| {
+            used += char_width(c, f);
+            used <= room
+        })
+        .count();
+    let word = (fits / 2..=fits)
+        .rev()
+        .find(|&i| i > 0 && matches!(chars[i], ' ' | '_' | '-'));
+    let kept: String = chars[..word.unwrap_or(fits)].iter().collect();
+    kept.trim_end_matches([' ', '_', '-']).to_string() + "…"
+}
+
+/// The widest the GO terms beside the grid are kept, in characters, when
+/// the page leaves less beside the grid.
+const GO_CHARS: f64 = 28.0;
+/// A GO term's line, in font sizes, and the least, when a row is shallow.
+const GO_LINE: f64 = 1.15;
+const GO_LINE_LEAST: f64 = 1.0;
+/// A line's capitals' height, in font sizes.
+const CAP: f64 = 0.75;
+
+/// The GO terms on each row: each term's name and the q after it.
 type Terms = Vec<Vec<(String, String)>>;
 
 fn go_terms(table: &Table, rows: &[usize], n: usize) -> Terms {
     (rows.iter())
         .map(|&g| {
-            let hits = table.of(g).map_or(&[][..], |t| &t.hits);
-            (hits.iter().take(n))
-                .map(|h| (h.named().to_string(), format!("{:.1e}", h.q)))
+            let picked = table.of(g).map_or(Vec::new(), |t| t.representative(n));
+            (picked.into_iter())
+                .map(|h| (h.named().to_string(), format!(" (q {})", q_said(h.q))))
                 .collect()
         })
         .collect()
+}
+
+/// How many of `n` lines a row `cell` points deep holds in `f`-point text,
+/// and their spacing: the lines' capitals within the row, no closer than
+/// the font; one at least.
+fn go_lines(cell: f64, f: f64, n: usize) -> (usize, f64) {
+    let held = ((cell - CAP * f) / (GO_LINE_LEAST * f)).floor().max(0.0) as usize + 1;
+    let shown = n.min(held).max(1);
+    let spacing = match shown {
+        1 => 0.0,
+        k => (GO_LINE * f).min((cell - CAP * f) / (k - 1) as f64),
+    };
+    (shown, spacing)
 }
 
 /// The reference |z| values the Hinton key's squares show: up to three
@@ -315,13 +369,14 @@ pub(super) fn heatmap(
         foot += 1.4 * f;
     }
     let terms = grid.go_labels.zip(go).map(|(k, t)| go_terms(t, &rows, k));
-    let none = go.map_or(String::new(), |t| format!("none at q <= {}", t.q));
-    let go_w = terms.as_ref().map(|terms| {
-        let widest = (terms.iter().flatten())
-            .map(|(name, q)| width(name, f) + width(q, f) + 0.5 * f)
-            .chain([width(&none, f)])
-            .fold(0.0, f64::max);
-        widest.min(width("x", f) * GO_CHARS)
+    // A row with no term: blank, or saying so with `--go-none`.
+    let none = (go.filter(|_| grid.go_none)).map(|t| format!("none at q <= {}", t.q));
+    // The width the labels need, whole.
+    let go_need = terms.as_ref().map(|terms| {
+        (terms.iter().flatten())
+            .map(|(name, q)| go_width(name, f) + go_width(q, f))
+            .chain(none.iter().map(|s| go_width(s, f)))
+            .fold(0.0, f64::max)
     });
     // Each row's shift range right of the grid, as the browser has it,
     // when the bars are drawn.
@@ -334,7 +389,10 @@ pub(super) fn heatmap(
     let range_w = (ranges.iter())
         .map(|s| 0.6 * f + width(s, f))
         .fold(0.0, f64::max);
-    let beside = range_w + go_w.map_or(0.0, |w| 0.6 * f + w);
+    // The grid laid out with the labels' width kept to `GO_CHARS` at most;
+    // then the labels take what they need of the width the page leaves.
+    let kept = go_need.map(|w| w.min(width("x", f) * GO_CHARS));
+    let beside = range_w + kept.map_or(0.0, |w| 0.6 * f + w);
     let fixed = (label + nl * gap + beside + scale, head + foot);
     let units = (
         cols as f64 + nl * depth,
@@ -342,6 +400,9 @@ pub(super) fn heatmap(
     );
     // Square boxes as large as the page allows (44 points without one).
     let (cell, (w, h)) = cells(size, 44.0, fixed, units)?;
+    let left_over = w - fixed.0 - cell * units.0;
+    let go_w = (go_need.zip(kept)).map(|(need, kept)| need.min(kept + left_over.max(0.0)));
+    let beside = range_w + go_w.map_or(0.0, |w| 0.6 * f + w);
     let d = depth * cell;
     // The grid under its top margins.
     let head = head + nt * d;
@@ -556,18 +617,20 @@ pub(super) fn heatmap(
             for (i, row) in terms.iter().enumerate() {
                 let yc = head + cell * (i as f64 + 0.5);
                 if row.is_empty() {
-                    let said = fit(&none, go_w, f);
-                    c.text(x, yc + 0.35 * f, &said, f, Anchor::Start, MUTED);
+                    if let Some(none) = &none {
+                        let said = shortened(none, go_w, f);
+                        c.text(x, yc + 0.35 * f, &said, f, Anchor::Start, MUTED);
+                    }
                     continue;
                 }
-                let held = (((cell - 2.0) / (GO_LINE * f)).floor() as usize).max(1);
-                let shown = row.len().min(held);
-                let first = yc - (shown as f64 - 1.0) * GO_LINE * f / 2.0 + 0.35 * f;
+                // A line a term, the lines' capitals centred on the row.
+                let (shown, spacing) = go_lines(cell, f, row.len());
+                let block = (shown - 1) as f64 * spacing + CAP * f;
+                let first = yc - block / 2.0 + CAP * f;
                 for (k, (name, q)) in row.iter().take(shown).enumerate() {
-                    let y = first + k as f64 * GO_LINE * f;
-                    let room = go_w - width(q, f) - 0.5 * f;
-                    c.text(x, y, &fit(name, room, f), f, Anchor::Start, INK);
-                    c.text(x + go_w, y, q, f, Anchor::End, MUTED);
+                    let y = first + k as f64 * spacing;
+                    let name = shortened(name, go_w - go_width(q, f), f);
+                    c.text(x, y, &format!("{name}{q}"), f, Anchor::Start, INK);
                 }
             }
         }

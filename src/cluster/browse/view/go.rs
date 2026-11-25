@@ -244,7 +244,7 @@ type Piece = (String, Style);
 /// A term in the GO column, at most `w` wide: its name, shortened to fit,
 /// and its q.
 fn term(h: &Hit, w: usize) -> Vec<Piece> {
-    let q = format!(" {:.1e}", h.q);
+    let q = format!(" {}", super::super::go::q_said(h.q));
     let name = h.named();
     let room = w.saturating_sub(q.chars().count());
     let name = match name.chars().count() > room {

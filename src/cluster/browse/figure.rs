@@ -18,6 +18,8 @@ mod grid;
 use crate::figure::size::{self, Page};
 use crate::figure::style::{AxisTitles, Palette, Sheet};
 use crate::figure::{esc, mix, svg, Anchor, Canvas, FAINT, INK, MUTED};
+#[cfg(test)]
+pub(super) use grid::go_width;
 
 /// Which figure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -230,9 +232,16 @@ pub struct GridArgs {
         value_name = "N",
         value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..=10),
         requires = "figure",
-        help = "Label each gene module's row, right of the grid, with its top N GO terms (or --gmt sets) and their q, as the browser's GO column lists them (--gaf, --obo, --gmt, --go-q, --go-min-weight)"
+        help = "Label each gene module's row, right of the grid, with up to N of its GO terms (or --gmt sets), a line each with its q after it, by p and none mostly within a term already shown (--gaf, --obo, --gmt, --go-q, --go-min-weight); a row with none is left blank"
     )]
     pub go_labels: Option<usize>,
+
+    #[arg(
+        long = "go-none",
+        requires = "go_labels",
+        help = "With --go-labels, say \"none at q <= Q\" on a row with no term, as the browser's GO column does, instead of leaving it blank"
+    )]
+    pub go_none: bool,
 
     #[arg(
         long = "block-bars",
@@ -254,6 +263,7 @@ impl Default for GridArgs {
             key: false,
             values: false,
             go_labels: None,
+            go_none: false,
             block_bars: false,
         }
     }

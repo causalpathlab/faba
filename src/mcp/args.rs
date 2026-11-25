@@ -394,13 +394,14 @@ mod tests {
             };
             for m in missing.clone() {
                 let flag = m.split(' ').next().unwrap_or(&m).to_string();
-                let takes = sub
-                    .get_arguments()
-                    .find(|a| a.get_long().is_some_and(|l| flag == format!("--{l}")))
-                    .is_some_and(|a| a.get_action().takes_values());
+                let arg = (sub.get_arguments())
+                    .find(|a| a.get_long().is_some_and(|l| flag == format!("--{l}")));
                 line.push(flag);
-                if takes {
-                    line.push("p1".into());
+                // A value of the flag's type: a number, or a path.
+                match arg.filter(|a| a.get_action().takes_values()) {
+                    Some(a) if value_type(a) != Ty::Text => line.push("1".into()),
+                    Some(_) => line.push("p1".into()),
+                    None => {}
                 }
             }
         }

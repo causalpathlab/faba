@@ -162,6 +162,8 @@ pub struct Hit {
     pub q: f64,
     /// The overlap's genes' symbols, the module's strongest first.
     pub genes: Vec<String>,
+    /// The overlap's genes, as rows of the fit's genes, ascending.
+    pub overlap: Vec<usize>,
 }
 
 impl Hit {
@@ -452,6 +454,7 @@ pub fn terms(
                 .take(5)
                 .map(|&r| symbol(&genes[r].0).to_string())
                 .collect(),
+            overlap: overlap.clone(),
         });
         seen[g].push(overlap);
     }
@@ -575,7 +578,38 @@ impl Table {
     }
 }
 
+/// A term is left out of [`ModuleTerms::representative`] when at least
+/// this share of its overlap genes are those of one term picked before it.
+pub const REDUNDANT: f64 = 0.8;
+
+/// A q as the browser's GO column writes it.
+pub fn q_said(q: f64) -> String {
+    format!("{q:.1e}")
+}
+
 impl ModuleTerms {
+    /// Up to `n` of its terms, by p, each left out whose overlap genes are
+    /// mostly ([`REDUNDANT`]) those of one picked before it: a parent set
+    /// and its child give one line, not two.
+    pub fn representative(&self, n: usize) -> Vec<&Hit> {
+        let mut out: Vec<&Hit> = Vec::new();
+        for h in &self.hits {
+            if out.len() >= n {
+                break;
+            }
+            let within = |o: &&Hit| {
+                let shared = (h.overlap.iter())
+                    .filter(|r| o.overlap.binary_search(r).is_ok())
+                    .count();
+                shared as f64 >= REDUNDANT * h.overlap.len() as f64
+            };
+            if !out.iter().any(within) {
+                out.push(h);
+            }
+        }
+        out
+    }
+
     /// Why it lists no term, held to the cutoff `q`.
     pub fn why_none(&self, q: f64) -> String {
         match self.n < LEAST_MODULE {

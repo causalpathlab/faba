@@ -183,3 +183,32 @@ fn the_source_says_what_is_missing() {
         .unwrap_err()
         .contains("not human or mouse"));
 }
+
+/// A parent set and a child within it, both over-represented in module 0,
+/// and a set beside them: both are listed, but the representative terms
+/// give the parent and the set beside it, never the child too, in p's
+/// order.
+#[test]
+fn representative_terms_leave_out_a_set_mostly_within_one_picked() {
+    let tmp = tempfile::tempdir().unwrap();
+    let set = |name: &str, g: std::ops::Range<usize>| {
+        let genes: Vec<String> = g.map(|i| format!("G{i}")).collect();
+        format!("{name}\t-\t{}", genes.join("\t"))
+    };
+    let lines = [
+        set("SET1_PARENT", 0..10),
+        set("SET2_CHILD", 0..8),
+        set("SET3_BESIDE", 10..17),
+        set("SET4_FILL", 20..40),
+    ];
+    let path = tmp.path().join("nested.gmt");
+    std::fs::write(&path, lines.join("\n")).unwrap();
+    let t = terms(&genes(), 2, &Source::Gmt(path), 0.5, DEFAULT_Q).unwrap();
+    let m0 = t.of(0).unwrap();
+    let ids = |h: &[&Hit]| h.iter().map(|h| h.id.clone()).collect::<Vec<_>>();
+    let all: Vec<&Hit> = m0.hits.iter().collect();
+    assert_eq!(ids(&all), ["SET1_PARENT", "SET2_CHILD", "SET3_BESIDE"]);
+    assert_eq!(ids(&m0.representative(2)), ["SET1_PARENT", "SET3_BESIDE"]);
+    assert_eq!(ids(&m0.representative(1)), ["SET1_PARENT"]);
+    assert_eq!(ids(&m0.representative(10)), ["SET1_PARENT", "SET3_BESIDE"]);
+}

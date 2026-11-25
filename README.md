@@ -386,10 +386,14 @@ The grid's figure takes more, each off by default. `--size-bars left,top` (or `l
 in cells (as `--cells` prints it) by its column; `--read-bars` takes the same sides and draws each
 module's reads, summed over its blocks, as the browser's mirror bars (converted out or up,
 unconverted the other way, one scale a side). `--marginal-size` sets their depth as a fraction of
-the grid's shorter side (default 0.15); the largest of each is labelled. `--go-labels N` lists each
-gene module's top N GO terms (or `--gmt` sets) and their q on its right, as the browser's GO column
-does (read only with this flag; `--gaf`, `--obo`, `--go-q`, `--go-min-weight` apply), shortened to
-fit, as many as its row holds. `--key` keeps a small key under the grid with `--panel-only` (for
+the grid's shorter side (default 0.15); the largest of each is labelled. `--go-labels N` lists up
+to N of each gene module's GO terms (or `--gmt` sets) on its right, a line each within its row, the
+q after the name, e.g. `SET1_NAME (q 1.1e-2)` (read only with this flag; `--gaf`, `--obo`, `--go-q`,
+`--go-min-weight` apply). The terms go by p, each left out whose overlap genes are 80% or more
+those of one already shown, so a parent set and its child give one line. The names take the width
+the page leaves beside the grid, shortened past it at a word's end; fewer than N show only where
+the row is too shallow for N lines. A module with no term is left blank; `--go-none` says "none at
+q <= Q" there, as the browser's GO column does. `--key` keeps a small key under the grid with `--panel-only` (for
 `--look hinton`, squares at reference |z| beside the colours). `--values` prints each block's value
 (z to a tenth, the shift to a hundredth, the %) at the font size, left out where it does not fit
 in its cell. A figure asked for smaller than it can be drawn is refused, naming the least size it
