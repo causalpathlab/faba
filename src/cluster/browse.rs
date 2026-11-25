@@ -91,6 +91,7 @@ pub struct ModulesArgs {
     #[arg(
         long = "gtf",
         value_name = "FILE",
+        value_hint = clap::ValueHint::FilePath,
         help = "Gene annotation GTF/GFF for the gene models over the pileups",
         long_help = "Gene annotation GTF/GFF for the gene models over the pileups (exons,\n\
                      introns, strand). Without it, the GFF recorded next to the tables is\n\
@@ -102,6 +103,7 @@ pub struct ModulesArgs {
     #[arg(
         long = "html",
         value_name = "FILE",
+        value_hint = clap::ValueHint::FilePath,
         help = "Write the modules as one self-contained HTML page, to share or post, instead of browsing",
         long_help = "Write the modules as one self-contained HTML page instead of browsing: the\n\
                      browser's levels and keys, its data embedded, nothing loaded from anywhere,\n\
@@ -113,6 +115,7 @@ pub struct ModulesArgs {
     #[arg(
         long = "figure",
         value_name = "PREFIX",
+        value_hint = clap::ValueHint::FilePath,
         conflicts_with = "html",
         help = "Write the modules grid (gene modules against cell modules) as PREFIX.pdf and PREFIX.png, coloured as --look says, instead of browsing"
     )]

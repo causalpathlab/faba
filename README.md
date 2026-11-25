@@ -218,7 +218,7 @@ Producers write every candidate and apply no p-value cutoff. qc is where cells, 
 
 The producers (count, depth, atoi, dartseq, apa, snp, run, qc, cluster) take `background`: on large BAMs set it, and the call returns a job id at once.
 
-Every write goes to `out`, which must not exist. Leave `out` out and the output goes in today's results folder, named after the input and the tool. Paths resolve against the server's working directory. Common flags have their own arguments; further flags go in `options`, as `faba <command> --help` lists them; `options` cannot name the output or open a view. Results give the paths written and what the run recorded (`results`: a fit's ELBO verdict, its cluster sizes).
+Every write goes to `out`, which must not exist. Leave `out` out and the output goes in today's results folder, named after the input and the tool. Paths resolve against the server's working directory. Every flag of a tool's command is an argument of the tool, typed, named after the flag (`--min-coverage` is `min_coverage`), but those naming the output or opening a view; `options` remains for anything else, as `faba <command> --help` lists it, and a flag given both ways is refused. Results give the paths written and what the run recorded (`results`: a fit's ELBO verdict, its cluster sizes).
 ```
 
 legume-mcp adds where the records are and the background jobs below. The project's notebook (open with a plan: the question, the data, how the result will be checked) is the `legume` server's, not faba's.

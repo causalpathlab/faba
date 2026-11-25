@@ -55,6 +55,7 @@ pub struct Shown {
     #[arg(
         long = "gaf",
         value_name = "FILE",
+        value_hint = clap::ValueHint::FilePath,
         help = "GO annotations for --go and the browser's a (default: lupin's cached GO Consortium file for the genes' species)"
     )]
     pub gaf: Option<String>,
@@ -62,6 +63,7 @@ pub struct Shown {
     #[arg(
         long = "obo",
         value_name = "FILE",
+        value_hint = clap::ValueHint::FilePath,
         help = "The GO graph for --gaf, terms propagated up it (default: lupin's cached go-basic.obo)"
     )]
     pub obo: Option<String>,
@@ -69,6 +71,7 @@ pub struct Shown {
     #[arg(
         long = "gmt",
         value_name = "FILE",
+        value_hint = clap::ValueHint::FilePath,
         conflicts_with = "gaf",
         help = "Gene sets to test instead of GO, a GMT file"
     )]

@@ -105,6 +105,7 @@ pub struct ScanPwmArgs {
     #[arg(
         long = "figure",
         value_name = "PREFIX",
+        value_hint = clap::ValueHint::FilePath,
         help = "Also write the sequence logo as `{PREFIX}.pdf` and `{PREFIX}.png`",
         long_help = "Also write the sequence logo as `{PREFIX}.pdf` and `{PREFIX}.png`, as the\n\
                      view first shows it. Works with --batch-process: no terminal needed."
