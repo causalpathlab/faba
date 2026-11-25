@@ -33,10 +33,12 @@ pub(in crate::mcp) fn cluster(a: &Arguments, cx: &Call) -> Result<Value> {
         (Some(record), first) => (
             first.unwrap_or(record),
             "within",
-            format!("clusters within the cell modules of {record}"),
+            format!("clusters within the cell modules (or groups) of {record}"),
         ),
         (None, Some(first)) => (first, "cluster", format!("clusters of {}", data.join(", "))),
-        (None, None) => bail!("`data` is required (or `within`, a count fit's run record)"),
+        (None, None) => {
+            bail!("`data` is required (or `within`, a count fit's run record or a cell table)")
+        }
     };
     let out = a.out_or(cx, (&named(from, tool), ""), exists)?;
     let mut argv = vec!["cluster".into()];
@@ -504,6 +506,33 @@ mod tests {
         assert!(tools().iter().any(|t| {
             t.name == "cluster" && t.input_schema["properties"]["within"].is_object()
         }));
+    }
+
+    /// `within` takes a cell table too, its columns named by
+    /// `within_column` and `within_cell_column`.
+    #[test]
+    fn cluster_within_a_cell_table_names_its_columns() {
+        let args = json!({
+            "within": "out/t.cell_annotation.parquet",
+            "within_column": "cluster",
+            "within_cell_column": "obs_names",
+        });
+        let a = Arguments(with_typed("cluster", args).unwrap());
+        assert_eq!(
+            a.options("cluster").unwrap(),
+            [
+                "--within",
+                "out/t.cell_annotation.parquet",
+                "--within-column",
+                "cluster",
+                "--within-cell-column",
+                "obs_names"
+            ]
+        );
+        let schema = tools().into_iter().find(|t| t.name == "cluster").unwrap();
+        for key in ["within_column", "within_cell_column"] {
+            assert!(schema.input_schema["properties"][key].is_object(), "{key}");
+        }
     }
 
     /// `batch_map` is an object of `SITES: COUNT` or a list of

@@ -134,6 +134,8 @@ cluster shift_sd type="number"
 cluster svi_epochs type="integer" minimum=0.0
 cluster tol type="number" minimum=0.0
 cluster within type="string"
+cluster within_cell_column type="string"
+cluster within_column type="string"
 cluster within_min_cells type="integer" minimum=0.0
 cluster_view batch_groups type="string"
 cluster_view batches type="boolean"
