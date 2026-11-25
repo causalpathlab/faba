@@ -29,6 +29,9 @@ pub struct Roles {
     pub bar: &'static str,
     pub dropped: &'static str,
     pub line: &'static str,
+    /// Bars drawn in front of a total (a pileup's converted reads over
+    /// all of them, which are drawn palest): to stand out from it.
+    pub front: &'static str,
     /// Barcodes under the near-empty floor, in the cell QC.
     pub near_empty: &'static str,
     /// The kept and removed colours' names, for a key; what a threshold
@@ -48,6 +51,7 @@ const COLOUR: Roles = Roles {
     bar: super::BAR,
     dropped: super::ACCENT,
     line: super::ACCENT,
+    front: super::ACCENT,
     near_empty: "#8a8f8b",
     kept_name: "blue",
     removed_name: "orange",
@@ -56,13 +60,14 @@ const COLOUR: Roles = Roles {
 };
 
 /// [`Palette::Gray`]'s roles: kept in dark gray, removed in light gray, the
-/// threshold's line in ink.
+/// threshold's line in ink; bars in front of a total near black over it.
 const GRAY: Roles = Roles {
     kept: "#262626",
     removed: "#b3b3b3",
     bar: "#262626",
     dropped: "#b3b3b3",
     line: super::INK,
+    front: "#262626",
     near_empty: "#8c8c8c",
     kept_name: "dark gray",
     removed_name: "light gray",
@@ -153,6 +158,12 @@ pub struct Style {
     pub uniform: bool,
     pub panel_only: bool,
     pub palette: Palette,
+    /// Bar panels take only the margins their labels need, as a figure
+    /// laid out for a small page does (pileup's).
+    pub tight: bool,
+    /// The least room under a bar panel for its position labels, laid
+    /// out, so panels side by side line their plots up.
+    pub tick_room: f64,
 }
 
 impl Default for Style {
@@ -162,6 +173,8 @@ impl Default for Style {
             uniform: false,
             panel_only: false,
             palette: Palette::Colour,
+            tight: false,
+            tick_room: 0.0,
         }
     }
 }
@@ -199,6 +212,8 @@ impl StyleArgs {
             uniform: self.font_size.is_some(),
             panel_only: self.panel_only,
             palette: self.palette,
+            tight: false,
+            tick_room: 0.0,
         }
     }
 }

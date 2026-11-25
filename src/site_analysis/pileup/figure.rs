@@ -2,6 +2,169 @@
 
 use super::*;
 
+/// The figure the browser saves, of the gene's sites (or the whole gene,
+/// `--window gene`): its rows on the page
+/// and in the look asked for, a pair of alike tracks (`--track WT=...
+/// --track MUT=...`) one above the other's mirror on one scale, under the
+/// gene model; written to `{out}.miami.svg` (and PDF, PNG as asked). With
+/// several genes (`-q A,B`, `--gene-file`), a figure each,
+/// `{out}_{SYMBOL}`, and with `--row` or `--grid` one of them all; the
+/// files a stack of those genes saves in the browser.
+pub(super) fn run_rows_figure(args: &PileupArgs, groups: &[TrackFiles]) -> anyhow::Result<()> {
+    let sheet = crate::figure::style::Sheet::new(
+        crate::figure::size::Figure::Pileup,
+        &args.size,
+        &args.look,
+    )?;
+    let genes = args.gene_list()?;
+    let many = genes.len() > 1;
+    anyhow::ensure!(
+        !many || args.regions.is_empty(),
+        "several genes draw a figure each: give --regions without them"
+    );
+    let selectors: Vec<Selector> = match many {
+        true => (genes.iter())
+            .map(|g| Selector::build(std::slice::from_ref(g), &[]))
+            .collect::<anyhow::Result<_>>()?,
+        false => vec![Selector::build(&genes, &args.regions)?],
+    };
+    let combine = args.combine(selectors.len())?;
+    let loaded = (selectors.iter())
+        .map(|s| load(args, groups, s, true, None, None))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let models = match args.annotation() {
+        Some(gtf) => {
+            let keep = |key: &str| selectors.iter().any(|s| s.matches_gene(key));
+            let models = SharedModels::default();
+            let _ = models.set(Ok(load_gene_models_where(&gtf, keep)?));
+            Some(models)
+        }
+        None => None,
+    };
+    let names: Vec<String> = loaded.iter().map(|l| stacked_name(args, l)).collect();
+    let settings = args.figure_settings();
+    let columns = args.num_bins.unwrap_or(tui::SCREEN_BARS);
+    let mut views: Vec<_> = (loaded.iter().zip(&names))
+        .map(|(l, name)| {
+            let view = view_of(l, models.as_ref(), false);
+            let at = (args.figure_window(), columns);
+            tui::figure_view(view, tracks_of(args, l, name), &settings, at, args.key)
+        })
+        .collect();
+    let files = tui::export(&mut views, &sheet, combine)?;
+    let prefix: String = match &args.out {
+        Some(p) => p.to_string(),
+        None if many => "pileup".into(),
+        None => slug(&query_symbol(&loaded[0].gene)),
+    };
+    let mut written = Vec::new();
+    for (k, (suffix, svg)) in files.iter().enumerate() {
+        // One gene's figure keeps its name of old.
+        let name = match (k, many || combine.is_some()) {
+            (0, false) => format!("{prefix}.miami"),
+            _ => format!("{prefix}{suffix}"),
+        };
+        written.extend(write_figure(args, svg, &name)?);
+    }
+    info!("wrote {}", written.join(", "));
+    Ok(())
+}
+
+/// `svg` under `prefix`: the SVG (unless `--format pdf`), the PDF (unless
+/// `--no-pdf` or `--format svg`) and with `--png` a PNG; the paths written.
+fn write_figure(args: &PileupArgs, svg: &str, prefix: &str) -> anyhow::Result<Vec<String>> {
+    let mut written = Vec::new();
+    if !matches!(args.format, Some(FigFormat::Pdf)) {
+        let path = format!("{prefix}.svg");
+        std::fs::write(&path, svg)?;
+        written.push(path);
+    }
+    if !args.no_pdf && !matches!(args.format, Some(FigFormat::Svg)) {
+        written.extend(crate::figure::save(svg, prefix)?);
+    }
+    if args.png {
+        let png = format!("{prefix}.png");
+        std::fs::write(&png, crate::figure::png(svg, args.dpi as f32 / 72.0)?)?;
+        written.push(png);
+    }
+    Ok(written)
+}
+
+impl PileupArgs {
+    /// The genes asked for: `-q`'s, then `--gene-file`'s, each once.
+    pub(super) fn gene_list(&self) -> anyhow::Result<Vec<Box<str>>> {
+        let mut genes = self.genes.clone();
+        if let Some(file) = &self.gene_file {
+            let text = std::fs::read_to_string(file.as_ref())
+                .map_err(|e| anyhow::anyhow!("--gene-file {file}: {e}"))?;
+            genes.extend(genes_in(&text));
+        }
+        let mut seen = std::collections::HashSet::new();
+        genes.retain(|g| seen.insert(g.to_ascii_uppercase()));
+        Ok(genes)
+    }
+
+    /// How the figure draws, as the browser's state: the y scale, both
+    /// channels, the pair mirrored, the difference row as asked, the key
+    /// where asked.
+    pub(super) fn figure_settings(&self) -> tui::Settings {
+        tui::Settings {
+            y_scale: Some(self.yscale.into()),
+            show: Some(crate::site_analysis::show::Show::Both),
+            mirror: Some(true),
+            difference: Some(self.difference),
+            key_at: Some(self.key_at),
+            pad: self.pad.map(i64::from),
+            ..tui::Settings::default()
+        }
+    }
+
+    /// What the figure spans: `--window`, else the sites.
+    pub(super) fn figure_window(&self) -> tui::Window {
+        self.window.unwrap_or(tui::Window::Sites)
+    }
+
+    /// The figure of all `n` genes `--row` or `--grid` asks for.
+    pub(super) fn combine(&self, n: usize) -> anyhow::Result<Option<tui::Combine>> {
+        if self.row {
+            return Ok(Some(tui::Combine {
+                cols: n,
+                name: "row",
+            }));
+        }
+        let Some(grid) = &self.grid else {
+            return Ok(None);
+        };
+        let parsed = grid.split_once(['x', 'X']).and_then(|(c, r)| {
+            Some((
+                c.trim().parse::<usize>().ok()?,
+                r.trim().parse::<usize>().ok()?,
+            ))
+        });
+        let Some((cols, rows)) = parsed.filter(|&(c, r)| c > 0 && r > 0) else {
+            anyhow::bail!("--grid {grid}: write it as COLSxROWS, e.g. 4x2");
+        };
+        anyhow::ensure!(
+            cols * rows >= n,
+            "--grid {grid} holds {} panels: {n} genes need more",
+            cols * rows
+        );
+        Ok(Some(tui::Combine { cols, name: "grid" }))
+    }
+}
+
+/// The genes a gene file names: words split at lines, commas and spaces,
+/// what follows a `#` on a line left out.
+pub(super) fn genes_in(text: &str) -> Vec<Box<str>> {
+    text.lines()
+        .map(|l| l.split('#').next().unwrap_or_default())
+        .flat_map(|l| l.split([',', ' ', '\t']))
+        .map(str::trim)
+        .filter(|w| !w.is_empty())
+        .map(Box::from)
+        .collect()
+}
+
 /// Faceted Miami-plot path: stratified matrix epi sites (top), GTF gene
 /// model (middle), and BAM read depth (bottom), one panel per track and
 /// cell type.
@@ -63,7 +226,7 @@ pub(super) fn run_miami_figure(
         );
     }
 
-    let edges = BinEdges::new(lo, hi, args.num_bins);
+    let edges = BinEdges::new(lo, hi, args.num_bins.unwrap_or(80));
 
     // Region chromosome: prefer the matrix chr (same origin as the BAM),
     // else the GTF gene's chr.
@@ -138,7 +301,7 @@ pub(super) fn run_miami_figure(
         width_in: width_in.unwrap_or(8.0) as f32,
         height_in: height_in.map(|h| h as f32),
         dpi: args.dpi,
-        palette: args.palette.clone(),
+        palette: args.celltype_palette.clone(),
         title,
         top_label,
     };

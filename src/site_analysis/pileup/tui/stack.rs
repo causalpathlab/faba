@@ -1,6 +1,7 @@
 //! Several genes' browsers stacked top to bottom, for the genes marked in
 //! the gene list: one takes the keys (Tab moves on), how the bars are drawn
-//! applies to all of them, and `s` saves them all as one figure.
+//! applies to all of them, and `s` saves each, and all of them as one
+//! figure, as `faba pileup --batch-process` does.
 
 use crate::tui::ui::{help_line, Screen};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
@@ -10,7 +11,8 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use super::render::fitted_help;
-use super::{browser, Exit, PileupView, Settings, Track, View};
+use super::{browser, export, Combine, Exit, PileupView, Settings, Track, View};
+use crate::figure::style::Sheet;
 use crate::figure::{status_line, Controls, Key};
 
 /// What a stack says when a key needs one gene to itself.
@@ -42,6 +44,15 @@ impl Arrange {
             Arrange::Column => 1,
             Arrange::Row => n.max(1),
             Arrange::Grid => (n as f64).sqrt().ceil().max(1.0) as usize,
+        }
+    }
+
+    /// What the combined figure of genes laid out so is named after.
+    fn file_name(self) -> &'static str {
+        match self {
+            Arrange::Column => "column",
+            Arrange::Row => "row",
+            Arrange::Grid => "grid",
         }
     }
 
@@ -100,10 +111,17 @@ impl<'a> StackView<'a> {
         }
     }
 
-    /// The genes' figures as one, laid out as on screen.
-    pub(super) fn figure(&self) -> String {
-        let figures: Vec<String> = self.views.iter().map(PileupView::figure).collect();
-        crate::figure::tile_svgs(&figures, self.arrange.cols(figures.len()))
+    /// The files `s` writes, as `faba pileup --batch-process` writes them
+    /// for these genes drawn so: each gene's figure, one of them all laid
+    /// out as on screen, and the key alone when it goes so (see
+    /// [`export`]).
+    pub(super) fn files(&mut self) -> anyhow::Result<Vec<(String, String)>> {
+        let n = self.views.len();
+        let combine = Combine {
+            cols: self.arrange.cols(n),
+            name: self.arrange.file_name(),
+        };
+        export(&mut self.views, &Sheet::OWN, Some(combine))
     }
 
     /// The footer: a status, the save prompt, or the keys, `[/]` among
@@ -129,8 +147,8 @@ impl<'a> StackView<'a> {
             ("PgUp/PgDn", "half a view"),
             ("n/N", "next/prev site"),
             ("+/-", "zoom"),
-            ("0", "whole"),
-            ("Z/W", "zoom all/all whole"),
+            ("0", "whole/sites"),
+            ("Z/W", "zoom all/all whole or sites"),
             ("y", "scale"),
             (
                 "Y",
@@ -180,9 +198,9 @@ impl crate::tui::View for StackView<'_> {
             ("n/N", "next/previous site"),
             ("+/=", "zoom the gene in"),
             ("-", "zoom it out"),
-            ("0", "it whole"),
+            ("0", "it whole, or its sites"),
             ("Z", "zoom every gene in"),
-            ("W", "every gene whole"),
+            ("W", "every gene whole, or each at its sites"),
             ("y", "y scale"),
             ("Y", "lock y to the tallest gene, or unlock"),
         ];
@@ -258,7 +276,12 @@ impl Screen for StackView<'_> {
         self.status = None;
         match self.controls.key(key) {
             Key::Used => return self.share_settings(),
-            Key::Save(prefix) => return self.controls.save(&self.figure(), &prefix),
+            Key::Save(prefix) => {
+                return match self.files() {
+                    Ok(files) => self.controls.save_many(&files, &prefix),
+                    Err(e) => self.status = Some(format!("not saved: {e}")),
+                }
+            }
             Key::Pass => {}
         }
         let n = self.views.len();
@@ -277,12 +300,23 @@ impl Screen for StackView<'_> {
             KeyCode::Char('g') | KeyCode::Esc => self.exit = Some(Exit::Genes),
             // A search or the other modality opens one gene, not a stack.
             KeyCode::Char('/' | 'm' | 'M') => self.status = Some(ONE_GENE.into()),
-            // Every gene at once: `Z` zooms each in, `W` shows each whole.
-            KeyCode::Char(c @ ('Z' | 'W')) => {
-                let one = if c == 'Z' { '=' } else { '0' };
-                let key = KeyEvent::new(KeyCode::Char(one), key.modifiers);
+            // Every gene at once: `Z` zooms each in.
+            KeyCode::Char('Z') => {
+                let key = KeyEvent::new(KeyCode::Char('='), key.modifiers);
                 for v in &mut self.views {
                     v.handle_key(key);
+                }
+            }
+            // `W` shows each whole, or each at its own sites from whole, as
+            // the gene with the keys steps (`0`).
+            KeyCode::Char('W') => {
+                let f = &self.views[self.focus];
+                let to = match f.window == f.extent {
+                    true => super::Window::Sites,
+                    false => super::Window::Gene,
+                };
+                for v in &mut self.views {
+                    v.set_window(to);
                 }
             }
             // One y axis for every gene: the tallest of them, as a locked

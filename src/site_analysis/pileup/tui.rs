@@ -25,6 +25,8 @@ mod scroll;
 mod stack;
 mod track;
 
+pub use figure::{export, Combine, KeyAt};
+pub use nav::Window;
 use rows::Row;
 pub use stack::show_stack;
 pub use track::*;
@@ -119,6 +121,25 @@ pub struct PileupView<'a> {
     plots: Vec<PlotImage>,
     /// How the first two tracks are compared, when both carry totals.
     contrast: Option<Contrast>,
+    /// Whether that comparison's row is drawn (`D` hides it).
+    difference: bool,
+    /// Where a saved figure puts its key (`K` steps it).
+    key_at: KeyAt,
+    /// The bases either side of the sites when the window is at them (`0`);
+    /// `None` centres it on them, 1 kb at least (see
+    /// [`PileupView::sites_window`]).
+    pad: Option<i64>,
+    /// A figure of a panel alone draws the key too (`--key`).
+    with_key: bool,
+    /// A figure drawn as a panel of a combined one, which draws the key
+    /// once for all.
+    keyless: bool,
+    /// A figure drawn as a panel not first in its row of a combined one:
+    /// its y axis goes untitled, its plot taking that room.
+    y_untitled: bool,
+    /// The room a figure's position labels take at least, laid out: that
+    /// of the widest among panels side by side.
+    tick_room: f64,
     /// The converted channel's name, e.g. `methylated`.
     on: &'static str,
     /// The other channel's name, e.g. `unmethylated`.
@@ -168,6 +189,10 @@ pub struct Settings {
     pub measure: Option<Measure>,
     pub y_lock: Option<f64>,
     pub images: Option<bool>,
+    pub difference: Option<bool>,
+    pub key_at: Option<KeyAt>,
+    /// The bases either side of the sites when the window is at them.
+    pub pad: Option<i64>,
 }
 
 impl<'a> PileupView<'a> {
@@ -209,6 +234,13 @@ impl<'a> PileupView<'a> {
                 b: 1,
                 measure: Measure::Difference,
             }),
+            difference: true,
+            key_at: KeyAt::default(),
+            pad: None,
+            with_key: false,
+            keyless: false,
+            y_untitled: false,
+            tick_room: 0.0,
             on: "methylated",
             off: "unmethylated",
             show: Show::default(),
@@ -241,6 +273,9 @@ impl<'a> PileupView<'a> {
             c.measure = measure;
         }
         self.y_lock = s.y_lock;
+        self.difference = s.difference.unwrap_or(self.difference);
+        self.key_at = s.key_at.unwrap_or(self.key_at);
+        self.pad = s.pad.or(self.pad);
         if let Some(on) = s.images {
             self.controls.set_images(on);
         }
@@ -270,6 +305,9 @@ impl<'a> PileupView<'a> {
             measure: self.contrast.map(|c| c.measure),
             y_lock: self.y_lock,
             images: Some(self.controls.images_on()),
+            difference: Some(self.difference),
+            key_at: Some(self.key_at),
+            pad: self.pad,
         }
     }
 
@@ -365,7 +403,7 @@ impl crate::tui::View for PileupView<'_> {
             ("n/N", "next/previous site"),
             ("+/=", "zoom in"),
             ("-", "zoom out"),
-            ("0", "the whole gene"),
+            ("0", "the whole gene, or its sites"),
             ("y", "y scale"),
             ("Y", "lock y for the genes after, or unlock"),
         ];
@@ -421,7 +459,10 @@ impl Screen for PileupView<'_> {
         match self.controls.key(key) {
             Key::Pass => self.plots.iter_mut().for_each(PlotImage::invalidate),
             Key::Used => return,
-            Key::Save(prefix) => return self.controls.save(&self.figure(), &prefix),
+            Key::Save(prefix) => {
+                let files = self.saved();
+                return self.controls.save_many(&files, &prefix);
+            }
         }
         match key.code {
             // From cluster-view the search is its own: `/` there.
@@ -433,6 +474,8 @@ impl Screen for PileupView<'_> {
                     ..c
                 })
             }
+            KeyCode::Char('D') if self.contrast.is_some() => self.difference = !self.difference,
+            KeyCode::Char('K') if self.key().is_some() => self.key_at = self.key_at.next(),
             KeyCode::Char('v') => self.set_mirror(!self.mirror),
             KeyCode::Char('[') => self.scroll_rows(-1),
             KeyCode::Char(']') => self.scroll_rows(1),
@@ -447,7 +490,7 @@ impl Screen for PileupView<'_> {
             KeyCode::Char('N') => self.jump_site(false),
             KeyCode::Char('+' | '=') => self.zoom(0.5),
             KeyCode::Char('-') => self.zoom_out(),
-            KeyCode::Char('0') => self.window = self.extent,
+            KeyCode::Char('0') => self.whole_or_sites(),
             KeyCode::Char('y') => self.y_scale = self.y_scale.next(),
             // Keep this y-axis maximum for every gene opened after, so they
             // compare; again, back to each its own.
@@ -521,6 +564,31 @@ fn browser<'a>(view: View<'a>, tracks: Vec<Track<'a>>, status: Option<String>) -
     });
     // Text plots on screen; only the saved figure is drawn as a picture.
     browser.controls = Controls::new(&format!("pileup_{}", view.title));
+    browser
+}
+
+/// The bars the browser shows a gene in on a terminal 110 columns wide
+/// (past its frame and y axis): what a figure drawn without a view takes
+/// across, so its bases per bar are the browser's.
+pub const SCREEN_BARS: usize = 110 - 2 - GUTTER as usize;
+
+/// `view`'s `tracks` as `faba pileup --batch-process` draws them: the
+/// `window` asked for (the whole gene, or its sites as `0` shows them) at
+/// `columns` bars, drawn as `settings` say (the y scale, the channels, the
+/// difference row, where the key goes, the sites' pad), and the key on a
+/// panel alone too `with_key`.
+pub fn figure_view<'a>(
+    view: View<'a>,
+    tracks: Vec<Track<'a>>,
+    settings: &Settings,
+    (window, columns): (Window, usize),
+    with_key: bool,
+) -> PileupView<'a> {
+    let mut browser = browser(view, tracks, None);
+    browser.apply(settings);
+    browser.columns = columns.max(1);
+    browser.with_key = with_key;
+    browser.set_window(window);
     browser
 }
 

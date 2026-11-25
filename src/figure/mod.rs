@@ -212,6 +212,17 @@ impl Canvas {
         );
     }
 
+    /// [`Canvas::text`] over a white halo, to read where it lies over bars.
+    pub fn text_halo(&mut self, x: f64, y: f64, s: &str, size: f64, anchor: Anchor, fill: &str) {
+        let size = self.size(size);
+        let _ = writeln!(
+            self.body,
+            r##"<text x="{x:.2}" y="{y:.2}" font-family="{FONT}" font-size="{size}" text-anchor="{}" fill="{fill}" stroke="#ffffff" stroke-width="2" stroke-linejoin="round" paint-order="stroke">{}</text>"##,
+            anchor.svg(),
+            esc(s)
+        );
+    }
+
     /// Text turned to read bottom to top, centred on `(x, y)`.
     pub fn vtext(&mut self, x: f64, y: f64, s: &str, size: f64, fill: &str) {
         let size = self.size(size);
@@ -236,6 +247,18 @@ impl Canvas {
 
     pub fn bold(&mut self, x: f64, y: f64, s: &str, size: f64, anchor: Anchor, fill: &str) {
         let size = self.size(size);
+        self.bold_at(x, y, s, &size, anchor, fill);
+    }
+
+    /// [`Canvas::bold`] at `size` as it is, a uniform font or not: for a
+    /// title shrunk to fit its room (see [`place_bold_title`]).
+    pub fn bold_exact(&mut self, x: f64, y: f64, s: &str, size: f64, anchor: Anchor, fill: &str) {
+        let size = format!("{size:.2}");
+        let size = size.trim_end_matches('0').trim_end_matches('.');
+        self.bold_at(x, y, s, size, anchor, fill);
+    }
+
+    fn bold_at(&mut self, x: f64, y: f64, s: &str, size: &str, anchor: Anchor, fill: &str) {
         let _ = writeln!(
             self.body,
             r#"<text x="{x:.2}" y="{y:.2}" font-family="{FONT}" font-size="{size}" font-weight="bold" text-anchor="{}" fill="{fill}">{}</text>"#,
@@ -405,6 +428,19 @@ pub fn tile_svgs(svgs: &[String], cols: usize) -> String {
     )
 }
 
+/// Figure `b` from [`Canvas::finish`] to the right of figure `a`, their
+/// tops aligned, each its own width: a key beside a row of panels.
+pub fn beside_svgs(a: &str, b: &str) -> String {
+    let ((aw, ah), (bw, bh)) = (svg_size(a), svg_size(b));
+    let (width, height) = (aw + bw, ah.max(bh));
+    let b = b.replacen("<svg ", &format!("<svg x=\"{aw}\" y=\"0\" "), 1);
+    format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">
+{a}{b}</svg>
+"#
+    )
+}
+
 /// A `w` x `h` drawing made by `draw`, as SVG.
 pub fn svg(w: f64, h: f64, draw: impl FnOnce(&mut Canvas)) -> String {
     let mut c = Canvas::new(w, h);
@@ -421,6 +457,55 @@ pub(crate) fn scaled(scale: Scale, v: f64) -> f64 {
     }
 }
 
+/// The round values an axis on `scale` up to `max` (scaled) may label,
+/// each with its share of the axis, from the least: powers of ten on a
+/// log axis (10, 100, 1k, ...), evenly spread counts on a square-root one,
+/// `spread` of the axis apart at least (see [`even_counts`]); none on a
+/// linear one.
+pub(crate) fn round_y_ticks(scale: Scale, max: f64, spread: f64) -> Vec<(f64, String)> {
+    let top = unscaled(scale, max);
+    let values: Vec<f64> = match scale {
+        Scale::Linear => Vec::new(),
+        Scale::Log => (1..16).map(|k| 10f64.powi(k)).collect(),
+        Scale::Sqrt => even_counts(top, spread),
+    };
+    (values.into_iter())
+        .filter(|&v| v <= top * (1.0 + 1e-9) && max > 0.0)
+        .map(|v| (scaled(scale, v) / max, round_label(v)))
+        .collect()
+}
+
+/// The least share of a square-root axis between its top two labels.
+const SQRT_SPREAD: f64 = 0.17;
+
+/// The counts a square-root axis up to `top` labels: the multiples of a
+/// round step (1, 1.5, 2, 2.5 or 5 times a power of ten, whole), the least
+/// whose four or fewer up to the top stand `spread` of the axis apart at
+/// the top, where they crowd most.
+fn even_counts(top: f64, spread: f64) -> Vec<f64> {
+    let steps = (0..16).flat_map(|k| [1.0, 1.5, 2.0, 2.5, 5.0].map(|m| m * 10f64.powi(k)));
+    for step in steps.filter(|s: &f64| s.fract() == 0.0) {
+        let n = (top / step * (1.0 + 1e-9)).floor() as usize;
+        if n == 0 {
+            break;
+        }
+        let share = |k: usize| (k as f64 * step / top).sqrt();
+        if n <= 4 && share(1) >= spread && (n == 1 || share(n) - share(n - 1) >= spread) {
+            return (1..=n).map(|k| k as f64 * step).collect();
+        }
+    }
+    Vec::new()
+}
+
+/// A round count as an axis says it: `20`, `500`, `1k`, `2.5k`, `1M`.
+fn round_label(v: f64) -> String {
+    match v {
+        v if v >= 1e6 => format!("{}M", v / 1e6),
+        v if v >= 1e3 => format!("{}k", v / 1e3),
+        v => format!("{v}"),
+    }
+}
+
 pub(crate) fn unscaled(scale: Scale, t: f64) -> f64 {
     match scale {
         Scale::Log => 10f64.powf(t) - 1.0,
@@ -432,6 +517,16 @@ pub(crate) fn unscaled(scale: Scale, t: f64) -> f64 {
 /// About how wide `s` sets at `size` points.
 pub fn text_width(s: &str, size: f64) -> f64 {
     data_beans::figure::text_width(s, size)
+}
+
+/// About how wide a position label `s` (digits and a point) sets at
+/// `size` points: a point or comma half a digit's width.
+pub fn tick_width(s: &str, size: f64) -> f64 {
+    let em = |ch: char| match ch {
+        '.' | ',' => 0.278,
+        _ => 0.55,
+    };
+    s.chars().map(em).sum::<f64>() * size
 }
 
 /// `s` as it fits `room` points across at `size`: as it is, else without
@@ -452,6 +547,39 @@ pub fn fit_text(s: &str, room: f64, size: f64) -> String {
     let fits = ((room / (size * 0.55)).floor() as usize).saturating_sub(1);
     let cut: String = s.chars().take(fits).collect();
     format!("{}…", cut.trim_end())
+}
+
+/// How wide `s` sets in bold at `size`, roughly: Helvetica Bold's
+/// capitals and digits, which a symbol is made of, set wider than
+/// [`text_width`]'s average letter.
+pub fn bold_width(s: &str, size: f64) -> f64 {
+    let em = |ch: char| match ch {
+        'I' | 'i' | 'j' | 'l' | '.' | ',' => 0.28,
+        'M' | 'm' => 0.86,
+        'W' => 0.94,
+        'w' => 0.78,
+        'A'..='Z' => 0.72,
+        '0'..='9' => 0.556,
+        'a'..='z' => 0.6,
+        _ => 0.34,
+    };
+    s.chars().map(em).sum::<f64>() * size
+}
+
+/// Where a bold title `s` wanted centred at `at` goes in the box from `x`
+/// to `x + w`, and the size it is written at: centred where it fits so,
+/// else moved over as little as keeps it inside, else shrunk to the box.
+/// Laid out at `size` on `c`.
+pub fn place_bold_title(c: &Canvas, s: &str, at: f64, (x, w): (f64, f64), size: f64) -> (f64, f64) {
+    let size = c.label_size(size);
+    let (lo, hi) = (x + 1.0, x + w - 1.0);
+    let wide = bold_width(s, size);
+    let size = match wide > hi - lo {
+        true => size * (hi - lo) / wide,
+        false => size,
+    };
+    let half = bold_width(s, size) / 2.0;
+    (at.clamp(lo + half, (hi - half).max(lo + half)), size)
 }
 
 /// Where a title `s` wanted centred at `at` goes in the box from `x` to
@@ -495,10 +623,53 @@ pub struct Bars<'a> {
 
 /// The room around a bar panel, in points of its 8-point layout: left,
 /// right, top and bottom, the top without a title when drawn alone.
-fn bar_margins(c: &Canvas, ticks: &[(usize, String)], rotated: bool) -> [f64; 4] {
-    let top = if c.style().panel_only { 8.0 } else { 20.0 };
-    let bottom = 38.0 + tick_room(ticks, rotated);
-    [52.0, 12.0, top, bottom]
+/// A [`style::Style::tight`] panel takes only the room its labels need:
+/// no title, the left as its widest y label (`widest`, laid out) and its
+/// y title when `titled` (see [`tight_left`]), the bottom as its ticks and
+/// the x title, little on the right.
+fn bar_margins(
+    c: &Canvas,
+    (ticks, rotated): (&[(usize, String)], bool),
+    widest: f64,
+    titled: bool,
+) -> [f64; 4] {
+    let top = if c.style().panel_only || c.style().tight {
+        8.0
+    } else {
+        20.0
+    };
+    let room = tick_room(ticks, rotated).max(c.style().tick_room);
+    if c.style().tight {
+        let bottom = match rotated {
+            true => 25.0 + room,
+            false => 28.0_f64.max(25.0 + c.style().tick_room),
+        };
+        return [tight_left(widest, titled), TIGHT_RIGHT, top, bottom];
+    }
+    [52.0, 12.0, top, 38.0 + room]
+}
+
+/// The room right of a tight panel's plot, laid out.
+pub(crate) const TIGHT_RIGHT: f64 = 4.0;
+
+/// A tight panel's left margin, laid out, for y labels `widest` across:
+/// room for them and, when `titled`, the y title beside them; a panel
+/// whose y axis goes untitled (one not first in a row of panels) gives
+/// that room to its plot.
+fn tight_left(widest: f64, titled: bool) -> f64 {
+    match titled {
+        true => (widest + 22.0).min(52.0),
+        false => (widest + 8.0).min(38.0),
+    }
+}
+
+/// The widest of `labels` as `c` writes 8-point ones, laid out.
+fn widest(c: &Canvas, labels: &[&str]) -> f64 {
+    let size = c.label_size(8.0);
+    labels
+        .iter()
+        .map(|l| text_width(l, size))
+        .fold(0.0, f64::max)
 }
 
 /// A bar panel's frame: the plot's box `(x, y, w, h)` inside the panel's
@@ -516,11 +687,15 @@ impl BarFrame {
     fn draw(
         c: &mut Canvas,
         (x, y, w, h): (f64, f64, f64, f64),
-        (ticks, rotated): (&[(usize, String)], bool),
-        title: &str,
+        ticks: (&[(usize, String)], bool),
+        (title, y_title): (&str, &str),
+        y_labels: &[&str],
     ) -> Self {
-        let [left, right, top, bottom] = bar_margins(c, ticks, rotated);
-        if !c.style().panel_only {
+        let widest = widest(c, y_labels);
+        let [left, right, top, bottom] = bar_margins(c, ticks, widest, !y_title.is_empty());
+        // A tight page's rows go untitled: the figure's title and the
+        // arms' names say what they are.
+        if !c.style().panel_only && !c.style().tight {
             c.bold(x + left, y + 13.0, title, 11.0, Anchor::Start, INK);
         }
         let roles = c.style().palette.roles();
@@ -532,15 +707,15 @@ impl BarFrame {
     }
 }
 
+/// The left margin a tight panel of `y_labels` takes on `c`, laid out,
+/// with its y title when `titled`: where its plot starts.
+fn left_of(c: &Canvas, y_labels: &[&str], titled: bool) -> f64 {
+    tight_left(widest(c, y_labels), titled)
+}
+
 impl Bars<'_> {
-    pub fn draw(&self, c: &mut Canvas, x: f64, y: f64, w: f64, h: f64) {
-        let BarFrame {
-            plot: (px, py, pw, ph),
-            dropped,
-            line,
-        } = BarFrame::draw(c, (x, y, w, h), (&self.ticks, self.rotated), &self.title);
-        let n = self.values.len().max(1);
-        let bw = pw / n as f64;
+    /// The y axis's top (scaled) and its labels at 0, half and full scale.
+    fn y_axis(&self) -> (f64, [String; 3]) {
         let tallest = self
             .values
             .iter()
@@ -549,6 +724,41 @@ impl Bars<'_> {
         let max = self
             .y_max
             .map_or(tallest, |m| scaled(self.y_scale, m).max(tallest));
+        let labels = [0.0, 0.5, 1.0].map(|f| {
+            if max > 0.0 {
+                compact(unscaled(self.y_scale, f * max))
+            } else {
+                "0".to_string()
+            }
+        });
+        (max, labels)
+    }
+
+    /// Where its plot starts in a tight panel on `c`, laid out.
+    pub fn left(&self, c: &Canvas) -> f64 {
+        let labels = self.y_axis().1;
+        left_of(
+            c,
+            &labels.each_ref().map(String::as_str),
+            !self.y_title.is_empty(),
+        )
+    }
+
+    pub fn draw(&self, c: &mut Canvas, x: f64, y: f64, w: f64, h: f64) -> (f64, f64, f64, f64) {
+        let (max, labels) = self.y_axis();
+        let BarFrame {
+            plot: (px, py, pw, ph),
+            dropped,
+            line,
+        } = BarFrame::draw(
+            c,
+            (x, y, w, h),
+            (&self.ticks, self.rotated),
+            (&self.title, &self.y_title),
+            &labels.each_ref().map(String::as_str),
+        );
+        let n = self.values.len().max(1);
+        let bw = pw / n as f64;
         let height = |v: f64| {
             if max <= 0.0 {
                 0.0
@@ -558,27 +768,23 @@ impl Bars<'_> {
         };
 
         // y gridlines and labels at 0, half and full scale.
-        for f in [0.0, 0.5, 1.0] {
+        for (f, label) in [0.0, 0.5, 1.0].into_iter().zip(&labels) {
             let gy = py + ph - f * ph;
             if f > 0.0 {
                 c.line(px, gy, px + pw, gy, FAINT, 0.4);
             }
-            let label = if max > 0.0 {
-                compact(unscaled(self.y_scale, f * max))
-            } else {
-                "0".into()
-            };
-            c.text(px - 5.0, gy + 3.0, &label, 8.0, Anchor::End, MUTED);
+            c.text(px - 5.0, gy + 3.0, label, 8.0, Anchor::End, MUTED);
         }
-        c.vtext(x + 12.0, py + ph / 2.0, &self.y_title, 8.0, MUTED);
+        y_title(c, &self.y_title, x, (py, ph));
 
         let gap = if bw > 3.0 { 0.15 * bw } else { 0.0 };
         let mut bars = |values: &[f64], colour: &dyn Fn(usize) -> &'static str| {
             for (i, &v) in values.iter().enumerate() {
                 let bh = height(v);
                 if bh > 0.0 {
-                    let bx = px + i as f64 * bw + gap / 2.0;
-                    c.rect(bx, py + ph - bh, bw - gap, bh, colour(i));
+                    let bh = bh.max(MIN_BAR);
+                    let (bx, w) = bar_span(px, bw, gap, i);
+                    c.rect(bx, py + ph - bh, w, bh, colour(i));
                 }
             }
         };
@@ -612,10 +818,67 @@ impl Bars<'_> {
             c.dashed(dx, py, dx, py + ph + 4.0, MUTED, 0.8);
         }
         let stub = self.dividers.is_empty();
-        x_ticks(c, &self.ticks, (px, bw, py + ph), stub, self.rotated);
+        let at = (px, bw, py + ph, (x, x + w));
+        x_ticks(c, &self.ticks, at, stub, self.rotated);
         let (at, x_title) = place_title(c, &self.x_title, px + pw / 2.0, (x, w), 8.0);
         c.text(at, y + h - 6.0, &x_title, 8.0, Anchor::Middle, MUTED);
+        (px, py, pw, ph)
     }
+}
+
+/// A panel's y title `s` at `x`, along its plot from `py`, `ph` tall: on a
+/// tight page shortened where it would run past; none when empty.
+fn y_title(c: &mut Canvas, s: &str, x: f64, (py, ph): (f64, f64)) {
+    if s.is_empty() {
+        return;
+    }
+    let s = match c.style().tight {
+        true => fit_text(s, ph, c.label_size(8.0)),
+        false => s.to_string(),
+    };
+    c.vtext(x + 12.0, py + ph / 2.0, &s, 8.0, MUTED);
+}
+
+/// A bar panel ([`Bars`], [`Diverging`], [`Mirror`]) as a figure lays it
+/// out: where its plot starts on a tight page, the position ticks it is
+/// given for that, and its drawing.
+pub trait Panel {
+    /// Where its plot starts in a tight panel on `c`, laid out.
+    fn left(&self, c: &Canvas) -> f64;
+    /// Its position ticks, turned or flat.
+    fn set_ticks(&mut self, ticks: Vec<(usize, String)>, rotated: bool);
+    /// Drawn in the box `(x, y, w, h)`; the box its bars take.
+    fn draw_in(&self, c: &mut Canvas, bbox: (f64, f64, f64, f64)) -> (f64, f64, f64, f64);
+}
+
+macro_rules! panel {
+    ($($t:ident),*) => {$(
+        impl Panel for $t<'_> {
+            fn left(&self, c: &Canvas) -> f64 {
+                $t::left(self, c)
+            }
+            fn set_ticks(&mut self, ticks: Vec<(usize, String)>, rotated: bool) {
+                self.ticks = ticks;
+                self.rotated = rotated;
+            }
+            fn draw_in(&self, c: &mut Canvas, (x, y, w, h): (f64, f64, f64, f64)) -> (f64, f64, f64, f64) {
+                self.draw(c, x, y, w, h)
+            }
+        }
+    )*};
+}
+panel!(Bars, Diverging, Mirror);
+
+/// The least a bar is drawn across, and one of any value up, laid out: a
+/// hairline, so a bar on a small page, or of a few reads beside many,
+/// still shows, as a terminal's block does.
+pub const MIN_BAR: f64 = 0.75;
+
+/// Where bar `i` of bars `bw` apart from `px` is drawn, `gap` between
+/// them, and how wide: at least [`MIN_BAR`], centred on its place.
+fn bar_span(px: f64, bw: f64, gap: f64, i: usize) -> (f64, f64) {
+    let w = (bw - gap).max(MIN_BAR);
+    (px + (i as f64 + 0.5) * bw - w / 2.0, w)
 }
 
 /// Signed bars around a zero line: positive up in the accent, negative
@@ -634,12 +897,23 @@ pub struct Diverging<'a> {
 }
 
 impl Diverging<'_> {
-    pub fn draw(&self, c: &mut Canvas, x: f64, y: f64, w: f64, h: f64) {
+    /// Where its plot starts in a tight panel on `c`, laid out.
+    pub fn left(&self, c: &Canvas) -> f64 {
         let (up, down) = split_signed(self.values);
-        let max = up.iter().chain(&down).fold(0.0, |m: f64, &v| m.max(v));
+        self.mirror(&up, &down).left(c)
+    }
+
+    pub fn draw(&self, c: &mut Canvas, x: f64, y: f64, w: f64, h: f64) -> (f64, f64, f64, f64) {
+        let (up, down) = split_signed(self.values);
+        self.mirror(&up, &down).draw(c, x, y, w, h)
+    }
+
+    /// The mirror it draws: `up` in the accent over `down` in grey.
+    fn mirror<'b>(&'b self, up: &'b [f64], down: &'b [f64]) -> Mirror<'b> {
+        let max = up.iter().chain(down).fold(0.0, |m: f64, &v| m.max(v));
         Mirror {
-            up: Half::plain(&up, ACCENT),
-            down: Half::plain(&down, BAR),
+            up: Half::plain(up, ACCENT),
+            down: Half::plain(down, BAR),
             y_scale: Scale::Linear,
             y_max: Some(max),
             y_labels: [(self.label)(max), (self.label)(0.0), (self.label)(-max)],
@@ -650,7 +924,95 @@ impl Diverging<'_> {
             y_title: self.y_title.clone(),
             rotated: self.rotated,
         }
-        .draw(c, x, y, w, h);
+    }
+}
+
+/// One arm of a [`Mirror`], for placing its name: the upper or the lower,
+/// the y labels' lines across the plot, its bars (each `bw` across, `n` of
+/// them) and how far bar `i` reaches from the zero line, laid out.
+struct Arm<'a> {
+    upper: bool,
+    lines: &'a [f64],
+    bars: (f64, usize),
+    reach: &'a dyn Fn(usize) -> f64,
+}
+
+impl Arm<'_> {
+    /// Where the arm's `name` is written on the plot `(px, py, pw, ph)`:
+    /// its anchor point and anchor, and whether it is clear of the bars.
+    /// Clear of the y labels' lines and of the bars: at the arm's outer
+    /// corner, at the left or else at the right, else nudged toward the
+    /// zero line; else anywhere across the arm, from its outer edge in.
+    /// Where nothing is clear of both, clear of the lines where it
+    /// overlaps the bars least; the left corner where nothing is clear of
+    /// the lines.
+    fn name_at(
+        &self,
+        c: &Canvas,
+        name: &str,
+        (px, py, pw, ph): (f64, f64, f64, f64),
+    ) -> (f64, f64, Anchor, bool) {
+        let size = c.label_size(8.0);
+        let wide = text_width(name, size);
+        let (above, below) = (0.75 * size, 0.25 * size);
+        let zero = py + ph / 2.0;
+        let corner = if self.upper { py + 9.0 } else { py + ph - 3.0 };
+        // Baselines from the corner toward the zero line, a point apart.
+        let room = if self.upper {
+            zero - 2.0 - below - corner
+        } else {
+            corner - above - zero - 2.0
+        };
+        let baselines = (0..=room.max(0.0).floor() as usize).map(|k| match self.upper {
+            true => corner + k as f64,
+            false => corner - k as f64,
+        });
+        let ends = [(px + 4.0, Anchor::Start), (px + pw - 2.0, Anchor::End)];
+        let across = (0..).map(|k| px + 4.0 + 2.0 * k as f64);
+        let across = across.take_while(|&l| l + wide <= px + pw - 2.0);
+        let off_lines = |t: f64, b: f64| self.lines.iter().all(|&g| g <= t - 1.0 || g >= b + 1.0);
+        // How far into the bars a name from `l` to `l + wide`, `t` to `b`,
+        // runs: the most any under it, or one either side (a hairline bar
+        // is wider than its place), reaches past it.
+        let over = |l: f64, t: f64, b: f64| {
+            let (bw, n) = self.bars;
+            if bw <= 0.0 || n == 0 {
+                return 0.0;
+            }
+            let first = (((l - px) / bw).floor() as i64 - 1).max(0) as usize;
+            let last = (((l + wide - px) / bw).floor() as i64 + 1).clamp(0, n as i64 - 1) as usize;
+            (first..=last)
+                .map(|i| match (self.reach)(i) {
+                    r if r <= 0.0 => 0.0,
+                    r if self.upper => b + 1.0 - (zero - r),
+                    r => zero + r + 1.0 - t,
+                })
+                .fold(0.0, f64::max)
+        };
+        let starts: Vec<(f64, f64, Anchor)> = (baselines.clone())
+            .flat_map(|y| ends.map(|(x, a)| (x, y, a)))
+            .chain(baselines.flat_map(|y| across.clone().map(move |x| (x, y, Anchor::Start))))
+            .collect();
+        let mut least: Option<(f64, (f64, f64, Anchor))> = None;
+        for (x, y, anchor) in starts {
+            let l = match anchor {
+                Anchor::End => x - wide,
+                _ => x,
+            };
+            let (t, b) = (y - above, y + below);
+            if !off_lines(t, b) {
+                continue;
+            }
+            let into = over(l, t, b);
+            if into <= 0.0 {
+                return (x, y, anchor, true);
+            }
+            if least.is_none_or(|m| into < m.0) {
+                least = Some((into, (x, y, anchor)));
+            }
+        }
+        let (x, y, anchor) = least.map_or((ends[0].0, corner, Anchor::Start), |m| m.1);
+        (x, y, anchor, false)
     }
 }
 
@@ -671,25 +1033,55 @@ pub(crate) fn tick_room(ticks: &[(usize, String)], rotated: bool) -> f64 {
     (longest as f64 * CHAR_W - 6.0).max(0.0)
 }
 
+/// Where a flat tick label `half` across either side of its middle is
+/// centred, for a tick at `tx`, inside `(lo, hi)`: on the tick, else moved
+/// in as little as keeps it inside while the tick stays under it; none
+/// where it cannot.
+pub(crate) fn flat_label(tx: f64, half: f64, (lo, hi): (f64, f64)) -> Option<f64> {
+    if hi - lo < 2.0 * half {
+        return None;
+    }
+    let at = tx.clamp(lo + half, hi - half);
+    ((at - tx).abs() <= 0.75 * half).then_some(at)
+}
+
 /// The x ticks under the axis at `base`, bar `i` at `px + (i + ½)·bw`:
 /// a stub (with `stub`) and the label, flat and centred, or turned 90°
-/// counter-clockwise to end just under the stub.
+/// counter-clockwise to end just under the stub. A flat label at an end
+/// moves in to stay inside the panel's `span` across (see [`flat_label`]).
+/// Thinned to fit: a label that would run into the one before it, or out
+/// of the span, is left out, stub and all.
 fn x_ticks(
     c: &mut Canvas,
     ticks: &[(usize, String)],
-    (px, bw, base): (f64, f64, f64),
+    (px, bw, base, span): (f64, f64, f64, (f64, f64)),
     stub: bool,
     rotated: bool,
 ) {
+    let size = c.label_size(8.0);
+    let mut last = f64::NEG_INFINITY;
     for (i, label) in ticks {
         let tx = px + (*i as f64 + 0.5) * bw;
+        let (at, (lo, hi)) = if rotated {
+            (tx, (tx + 3.0 - 0.75 * size, tx + 3.0 + 0.25 * size))
+        } else {
+            let half = tick_width(label, size) / 2.0;
+            let Some(at) = flat_label(tx, half, span) else {
+                continue;
+            };
+            (at, (at - half, at + half))
+        };
+        if lo < last + 0.25 * size || lo < span.0 || hi > span.1 {
+            continue;
+        }
+        last = hi;
         if stub {
             c.line(tx, base, tx, base + 4.0, INK, 0.6);
         }
         if rotated {
             c.rotated(tx + 3.0, base + 6.0, label, 8.0, Anchor::End, INK);
         } else {
-            c.text(tx, base + 13.0, label, 8.0, Anchor::Middle, INK);
+            c.text(at, base + 13.0, label, 8.0, Anchor::Middle, INK);
         }
     }
 }
@@ -745,19 +1137,70 @@ pub struct Mirror<'a> {
 }
 
 impl Mirror<'_> {
-    pub fn draw(&self, c: &mut Canvas, x: f64, y: f64, w: f64, h: f64) {
-        let BarFrame {
-            plot: (px, py, pw, ph),
-            dropped,
-            line,
-        } = BarFrame::draw(c, (x, y, w, h), (&self.ticks, self.rotated), &self.title);
-        let n = self.up.values.len().max(self.down.values.len()).max(1);
-        let bw = pw / n as f64;
+    /// The y axis: its top (scaled), its labels at the top, the zero line
+    /// and the bottom, and the round values it may label up each arm, a
+    /// square-root one's `spread` of an arm apart.
+    fn y_axis(&self, spread: f64) -> (f64, [String; 3], Vec<(f64, String)>) {
         let all = self.up.values.iter().chain(self.down.values);
         let tallest = all.map(|&v| scaled(self.y_scale, v)).fold(0.0, f64::max);
         let max = self
             .y_max
             .map_or(tallest, |m| scaled(self.y_scale, m).max(tallest));
+        let own = compact(unscaled(self.y_scale, max));
+        let labels = [0, 1, 2].map(|k| match self.y_labels[k].as_str() {
+            "" if k == 1 => "0".to_string(),
+            "" => own.clone(),
+            l => l.to_string(),
+        });
+        // A square-root or log axis of its own labels round values up each
+        // arm, as many as stand apart; else its top and zero.
+        let own_labels = self.y_labels.iter().all(String::is_empty);
+        let round = match self.y_scale {
+            Scale::Linear => Vec::new(),
+            _ if !own_labels => Vec::new(),
+            scale => round_y_ticks(scale, max, spread),
+        };
+        (max, labels, round)
+    }
+
+    /// The labels its y axis writes, for the room they take: the zero's
+    /// and the round values where it has any (its own top's then goes
+    /// unwritten), else its own at the top, the zero line and the bottom.
+    fn all_labels<'b>(labels: &'b [String; 3], round: &'b [(f64, String)]) -> Vec<&'b str> {
+        match round.is_empty() {
+            true => labels.iter().map(String::as_str).collect(),
+            false => std::iter::once(labels[1].as_str())
+                .chain(round.iter().map(|r| r.1.as_str()))
+                .collect(),
+        }
+    }
+
+    /// Where its plot starts in a tight panel on `c`, laid out.
+    pub fn left(&self, c: &Canvas) -> f64 {
+        let (_, labels, round) = self.y_axis(SQRT_SPREAD);
+        left_of(
+            c,
+            &Self::all_labels(&labels, &round),
+            !self.y_title.is_empty(),
+        )
+    }
+
+    pub fn draw(&self, c: &mut Canvas, x: f64, y: f64, w: f64, h: f64) -> (f64, f64, f64, f64) {
+        let (max, labels, round) = self.y_axis(SQRT_SPREAD);
+        let BarFrame {
+            plot: (px, py, pw, ph),
+            line,
+            ..
+        } = BarFrame::draw(
+            c,
+            (x, y, w, h),
+            (&self.ticks, self.rotated),
+            (&self.title, &self.y_title),
+            &Self::all_labels(&labels, &round),
+        );
+        let front_tone = c.style().palette.roles().front;
+        let n = self.up.values.len().max(self.down.values.len()).max(1);
+        let bw = pw / n as f64;
         let zero = py + ph / 2.0;
         let height = |v: f64| {
             if max <= 0.0 {
@@ -766,52 +1209,102 @@ impl Mirror<'_> {
                 scaled(self.y_scale, v) / max * ph / 2.0
             }
         };
-        let own = compact(unscaled(self.y_scale, max));
-        for (f, label) in [(1.0, 0), (0.0, 1), (-1.0, 2)] {
-            let gy = zero - f * ph / 2.0;
-            if f != 0.0 {
-                c.line(px, gy, px + pw, gy, FAINT, 0.4);
+        // Round values each a label's height and a little apart, from the
+        // top down; none past the zero's. A square-root axis's are chosen
+        // so, to stay evenly spread.
+        let apart = 1.3 * c.label_size(8.0) / (ph / 2.0);
+        let round = match self.y_scale {
+            Scale::Sqrt => self.y_axis(apart.max(SQRT_SPREAD)).2,
+            _ => round,
+        };
+        let mut kept: Vec<(f64, &str)> = Vec::new();
+        for (share, label) in round.iter().rev() {
+            let last = kept.last().map_or(f64::INFINITY, |k| k.0);
+            if *share <= last - apart && *share >= apart {
+                kept.push((*share, label));
             }
-            let label = match self.y_labels[label].as_str() {
-                "" if f == 0.0 => "0",
-                "" => &own,
-                l => l,
-            };
-            c.text(px - 5.0, gy + 3.0, label, 8.0, Anchor::End, MUTED);
         }
-        c.vtext(x + 12.0, py + ph / 2.0, &self.y_title, 8.0, MUTED);
+        // Where the y labels' lines run, the zero line's among them.
+        let mut lines = vec![zero];
+        match kept.is_empty() {
+            true => {
+                for (f, label) in [1.0, 0.0, -1.0].into_iter().zip(&labels) {
+                    let gy = zero - f * ph / 2.0;
+                    if f != 0.0 {
+                        c.line(px, gy, px + pw, gy, FAINT, 0.4);
+                        lines.push(gy);
+                    }
+                    c.text(px - 5.0, gy + 3.0, label, 8.0, Anchor::End, MUTED);
+                }
+            }
+            false => {
+                c.text(px - 5.0, zero + 3.0, "0", 8.0, Anchor::End, MUTED);
+                for (share, label) in kept {
+                    for sign in [-1.0, 1.0] {
+                        let gy = zero + sign * share * ph / 2.0;
+                        c.line(px, gy, px + pw, gy, FAINT, 0.4);
+                        lines.push(gy);
+                        c.text(px - 5.0, gy + 3.0, label, 8.0, Anchor::End, MUTED);
+                    }
+                }
+            }
+        }
+        y_title(c, &self.y_title, x, (py, ph));
         let gap = if bw > 3.0 { 0.15 * bw } else { 0.0 };
         for (half, sign) in [(&self.up, -1.0), (&self.down, 1.0)] {
             let mut bars = |values: &[f64], colour: &'static str| {
                 for (i, &v) in values.iter().enumerate() {
-                    let bh = height(v);
-                    let bx = px + i as f64 * bw + gap / 2.0;
+                    // A bar of anything shows, as the browser shows it.
+                    let bh = match height(v) {
+                        h if h > 0.0 => h.max(MIN_BAR),
+                        _ => 0.0,
+                    };
+                    let (bx, w) = bar_span(px, bw, gap, i);
                     let top = if sign < 0.0 { zero - bh } else { zero };
-                    c.rect(bx, top, bw - gap, bh, colour);
+                    c.rect(bx, top, w, bh, colour);
                 }
             };
             match half.front {
                 Some(front) => {
                     bars(half.values, FAINT);
-                    bars(front, dropped);
+                    bars(front, front_tone);
                 }
                 None => bars(half.values, half.colour),
             }
         }
-        let (nx, up_y) = (px + 4.0, py + 9.0);
-        c.text(nx, up_y, &self.up.name, 8.0, Anchor::Start, MUTED);
-        let down_y = py + ph - 3.0;
-        c.text(nx, down_y, &self.down.name, 8.0, Anchor::Start, MUTED);
+        let plot = (px, py, pw, ph);
+        for (half, upper) in [(&self.up, true), (&self.down, false)] {
+            // How far each bar of the arm reaches from the zero line.
+            let reach = |i: usize| {
+                let v = half.values.get(i).copied().unwrap_or(0.0);
+                let f = half.front.and_then(|f| f.get(i)).copied().unwrap_or(0.0);
+                match height(v.max(f)) {
+                    h if h > 0.0 => h.max(MIN_BAR),
+                    _ => 0.0,
+                }
+            };
+            let arm = Arm {
+                upper,
+                lines: &lines,
+                bars: (bw, n),
+                reach: &reach,
+            };
+            match arm.name_at(c, &half.name, plot) {
+                (nx, ny, anchor, true) => c.text(nx, ny, &half.name, 8.0, anchor, MUTED),
+                (nx, ny, anchor, false) => c.text_halo(nx, ny, &half.name, 8.0, anchor, MUTED),
+            }
+        }
         if let Some(p) = self.pointer {
             let cx = px + (p as f64 + 0.5) * bw;
             c.dashed(cx, py, cx, py + ph, line, 0.8);
         }
         c.line(px, zero, px + pw, zero, INK, 0.6);
         c.line(px, py, px, py + ph, INK, 0.6);
-        let base = py + ph;
-        x_ticks(c, &self.ticks, (px, bw, base), true, self.rotated);
+        let at = (px, bw, py + ph, (x, x + w));
+        x_ticks(c, &self.ticks, at, true, self.rotated);
         let (at, x_title) = place_title(c, &self.x_title, px + pw / 2.0, (x, w), 8.0);
         c.text(at, y + h - 6.0, &x_title, 8.0, Anchor::Middle, MUTED);
+        (px, py, pw, ph)
     }
 }
 
@@ -873,7 +1366,6 @@ fn options() -> usvg::Options<'static> {
 }
 
 /// Write `svg` as `{prefix}.pdf` (vector) alone; returns the path written.
-#[cfg(test)]
 pub fn save(svg: &str, prefix: &str) -> anyhow::Result<Vec<String>> {
     let tree = usvg::Tree::from_str(svg, &options())?;
     Ok(vec![write_pdf(&tree, prefix)?])
@@ -1218,6 +1710,30 @@ impl Controls {
         self.save.report(saved);
     }
 
+    /// Save each `(suffix, svg)` of `files` under the confirmed `prefix`
+    /// and the suffix, list the first with its thumbnail, and show how it
+    /// went: every file, or the first that failed.
+    pub fn save_many(&mut self, files: &[(String, String)], prefix: &str) {
+        let prefix = strip_extension(prefix);
+        let mut written = Vec::new();
+        for (k, (suffix, svg)) in files.iter().enumerate() {
+            match save_picture(svg, &format!("{prefix}{suffix}")) {
+                Ok((paths, picture)) => {
+                    if k == 0 {
+                        let gallery = self.gallery.get_or_insert_with(gallery::Gallery::here);
+                        let first = std::path::Path::new(&paths[0]);
+                        if let Err(e) = gallery.add(first, &self.what, &picture) {
+                            log::debug!("not listed in the gallery: {e}");
+                        }
+                    }
+                    written.extend(paths);
+                }
+                Err(e) => return self.save.report(Err(e)),
+            }
+        }
+        self.save.report(Ok(written));
+    }
+
     /// While the save prompt is open, a pop-up over `area`: the figures
     /// saved here on the left, newest first, each with its thumbnail where
     /// the terminal draws images; the name being typed on the right. Call
@@ -1376,8 +1892,8 @@ pub(crate) fn labels(svg: &str) -> Vec<(String, String, Option<f64>)> {
 
 /// Each `<text>` of `svg` as the box it takes, left, top, right, bottom,
 /// with what it says (unescaped): about 0.55 of its size a character
-/// across, 0.75 above its baseline and 0.25 below; a turned one centred on
-/// its anchor. Sequence-logo letters (scaled to their boxes) are left out.
+/// across (a point or comma half that, as [`tick_width`]), 0.75 above its
+/// baseline and 0.25 below; a turned one centred on its anchor. Sequence-logo letters (scaled to their boxes) are left out.
 #[cfg(test)]
 pub(crate) fn text_boxes(svg: &str) -> Vec<((f64, f64, f64, f64), String)> {
     let attr = |l: &str, name: &str| -> Option<String> {
@@ -1396,7 +1912,7 @@ pub(crate) fn text_boxes(svg: &str) -> Vec<((f64, f64, f64, f64), String)> {
             .replace("&apos;", "'")
             .replace("&amp;", "&");
         let size = num(l, "font-size");
-        let w = s.chars().count() as f64 * size * 0.55;
+        let w = tick_width(&s, size);
         let (up, down) = (0.75 * size, 0.25 * size);
         let b = match attr(l, "transform") {
             Some(t) => {

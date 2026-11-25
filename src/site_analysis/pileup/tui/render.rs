@@ -33,7 +33,9 @@ impl PileupView<'_> {
             Vec::new()
         };
         self.fit_in(&all, area, help.len(), genes_height);
-        let rows = self.shown_rows(&all);
+        // The genes on top, as the saved figure draws them.
+        let rows = genes_first(self.shown_rows(&all));
+        let above = usize::from(rows.first() == Some(&Row::Genes));
         let plot_rows = Self::plot_count(&rows);
         let n_plots = plot_rows as u32;
         let mut layout = vec![Constraint::Length(1)];
@@ -50,21 +52,30 @@ impl PileupView<'_> {
         self.columns = (inner_width as usize).max(1);
         // Inside the panel's border, past the y axis.
         (self.drawn, self.chart_x) = (area, areas[1].x + 1 + GUTTER);
-        self.chart_rows = (areas[1].y, areas[plot_rows].bottom());
+        self.chart_rows = (areas[1 + above].y, areas[plot_rows + above].bottom());
         self.clamp_window();
         let (lo, hi) = self.window;
+        let key = match self.key() {
+            Some(_) => format!(" · key {}", self.key_at.name()),
+            None => String::new(),
+        };
+        // Which the window is, the whole gene or its sites, when either.
+        let which = match self.window_is() {
+            Some(w) => format!(" ({})", w.name()),
+            None => String::new(),
+        };
         let extra = format!(
-            "{}:{}-{}  {} bp/bar · {} · y {}{}{}",
+            "{}:{}-{}{which}  {} bp/bar · y {}{}{key} · {}{}",
             self.chr,
             fmt_thousands(lo),
             fmt_thousands(hi),
             self.bin_width(),
-            self.show.label(self.on, self.off),
             self.y_scale.name(),
             match self.y_lock {
                 Some(max) => format!(" ≤ {max:.0} locked"),
                 None => String::new(),
             },
+            self.show.label(self.on, self.off),
             self.controls.tag()
         );
         frame.render_widget(header(self.badge, &self.title, &extra), top);
@@ -81,7 +92,11 @@ impl PileupView<'_> {
         let mut plots = std::mem::take(&mut self.plots);
         plots.resize_with(rows.len(), PlotImage::default);
         for (k, (&row, &area)) in rows.iter().zip(&areas[1..areas.len() - 2]).enumerate() {
-            let title = self.marked_title(k, &rows, self.row_title(row));
+            // Counted among the plots, as the scrolled rows are.
+            let title = match row {
+                Row::Genes => self.row_title(row),
+                _ => self.marked_title(k - above, &rows[above..], self.row_title(row)),
+            };
             let block = panel(format!(" {title} "), true);
             let inner = block.inner(area);
             frame.render_widget(block, area);
@@ -89,7 +104,7 @@ impl PileupView<'_> {
                 plots[k].render(frame, inner, picker, |w, h| {
                     let bbox = (0.0, 0.0, w, h);
                     crate::figure::svg(w, h, |c| {
-                        self.draw_row(row, &bins, c, bbox, Some(pointer), String::new())
+                        self.draw_row(row, &bins, c, bbox, Some(pointer), String::new());
                     })
                 })
             });
@@ -161,7 +176,7 @@ impl PileupView<'_> {
             ("PgUp/PgDn", "half a view"),
             ("n/N", "next/prev site"),
             ("+/-", "zoom"),
-            ("0", "whole"),
+            ("0", "whole/sites"),
         ];
         if !self.from_cluster {
             keys.push(("/", "search"));
@@ -201,8 +216,21 @@ impl PileupView<'_> {
         if self.tracks.iter().any(|t| t.is_reads()) {
             keys.push(("c", self.show.next().short()));
         }
-        if self.contrast.is_some() {
+        if self.shown_contrast().is_some() {
             keys.push(("d", "difference/fold"));
+        }
+        if self.contrast.is_some() {
+            keys.push((
+                "D",
+                if self.difference {
+                    "hide difference"
+                } else {
+                    "show difference"
+                },
+            ));
+        }
+        if self.key().is_some() {
+            keys.push(("K", "key in figure"));
         }
         if self.mirrorable() {
             keys.push(("v", if self.mirror { "split" } else { "mirror" }));
@@ -324,7 +352,7 @@ impl PileupView<'_> {
                 fmt_thousands(stop)
             )),
         ];
-        if let Some(c) = self.contrast {
+        if let Some(c) = self.shown_contrast() {
             let (a, b) = (self.tracks[c.a].label, self.tracks[c.b].label);
             let value = self.contrast_values(c, bins).get(col).copied().flatten();
             spans.push(dim(format!("   {a} vs {b} ")));
@@ -351,6 +379,12 @@ impl PileupView<'_> {
         spans.push(dim(format!("   {here} site(s) in bar")));
         Line::from(spans)
     }
+}
+
+/// `rows` with the genes (if among them) moved to the top.
+pub(super) fn genes_first(rows: Vec<Row>) -> Vec<Row> {
+    let (genes, plots): (Vec<Row>, Vec<Row>) = rows.into_iter().partition(|&r| r == Row::Genes);
+    genes.into_iter().chain(plots).collect()
 }
 
 /// The footer `line` gives for `view`, wrapped to `width`, naming `[/]`

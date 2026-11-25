@@ -1,3 +1,4 @@
+use super::super::figure_view;
 use super::*;
 use crate::site_analysis::pileup::tui::Track;
 use crate::tui::ui::Scale;
@@ -89,24 +90,38 @@ fn keys_go_to_one_gene_and_how_bars_draw_to_all() {
     assert!(matches!(s.exit, Some(Exit::Genes)));
 }
 
+/// `s` writes each gene's figure, and one of them all one under another.
 #[test]
-fn the_figure_is_the_genes_one_under_another() {
+fn the_files_are_each_gene_and_the_genes_one_under_another() {
     let (a, b) = (positions(1.0), positions(3.0));
-    let s = stack(&a, &b);
-    let svg = s.figure();
-    assert!(svg.contains("GENE1") && svg.contains("GENE2"));
-    let one = s.views[0].figure();
-    let height = |svg: &str| -> f64 {
-        let at = svg.find(" height=\"").unwrap() + 9;
-        svg[at..].split('"').next().unwrap().parse().unwrap()
-    };
-    let two = s.views[1].figure();
-    assert_eq!(height(&svg), height(&one) + height(&two));
-    // It renders, as a save would.
+    let mut s = stack(&a, &b);
+    let files = s.files().unwrap();
+    let names: Vec<&str> = files.iter().map(|f| f.0.as_str()).collect();
+    assert_eq!(names, ["_GENE1", "_GENE2", "_column"]);
+    // Each gene's on its own page, at the figure's own size.
+    for (k, gene) in ["GENE1", "GENE2"].into_iter().enumerate() {
+        let own = s.views[k].figure_on(&Sheet::OWN).unwrap();
+        assert_eq!(
+            crate::figure::svg_size(&files[k].1),
+            crate::figure::svg_size(&own)
+        );
+        assert!(files[k].1.contains(&format!(">{gene}<")), "{gene}");
+    }
+    let height = |svg: &str| crate::figure::svg_size(svg).1;
+    assert_eq!(
+        height(&files[2].1),
+        height(&files[0].1) + height(&files[1].1)
+    );
+    // They render, as a save does.
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("both");
-    crate::figure::save(&svg, out.to_str().unwrap()).unwrap();
-    assert!(dir.path().join("both.pdf").exists());
+    s.controls.save_many(&files, out.to_str().unwrap());
+    for name in names {
+        assert!(
+            dir.path().join(format!("both{name}.pdf")).exists(),
+            "{name}"
+        );
+    }
 }
 
 #[test]
@@ -152,15 +167,18 @@ fn every_gene_redraws_when_the_scale_or_bars_change() {
 fn bar_cycles_the_layout_and_the_figure_follows() {
     let (a, b) = (positions(1.0), positions(3.0));
     let mut s = stack(&a, &b);
-    let width = |svg: &str| -> f64 {
-        let at = svg.find(" width=\"").unwrap() + 8;
-        svg[at..].split('"').next().unwrap().parse().unwrap()
-    };
-    let one = width(&s.views[0].figure());
-    assert_eq!(width(&s.figure()), one, "one under another");
+    let width = |svg: &str| crate::figure::svg_size(svg).0;
+    let one = width(&s.views[0].figure_on(&Sheet::OWN).unwrap());
+    let all = |s: &mut StackView| s.files().unwrap().pop().unwrap();
+    assert_eq!(width(&all(&mut s).1), one, "one under another");
     press(&mut s, KeyCode::Char('|'));
     assert_eq!(s.arrange, Arrange::Row);
-    assert_eq!(width(&s.figure()), 2.0 * one, "side by side");
+    let (name, svg) = all(&mut s);
+    assert_eq!(
+        (name.as_str(), width(&svg)),
+        ("_row", 2.0 * one),
+        "side by side"
+    );
     // Side by side on screen, too: GENE2 to the right of GENE1, same rows.
     let text = screen(&mut s, 160, 30);
     let row_of = |i: usize| i / 160;
@@ -168,6 +186,7 @@ fn bar_cycles_the_layout_and_the_figure_follows() {
     assert_eq!(row_of(g1), row_of(g2), "{text}");
     press(&mut s, KeyCode::Char('|'));
     assert_eq!(s.arrange, Arrange::Grid);
+    assert_eq!(all(&mut s).0, "_grid");
     press(&mut s, KeyCode::Char('|'));
     assert_eq!(s.arrange, Arrange::Column);
 }
@@ -431,4 +450,150 @@ fn the_keys_listed_are_the_keys_bound() {
         press(&mut s, KeyCode::Char(']'));
         s
     });
+}
+
+/// Two genes' WT and MUT tracks over their totals, and their gene models.
+fn marked<'a>(m: &'a [(i64, f64)], half: &'a [(i64, f64)]) -> Vec<(View<'a>, Vec<Track<'a>>)> {
+    ["ID1_GENE1", "ID2_GENE2"]
+        .into_iter()
+        .map(|title| {
+            let mut a = Track::single("WT", "sum", m, false).with_total(half);
+            a.mirror_with_next = true;
+            let b = Track::single("MUT", "sum", half, false).with_total(half);
+            let view = View {
+                title,
+                chr: "chr1",
+                extent: EXTENT,
+                on: "methylated",
+                off: "unmethylated",
+                keys: None,
+                genes: None,
+                cursor: None,
+                switchable: false,
+                from_cluster: false,
+                track_from: 0,
+            };
+            (view, vec![a, b])
+        })
+        .collect()
+}
+
+/// The genes marked in the list and saved from their stack are the files
+/// `faba pileup --batch-process -q GENE1,GENE2` writes, drawn the same way
+/// (its bars, y scale, difference row and key as the flags say): the same
+/// names and the same figures, the same PDFs.
+#[test]
+fn a_stack_saves_what_the_command_line_writes_for_the_same_genes() {
+    use crate::site_analysis::pileup::PileupArgs;
+    #[derive(clap::Parser)]
+    struct Cli {
+        #[command(flatten)]
+        args: PileupArgs,
+    }
+    // Sites in the middle of the genes, so a window at them is not whole.
+    let middle = |scale| -> Vec<(i64, f64)> {
+        let p = positions(scale).into_iter();
+        p.filter(|p| (1_030_000..1_060_000).contains(&p.0))
+            .collect()
+    };
+    let (m, half) = (middle(1.0), middle(2.0));
+    let views = marked(&m, &half)
+        .into_iter()
+        .map(|(view, tracks)| {
+            let mut b = super::browser(view, tracks, None);
+            b.show = crate::site_analysis::show::Show::Both;
+            b
+        })
+        .collect();
+    let mut s = StackView::new(views);
+    screen(&mut s, 120, 40);
+    // Drawn as sqrt, the difference row hidden, the key beside, a row,
+    // every gene at its sites (the command line's window).
+    for key in ['y', 'y', 'D', 'K', '|', 'W'] {
+        press(&mut s, KeyCode::Char(key));
+    }
+    screen(&mut s, 120, 40);
+    let columns = s.views[0].columns;
+    assert!(s.views.iter().all(|v| v.columns == columns));
+    let tui = s.files().unwrap();
+    let bins = columns.to_string();
+    let line = [
+        "pileup",
+        "x.zarr",
+        "-q",
+        "GENE1,GENE2",
+        "--yscale",
+        "sqrt",
+        "--key-at",
+        "right",
+        "--row",
+        "--bins",
+        &bins,
+    ];
+    let args = <Cli as clap::Parser>::try_parse_from(line).unwrap().args;
+    let settings = args.figure_settings();
+    let mut cli: Vec<PileupView> = marked(&m, &half)
+        .into_iter()
+        .map(|(view, tracks)| {
+            let at = (args.figure_window(), columns);
+            figure_view(view, tracks, &settings, at, args.key)
+        })
+        .collect();
+    let written = export(&mut cli, &Sheet::OWN, args.combine(2).unwrap()).unwrap();
+    assert_eq!(tui.len(), 3);
+    assert!(cli.iter().all(|v| v.window != v.extent), "at the sites");
+    assert_eq!(written, tui);
+    assert!(!tui[0].1.contains("WT vs MUT"), "no difference row");
+    // The PDFs too, as the browser and the command line each write them.
+    let dir = tempfile::tempdir().unwrap();
+    let at = |name: &str| dir.path().join(name).to_str().unwrap().to_string();
+    s.controls.save_many(&tui, &at("tui"));
+    for (suffix, svg) in &written {
+        crate::figure::save(svg, &at(&format!("cli{suffix}"))).unwrap();
+        // svg2pdf numbers a page's fonts in an order that differs from one
+        // run to the next (two runs of the command line differ so too): the
+        // same size, the same fonts.
+        let read = |p: String| {
+            let pdf = std::fs::read(format!("{p}.pdf")).unwrap();
+            let text = String::from_utf8_lossy(&pdf).to_string();
+            let mut fonts: Vec<String> = (text.split("/BaseFont /").skip(1))
+                .filter_map(|f| {
+                    f.split_whitespace()
+                        .next()?
+                        .split('+')
+                        .nth(1)
+                        .map(String::from)
+                })
+                .collect();
+            fonts.sort();
+            (pdf.len(), fonts)
+        };
+        let (a, b) = (
+            read(at(&format!("tui{suffix}"))),
+            read(at(&format!("cli{suffix}"))),
+        );
+        assert!(!a.1.is_empty(), "{suffix}: no fonts");
+        assert_eq!(a, b, "{suffix}: the PDFs differ");
+    }
+}
+
+/// `W` puts every gene at its own sites from whole, as `0` does one, and
+/// every gene whole again: each by its own sites, not the first's.
+#[test]
+fn w_steps_every_gene_between_whole_and_its_own_sites() {
+    let a: Vec<(i64, f64)> = (0..100).map(|i| (1_020_000 + i * 100, 1.0)).collect();
+    let b: Vec<(i64, f64)> = (0..100).map(|i| (1_060_000 + i * 200, 1.0)).collect();
+    let mut s = stack(&a, &b);
+    screen(&mut s, 120, 40);
+    press(&mut s, KeyCode::Char('W'));
+    let sites: Vec<_> = s.views.iter().map(|v| v.sites_window()).collect();
+    let now: Vec<_> = s.views.iter().map(|v| v.window).collect();
+    assert_eq!(now, sites);
+    assert_ne!(sites[0], sites[1]);
+    assert!(
+        sites[0].0 < 1_020_000 && 1_029_900 < sites[0].1,
+        "{sites:?}"
+    );
+    press(&mut s, KeyCode::Char('W'));
+    assert!(s.views.iter().all(|v| v.window == EXTENT));
 }

@@ -8,7 +8,7 @@
 //! the model stays aligned with the matrix/depth tracks above and below.
 
 use super::bin::BinEdges;
-use crate::figure::{Anchor, Canvas, BAR, INK, MUTED};
+use crate::figure::{Anchor, Canvas, INK};
 use crate::site_analysis::pileup::Selector;
 use genomic_data::gff::{
     build_exon_intervals, build_gene_map, parse_gff, FeatureType, GeneSymbol, GffRecord,
@@ -137,8 +137,20 @@ pub fn models_extent(models: &[GeneModel]) -> Option<(Box<str>, i64, i64)> {
     Some((first.chr.clone(), lo, hi))
 }
 
+/// The share of a gene model's band its exons take: thin blocks on the
+/// intron line, not a bar across the band. (The models carry merged exons
+/// only, no UTRs, so every exon is drawn alike.)
+pub const EXON_SHARE: f64 = 1.0 / 3.0;
+
+/// A gene model's exons, and its intron line, chevrons and break marks:
+/// lighter than the bars' ink, so the model is a quiet guide beside the
+/// data.
+pub const EXON: &str = "#9a9a9a";
+pub const INTRON: &str = "#b0b0b0";
+
 /// Draw one gene model into `[x_left, x_left + plot_w]`, centered on
-/// `y_mid`: exons as boxes `band_h` tall on an intron line with strand
+/// `y_mid` in a band `band_h` tall: exons as boxes [`EXON_SHARE`] of it on
+/// an intron line with strand
 /// chevrons, the symbol just left of the gene.
 pub fn draw_gene_model(
     c: &mut Canvas,
@@ -149,34 +161,7 @@ pub fn draw_gene_model(
     y_mid: f64,
     band_h: f64,
 ) {
-    let x_of = |pos: i64| edges.x_px(pos, x_left as f32, plot_w as f32) as f64;
-    let (x0, x1) = (x_of(g.lo), x_of(g.hi));
-
-    // Intron line (gene footprint), then strand chevrons along it.
-    c.line(x0, y_mid, x1, y_mid, MUTED, 1.2);
-    let step = (band_h * 1.4).max(8.0);
-    let head = (band_h * 0.175).max(1.0);
-    let mut x = x0 + step * 0.5;
-    while x < x1 - 1.0 {
-        let (tip, base) = if g.forward {
-            (x + head, x - head)
-        } else {
-            (x - head, x + head)
-        };
-        let chevron = [(base, y_mid - head), (tip, y_mid), (base, y_mid + head)];
-        c.polyline(&chevron, MUTED, 1.0);
-        x += step;
-    }
-
-    let top = y_mid - band_h / 2.0;
-    for &(es, ee) in &g.exons {
-        if ee <= edges.min_pos || es > edges.max_pos {
-            continue;
-        }
-        let (ex0, ex1) = (x_of(es), x_of(ee));
-        c.rect(ex0, top, (ex1 - ex0).max(0.8), band_h, BAR);
-    }
-
+    let x0 = draw_gene_body(c, g, edges, (x_left, plot_w), y_mid, band_h);
     let lx = (x0 - 2.0).max(x_left);
     c.text(
         lx,
@@ -186,6 +171,72 @@ pub fn draw_gene_model(
         Anchor::End,
         INK,
     );
+}
+
+/// [`draw_gene_model`] without the symbol, where a title names the gene;
+/// where the gene starts across.
+pub fn draw_gene_body(
+    c: &mut Canvas,
+    g: &GeneModel,
+    edges: &BinEdges,
+    (x_left, plot_w): (f64, f64),
+    y_mid: f64,
+    band_h: f64,
+) -> f64 {
+    let x_of = |pos: i64| edges.x_px(pos, x_left as f32, plot_w as f32) as f64;
+    let (x0, x1) = (x_of(g.lo), x_of(g.hi));
+    let exon_h = band_h * EXON_SHARE;
+
+    // Intron line (gene footprint), then strand chevrons along it, each
+    // thinning with the band so a small model is not drawn coarse.
+    let stroke = (band_h * 0.06).clamp(0.25, 0.8);
+    c.line(x0, y_mid, x1, y_mid, INTRON, stroke);
+    let step = band_h * 2.5;
+    let head = exon_h * 0.35;
+    let mut x = x0 + step * 0.5;
+    while x < x1 - 1.0 {
+        let (tip, base) = if g.forward {
+            (x + head, x - head)
+        } else {
+            (x - head, x + head)
+        };
+        let chevron = [(base, y_mid - head), (tip, y_mid), (base, y_mid + head)];
+        c.polyline(&chevron, INTRON, stroke * 0.8);
+        x += step;
+    }
+
+    let top = y_mid - exon_h / 2.0;
+    for &(es, ee) in &g.exons {
+        if ee <= edges.min_pos || es > edges.max_pos {
+            continue;
+        }
+        let (ex0, ex1) = (x_of(es), x_of(ee));
+        c.rect(ex0, top, (ex1 - ex0).max(0.8), exon_h, EXON);
+    }
+    // A gene running past the window is cut there: a break mark, two
+    // short slashes across its line, says so at that end.
+    let (left, right) = cut_ends(g, edges);
+    let cut = [(left, x0, 1.0), (right, x1, -1.0)];
+    for (_, at, inward) in cut.into_iter().filter(|c| c.0) {
+        let (rise, lean) = (exon_h * 0.9, exon_h * 0.3);
+        for k in [0.0, 1.0] {
+            let x = at + inward * (lean + k * 1.6 * lean);
+            c.line(
+                x - lean,
+                y_mid + rise,
+                x + lean,
+                y_mid - rise,
+                INTRON,
+                stroke,
+            );
+        }
+    }
+    x0
+}
+
+/// Whether `g` runs past the window `edges` span, left and right.
+pub fn cut_ends(g: &GeneModel, edges: &BinEdges) -> (bool, bool) {
+    (g.lo < edges.min_pos, g.hi - 1 > edges.max_pos)
 }
 
 /// [`draw_gene_model`] as SVG shapes to place in a larger drawing.

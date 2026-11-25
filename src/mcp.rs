@@ -62,7 +62,7 @@ figures and page.
 return their table and its figure as an image. site_plot draws a \
 directory's site statistics as paper panels (histograms, pairs, \
 marginals), thresholds optional, and returns them as images. pileup returns a binned table \
-for a gene or region (and, with `figure`, a Miami SVG, as an image too). \
+for a gene or region (and, with `figure`, the browser's figure as SVG, as an image too). \
 cluster_view shows a cluster fit level by level, from its run record \
 ({m}_blockmodel.run.json) or the directory holding its tables, each level \
 as JSON rows: by default an overview (the ELBO verdict, the modules' sizes, \

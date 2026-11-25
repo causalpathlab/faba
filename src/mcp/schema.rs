@@ -226,7 +226,7 @@ fn hand_written() -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "pileup",
-            "A gene's or region's sites (`faba pileup --batch-process`). Returns a binned TSV. The ASCII histogram is the call's progress. With `figure` (or `gtf` or `bam`), write a Miami SVG instead, returned as an image too; `out` is then the figure prefix (`{out}.miami.svg`). A `gtf` draws the gene model (else the annotation recorded with the data, if any), `bam` the read-depth track.",
+            "A gene's or region's sites (`faba pileup --batch-process`). Returns a binned TSV. The ASCII histogram is the call's progress. With `figure` (or `gtf` or `bam`), write the figure the browser saves instead (`{out}.miami.svg`, returned as an image too; `out` is then the figure prefix): `window` sites (the default: centred on the gene's sites, their span and a quarter of it either side, 1 kb at least, or with `pad` the first site to the last and `pad` bases either side; the gene model cut there and its cut ends marked) or gene (TSS to TES), ticked in Mb, two alike `track`s (e.g. WT and MUT) one above the other mirrored on one zero line and one y scale, over the gene model, titled by the gene symbol, `width` by `height` inches with its text at `font_size` points (else fit to the page), `panel_only` without the window and row titles, `palette` gray in grays. It is drawn as the browser draws the gene: its bases per bar for that window (`bins` sets the bars), `yscale` (sqrt ticked at evenly spread round counts, log10 at powers of ten), the difference row with `difference`, the key `key_at` inside, right or alone (`{out}_key`; `panel_only` leaves it out unless `key`). Several `genes` (or a `gene_file`) draw a figure each, `{out}_{SYMBOL}.svg`, each `width` by `height`, and with `row` (or `grid` COLSxROWS) one of them all, `{out}_row.svg`, one key for all, the y axis titled on each row's first panel only; the files are listed and returned as images. A `gtf` draws the gene model (else the annotation recorded with the data, if any); `bam` (read depth) or `cell_membership` (a panel per cell type) draw the Miami figure instead, at least 2 by 1.5 inches.",
             schema(
                 json!({
                     "data": { "type": "array", "items": { "type": "string" }, "minItems": 1, "description": "Site matrices, or a faba output directory" },
@@ -767,7 +767,7 @@ const SIZED: [&str; 7] = [
 fn figures(tool: &str) -> &'static [Figure] {
     match tool {
         "cluster_view" => &[Figure::Modules, Figure::Trace, Figure::Batches],
-        "pileup" => &[Figure::Pileup],
+        "pileup" => &[Figure::Pileup, Figure::Miami],
         "metagene" => &[Figure::Metagene],
         "pwm" => &[Figure::Logo],
         "qc" | "qc_view" => &[Figure::Qc, Figure::SitePanels],
@@ -988,6 +988,11 @@ mod tests {
         let view = ["cluster-view", "/no/such", "--figure", "f", "--plot"];
         let lines = [
             ("pileup", Figure::Pileup, vec!["pileup", "/no/such.zarr"]),
+            (
+                "pileup",
+                Figure::Miami,
+                vec!["pileup", "/no/such.zarr", "--bam", "/no/such.bam"],
+            ),
             (
                 "cluster_view",
                 Figure::Modules,
