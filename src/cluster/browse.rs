@@ -157,7 +157,7 @@ pub struct ModulesArgs {
 
     /// The levels printed under --batch-process instead of the modules.
     #[command(flatten)]
-    shown: text::Shown,
+    pub(crate) shown: text::Shown,
 
     /// `--no-detach` and `--session`: how the view runs as a session.
     #[command(flatten)]

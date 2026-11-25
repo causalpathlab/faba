@@ -38,7 +38,7 @@ impl ModulesView<'_> {
         let (genes, roles) = (self.m.gene_main.clone(), self.m.gene_roles);
         std::thread::spawn(move || {
             let table = source.and_then(|s| {
-                super::super::go::terms(&genes, roles, &s, ask.min_weight)
+                super::super::go::terms(&genes, roles, &s, ask.min_weight, ask.q)
                     .map_err(|e| format!("{e:#}"))
             });
             let _ = pending.set(table);
@@ -102,15 +102,15 @@ fn go_lines(table: &Table, g: usize, width: u16) -> Vec<Line<'static>> {
     let mut lines = vec![
         said(
             format!(
-                "{} genes of weight at least {} ({} in all) of the {} annotated; {}",
-                m.n, table.min_weight, m.all, table.universe, table.source
+                "{} genes of weight at least {} ({} in all) of the {} annotated; terms at q <= {}; {}",
+                m.n, table.min_weight, m.all, table.universe, table.q, table.source
             ),
             DIM,
         ),
         Line::raw(""),
     ];
     if m.hits.is_empty() {
-        lines.push(said(m.why_none(), DIM));
+        lines.push(said(m.why_none(table.q), DIM));
         return lines;
     }
     lines.push(said(
