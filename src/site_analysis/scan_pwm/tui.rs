@@ -443,6 +443,22 @@ impl crate::tui::View for PwmView {
     fn takes_apply(&self) -> bool {
         self.controls.prompting()
     }
+
+    fn help(&self) -> Option<crate::tui::KeyList> {
+        if self.controls.prompting() {
+            return None;
+        }
+        let mut keys = vec![
+            ("←/→ h/l", "previous/next position"),
+            ("Home", "first position"),
+            ("End", "last position"),
+            ("0", "the site"),
+            ("v b", "bits or frequency"),
+        ];
+        self.controls.help_keys(&mut keys);
+        keys.extend([("q", "quit"), ("?", "these keys")]);
+        Some(crate::tui::keys(&keys))
+    }
 }
 
 impl Screen for PwmView {
@@ -471,13 +487,14 @@ impl Screen for PwmView {
             KeyCode::Home => self.cursor = 0,
             KeyCode::End => self.cursor = self.columns.len().saturating_sub(1),
             KeyCode::Char('0') => self.cursor = (-self.first).max(0) as usize,
-            KeyCode::Char('b') => {
+            // `b` as it was before `v` cycled every view's look.
+            KeyCode::Char('v' | 'b') => {
                 self.mode = match self.mode {
                     Mode::Bits => Mode::Freq,
                     Mode::Freq => Mode::Bits,
                 }
             }
-            KeyCode::Char('q') | KeyCode::Esc => self.done = true,
+            KeyCode::Char('q') => self.done = true,
             _ => {}
         }
     }
@@ -489,10 +506,10 @@ impl Screen for PwmView {
                 ("←/→", "position"),
                 ("Home/End", "ends"),
                 ("0", "site"),
-                ("b", "bits/frequency"),
+                ("v", "bits/frequency"),
             ];
             self.controls.help_keys(&mut keys);
-            keys.push(("q/Esc", "quit"));
+            keys.extend([("q", "quit"), ("?", "keys")]);
             help_line(&keys)
         });
         let help = crate::tui::wrap_help(help, frame.area().width);

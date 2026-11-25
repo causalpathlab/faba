@@ -408,7 +408,19 @@ impl Question {
     }
 }
 
-impl View for Question {}
+impl View for Question {
+    fn help(&self) -> Option<crate::tui::KeyList> {
+        Some(crate::tui::keys(&[
+            ("↑/↓", "move"),
+            ("PgUp/PgDn", "a page up/down"),
+            ("Home/End", "first/last"),
+            ("Enter", "take it"),
+            ("1-9", "take that one"),
+            ("Esc/q", "cancel the run"),
+            ("?", "these keys"),
+        ]))
+    }
+}
 
 impl Screen for Question {
     fn done(&self) -> bool {

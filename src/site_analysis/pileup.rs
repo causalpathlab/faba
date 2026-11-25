@@ -676,6 +676,7 @@ fn view_of<'a>(
         genes: genes.cloned(),
         cursor: loaded.cursor,
         switchable,
+        from_cluster: false,
         track_from: 0,
     }
 }

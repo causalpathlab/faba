@@ -156,6 +156,7 @@ impl ModulesView<'_> {
     /// A key, for `Screen::handle_key`.
     pub(super) fn on_key(&mut self, key: KeyEvent) {
         self.status = None;
+        let clearing = std::mem::take(&mut self.clearing);
         if self.find.is_some() {
             return self.find_key(key);
         }
@@ -170,7 +171,8 @@ impl ModulesView<'_> {
         let (sites, genes) = (self.pane == Pane::Sites, self.pane == Pane::Genes);
         match key.code {
             KeyCode::Char('q') => self.done = true,
-            KeyCode::Char('e') => self.export(),
+            // Ctrl+E comes only here (see `takes_chord`).
+            _ if crate::tui::is_report(&key) => self.export(),
             KeyCode::Char('t') => self.open_trace(),
             KeyCode::Char('b') => self.open_batches(),
             KeyCode::Char('a') => self.open_go(),
@@ -204,6 +206,11 @@ impl ModulesView<'_> {
                 }
             }
             KeyCode::Delete | KeyCode::Backspace if genes => self.unpin(self.pin),
+            // Every pin at once, in any pane: the first `X` only asks.
+            KeyCode::Char('X') if !self.pins.is_empty() && !clearing => {
+                self.clearing = true;
+                self.status = Some("X again clears every pinned gene".into());
+            }
             KeyCode::Char('X') => {
                 self.pins.clear();
                 (self.pin, self.row_from) = (0, 0);

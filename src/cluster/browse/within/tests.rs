@@ -290,3 +290,20 @@ fn the_list_moves_and_opens_only_fits() {
     assert!(list.done());
     assert_eq!(list.take_open(), None);
 }
+
+#[test]
+fn the_list_footer_names_every_way_in_and_esc_never_quits() {
+    let tmp = tempfile::tempdir().unwrap();
+    let nested = read(&nested(tmp.path()));
+    let mut list = List::new(&nested);
+    let screen = crate::tui::screen_text(&mut list, 120, 12);
+    for shown in ["Enter/→/Ctrl+R open the fit", "q quit", "? keys"] {
+        assert!(screen.contains(shown), "{shown}:\n{screen}");
+    }
+    press(&mut list, KeyCode::Esc);
+    assert!(!list.done(), "Esc never quits the list");
+    let keys = crate::tui::help::shown(&mut list, 100, 24).expect("? opens the keys");
+    for key in ["↑/↓ k/j", "PgUp/PgDn", "Home/End", "Ctrl+R", "q"] {
+        assert!(keys.contains(key), "{key}:\n{keys}");
+    }
+}

@@ -251,3 +251,26 @@ fn a_folder_asks_before_dropping_marks() {
     press(&mut p, KeyCode::Char(' '));
     assert!(p.decision.is_some(), "the second Space takes it");
 }
+
+#[test]
+fn a_reference_download_stops_on_capital_s_only() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut p = ReferencePicker::new(tmp.path().to_path_buf(), "pwm", Reference::Genome, None);
+    let screen = crate::tui::screen_text(&mut p, 100, 30);
+    assert!(screen.contains("Enter choose / open folder"), "{screen}");
+    let f = Fetch::idle("a reference", tmp.path().join("ref"));
+    p.fetching = Fetching::Downloading(f, true);
+    let screen = crate::tui::screen_text(&mut p, 100, 30);
+    assert!(screen.contains("S stop (what came is kept)"), "{screen}");
+    press(&mut p, KeyCode::Char('s'));
+    assert!(
+        matches!(p.fetching, Fetching::Downloading(_, true)),
+        "s is not stop"
+    );
+    crate::tui::feed(
+        &mut p,
+        KeyEvent::new(KeyCode::Char('S'), KeyModifiers::SHIFT),
+    );
+    assert!(matches!(p.fetching, Fetching::No));
+    assert!(p.note.as_deref().is_some_and(|n| n.contains("stopped")));
+}

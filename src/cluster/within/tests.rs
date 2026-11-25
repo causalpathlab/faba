@@ -413,6 +413,12 @@ fn the_question_takes_a_pairing_or_neither() {
     let mut q = pairing::Question::new(&a);
     press(&mut q, KeyCode::Esc);
     assert_eq!(q.decision, Some(None));
+    let mut q = pairing::Question::new(&a);
+    let keys = crate::tui::help::shown(&mut q, 100, 30).expect("? opens the keys");
+    for key in ["↑/↓", "PgUp/PgDn", "Home/End", "Enter", "Esc/q"] {
+        assert!(keys.contains(key), "{key}:\n{keys}");
+    }
+    assert_eq!(q.decision, None, "? chooses nothing");
 }
 
 /// A batch met in several folders is named with its folder, as typed in

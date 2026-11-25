@@ -1,4 +1,4 @@
-//! `faba cluster-view --html`, and `e` in the browser: the modules as one page,
+//! `faba cluster-view --html`, and Ctrl+E in the browser: the modules as one page,
 //! the browser's levels and keys in it, its data the module tables (see
 //! [`crate::report`]).
 

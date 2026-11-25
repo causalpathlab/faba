@@ -1,4 +1,4 @@
-//! The 2D view (`d`): the thresholds two at a time, in four panels in
+//! The 2D view (`v`): the thresholds two at a time, in four panels in
 //! place of the histogram, gene and metagene (see [`crate::qc::pairs`]).
 //! Tab reaches the panels; there ←/→ pick one, `x`/`X` and `y`/`Y` step its
 //! axes, and `A` lets Auto choose the pairs again. The thresholds still
@@ -13,7 +13,7 @@ use std::sync::Arc;
 const OWN_SIZE: (f64, f64) = (720.0, 640.0);
 
 impl SitePicker<'_> {
-    /// `d`: the 2D view in place of the histograms, or back.
+    /// `v`: the 2D view in place of the histograms, or back.
     pub(super) fn toggle_two_d(&mut self) {
         self.two_d = !self.two_d;
         if !self.two_d && self.panel == Panel::Pairs {

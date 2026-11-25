@@ -430,6 +430,18 @@ impl crate::tui::View for List<'_> {
     fn takes_apply(&self) -> bool {
         true
     }
+
+    fn help(&self) -> Option<crate::tui::KeyList> {
+        Some(crate::tui::keys(&[
+            ("↑/↓ k/j", "previous/next fit"),
+            ("PgUp/PgDn", "ten up/down"),
+            ("Home/End", "first/last"),
+            ("Enter/→", "open the fit"),
+            (crate::tui::APPLY_KEYS, "open the fit"),
+            ("q", "quit"),
+            ("?", "these keys"),
+        ]))
+    }
 }
 
 impl Screen for List<'_> {
@@ -454,7 +466,7 @@ impl Screen for List<'_> {
             KeyCode::Home => self.at = 0,
             KeyCode::End => self.at = last,
             KeyCode::Enter | KeyCode::Right => self.enter(),
-            KeyCode::Char('q') | KeyCode::Esc => self.done = true,
+            KeyCode::Char('q') => self.done = true,
             _ => {}
         }
     }
@@ -484,7 +496,12 @@ impl Screen for List<'_> {
         frame.render_widget(Paragraph::new(lines), inner);
         let footer = match &self.status {
             Some(msg) => crate::figure::status_line(msg),
-            None => help_line(&[("↑/↓", "move"), ("Enter", "open the fit"), ("q", "quit")]),
+            None => help_line(&[
+                ("↑/↓", "move"),
+                ("Enter/→/Ctrl+R", "open the fit"),
+                ("q", "quit"),
+                ("?", "keys"),
+            ]),
         };
         frame.render_widget(Paragraph::new(footer), foot);
     }

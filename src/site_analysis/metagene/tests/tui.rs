@@ -91,7 +91,7 @@ fn the_cursor_survives_merging() {
     let b = bars[v.cursor_bar(&bars)];
     assert_eq!(b.region, region);
     assert!((b.first..=b.last).contains(&bin));
-    press(&mut v, KeyCode::Char('a'));
+    press(&mut v, KeyCode::Char('0'));
     assert_eq!(v.merge, None);
 }
 
@@ -221,15 +221,66 @@ fn every_footer_key_shows_at_80_columns() {
     let mut v = MetageneView::new("sites", &h);
     let s = screen(&mut v, 80, 24);
     for key in [
-        "Home first",
+        "Home/End first/last",
         "+/- finer/coarser",
+        "[/] coarser/finer",
         "0 fit",
         "Tab track",
         "s save",
-        "q/Esc quit",
+        "q quit",
+        "? keys",
     ] {
         assert!(s.contains(key), "{key}\n{s}");
     }
+    assert!(!s.contains("q/Esc"), "Esc goes back, never quits:\n{s}");
+    assert!(!s.contains("c reads"), "no reads, no c:\n{s}");
+    let h = hist_with_reads();
+    let mut v = MetageneView::new("sites", &h);
+    let s = screen(&mut v, 80, 24);
+    assert!(s.contains("c reads"), "{s}");
+}
+
+#[test]
+fn esc_does_not_quit_but_q_does() {
+    let h = hist(false);
+    let mut v = MetageneView::new("sites", &h);
+    press(&mut v, KeyCode::Esc);
+    assert!(!v.done(), "Esc never quits a top-level view");
+    press(&mut v, KeyCode::Char('q'));
+    assert!(v.done());
+}
+
+#[test]
+fn zero_fits_a_does_not_and_end_takes_the_last_bar() {
+    let h = hist(false);
+    let mut v = MetageneView::new("sites", &h);
+    screen(&mut v, 100, 18);
+    press(&mut v, KeyCode::Char('-'));
+    assert!(v.merge.is_some());
+    press(&mut v, KeyCode::Char('a'));
+    assert!(v.merge.is_some(), "a is no longer fit");
+    press(&mut v, KeyCode::Char('0'));
+    assert!(v.merge.is_none());
+    press(&mut v, KeyCode::End);
+    let bars = v.bars();
+    assert_eq!(v.cursor_bar(&bars), bars.len() - 1);
+    press(&mut v, KeyCode::Home);
+    assert_eq!(v.cursor_bar(&v.bars()), 0);
+}
+
+#[test]
+fn question_mark_lists_every_key_but_types_in_the_save_prompt() {
+    let h = hist_with_reads();
+    let mut v = MetageneView::new("sites", &h);
+    let text = crate::tui::help::shown(&mut v, 100, 30).expect("? opens the keys");
+    for key in ["←/→ h/l", "Home", "End", "c", "y", "+/=", "s", "q"] {
+        assert!(text.contains(key), "{key}:\n{text}");
+    }
+    press(&mut v, KeyCode::Char('s'));
+    assert!(
+        crate::tui::help::shown(&mut v, 100, 30).is_none(),
+        "? types"
+    );
 }
 
 #[test]
@@ -247,7 +298,7 @@ fn enter_stays_and_plus_is_finer() {
         "+ undoes -, finer: {:?} < {coarser:?}",
         v.merge
     );
-    press(&mut v, KeyCode::Esc);
+    press(&mut v, KeyCode::Char('q'));
     assert!(v.done());
 }
 

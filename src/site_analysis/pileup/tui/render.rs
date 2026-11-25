@@ -161,7 +161,11 @@ impl PileupView<'_> {
             ("n/N", "next/prev site"),
             ("+/-", "zoom"),
             ("0", "whole"),
-            ("/", "search"),
+        ];
+        if !self.from_cluster {
+            keys.push(("/", "search"));
+        }
+        keys.extend([
             ("y", "scale"),
             (
                 "Y",
@@ -171,8 +175,28 @@ impl PileupView<'_> {
                     "lock y"
                 },
             ),
-            ("g/Esc", "gene list"),
-        ];
+            ("g/Esc", self.back_to()),
+        ]);
+        keys.extend(self.optional_keys(hidden));
+        self.controls.help_keys(&mut keys);
+        keys.extend([("q", "quit"), ("?", "keys")]);
+        help_line(&keys)
+    }
+
+    /// What `g` and Esc go back to.
+    pub(super) fn back_to(&self) -> &'static str {
+        if self.from_cluster {
+            "cluster-view"
+        } else {
+            "gene list"
+        }
+    }
+
+    /// The keys that work only on some genes' tracks: `c` with reads, `d`
+    /// with two to compare, `v` with tracks to mirror, `[/]` with rows
+    /// `hidden`, `m` with another modality.
+    pub(super) fn optional_keys(&self, hidden: bool) -> Vec<(&'static str, &'static str)> {
+        let mut keys = Vec::new();
         if self.tracks.iter().any(|t| t.is_reads()) {
             keys.push(("c", self.show.next().short()));
         }
@@ -188,9 +212,7 @@ impl PileupView<'_> {
         if self.switchable {
             keys.push(("m", "m6A/A-to-I"));
         }
-        self.controls.help_keys(&mut keys);
-        keys.push(("q", "quit"));
-        help_line(&keys)
+        keys
     }
 
     /// Row `row` as text in `inner`, the cursor at column `pointer` and

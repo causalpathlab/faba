@@ -74,7 +74,12 @@ impl ModulesView<'_> {
     /// The GO pane in `area` above the footer in `foot`: the gene module's
     /// terms, a line each, with what they were tested against.
     pub(super) fn draw_go(&self, frame: &mut Frame, area: Rect, foot: Rect) {
-        let help = help_line(&[("↑/↓", "gene module"), ("a/Esc", "close"), ("q", "quit")]);
+        let help = help_line(&[
+            ("↑/↓", "gene module"),
+            ("a/Esc", "close"),
+            ("q", "quit"),
+            ("?", "keys"),
+        ]);
         frame.render_widget(Paragraph::new(help), foot);
         let g = self.module;
         let block = panel(format!(" GO · gene module M{} ", g + 1), true);

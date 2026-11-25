@@ -3,15 +3,8 @@
 
 use super::*;
 
-/// The key that writes the HTML report, as the footer names it.
-pub(super) const REPORT_KEY: &str = "Ctrl+E";
-
-/// Whether `key` is the report's: Ctrl+E and no other modifier, but the
-/// Shift a terminal may add for a capital E.
-pub(super) fn is_report(key: &KeyEvent) -> bool {
-    key.modifiers.difference(KeyModifiers::SHIFT) == KeyModifiers::CONTROL
-        && matches!(key.code, KeyCode::Char('e' | 'E'))
-}
+/// The report's chord, the one every view writes its page with.
+pub(super) use crate::tui::{is_report, REPORT_KEY};
 
 /// The key that asks to leave as `picked` says, and confirms it.
 pub(super) fn leave_key(picked: &Picked) -> char {
@@ -78,7 +71,8 @@ impl SitePicker<'_> {
     pub(super) fn confirm_key(&mut self, key: KeyEvent) {
         match key.code {
             _ if is_apply(&key) => self.apply(),
-            KeyCode::Esc | KeyCode::Char('n' | 'q') => self.mode = Mode::Browse,
+            // `q` is quit everywhere, so never back here.
+            KeyCode::Esc | KeyCode::Char('n') => self.mode = Mode::Browse,
             _ => {}
         }
     }
@@ -96,6 +90,42 @@ impl SitePicker<'_> {
             KeyCode::Esc | KeyCode::Char('n') => self.mode = Mode::Browse,
             _ => {}
         }
+    }
+
+    /// Every key while browsing, for the `?` pop-up.
+    pub(super) fn browse_help(&self) -> Vec<(&'static str, &'static str)> {
+        let mut keys = vec![
+            ("Tab/Shift+Tab", "next/previous panel"),
+            ("↑/↓ k/j", "knob; gene in the genes; panel in 2D"),
+            ("←/→ h/l", "bin; panel in 2D"),
+            ("PgUp/PgDn", "ten genes up/down, in the genes"),
+            ("-/+ , .", "threshold down/up a step (= as +)"),
+            ("0-9 e", "type a threshold"),
+            ("o", "threshold off"),
+            ("r", "reset the threshold"),
+            ("x/y", "x/y scale; in 2D the panel's axes"),
+            ("X/Y", "in 2D, the panel's axes back"),
+            ("v", "2D panels or histograms"),
+        ];
+        if self.two_d {
+            keys.push(("A", "auto pairs"));
+        }
+        keys.extend([
+            ("m/M", "next/previous modality"),
+            ("[ ]", "previous/next gene"),
+            ("/", "find a gene"),
+            ("w", "weight: coverage, converted reads or sites"),
+            ("a", "read an annotation"),
+        ]);
+        self.controls.help_keys(&mut keys);
+        keys.extend([
+            (REPORT_KEY, "write the HTML report"),
+            (APPLY_KEYS, "apply and write"),
+            ("p", "print the flags and leave"),
+            ("q", "leave (asks when changed)"),
+            ("?", "these keys"),
+        ]);
+        keys
     }
 
     /// A key while browsing.
@@ -117,7 +147,8 @@ impl SitePicker<'_> {
                     (Panel::Genes, _) => Panel::Thresholds,
                 }
             }
-            KeyCode::Char('d') => self.toggle_two_d(),
+            // `d` as it was before `v` cycled every view's look.
+            KeyCode::Char('v' | 'd') => self.toggle_two_d(),
             KeyCode::Char('A') if self.two_d => self.auto_pairs(),
             KeyCode::Left | KeyCode::Char('h') if self.panel == Panel::Pairs => self.step_pair(-1),
             KeyCode::Right | KeyCode::Char('l') if self.panel == Panel::Pairs => self.step_pair(1),
@@ -132,7 +163,7 @@ impl SitePicker<'_> {
             KeyCode::Char('[') => self.step_gene(-1),
             KeyCode::Char(']') => self.step_gene(1),
             KeyCode::Char('/') => self.start_find(),
-            KeyCode::Char('c') => self.switch_weight(),
+            KeyCode::Char('w') => self.switch_weight(),
             KeyCode::Char('a') => self.open_gff_browser(),
             KeyCode::Up | KeyCode::Char('k') if self.panel == Panel::Genes => self.step_gene(-1),
             KeyCode::Down | KeyCode::Char('j') if self.panel == Panel::Genes => self.step_gene(1),

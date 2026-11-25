@@ -6,8 +6,10 @@
 
 pub mod browser;
 pub mod busy;
+pub mod help;
 
 pub use busy::{busy, busy_counting};
+pub use help::{keys, Helped, KeyList};
 pub use legume_tui::browse::{first_visible, home, moved, tilde, typed_path, window, FindList};
 pub use legume_tui::hist::plain_axis;
 /// Whether a key is the apply key, Ctrl+R (with Shift or not), and nothing
@@ -24,7 +26,7 @@ pub use legume_tui::work::{on_thread, Pending};
 
 use std::time::Duration;
 
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -154,6 +156,17 @@ pub fn spinner_frame(elapsed: Duration) -> char {
 /// [`legume_tui::RUN_KEY`], capitalised as faba's footers write keys.
 pub const APPLY_KEYS: &str = "Ctrl+R";
 
+/// The key that writes a view's HTML page, as footers name it.
+pub const REPORT_KEY: &str = "Ctrl+E";
+
+/// Whether `key` is the page's, [`REPORT_KEY`]: Ctrl+E and no other
+/// modifier, but the Shift a terminal may add for a capital E. A view
+/// names it in [`View::takes_chord`] where it writes a page.
+pub fn is_report(key: &KeyEvent) -> bool {
+    key.modifiers.difference(KeyModifiers::SHIFT) == KeyModifiers::CONTROL
+        && matches!(key.code, KeyCode::Char('e' | 'E'))
+}
+
 /// What a view says when Enter (plain or held with Shift, Alt or Ctrl) did
 /// nothing: the key that `does` it. [`legume_tui::enter_hint`]'s words,
 /// with the key capitalised as faba's footers write keys.
@@ -179,6 +192,13 @@ pub trait View: Screen {
     /// otherwise; by default none, so no chord ever acts as its letter.
     fn takes_chord(&self, _key: &KeyEvent) -> bool {
         false
+    }
+
+    /// Every key the view takes as it is now, for the `?` pop-up
+    /// ([`Helped`]): the footer's and the ones it leaves out. None while
+    /// it is typing, where `?` is typed; and by default.
+    fn help(&self) -> Option<KeyList> {
+        None
     }
 }
 
@@ -230,11 +250,13 @@ pub fn child_env() -> legume_tui::ChildEnv {
 /// Run `view` full screen until it is done, in the command's session
 /// (a plain one where there is none), its keys fed by [`feed`], the
 /// session keys at the right end of its title row
-/// ([`legume_tui::view::run_view`]). A `faba kill` takes the view's quit
+/// ([`legume_tui::view::run_view`]), `?` showing its keys ([`Helped`]). A
+/// `faba kill` takes the view's quit
 /// path ([`Screen::quit`]) and then ends it with
 /// [`legume_tui::view::Stopped`].
 pub fn run_view<V: View>(view: &mut V) -> anyhow::Result<()> {
-    Ok(legume_tui::view::run_view(&TOOL, &LOOK, view, feed)?)
+    let mut helped = Helped::new(view);
+    Ok(legume_tui::view::run_view(&TOOL, &LOOK, &mut helped, feed)?)
 }
 
 /// Run `f`, the command's own work between or after its views, on the

@@ -591,6 +591,47 @@ fn enter_stays_esc_goes_back_to_the_genes_and_q_quits() {
 }
 
 #[test]
+fn from_cluster_view_esc_names_it_and_no_search_is_offered() {
+    let (m, s) = (positions(), sites());
+    let mut v = view(&m, &s);
+    let said = v.help(false).to_string();
+    assert!(
+        said.contains("g/Esc gene list") && said.contains("/ search"),
+        "{said}"
+    );
+    v.from_cluster = true;
+    let said = v.help(false).to_string();
+    assert!(said.contains("g/Esc cluster-view"), "{said}");
+    assert!(!said.contains("/ search"), "{said}");
+    // Nor is it bound: the search is cluster-view's.
+    press(&mut v, KeyCode::Char('/'));
+    assert!(!v.search.active(), "/ opened a search from cluster-view");
+}
+
+#[test]
+fn question_mark_lists_the_keys_but_types_in_the_search() {
+    let (m, s) = (positions(), sites());
+    let mut v = view(&m, &s);
+    let keys = crate::tui::help::shown(&mut v, 120, 40).expect("? opens the keys");
+    for key in [
+        "←/→ h/l",
+        "PgUp/PgDn",
+        "n/N",
+        "+/=",
+        "0",
+        "/",
+        "Y",
+        "g/Esc",
+        "q",
+    ] {
+        assert!(keys.contains(key), "{key}:\n{keys}");
+    }
+    press(&mut v, KeyCode::Char('/'));
+    assert!(crate::tui::help::shown(&mut v, 120, 40).is_none());
+    assert_eq!(v.search.text(), Some("?"), "? is typed");
+}
+
+#[test]
 fn how_bars_draw_carries_to_the_next_gene() {
     let (m, s) = (positions(), sites());
     let mut v = view(&m, &s);
@@ -621,6 +662,7 @@ fn the_browser_draws_text_and_saves_turned_position_labels() {
         genes: None,
         cursor: None,
         switchable: false,
+        from_cluster: false,
         track_from: 0,
     };
     let tracks = vec![Track::single("matrix", "sum", &m, false)];
@@ -678,6 +720,7 @@ fn paired_tracks_mirror_in_pairs_and_the_margin_keeps_its_own_scale() {
         genes: None,
         cursor: None,
         switchable: false,
+        from_cluster: false,
         track_from: 0,
     };
     let tracks = vec![
@@ -870,6 +913,7 @@ fn the_view_opens_scrolled_to_the_row_asked_for() {
         genes: None,
         cursor: None,
         switchable: false,
+        from_cluster: false,
         track_from: 8,
     };
     let mut b = browser(view, group_tracks(&labels, &m), None);
@@ -896,6 +940,7 @@ fn groups_from<'a>(labels: &'a [String], m: &'a [(i64, f64)], from: usize) -> Pi
         genes: None,
         cursor: None,
         switchable: false,
+        from_cluster: false,
         track_from: from,
     };
     browser(view, group_tracks(labels, m), None)

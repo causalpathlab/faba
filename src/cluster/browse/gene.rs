@@ -98,6 +98,7 @@ pub(super) fn show(
             genes: models.cloned(),
             cursor: place.cursor,
             switchable: false,
+            from_cluster: true,
             track_from: place.track_from,
         };
         let status = place.status.take();

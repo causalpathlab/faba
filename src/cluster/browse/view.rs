@@ -168,12 +168,14 @@ pub struct ModulesView<'a> {
     held: Option<Held>,
     /// A message for the footer, until the next key.
     status: Option<String>,
+    /// The first `X` asked; the next key, if `X`, clears every pin.
+    clearing: bool,
     /// The gene whose full pileup Enter asked for.
     open: Option<String>,
-    /// Where `e` writes the report, and the modules for its thread.
+    /// Where Ctrl+E writes the report, and the modules for its thread.
     report: Option<(PathBuf, Arc<Modules>)>,
     /// The report being written on a thread of its own, to `report`'s
-    /// path; `e` again meanwhile writes it anew after, with what has
+    /// path; Ctrl+E again meanwhile writes it anew after, with what has
     /// arrived since.
     writing: crate::report::Writing,
     /// The sites grid's colour ranges, for the gene role and scale they
@@ -228,6 +230,7 @@ impl<'a> ModulesView<'a> {
             find: None,
             held: None,
             status: None,
+            clearing: false,
             open: None,
             report: None,
             writing: Default::default(),
@@ -293,13 +296,13 @@ impl<'a> ModulesView<'a> {
         self.pending = None;
     }
 
-    /// Where `e` writes the report of `modules` (those the view shows).
+    /// Where Ctrl+E writes the report of `modules` (those the view shows).
     pub fn with_report(mut self, path: PathBuf, modules: Arc<Modules>) -> Self {
         self.report = Some((path, modules));
         self
     }
 
-    /// `e`: gather and write the report on a thread of its own, saying
+    /// Ctrl+E: gather and write the report on a thread of its own, saying
     /// where; [`Self::take_written`] says when it is done. Asked again
     /// while one is being written, it is written anew after.
     fn export(&mut self) {
@@ -378,7 +381,20 @@ impl<'a> ModulesView<'a> {
     }
 }
 
-impl crate::tui::View for ModulesView<'_> {}
+impl crate::tui::View for ModulesView<'_> {
+    /// The report's chord, where the panes take keys: never while a gene
+    /// is typed or a full pane is open.
+    fn takes_chord(&self, key: &KeyEvent) -> bool {
+        crate::tui::is_report(key) && self.find.is_none() && self.full.is_none()
+    }
+
+    fn help(&self) -> Option<crate::tui::KeyList> {
+        if self.find.is_some() {
+            return None;
+        }
+        Some(crate::tui::keys(&self.help_keys()))
+    }
+}
 
 impl Screen for ModulesView<'_> {
     fn done(&self) -> bool {

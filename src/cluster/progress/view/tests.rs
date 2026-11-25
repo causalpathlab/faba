@@ -450,3 +450,15 @@ fn many_chains_each_have_their_own_colour() {
         }
     }
 }
+
+#[test]
+fn question_mark_lists_the_keys_while_fitting() {
+    let p = midway();
+    let (_tx, mut rx) = channel_u8();
+    let mut f = fitting(&p, &mut rx);
+    let keys = crate::tui::help::shown(&mut f, 100, 30).expect("? opens the keys");
+    for key in ["q/Esc", "Ctrl+C"] {
+        assert!(keys.contains(key), "{key}:\n{keys}");
+    }
+    assert!(!f.done());
+}

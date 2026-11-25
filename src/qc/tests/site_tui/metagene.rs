@@ -64,7 +64,7 @@ fn the_metagene_panel_says_why_it_is_empty_and_draws_when_ready() {
 }
 
 #[test]
-fn c_cycles_the_bars_from_read_coverage_to_converted_reads_and_sites() {
+fn w_cycles_the_bars_from_read_coverage_to_converted_reads_and_sites() {
     let t = with_genes(table(M6A, 1500));
     let mut p = picker(&t, None, SiteFilterArgs::default_values());
     p.set_meta(Meta::ready(vec![Some(meta_layout(t.len()))], Vec::new()));
@@ -102,19 +102,19 @@ fn c_cycles_the_bars_from_read_coverage_to_converted_reads_and_sites() {
     check(&p, "read coverage", &|i| t.coverage[i]);
     let text = screen(&mut p);
     assert!(text.contains("metagene · y: read coverage per bin"));
-    assert!(text.contains("c: converted reads"));
+    assert!(text.contains("w: converted reads"));
 
-    press(&mut p, KeyCode::Char('c'));
+    press(&mut p, KeyCode::Char('w'));
     check(&p, "converted reads", &|i| t.converted[i]);
     let text = screen(&mut p);
     assert!(text.contains("metagene · y: converted reads per bin"));
     assert!(text.contains("█ kept converted reads"));
-    assert!(text.contains("c: sites"));
+    assert!(text.contains("w: sites"));
 
-    press(&mut p, KeyCode::Char('c'));
+    press(&mut p, KeyCode::Char('w'));
     check(&p, "sites", &|_| 1);
 
-    press(&mut p, KeyCode::Char('c'));
+    press(&mut p, KeyCode::Char('w'));
     check(&p, "read coverage", &|i| t.coverage[i]);
 }
 

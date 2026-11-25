@@ -271,7 +271,7 @@ pub struct QcArgs {
         long_help = "Gene annotation GFF/GTF for the view's metagene.\n\
                      Without it, the GFF recorded in the input directory's `*.run.json` is used.\n\
                      With neither, or when that file is not on this machine,\n\
-                     press `g` in the view to browse for one. The annotation the view ends on\n\
+                     press `a` in the view to browse for one. The annotation the view ends on\n\
                      is the one recorded in the output's `qc.run.json`."
     )]
     pub gff: Option<Box<str>>,

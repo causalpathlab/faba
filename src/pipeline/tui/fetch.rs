@@ -356,7 +356,7 @@ impl Fetch {
             Line::styled("the GTF, then the genome: fetched, unpacked, indexed", DIM),
             Line::raw(""),
             Line::from(vec![
-                Span::styled("s", HIGHLIGHT),
+                Span::styled("S", HIGHLIGHT),
                 Span::styled(" stop (what came is kept)  ", DIM),
                 Span::styled("Esc", HIGHLIGHT),
                 Span::styled(" hide (it carries on)", DIM),
@@ -545,6 +545,12 @@ impl Fetch {
     /// at their next check, and the rest goes with the process.
     pub fn stop(&self) {
         self.stopper.stop();
+    }
+
+    /// Whether it was asked to stop.
+    #[cfg(test)]
+    pub fn stopped(&self) -> bool {
+        self.stopper.is_stopped()
     }
 }
 

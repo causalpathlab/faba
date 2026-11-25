@@ -290,10 +290,74 @@ fn a_download_shows_its_progress_in_a_pop_up_esc_hides_d_shows() {
         s.contains("downloading a reference") && s.contains("412 / 846 MB"),
         "{s}"
     );
+    assert!(s.contains("S stop, keeping what came"), "{s}");
+    press(&mut a, KeyCode::Char('s'));
+    assert!(!a.fetch.as_ref().unwrap().stopped(), "s is not stop");
     press(&mut a, KeyCode::Esc);
     assert!(!a.fetch_shown && a.fetch.is_some());
     press(&mut a, KeyCode::Char('d'));
     assert!(a.fetch_shown);
+    press(&mut a, KeyCode::Char('S'));
+    assert!(a.fetch.as_ref().unwrap().stopped(), "S stops it");
+}
+
+#[test]
+fn esc_on_the_rows_stays_and_h_goes_to_the_bams() {
+    let (_t, mut a) = app_with_bams();
+    assert_eq!(a.inputs.focus, InputsFocus::Rows);
+    let s = screen(&mut a, 200, 20);
+    assert!(s.contains("h BAMs") && !s.contains("h/Esc"), "{s}");
+    press(&mut a, KeyCode::Esc);
+    assert_eq!(a.inputs.focus, InputsFocus::Rows, "Esc no longer bounces");
+    press(&mut a, KeyCode::Char('h'));
+    assert_eq!(a.inputs.focus, InputsFocus::Bams);
+    press(&mut a, KeyCode::Esc);
+    assert_eq!(
+        a.inputs.focus,
+        InputsFocus::Rows,
+        "Esc in the list goes to the rows"
+    );
+}
+
+#[test]
+fn the_footer_names_the_screens_by_number_and_the_flags_paging() {
+    let (_t, mut a) = app_with_bams();
+    assert!(screen(&mut a, 220, 20).contains("1-4 screen"));
+    press(&mut a, KeyCode::Char('3'));
+    let s = screen(&mut a, 220, 20);
+    assert!(
+        s.contains("PgUp/PgDn page") && s.contains("Home/End first/last"),
+        "{s}"
+    );
+}
+
+#[test]
+fn question_mark_lists_the_keys_but_types_where_typing() {
+    let (_t, mut a) = app_with_bams();
+    let keys = crate::tui::help::shown(&mut a, 120, 40).expect("? opens the keys");
+    for key in [
+        "Tab/Shift+Tab",
+        "1-4",
+        "↑/↓ k/j",
+        "h",
+        "d",
+        "Ctrl+R",
+        "c",
+        "p",
+        "q",
+    ] {
+        assert!(keys.contains(key), "{key}:\n{keys}");
+    }
+    press(&mut a, KeyCode::Char('3'));
+    let keys = crate::tui::help::shown(&mut a, 120, 40).expect("? opens the keys");
+    for key in ["PgUp/PgDn", "Home/End", "/", "a", "r", "R"] {
+        assert!(keys.contains(key), "{key}:\n{keys}");
+    }
+    // In the BAM list, letters find: ? among them.
+    press(&mut a, KeyCode::Char('1'));
+    a.inputs.focus = InputsFocus::Bams;
+    assert!(crate::tui::help::shown(&mut a, 120, 40).is_none());
+    assert_eq!(a.inputs.bams.filter, "?");
 }
 
 fn mouse(a: &mut App, kind: ratatui::crossterm::event::MouseEventKind, hit: Hit) {
@@ -591,10 +655,15 @@ fn q_is_refused_while_a_run_goes() {
     a.start().unwrap();
     press(&mut a, KeyCode::Char('q'));
     assert!(!a.quit && a.note.is_some(), "refused while running");
-    // s asks, a second s stops.
+    // Plain s is not stop; S asks, a second S stops.
     press(&mut a, KeyCode::Char('s'));
+    assert!(
+        !a.job.as_ref().unwrap().asking,
+        "s is save elsewhere, never stop"
+    );
+    press(&mut a, KeyCode::Char('S'));
     assert!(a.job.as_ref().unwrap().asking);
-    press(&mut a, KeyCode::Char('s'));
+    press(&mut a, KeyCode::Char('S'));
     let job = a.job.as_mut().unwrap();
     assert!(job.stopper.is_stopped());
     job.stopper.stop();
@@ -692,6 +761,24 @@ fn fake_program(a: &mut App, dir: &std::path::Path, body: &str) {
 }
 
 #[test]
+fn the_stop_button_asks_as_capital_s_does() {
+    let (tmp, mut a) = app_with_bams();
+    fake_program(&mut a, tmp.path(), "exec sleep 30");
+    a.start().unwrap();
+    press(&mut a, KeyCode::Char('1'));
+    let down = ratatui::crossterm::event::MouseEventKind::Down(
+        ratatui::crossterm::event::MouseButton::Left,
+    );
+    mouse(&mut a, down, Hit::Stop);
+    assert_eq!(a.page, Page::Run);
+    let job = a.job.as_mut().unwrap();
+    assert!(job.asking, "the button asks first");
+    job.stopper.stop();
+    job.stopper.stop();
+    job.handle.take().unwrap().join().unwrap();
+}
+
+#[test]
 fn the_footer_offers_q_only_when_it_works() {
     let (tmp, mut a) = app_with_bams();
     fake_program(&mut a, tmp.path(), "exec sleep 30");
@@ -703,8 +790,13 @@ fn the_footer_offers_q_only_when_it_works() {
     }
     press(&mut a, KeyCode::Char('4'));
     assert!(screen(&mut a, 160, 20).contains("refused"));
+    assert!(
+        screen(&mut a, 160, 20).contains("S stop"),
+        "S names the stop"
+    );
     // Asked to stop, then the run ends some other way: the question goes.
-    press(&mut a, KeyCode::Char('s'));
+    press(&mut a, KeyCode::Char('S'));
+    assert!(screen(&mut a, 160, 20).contains("S again stops the run"));
     assert!(a.job.as_ref().unwrap().asking);
     let job = a.job.as_mut().unwrap();
     job.stopper.stop();

@@ -212,6 +212,13 @@ impl<'a> MetageneView<'a> {
             .unwrap_or(0)
     }
 
+    /// The cursor to the last bar.
+    fn cursor_to_end(&mut self) {
+        if let Some(b) = self.bars().last() {
+            self.cursor = (b.region, b.first);
+        }
+    }
+
     fn move_cursor(&mut self, delta: isize) {
         let bars = self.bars();
         if bars.is_empty() {
@@ -360,10 +367,58 @@ impl<'a> MetageneView<'a> {
     }
 }
 
+impl MetageneView<'_> {
+    /// The footer's keys.
+    fn footer_keys(&self) -> Vec<(&'static str, &'static str)> {
+        let mut keys = vec![
+            ("←/→", "bar"),
+            ("Home/End", "first/last"),
+            ("+/-", "finer/coarser"),
+            ("[/]", "coarser/finer"),
+            ("0", "fit"),
+            ("y", "scale"),
+        ];
+        if self.hist.has_reads() {
+            keys.push(("c", "reads"));
+        }
+        if self.has_non_coding() {
+            keys.push(("Tab", "track"));
+        }
+        self.controls.help_keys(&mut keys);
+        keys.push(("q", "quit"));
+        keys.push(("?", "keys"));
+        keys
+    }
+}
+
 impl crate::tui::View for MetageneView<'_> {
     /// The apply key submits the save name being typed.
     fn takes_apply(&self) -> bool {
         self.controls.prompting()
+    }
+
+    fn help(&self) -> Option<crate::tui::KeyList> {
+        if self.controls.prompting() {
+            return None;
+        }
+        let mut keys = vec![
+            ("←/→ h/l", "previous/next bar"),
+            ("Home", "first bar"),
+            ("End", "last bar"),
+            ("+/= ]", "finer: fewer bins a bar"),
+            ("- [", "coarser"),
+            ("0", "fit the bars to the width"),
+            ("y", "y scale"),
+        ];
+        if self.hist.has_reads() {
+            keys.push(("c", "converted, unconverted, both or sites"));
+        }
+        if self.has_non_coding() {
+            keys.push(("Tab/Shift+Tab", "coding or ncRNA track"));
+        }
+        self.controls.help_keys(&mut keys);
+        keys.extend([("q", "quit"), ("?", "these keys")]);
+        Some(crate::tui::keys(&keys))
     }
 }
 
@@ -391,14 +446,15 @@ impl Screen for MetageneView<'_> {
             KeyCode::Left | KeyCode::Char('h') => self.move_cursor(-1),
             KeyCode::Right | KeyCode::Char('l') => self.move_cursor(1),
             KeyCode::Home => self.cursor_to_start(),
+            KeyCode::End => self.cursor_to_end(),
             KeyCode::Tab | KeyCode::BackTab => self.switch_track(),
             // As pileup's zoom: `+` finer (fewer bins a bar), `-` coarser.
             KeyCode::Char(']' | '+' | '=') => self.set_merge(-1),
             KeyCode::Char('[' | '-') => self.set_merge(1),
-            KeyCode::Char('a' | '0') => self.merge = None,
+            KeyCode::Char('0') => self.merge = None,
             KeyCode::Char('y') => self.y_scale = self.y_scale.next(),
             KeyCode::Char('c') if self.hist.has_reads() => self.show = self.show.next(),
-            KeyCode::Char('q') | KeyCode::Esc => self.done = true,
+            KeyCode::Char('q') => self.done = true,
             _ => {}
         }
     }
@@ -406,18 +462,7 @@ impl Screen for MetageneView<'_> {
     fn render(&mut self, frame: &mut Frame) {
         self.controls.refresh();
         self.drawn = frame.area();
-        let mut keys = vec![
-            ("←/→", "bar"),
-            ("Home", "first"),
-            ("+/-", "finer/coarser"),
-            ("0", "fit"),
-            ("y", "scale"),
-        ];
-        if self.has_non_coding() {
-            keys.push(("Tab", "track"));
-        }
-        self.controls.help_keys(&mut keys);
-        keys.push(("q/Esc", "quit"));
+        let keys = self.footer_keys();
         let help = self.controls.footer().unwrap_or_else(|| help_line(&keys));
         let help = crate::tui::wrap_help(help, frame.area().width);
         let [top, body, stats, summary, footer] = Layout::vertical([
@@ -451,7 +496,10 @@ impl Screen for MetageneView<'_> {
         );
         frame.render_widget(header("metagene", &self.title, &extra), top);
         frame.render_widget(block, body);
-        let next = self.hist.has_reads().then(|| self.show.next().short());
+        let next = self
+            .hist
+            .has_reads()
+            .then(|| ('c', self.show.next().short()));
         let key_line = region_key(&self.unit(), self.track.regions(), next);
         frame.render_widget(Paragraph::new(key_line), key);
 

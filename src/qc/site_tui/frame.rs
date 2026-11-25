@@ -49,11 +49,11 @@ impl SitePicker<'_> {
                 if self.enter_hint {
                     return Line::styled(format!(" {}", enter_hint("applies")), DIM);
                 }
-                let mut keys = vec![("Tab", "panel")];
-                keys.extend(match self.panel {
-                    Panel::Thresholds => [("↑/↓", "knob"), ("←/→", "bin")],
-                    Panel::Genes => [("↑/↓", "gene"), ("/", "find")],
-                    Panel::Pairs => [("arrows", "panel"), ("x/y X/Y", "axis")],
+                let mut keys = vec![("Tab/Shift+Tab", "panel")];
+                keys.extend_from_slice(match self.panel {
+                    Panel::Thresholds => &[("↑/↓", "knob"), ("←/→", "bin")][..],
+                    Panel::Genes => &[("↑/↓", "gene"), ("PgUp/PgDn", "page"), ("/", "find")],
+                    Panel::Pairs => &[("arrows", "panel"), ("x/y X/Y", "axis")],
                 });
                 // What matters most first.
                 keys.extend([apply, ("p", "print flags"), ("q", "cancel")]);
@@ -65,11 +65,20 @@ impl SitePicker<'_> {
                     ("0-9/e", "type"),
                     ("o", "off"),
                     ("r", "reset"),
-                    ("x/y", "scale"),
-                    ("d", if self.two_d { "histograms" } else { "2D" }),
-                    ("A", "auto pairs"),
+                ]);
+                // On the panels `x` and `y` step the axes instead.
+                if self.panel != Panel::Pairs {
+                    keys.push(("x/y", "scale"));
+                }
+                keys.push(("v", if self.two_d { "histograms" } else { "2D" }));
+                if self.two_d {
+                    keys.push(("A", "auto pairs"));
+                }
+                keys.extend([
+                    ("w", "weight"),
                     ("a", "annotation"),
                     (REPORT_KEY, "report"),
+                    ("?", "keys"),
                 ]);
                 help_line(&keys)
             }

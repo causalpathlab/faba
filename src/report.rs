@@ -6,9 +6,8 @@
 //! drawing code) inside one shared shell (`report/shell.html`): the theme,
 //! the window with the faba mark, the key footer, the legend, the canvas
 //! helpers, and the data. Each full-screen view names its report key in
-//! its footer: `e` in the modules browser, `Ctrl+E` in the QC site view
-//! (where `e` types a value), a chord it takes through
-//! [`crate::tui::View::takes_chord`]. A view that can run without a
+//! its footer: Ctrl+E ([`crate::tui::REPORT_KEY`]) wherever there is one,
+//! a chord it takes through [`crate::tui::View::takes_chord`]. A view that can run without a
 //! terminal also writes it by a `--html FILE` flag. Either way the page is
 //! written on a thread of its own ([`Writing`]).
 

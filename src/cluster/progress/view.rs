@@ -180,7 +180,21 @@ fn restart_bar(done: usize, total: usize, warmup: usize, width: usize) -> Vec<Sp
     .collect()
 }
 
-impl<T> View for Fitting<'_, T> {}
+impl<T> View for Fitting<'_, T> {
+    /// None once the fit is done, where any key, `?` among them, leaves.
+    fn help(&self) -> Option<crate::tui::KeyList> {
+        self.pending.out().is_none().then(|| {
+            crate::tui::keys(&[
+                ("q/Esc", "cancel the fit"),
+                (
+                    "Ctrl+C",
+                    "stop the restarts early, what they reached written",
+                ),
+                ("?", "these keys"),
+            ])
+        })
+    }
+}
 
 impl<T> Screen for Fitting<'_, T> {
     fn render(&mut self, frame: &mut Frame) {
@@ -221,7 +235,7 @@ impl<T> Screen for Fitting<'_, T> {
         let footer = match self.status {
             Some(s) => Line::from(Span::styled(format!(" {s}"), HIGHLIGHT)),
             None if self.pending.out().is_some() => help_line(&[("any key", "leave")]),
-            None => help_line(&[("q", "cancel"), ("Ctrl+C", "stop early")]),
+            None => help_line(&[("q", "cancel"), ("Ctrl+C", "stop early"), ("?", "keys")]),
         };
         frame.render_widget(Paragraph::new(footer), foot);
     }

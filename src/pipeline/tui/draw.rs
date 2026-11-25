@@ -603,7 +603,7 @@ pub(super) fn footer_line(app: &App) -> Line<'static> {
     if app.fetch_shown && app.fetch.is_some() {
         return help_line(&[
             ("Esc", "hide; it goes on (d shows it)"),
-            ("s", "stop, keeping what came"),
+            ("S", "stop, keeping what came"),
         ]);
     }
     if let Some(c) = &app.catalogue {
@@ -642,12 +642,14 @@ pub(super) fn footer_line(app: &App) -> Line<'static> {
     }
     let mut common = vec![
         ("Tab", "screen"),
+        ("1-4", "screen"),
         (APPLY_KEYS, "preview"),
         ("c", "copy the command"),
     ];
     if !app.running() {
         common.extend([("p", "print the command and leave"), ("q", "quit")]);
     }
+    common.push(("?", "keys"));
     if app.page == Page::Inputs && app.inputs.focus == InputsFocus::Bams {
         // Letters type into the find here, so only these keys act.
         let mut keys = vec![
@@ -669,11 +671,13 @@ pub(super) fn footer_line(app: &App) -> Line<'static> {
             ("↑/↓", "row"),
             ("Enter", "pick/type"),
             ("d", "download GFF + genome"),
-            ("h/Esc", "BAMs"),
+            ("h", "BAMs"),
         ],
         Page::Steps => vec![("Space", "toggle"), ("↑/↓", "move")],
         Page::Flags => vec![
             ("↑/↓", "move"),
+            ("PgUp/PgDn", "page"),
+            ("Home/End", "first/last"),
             ("Space", "on/off"),
             ("←/→", "choice"),
             ("Enter", "type"),
@@ -687,12 +691,12 @@ pub(super) fn footer_line(app: &App) -> Line<'static> {
             };
             if job.running() {
                 if job.asking {
-                    return help_line(&[("s", "again stops the run"), ("Esc", "keep it going")]);
+                    return help_line(&[("S", "again stops the run"), ("Esc", "keep it going")]);
                 }
                 return help_line(&[
                     ("↑/↓", "scroll"),
                     ("End", "follow"),
-                    ("s", "stop (asks; again to kill)"),
+                    ("S", "stop (asks; again to kill)"),
                     ("q", "is refused while running"),
                 ]);
             }
@@ -701,4 +705,71 @@ pub(super) fn footer_line(app: &App) -> Line<'static> {
     };
     keys.extend(common);
     help_line(&keys)
+}
+
+/// Every key of the screen up, for the `?` pop-up: the footer's, and those
+/// it leaves out.
+pub(super) fn help_keys(app: &App) -> Vec<(&'static str, &'static str)> {
+    let close = ("?", "these keys");
+    if app.ended_shown {
+        return vec![("Enter/Esc", "close, onto the log"), close];
+    }
+    if app.fetch_shown && app.fetch.is_some() {
+        return vec![
+            ("Esc", "hide; it goes on (d shows it)"),
+            ("S", "stop, keeping what came"),
+            close,
+        ];
+    }
+    if app.preview {
+        return vec![
+            (APPLY_KEYS, "save the script and start"),
+            ("c", "copy the command"),
+            ("p", "print it and leave"),
+            ("Esc", "back"),
+            close,
+        ];
+    }
+    let mut keys = match app.page {
+        Page::Inputs => vec![
+            ("↑/↓ k/j", "row"),
+            ("Enter", "pick a file or type"),
+            ("d", "download a GFF and genome"),
+            ("h", "the BAM list"),
+        ],
+        Page::Steps => vec![
+            ("↑/↓ k/j", "move"),
+            ("Space", "step on/off"),
+            ("Enter", "type the depth resolution"),
+        ],
+        Page::Flags => vec![
+            ("↑/↓ k/j", "move"),
+            ("PgUp/PgDn", "ten up/down"),
+            ("Home/End", "first/last"),
+            ("Space", "on/off"),
+            ("←/→", "choice"),
+            ("Enter", "type a value"),
+            ("/", "find a flag"),
+            ("a", "advanced flags"),
+            ("r", "reset the flag"),
+            ("R", "reset every flag (asks)"),
+        ],
+        Page::Run => vec![
+            ("↑/↓ k/j", "scroll the log"),
+            ("PgUp/PgDn", "ten lines up/down"),
+            ("End", "follow"),
+            ("S", "stop the run (asks; again to kill)"),
+            ("Esc", "keep it going, when asked"),
+        ],
+    };
+    keys.extend([
+        ("Tab/Shift+Tab", "next/previous screen"),
+        ("1-4", "screen by number"),
+        (APPLY_KEYS, "preview, then start"),
+        ("c", "copy the command"),
+        ("p", "print the command and leave"),
+        ("q", "quit (asks with a setup; refused while running)"),
+        close,
+    ]);
+    keys
 }

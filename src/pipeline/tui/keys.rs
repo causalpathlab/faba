@@ -129,7 +129,7 @@ impl App {
             Hit::Ok if self.ended_shown => Some(esc),
             Hit::Stop if !popped => {
                 self.page = Page::Run;
-                Some(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE))
+                Some(KeyEvent::new(KeyCode::Char('S'), KeyModifiers::SHIFT))
             }
             _ => None,
         };
@@ -311,12 +311,12 @@ impl App {
         self.catalogue = Some(Catalogue::new(bam_chr));
     }
 
-    /// The download's pop-up: Esc hides it, the download going on; `s`
+    /// The download's pop-up: Esc hides it, the download going on; `S`
     /// stops it, keeping what came for the next try.
     fn key_fetch(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Esc => self.fetch_shown = false,
-            KeyCode::Char('s') => {
+            KeyCode::Char('S') => {
                 if let Some(f) = &self.fetch {
                     f.stop();
                 }
@@ -403,7 +403,8 @@ impl App {
                 }
                 KeyCode::Enter => self.open_row(),
                 KeyCode::Char('d') => self.offer_references(),
-                KeyCode::Char('h') | KeyCode::Esc => self.inputs.focus = InputsFocus::Bams,
+                // Esc goes back, and the rows are the top: it stays.
+                KeyCode::Char('h') => self.inputs.focus = InputsFocus::Bams,
                 _ => {}
             },
         }
@@ -528,7 +529,9 @@ impl App {
         }
         match key.code {
             KeyCode::End => job.scroll = 0,
-            KeyCode::Char('s') if job.running() => {
+            // `S`, not `s`: `s` saves a figure elsewhere, and a stop
+            // should never be a slip of the finger.
+            KeyCode::Char('S') if job.running() => {
                 if job.asking || job.stopper.is_stopped() {
                     job.asking = false;
                     job.stopper.stop();
