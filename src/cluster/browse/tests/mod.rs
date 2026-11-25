@@ -17,6 +17,7 @@ mod data;
 mod figure;
 mod gene;
 mod go_column;
+mod go_labels;
 mod json;
 mod margins;
 mod model;

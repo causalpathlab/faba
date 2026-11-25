@@ -10,6 +10,16 @@ use super::*;
 /// gene module 1's (each a different 12) and `OTHER` gene module 3's, so
 /// gene module 1 has eight terms and 2 none (none of its genes annotated).
 pub(super) fn with_go(dir: &std::path::Path) -> (Modules, Ask) {
+    let sets = (0..8).map(|t| (format!("TERM{}_SET_OF_GENES", t + 1), t..t + 12));
+    with_sets(dir, sets.collect())
+}
+
+/// [`with_go`]'s modules and genes, gene module 1's sets `sets` (each a
+/// name and its genes) beside `OTHER`.
+pub(super) fn with_sets(
+    dir: &std::path::Path,
+    sets: Vec<(String, std::ops::Range<usize>)>,
+) -> (Modules, Ask) {
     let mut m = loaded();
     m.gene_main = (0..40)
         .map(|i| {
@@ -25,9 +35,7 @@ pub(super) fn with_go(dir: &std::path::Path) -> (Modules, Ask) {
         let g: Vec<String> = genes.map(|i| format!("G{i}")).collect();
         format!("{name}\t-\t{}", g.join("\t"))
     };
-    let mut lines: Vec<String> = (0..8)
-        .map(|t| set(format!("TERM{}_SET_OF_GENES", t + 1), t..t + 12))
-        .collect();
+    let mut lines: Vec<String> = sets.into_iter().map(|(n, g)| set(n, g)).collect();
     lines.push(set("OTHER".into(), 24..40));
     let gmt = dir.join("sets.gmt");
     std::fs::write(&gmt, lines.join("\n")).unwrap();

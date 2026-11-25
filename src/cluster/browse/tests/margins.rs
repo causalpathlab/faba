@@ -90,7 +90,7 @@ pub(super) struct Grid {
     pub(super) cell: f64,
 }
 
-fn grid_of(svg: &str, m: &super::Modules) -> Grid {
+pub(super) fn grid_of(svg: &str, m: &super::Modules) -> Grid {
     grid_by(svg, m, &m.diagonal)
 }
 
@@ -440,63 +440,6 @@ fn every_label_is_at_the_font_size_and_on_the_page() {
             }
         }
     }
-}
-
-/// `--go-labels N`: each gene module's row carries its top N terms on the
-/// grid's right, in the table's order, each with its q; a module with
-/// none says so; GO is read only with the flag.
-#[test]
-fn go_labels_put_each_modules_top_terms_on_its_row() {
-    let tmp = tempfile::tempdir().unwrap();
-    let (m, mut ask) = super::go_column::with_go(tmp.path());
-    let table = go_table(&m, Some(3), &ask).unwrap().unwrap();
-    for n in [1, 2, 3] {
-        let g = grid(|g| g.go_labels = Some(n));
-        let look = super::super::figure::Look::Hinton;
-        let svg = draw_with(&m, look, &g, Some(&table), "t", paper(Palette::Gray)).unwrap();
-        assert_eq!(crate::figure::svg_size(&svg), (331.2, 187.2));
-        let at = grid_of(&svg, &m);
-        let right: Vec<Text> = (texts(&svg).into_iter())
-            .filter(|t| t.x > at.right())
-            .collect();
-        for (&g, &y) in m.diagonal.iter().zip(&at.rows) {
-            let mut row: Vec<&Text> = (right.iter())
-                .filter(|t| (t.y - y).abs() < at.cell / 2.0 && t.anchor == "start")
-                .collect();
-            row.sort_by(|a, b| a.y.total_cmp(&b.y));
-            let hits = &table.of(g).unwrap().hits;
-            if hits.is_empty() {
-                assert_eq!(row.len(), 1, "{row:?}");
-                let said = row[0].s.trim_end_matches('…');
-                assert!(
-                    "none at q <= 0.05".starts_with(said) && said.len() > 3,
-                    "{row:?}"
-                );
-                continue;
-            }
-            let want: Vec<&str> = hits.iter().take(n).map(|h| h.named()).collect();
-            let got: Vec<&str> = row.iter().map(|t| t.s.trim_end_matches('…')).collect();
-            assert_eq!(got.len(), want.len(), "M{}: {got:?}", g + 1);
-            for (got, want) in got.iter().zip(&want) {
-                assert!(want.starts_with(got) && got.len() > 3, "{got} of {want}");
-            }
-            let qs: Vec<&Text> = (right.iter())
-                .filter(|t| (t.y - y).abs() < at.cell / 2.0 && t.anchor == "end")
-                .collect();
-            let said: Vec<String> = hits
-                .iter()
-                .take(n)
-                .map(|h| format!("{:.1e}", h.q))
-                .collect();
-            let mut qs: Vec<(f64, String)> = qs.iter().map(|t| (t.y, t.s.clone())).collect();
-            qs.sort_by(|a, b| a.0.total_cmp(&b.0));
-            assert_eq!(qs.into_iter().map(|q| q.1).collect::<Vec<_>>(), said);
-        }
-    }
-    // Not read without the flag: a source that is not there is no error.
-    ask.gmt = Some(tmp.path().join("none.gmt").to_string_lossy().into());
-    assert!(go_table(&m, None, &ask).unwrap().is_none());
-    assert!(go_table(&m, Some(2), &ask).is_err());
 }
 
 /// `--values`: each block's value in its cell, at the font size, as the

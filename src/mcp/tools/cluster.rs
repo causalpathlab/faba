@@ -284,7 +284,7 @@ mod tests {
     fn cluster_view_takes_the_grids_margins_go_labels_key_and_values() {
         let args = json!({
             "size_bars": ["left", "bottom"], "read_bars": ["left"], "marginal_size": 0.2,
-            "key": true, "values": true, "go_labels": 2, "figure": "f",
+            "key": true, "values": true, "go_labels": 2, "go_none": true, "figure": "f",
         });
         let flags = typed_flags("cluster_view", &Arguments(args)).unwrap();
         let argv = ["faba", "cluster-view", "fit.run.json", "--figure", "f"]
@@ -299,7 +299,7 @@ mod tests {
         let sides = format!("{:?} {:?}", g.size_bars, g.read_bars);
         assert_eq!(sides, "[Left, Bottom] [Left]");
         assert_eq!((g.marginal_size, g.key, g.values), (0.2, true, true));
-        assert_eq!(g.go_labels, Some(2));
+        assert_eq!((g.go_labels, g.go_none), (Some(2), true));
         let props = properties("cluster_view").unwrap();
         assert_eq!(
             props["size_bars"]["items"]["enum"],

@@ -150,6 +150,7 @@ cluster_view gmt type="string"
 cluster_view go type="boolean"
 cluster_view go_labels type="integer" minimum=1.0 maximum=10.0
 cluster_view go_min_weight type="number" minimum=0.0 maximum=1.0
+cluster_view go_none type="boolean"
 cluster_view go_q type="number" exclusiveMinimum=0.0 maximum=1.0
 cluster_view grid type="boolean"
 cluster_view group type="string"
