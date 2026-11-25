@@ -197,13 +197,17 @@ pub struct PileupArgs {
     #[arg(
         long = "track",
         value_name = "LABEL=PATTERN",
-        help = "Group input files into a labelled track (repeatable): each file joins the first track whose PATTERN (`*`, `?`) matches its path",
+        help = "Group input files into labelled tracks (repeatable or comma-separated): each file joins the first track whose PATTERN (`*`, `?`) matches its path",
         long_help = "Group the input files into labelled tracks, e.g.\n\
-                     `--track wt='*_wt_*' --track mut='*_mut_*'`. Each file joins the first\n\
+                     `--track wt='*_wt_*' --track mut='*_mut_*'` or\n\
+                     `--track 'wt=*_wt_*,mut=*_mut_*'` (a comma starts another track only\n\
+                     before `LABEL=`). Each file joins the first\n\
                      track whose PATTERN matches its path (`*` any run, `?` one character);\n\
                      files matching none are an error. Without `--track`, every file is\n\
-                     pooled into one `matrix` track. Tracks are drawn, written and browsed\n\
-                     separately; files within a track are pooled per position."
+                     pooled into one `matrix` track (an output directory or --separate gives\n\
+                     a track per batch, except in the figure). Tracks are drawn, written and\n\
+                     browsed separately, a figure panel each; files within a track are pooled\n\
+                     per position."
     )]
     tracks: Vec<Box<str>>,
 
@@ -229,7 +233,8 @@ pub struct PileupArgs {
         help = "Give each named matrix its own track, named after its batch, rather than one together",
         long_help = "Give each named matrix its own track, named after its batch, rather than\n\
                      summing them into one. The browser's file picker sets this with Tab.\n\
-                     --track groups them otherwise."
+                     --track groups them otherwise. The figure pools them unless --track\n\
+                     is given."
     )]
     separate: bool,
 
@@ -381,9 +386,33 @@ fn track_name(file: &str) -> Box<str> {
 }
 
 /// One labelled group of input matrices.
+#[derive(Clone)]
 struct TrackFiles {
     label: Box<str>,
     files: Vec<Box<str>>,
+    /// The `--track` pattern that chose the files; none for a track that
+    /// was not asked for by pattern.
+    pattern: Option<Box<str>>,
+}
+
+/// One `--track` value's `LABEL=PATTERN` specs, split at each comma that
+/// starts another `LABEL=`.
+fn split_tracks(spec: &str) -> Vec<&str> {
+    // A label: what runs to the next `=` holding no comma nor wildcard.
+    let starts_label = |rest: &str| {
+        rest.split_once('=')
+            .is_some_and(|(l, _)| !l.is_empty() && !l.contains([',', '*', '?']))
+    };
+    let mut out = Vec::new();
+    let mut from = 0;
+    for (i, _) in spec.match_indices(',') {
+        if starts_label(&spec[i + 1..]) {
+            out.push(&spec[from..i]);
+            from = i + 1;
+        }
+    }
+    out.push(&spec[from..]);
+    out
 }
 
 /// The input files grouped by `--track`, in the order the tracks were given;
@@ -393,10 +422,11 @@ fn track_files(files: &[Box<str>], specs: &[Box<str>]) -> anyhow::Result<Vec<Tra
         return Ok(vec![TrackFiles {
             label: "matrix".into(),
             files: files.to_vec(),
+            pattern: None,
         }]);
     }
     let mut groups: Vec<(TrackFiles, &str)> = Vec::new();
-    for spec in specs {
+    for spec in specs.iter().flat_map(|s| split_tracks(s)) {
         let (label, pattern) = spec
             .split_once('=')
             .filter(|(l, p)| !l.is_empty() && !p.is_empty())
@@ -404,6 +434,7 @@ fn track_files(files: &[Box<str>], specs: &[Box<str>]) -> anyhow::Result<Vec<Tra
         let track = TrackFiles {
             label: label.into(),
             files: Vec::new(),
+            pattern: Some(pattern.into()),
         };
         groups.push((track, pattern));
     }
@@ -1004,6 +1035,7 @@ impl PileupArgs {
                 own.push(TrackFiles {
                     label: track_name(f),
                     files: vec![f.clone()],
+                    pattern: None,
                 });
                 continue;
             };
@@ -1023,6 +1055,7 @@ impl PileupArgs {
                 own.push(TrackFiles {
                     label: batch,
                     files: vec![path],
+                    pattern: None,
                 });
             }
             if out.site_file.is_none() {
@@ -1096,10 +1129,7 @@ pub fn run_pileup(args: &PileupArgs) -> anyhow::Result<()> {
     }
     let selector = Selector::build(&args.genes, &args.regions)?;
     if figure_mode {
-        if !args.tracks.is_empty() {
-            log::warn!("--track applies to the ASCII pileup, not the figure; ignoring it");
-        }
-        return run_miami_figure(args, &selector);
+        return run_miami_figure(args, groups, &selector);
     }
 
     let what = selector.describe();

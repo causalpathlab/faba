@@ -36,7 +36,10 @@ pub fn levels(m: &Modules, shown: &Shown) -> anyhow::Result<Value> {
     if shown.go {
         let ask = shown.go_ask();
         let source = ask.source(m).map_err(anyhow::Error::msg)?;
-        put("go", super::go::table(m, &source, ask.min_weight)?.json());
+        put(
+            "go",
+            super::go::table(m, &source, ask.min_weight, ask.q)?.json(),
+        );
     }
     if shown.trace {
         put("trace", trace(m));

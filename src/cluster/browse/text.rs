@@ -108,6 +108,15 @@ pub struct Shown {
     pub go_min_weight: f64,
 
     #[arg(
+        long = "go-q",
+        value_name = "Q",
+        default_value_t = super::go::DEFAULT_Q,
+        value_parser = go_q,
+        help = "A GO term (or --gmt set) is listed, for --go and the browser's a, when its BH q is at most this, in (0, 1]"
+    )]
+    pub go_q: f64,
+
+    #[arg(
         long = "batches",
         conflicts_with = "html",
         help = "Print how each cell module spreads over the batches: shared, one condition's, or batch-specific"
@@ -122,8 +131,18 @@ pub struct Shown {
     pub settings: bool,
 }
 
+/// A `--go-q` cutoff: a number in (0, 1].
+fn go_q(s: &str) -> Result<f64, String> {
+    let q: f64 = s.parse().map_err(|_| format!("{s} is not a number"))?;
+    match q > 0.0 && q <= 1.0 {
+        true => Ok(q),
+        false => Err(format!("{s} is not in (0, 1]")),
+    }
+}
+
 impl Default for Shown {
-    /// As the command line has it: no level, GO's weight cut at 0.5.
+    /// As the command line has it: no level, GO's weight cut at 0.5 and its q
+    /// at 0.05.
     fn default() -> Self {
         use clap::Parser;
         #[derive(Parser)]
@@ -413,7 +432,7 @@ fn gene(m: &Modules, name: &str) -> anyhow::Result<Vec<String>> {
 fn go_lines(m: &Modules, shown: &Shown) -> anyhow::Result<Vec<String>> {
     let ask = shown.go_ask();
     let source = ask.source(m).map_err(anyhow::Error::msg)?;
-    Ok(super::go::table(m, &source, ask.min_weight)?.lines())
+    Ok(super::go::table(m, &source, ask.min_weight, ask.q)?.lines())
 }
 
 impl Shown {
@@ -424,6 +443,7 @@ impl Shown {
             gmt: self.gmt.clone(),
             obo: self.obo.clone(),
             min_weight: self.go_min_weight,
+            q: self.go_q,
         }
     }
 }

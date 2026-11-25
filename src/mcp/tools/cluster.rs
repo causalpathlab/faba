@@ -60,6 +60,9 @@ pub(in crate::mcp) fn cluster(a: &Arguments, cx: &Call) -> Result<Value> {
     run_out(a, cx, argv, &out, &what)
 }
 
+/// `cluster_view`'s numbers for `go`, each passed as its flag.
+const GO_NUMBERS: [&str; 2] = ["go_min_weight", "go_q"];
+
 pub(in crate::mcp) fn cluster_view(a: &Arguments, cx: &Call) -> Result<Vec<Content>> {
     let data = a.path("data")?;
     let html = a.path_opt("html")?;
@@ -81,7 +84,7 @@ pub(in crate::mcp) fn cluster_view(a: &Arguments, cx: &Call) -> Result<Vec<Conte
             push_flag(&mut argv, &format!("--{file}"), &path);
         }
     }
-    argv.extend(a.numbers(&["go_min_weight"])?);
+    argv.extend(a.numbers(&GO_NUMBERS)?);
     if let Some(gtf) = a.path_opt("gtf")? {
         push_flag(&mut argv, "--gtf", &gtf);
     }
@@ -218,7 +221,7 @@ mod tests {
 
     use crate::mcp::schema::tools;
 
-    use super::{batch_map, figures, levels};
+    use super::{batch_map, figures, levels, GO_NUMBERS};
     use crate::mcp::schema::properties;
     use serde_json::json;
     use std::path::{Path, PathBuf};
@@ -463,5 +466,31 @@ mod tests {
             refused(json!({ "sweeps": null, "holdout": null })).is_ok(),
             "null: not given"
         );
+    }
+
+    /// `go_q` is in `cluster_view`'s schema as a number in (0, 1], and
+    /// reaches `faba cluster-view` as the `--go-q` it parses.
+    #[test]
+    fn cluster_view_takes_the_go_q_cutoff() {
+        let specs = tools();
+        let spec = specs.iter().find(|s| s.name == "cluster_view").unwrap();
+        let q = &spec.input_schema["properties"]["go_q"];
+        assert_eq!(q["type"], "number", "{q}");
+        assert_eq!(
+            (q["exclusiveMinimum"].as_f64(), q["maximum"].as_f64()),
+            (Some(0.0), Some(1.0))
+        );
+        let flags = Arguments(json!({ "go_q": 0.1 }))
+            .numbers(&GO_NUMBERS)
+            .unwrap();
+        let argv = ["faba", "cluster-view", "fit.run.json"]
+            .into_iter()
+            .map(String::from)
+            .chain(flags);
+        let cli = <crate::Cli as clap::Parser>::try_parse_from(argv).unwrap();
+        let crate::Commands::ClusterView(args) = cli.commands else {
+            panic!("not cluster-view");
+        };
+        assert_eq!(args.shown.go_ask().q, 0.1);
     }
 }
