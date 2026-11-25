@@ -91,37 +91,48 @@ fn each_row_lists_its_representative_terms_with_their_q_after_them() {
 }
 
 /// A row's N terms each on a line of its own within the row's band, the
-/// lines no closer than the font, whenever the row is two lines deep:
-/// over pages of many heights.
+/// lines no closer than the font, whenever the row holds N lines and half
+/// a line between rows; fewer terms where it does not; every line's
+/// capitals a third of the font inside the band, so a row's lines never
+/// run into the next row's: over pages of many heights.
 #[test]
 fn n_terms_show_when_the_row_holds_n_lines() {
     let tmp = tempfile::tempdir().unwrap();
     let (m, ask) = with_go(tmp.path());
-    let table = go_table(&m, Some(2), &ask).unwrap().unwrap();
-    let g = grid(|g| g.go_labels = Some(2));
-    let mut tried = 0;
-    for h in (40..160).step_by(3) {
-        let sheet = page(540.0, h as f64);
-        let Ok(svg) = draw_with(&m, Look::Hinton, &g, Some(&table), "t", sheet) else {
-            continue;
-        };
-        let at = grid_of(&svg, &m);
-        let (y, cell) = (at.rows[first(&m)], at.cell);
-        let row = row_texts(&svg, at.right(), y, cell);
-        if cell >= 2.0 * F {
-            tried += 1;
-            assert_eq!(row.len(), 2, "cell {cell}: {row:?}");
-            assert!(row[1].y - row[0].y >= F - 1e-9, "cell {cell}: {row:?}");
+    for n in [2, 3] {
+        let table = go_table(&m, Some(n), &ask).unwrap().unwrap();
+        let has = table.of(0).unwrap().representative(n).len();
+        assert_eq!(has, n, "the fixture's M1 has {n} terms");
+        let g = grid(|g| g.go_labels = Some(n));
+        let (mut full, mut fewer) = (0, 0);
+        for h in (40..200).step_by(3) {
+            let sheet = page(540.0, h as f64);
+            let Ok(svg) = draw_with(&m, Look::Hinton, &g, Some(&table), "t", sheet) else {
+                continue;
+            };
+            let at = grid_of(&svg, &m);
+            let (y, cell) = (at.rows[first(&m)], at.cell);
+            let row = row_texts(&svg, at.right(), y, cell);
+            let holds = ((cell - 0.5 * F) / F).floor().max(1.0) as usize;
+            assert_eq!(row.len(), n.min(holds), "cell {cell}: {row:?}");
+            match row.len() == n {
+                true => full += 1,
+                false => fewer += 1,
+            }
+            for pair in row.windows(2) {
+                assert!(pair[1].y - pair[0].y >= F - 1e-9, "cell {cell}: {row:?}");
+            }
+            for t in &row {
+                let inside = F / 3.0 - 1e-9;
+                assert!(
+                    t.y - 0.75 * F >= y - cell / 2.0 + inside,
+                    "cell {cell}: {t:?}"
+                );
+                assert!(t.y <= y + cell / 2.0 - inside, "cell {cell}: {t:?}");
+            }
         }
-        for t in &row {
-            assert!(
-                t.y - 0.75 * F >= y - cell / 2.0 - 1e-9,
-                "cell {cell}: {t:?}"
-            );
-            assert!(t.y <= y + cell / 2.0 + 1e-9, "cell {cell}: {t:?}");
-        }
+        assert!(full >= 5 && fewer >= 1, "N {n}: {full} full, {fewer} fewer");
     }
-    assert!(tried >= 5, "{tried}");
 }
 
 /// Long names take the width the page leaves after the grid: the

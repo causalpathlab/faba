@@ -140,10 +140,15 @@ cluster within_min_cells type="integer" minimum=0.0
 cluster_view batch_groups type="string"
 cluster_view batches type="boolean"
 cluster_view block_bars type="boolean"
+cluster_view cell_order type="array" items="string"
 cluster_view cells type="boolean"
 cluster_view data type="string"
+cluster_view each_fit type="boolean"
+cluster_view each_group type="boolean"
+cluster_view each_module type="boolean"
 cluster_view figure type="string"
 cluster_view font_size type="number"
+cluster_view format type="array" items="string" enum=["pdf","png","svg"]
 cluster_view gaf type="string"
 cluster_view gene type="string"
 cluster_view gmt type="string"
@@ -167,11 +172,18 @@ cluster_view options type="array" items="string"
 cluster_view overview type="boolean"
 cluster_view palette type="string" enum=["colour","gray"]
 cluster_view panel_only type="boolean"
+cluster_view pin type="array" items="string"
+cluster_view pin_top type="integer" minimum=0.0
 cluster_view plot type="string" enum=["batches","modules","trace"]
 cluster_view plots type="array" items="string" enum=["batches","modules","trace"] minItems=1.0
+cluster_view preset type="string" enum=["blocks","diagonal"]
 cluster_view read_bars type="array" items="string" enum=["bottom","left","top"]
+cluster_view region type="string" enum=["all","genes","grid","side"]
+cluster_view screen type="string"
 cluster_view settings type="boolean"
+cluster_view side type="string" enum=["go","none","sites"]
 cluster_view size_bars type="array" items="string" enum=["bottom","left","top"]
+cluster_view state type="string"
 cluster_view trace type="boolean"
 cluster_view values type="boolean"
 cluster_view width type="number" minimum=1.0

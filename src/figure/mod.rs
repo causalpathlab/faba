@@ -902,7 +902,6 @@ fn options() -> usvg::Options<'static> {
 }
 
 /// Write `svg` as `{prefix}.pdf` (vector) alone; returns the path written.
-#[cfg(test)]
 pub fn save(svg: &str, prefix: &str) -> anyhow::Result<Vec<String>> {
     let tree = usvg::Tree::from_str(svg, &options())?;
     Ok(vec![write_pdf(&tree, prefix)?])

@@ -167,6 +167,12 @@ impl ModulesView<'_> {
             Some(Full::Go) => return self.go_key(key),
             None => {}
         }
+        // `s` saves the screen; its prompt takes every key while open.
+        match self.controls.key(key) {
+            crate::figure::Key::Pass => {}
+            crate::figure::Key::Used => return,
+            crate::figure::Key::Save(prefix) => return self.save_screen(&prefix),
+        }
         // The grid in focus, a place in `looks`.
         let grid = (self.pane != Pane::Genes).then(|| self.pane.index());
         let (sites, genes) = (self.pane == Pane::Sites, self.pane == Pane::Genes);

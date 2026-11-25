@@ -14,7 +14,10 @@
 use super::order::standardized;
 use super::Modules;
 
+mod genes;
 mod grid;
+pub mod screen;
+mod sites;
 use crate::figure::size::{self, Page};
 use crate::figure::style::{AxisTitles, Palette, Sheet};
 use crate::figure::{esc, mix, svg, Anchor, Canvas, FAINT, INK, MUTED};
@@ -186,7 +189,7 @@ pub struct GridArgs {
         value_delimiter = ',',
         num_args = 0..=1,
         default_missing_value = "left,top",
-        requires = "figure",
+        requires = "drawn",
         help = "The modules grid's margins: each gene module's size in genes as a bar by its row (left), each cell module's in cells by its column (top or bottom); bare: left,top"
     )]
     pub size_bars: Vec<Side>,
@@ -198,7 +201,7 @@ pub struct GridArgs {
         value_delimiter = ',',
         num_args = 0..=1,
         default_missing_value = "left,top",
-        requires = "figure",
+        requires = "drawn",
         help = "The modules grid's margins: each module's reads summed over its blocks as the browser's mirror bars (converted out or up, unconverted the other way, one scale a side), sides as --size-bars"
     )]
     pub read_bars: Vec<Side>,
@@ -208,21 +211,21 @@ pub struct GridArgs {
         value_name = "FRACTION",
         default_value_t = MARGINAL,
         value_parser = fraction,
-        requires = "figure",
+        requires = "drawn",
         help = "The depth of the grid's margin bars, a fraction of its shorter side, in (0, 1]"
     )]
     pub marginal_size: f64,
 
     #[arg(
         long = "key",
-        requires = "figure",
+        requires = "drawn",
         help = "Keep the grid's key under --panel-only, small, under the grid (for --look hinton, squares at reference |z| too)"
     )]
     pub key: bool,
 
     #[arg(
         long = "values",
-        requires = "figure",
+        requires = "drawn",
         help = "Print each block's value in its cell at the font size (z for --look z and hinton, the shift, the %), left out where it does not fit"
     )]
     pub values: bool,
@@ -231,24 +234,29 @@ pub struct GridArgs {
         long = "go-labels",
         value_name = "N",
         value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..=10),
-        requires = "figure",
+        requires = "drawn",
         help = "Label each gene module's row, right of the grid, with up to N of its GO terms (or --gmt sets), a line each with its q after it, by p and none mostly within a term already shown (--gaf, --obo, --gmt, --go-q, --go-min-weight); a row with none is left blank"
     )]
     pub go_labels: Option<usize>,
 
     #[arg(
         long = "go-none",
-        requires = "go_labels",
-        help = "With --go-labels, say \"none at q <= Q\" on a row with no term, as the browser's GO column does, instead of leaving it blank"
+        requires = "go_shown",
+        help = "With --go-labels (or --screen's --side go), say \"none at q <= Q\" on a row with no term, as the browser's GO column does, instead of leaving it blank"
     )]
     pub go_none: bool,
 
     #[arg(
         long = "block-bars",
-        requires = "figure",
+        requires = "drawn",
         help = "Draw each block's reads as --look bars draws them (converted up, unconverted down, one scale) over the look's own block, lightened"
     )]
     pub block_bars: bool,
+
+    /// Each row's shift range right of the grid under every look, as the
+    /// browser writes it (the bars look has it anyway): the screen's.
+    #[arg(skip)]
+    pub ranges: bool,
 }
 
 /// The margin bars' depth when `--marginal-size` is not given.
@@ -265,6 +273,7 @@ impl Default for GridArgs {
             go_labels: None,
             go_none: false,
             block_bars: false,
+            ranges: false,
         }
     }
 }
@@ -303,6 +312,13 @@ pub const READ_OFF: &str = MUTED;
 /// The same in grays: dark, and light.
 const READ_UP_GRAY: &str = "#262626";
 const READ_OFF_GRAY: &str = "#b3b3b3";
+/// The unconverted side of the browser's mirror bars on paper (the pinned
+/// genes' tracks, the sites'): a light gray in either palette, as the
+/// terminal's plain light tone; and the least a side with reads is drawn,
+/// an eighth of a terminal line (two columns deep), in font sizes, as
+/// the browser's least block.
+pub const MIRROR_OFF: &str = READ_OFF_GRAY;
+pub const MIRROR_LEAST: f64 = 1.2 / 8.0;
 /// The blocks' bars: converted reads in the accent, unconverted in a light
 /// tone outlined so it reads on white paper; in grays, dark and light.
 pub const BLOCK_UP: &str = crate::figure::ACCENT;
@@ -459,7 +475,8 @@ pub enum Look {
     /// That standardized across the cell modules, within each gene module.
     Z,
     /// That z as a Hinton diagram: a square per block, its area by |z|
-    /// against the largest, coloured as `z`.
+    /// against the largest, coloured as the browser's Hinton look (full
+    /// red above the row's mean, blue below).
     Hinton,
     /// Its reads as the browser's mirror bars: converted rising above a
     /// zero line, unconverted hanging below, every block on one scale;
@@ -484,6 +501,28 @@ fn fill(v: f64, top: f64, diverging: bool) -> (String, bool) {
         (true, false) => LOW,
     };
     (mix(MID, far, t), t > 0.6)
+}
+
+/// A Hinton square's fill as the browser's Hinton look colours it (see
+/// [`super::view::Stretch::hinton`]), `z_top` the |z| at full red or
+/// blue; and whether it is dark enough for light ink.
+fn hinton_fill(v: f64, z_top: f64) -> (String, bool) {
+    let stretch = super::view::Stretch {
+        lo: 0.0,
+        hi: 1.0,
+        z_top,
+        deepest: 0.0,
+    };
+    let (colour, t) = stretch.hinton(v);
+    (hex(colour), t > 0.5)
+}
+
+/// A terminal colour as SVG writes it.
+fn hex(colour: ratatui::style::Color) -> String {
+    match colour {
+        ratatui::style::Color::Rgb(r, g, b) => format!("#{r:02x}{g:02x}{b:02x}"),
+        _ => INK.to_string(),
+    }
 }
 
 /// Each gene module's value in each cell module under `look`, rows the
