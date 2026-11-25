@@ -282,6 +282,13 @@ fn choose(v: &Value, record: &Path) -> Option<String> {
     }
 }
 
+/// The input `key` the run record at `record` names, chosen as
+/// [`find_input`] chooses it, when it is on this machine.
+pub fn input_of(record: &Path, key: &str) -> Option<Box<str>> {
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(record).ok()?).ok()?;
+    choose(v.get("inputs")?.get(key)?, record).map(Into::into)
+}
+
 /// Whether a file name is a run record: `{job}.run.json`, or `faba run`'s
 /// `pipeline_summary.json`.
 pub fn is_run_record(name: &str) -> bool {

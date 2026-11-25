@@ -118,21 +118,26 @@ impl SitePicker<'_> {
             ("a", "read an annotation"),
         ]);
         self.controls.help_keys(&mut keys);
-        keys.extend([
-            (REPORT_KEY, "write the HTML report"),
-            (APPLY_KEYS, "apply and write"),
-            ("p", "print the flags and leave"),
-            ("q", "leave (asks when changed)"),
-            ("?", "these keys"),
-        ]);
+        keys.push((REPORT_KEY, "write the HTML report"));
+        // Read only, nothing is applied and nothing is lost on leaving.
+        match self.read_only() {
+            true => keys.push(("q", "quit")),
+            false => keys.extend([
+                (APPLY_KEYS, "apply and write"),
+                ("p", "print the flags and leave"),
+                ("q", "leave (asks when changed)"),
+            ]),
+        }
+        keys.push(("?", "these keys"));
         keys
     }
 
     /// A key while browsing.
     pub(super) fn browse_key(&mut self, key: KeyEvent) {
+        let writes = !self.read_only();
         match key.code {
-            _ if is_apply(&key) => self.mode = Mode::Confirm,
-            KeyCode::Enter => self.enter_hint = true,
+            _ if is_apply(&key) && writes => self.mode = Mode::Confirm,
+            KeyCode::Enter => self.enter_hint = writes,
             KeyCode::Tab => {
                 self.panel = match (self.panel, self.two_d) {
                     (Panel::Thresholds, _) => Panel::Genes,
@@ -182,8 +187,10 @@ impl SitePicker<'_> {
             KeyCode::Char('e') => self.mode = Mode::Edit(String::new()),
             KeyCode::Char(ch) if ch.is_ascii_digit() => self.mode = Mode::Edit(ch.to_string()),
             // Esc backs out of every pop-up, so it never leaves the view.
-            KeyCode::Char('p') => self.leave(Picked::PrintOnly(self.filter.clone())),
-            KeyCode::Char('q') => self.leave(Picked::Cancelled),
+            // Read only, there are no flags to print and nothing to lose.
+            KeyCode::Char('p') if writes => self.leave(Picked::PrintOnly(self.filter.clone())),
+            KeyCode::Char('q') if writes => self.leave(Picked::Cancelled),
+            KeyCode::Char('q') => self.decide(Picked::Cancelled),
             _ => {}
         }
     }
