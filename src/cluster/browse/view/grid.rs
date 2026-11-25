@@ -1,6 +1,7 @@
 //! The two grids, gene modules and sites, each row a gene module or a site
 //! against every cell module: mirror bars with their methylated %, a %
-//! heatmap or a z heatmap, the heatmaps' boxes sized by their reads.
+//! heatmap or a z heatmap, the heatmaps' boxes sized by their reads, or a
+//! Hinton diagram of the z, each block a square sized by its |z|.
 
 use super::bars::{mirror, peak};
 use super::{ModulesView, Spot};
@@ -37,6 +38,7 @@ pub enum Look {
     Bars,
     Percent,
     Z,
+    Hinton,
 }
 
 impl Look {
@@ -44,7 +46,8 @@ impl Look {
         match self {
             Look::Bars => Look::Percent,
             Look::Percent => Look::Z,
-            Look::Z => Look::Bars,
+            Look::Z => Look::Hinton,
+            Look::Hinton => Look::Bars,
         }
     }
 }
@@ -138,7 +141,19 @@ impl Stretch {
         };
         (c, t)
     }
+
+    /// A Hinton square's colour and how far it is toward `z_top`: as
+    /// [`Self::diverging`], but never paler than [`HINTON_FLOOR`] of the
+    /// way, so the smallest squares still read on a light terminal.
+    pub fn hinton(&self, z: f64) -> (Color, f64) {
+        let t = (z.abs() / self.z_top).min(1.0);
+        let shade = HINTON_FLOOR + (1.0 - HINTON_FLOOR) * t;
+        (self.diverging(z.signum() * shade * self.z_top).0, t)
+    }
 }
+
+/// How far toward full red or blue the palest Hinton square is.
+const HINTON_FLOOR: f64 = 0.4;
 
 /// What a frame needs worked out over a whole module, kept with the key it
 /// was worked out for, so a frame works it out only when the key changes:
@@ -222,8 +237,21 @@ struct Row<'r> {
 }
 
 impl ModulesView<'_> {
-    /// The modules grid: each gene module's reads in each cell module.
+    /// The modules grid: each gene module's reads in each cell module, and
+    /// right of it the GO column when it is shown (see [`super::go`]).
     pub(super) fn draw_modules(&mut self, buf: &mut Buffer, area: Rect) {
+        let go_w = self.go_w.min(area.width);
+        let (area, go) = (
+            Rect {
+                width: area.width - go_w,
+                ..area
+            },
+            Rect {
+                x: area.right() - go_w,
+                width: go_w,
+                ..area
+            },
+        );
         let m = self.m;
         let look = self.looks[0];
         // Colours over every module's blocks, worked out once per scale.
@@ -235,8 +263,11 @@ impl ModulesView<'_> {
         let fit = (area.height.saturating_sub(1) / 2).max(1) as usize;
         let at = order.iter().position(|&g| g == self.module).unwrap_or(0);
         let first = (at + 1).saturating_sub(fit);
-        let rows: Vec<Row> = order[first..order.len().min(first + fit)]
-            .iter()
+        let shown = &order[first..order.len().min(first + fit)];
+        if go_w > 0 {
+            self.draw_go_column(buf, go, shown);
+        }
+        let rows: Vec<Row> = (shown.iter())
             .map(|&g| Row {
                 label: format!("M{:<3}{:>5} genes", g + 1, m.gene_sizes[g]),
                 reads: m.block(g),
@@ -454,8 +485,9 @@ fn grid_row(buf: &mut Buffer, area: Rect, reads: &[Count], (cols, cell_w): (&[us
 /// One grid row of boxes two lines high for the cell modules `cols` of
 /// `reads`, in cells `cell_w` wide, each sized by its reads against the
 /// grid's deepest block and coloured by its % (on `ramp`) or its z (across
-/// all of them); its number in it when `numbered` and there is room. The
-/// column after the last cell drawn.
+/// all of them); its number in it when `numbered` and there is room. Under
+/// the Hinton look, a square instead, sized by its |z| (see [`square`]).
+/// The column after the last cell drawn.
 fn heat_row(
     buf: &mut Buffer,
     area: Rect,
@@ -476,6 +508,18 @@ fn heat_row(
         }
         end = x + cell_w - 1;
         let Some(f) = r.fraction() else { continue };
+        if look == Look::Hinton {
+            let (colour, t) = stretch.hinton(z[c].unwrap_or(0.0));
+            let q = square(t, cell_w);
+            let bx = x + (cell_w - 1 - q.w) / 2;
+            for dy in 0..q.h {
+                for dx in 0..q.w {
+                    let at = (bx + dx, area.y + dy);
+                    buf.set_string(at.0, at.1, q.glyph.to_string(), Style::new().fg(colour));
+                }
+            }
+            continue;
+        }
         let (fill, ink, text) = match look {
             Look::Z => {
                 let z = z[c].unwrap_or(0.0);
@@ -524,6 +568,41 @@ pub fn box_size(reads: f64, deepest: f64, cell_w: u16) -> (u16, u16) {
     let w = ((a * (cell_w - 1) as f64).round() as u16).clamp(1, cell_w - 1);
     let h = if a >= 0.5 { 2 } else { 1 };
     (w, h)
+}
+
+/// A Hinton square in a grid cell: its glyph, and how many columns and
+/// lines of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Square {
+    pub glyph: char,
+    pub w: u16,
+    pub h: u16,
+}
+
+/// The shapes a Hinton square takes, smallest first: glyphs within one
+/// character, then blocks of whole ones, near square (a character about
+/// twice as tall as wide), each with its area in characters.
+const SHAPES: [(char, u16, u16, f64); 7] = [
+    ('·', 1, 1, 0.05),
+    ('▪', 1, 1, 0.15),
+    ('■', 1, 1, 0.35),
+    ('█', 1, 1, 1.0),
+    ('█', 2, 1, 2.0),
+    ('█', 3, 2, 6.0),
+    ('█', 4, 2, 8.0),
+];
+
+/// The square of a block `t` of the way to the grid's largest magnitude
+/// (0 to 1), in a cell `cell_w` wide and two lines high: the largest shape
+/// whose area is at most `t` of the largest that fits, a dot at least.
+pub fn square(t: f64, cell_w: u16) -> Square {
+    let fits: Vec<_> = (SHAPES.iter()).filter(|s| s.1 < cell_w).collect();
+    let most = fits.last().map_or(1.0, |s| s.3);
+    let want = t.clamp(0.0, 1.0) * most;
+    let &&(glyph, w, h, _) = (fits.iter().rev())
+        .find(|s| s.3 <= want)
+        .unwrap_or(&fits[0]);
+    Square { glyph, w, h }
 }
 
 /// A scrollbar down the right edge of `area` (below its head row) when

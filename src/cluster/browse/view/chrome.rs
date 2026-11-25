@@ -75,7 +75,7 @@ impl ModulesView<'_> {
             return vec![crate::figure::status_line(msg)];
         }
         let grid = |look: Look| {
-            let mut keys = vec![("v", "bars/%/z")];
+            let mut keys = vec![("v", "bars/%/z/Hinton")];
             if look == Look::Percent {
                 keys.push(("y", "% scale"));
             }
@@ -131,7 +131,7 @@ impl ModulesView<'_> {
             keys.extend([("b", "batches"), ("B", "filter")]);
         }
         if self.go_ask.is_some() {
-            keys.push(("a", "GO terms"));
+            keys.extend([("a", "GO column"), ("G", "GO terms")]);
         }
         keys.extend([("t", "trace"), ("q", "quit"), ("?", "keys")]);
         crate::tui::wrap_help(help_line(&keys), width)
@@ -155,7 +155,7 @@ impl ModulesView<'_> {
                 .concat()
             }
             Some(Full::Go) => {
-                return [&[("↑/↓ k/j", "gene module"), ("a", "close GO")][..], &close].concat()
+                return [&[("↑/↓ k/j", "gene module"), ("G", "close GO")][..], &close].concat()
             }
             None => {}
         }
@@ -182,7 +182,7 @@ impl ModulesView<'_> {
         }
         keys.extend([
             ("X", "clear every pin (asks)"),
-            ("v", "bars, % or z"),
+            ("v", "bars, %, z or Hinton (squares sized by |z|)"),
             ("y", "% scale, under the % look"),
             ("[ ]", "scroll the cell modules"),
             ("/", "find a gene"),
@@ -195,7 +195,13 @@ impl ModulesView<'_> {
             keys.extend([("b", "batches"), ("B", "batch filter")]);
         }
         if self.go_ask.is_some() {
-            keys.push(("a", "GO terms"));
+            keys.extend([
+                (
+                    "a",
+                    "GO column beside the gene modules: read GO, then show or hide it",
+                ),
+                ("G", "every GO term of the gene module in focus"),
+            ]);
         }
         keys.extend([("q", "quit"), ("?", "these keys")]);
         keys
@@ -207,6 +213,7 @@ impl ModulesView<'_> {
             Look::Bars => "bars".into(),
             Look::Percent => format!("% heatmap, {}", self.ramp.name()),
             Look::Z => "z heatmap".into(),
+            Look::Hinton => "Hinton, z".into(),
         }
     }
 

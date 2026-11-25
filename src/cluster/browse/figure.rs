@@ -2,7 +2,7 @@
 //! `cluster_view` returns them: the modules grid (gene modules against cell
 //! modules, each block coloured by its fitted shift, a count fit's log rate,
 //! its methylated %, UMIs per cell, or that standardized across the cell
-//! modules), the trace (each restart's ELBO by
+//! modules, drawn as boxes or as a Hinton diagram's squares), the trace (each restart's ELBO by
 //! step), and the cell modules against the batches. Each is laid out for a
 //! size when one is given (inches), its text at a size that reads in print.
 
@@ -133,6 +133,9 @@ pub enum Look {
     Percent,
     /// That standardized across the cell modules, within each gene module.
     Z,
+    /// That z as a Hinton diagram: a square per block, its area by |z|
+    /// against the largest, coloured as `z`.
+    Hinton,
 }
 
 /// The diverging pair and its neutral midpoint, and the sequential ramp's
@@ -169,7 +172,7 @@ fn values(m: &Modules, look: Look) -> (Vec<usize>, Vec<Vec<Option<f64>>>) {
                         .map(|f| if m.per_cell() { f } else { 100.0 * f })
                 })
                 .collect(),
-            Look::Z => standardized(m.block(g)),
+            Look::Z | Look::Hinton => standardized(m.block(g)),
         })
         .collect();
     (rows, values)
@@ -192,6 +195,7 @@ fn heatmap(m: &Modules, look: Look, title: &str, size: Page) -> Result<String, S
         (Look::Percent, true) => "UMIs per cell",
         (Look::Percent, false) => "methylated %",
         (Look::Z, _) => "z across the cell modules",
+        (Look::Hinton, _) => "z across the cell modules; square area by |z|",
     };
     let f = font(size);
     let names: Vec<String> = (rows.iter())
@@ -228,6 +232,16 @@ fn heatmap(m: &Modules, look: Look, title: &str, size: Page) -> Result<String, S
             );
             for (j, v) in row.iter().enumerate() {
                 let x = label + cell * j as f64;
+                if look == Look::Hinton {
+                    // A true square, centred, none for a block without reads.
+                    if let Some(v) = v {
+                        let side = (cell - 2.0) * (v.abs() / top.max(1e-12)).min(1.0).sqrt();
+                        let (cx, cy) = (x + cell / 2.0, y + cell / 2.0);
+                        let colour = fill(*v, top, diverging).0;
+                        c.rect(cx - side / 2.0, cy - side / 2.0, side, side, &colour);
+                    }
+                    continue;
+                }
                 let Some(v) = v else {
                     c.rect(x + 1.0, y + 1.0, cell - 2.0, cell - 2.0, "#ffffff");
                     continue;
@@ -235,7 +249,7 @@ fn heatmap(m: &Modules, look: Look, title: &str, size: Page) -> Result<String, S
                 let (colour, dark) = fill(*v, top, diverging);
                 c.rect(x + 1.0, y + 1.0, cell - 2.0, cell - 2.0, &colour);
                 let text = match look {
-                    Look::Shift | Look::Z => format!("{v:+.2}"),
+                    Look::Shift | Look::Z | Look::Hinton => format!("{v:+.2}"),
                     // As the grid writes it: a whole %, or UMIs per cell.
                     Look::Percent => m.block(rows[i])[j].number().unwrap_or_default(),
                 };
