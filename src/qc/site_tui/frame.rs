@@ -56,7 +56,10 @@ impl SitePicker<'_> {
                     Panel::Pairs => &[("arrows", "panel"), ("x/y X/Y", "axis")],
                 });
                 // What matters most first.
-                keys.extend([apply, ("p", "print flags"), ("q", "cancel")]);
+                match self.read_only() {
+                    true => keys.push(("q", "quit")),
+                    false => keys.extend([apply, ("p", "print flags"), ("q", "cancel")]),
+                }
                 self.controls.help_keys(&mut keys);
                 keys.extend([
                     ("m/M", "modality"),
@@ -105,11 +108,13 @@ impl SitePicker<'_> {
             self.y_scale.name(),
             self.controls.tag()
         );
-        frame.render_widget(header("qc", &self.title, &scales), top);
+        let badge = if self.read_only() { "qc-view" } else { "qc" };
+        frame.render_widget(header(badge, &self.title, &scales), top);
 
         self.hits.clear();
         let names: Vec<&str> = self.views.iter().map(|v| &*v.table.modality).collect();
-        let button = matches!(self.mode, Mode::Browse).then_some(("✓ apply", Hit::Apply));
+        let button = (matches!(self.mode, Mode::Browse) && !self.read_only())
+            .then_some(("✓ apply", Hit::Apply));
         let tabs_line = tab_bar(
             tabs,
             &names,

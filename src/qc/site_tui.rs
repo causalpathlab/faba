@@ -1,4 +1,5 @@
-//! Full-screen site-threshold picker for `faba qc`.
+//! Full-screen site-threshold picker for `faba qc`, and the same view read
+//! only for `faba qc-view` (see [`run_site_viewer`]).
 //!
 //! One row per [`Criterion`] beside a histogram of the column it cuts, for
 //! one editing modality at a time. The thresholds are shared across
@@ -321,6 +322,11 @@ struct SitePicker<'a> {
     status: Option<String>,
     /// Each batch's cell QC, for the report.
     cells: CellsShared,
+    /// Read only (`faba qc-view`): nothing to apply, `q` leaves at once,
+    /// and `s` saves the panel on screen as a paper panel, as these panels
+    /// and this sheet lay it out (see [`Self::screen_panel`]); `None` in
+    /// `faba qc`.
+    viewing: Option<(crate::qc::site_plot::Plan, Sheet)>,
 }
 
 impl<'a> SitePicker<'a> {
@@ -366,6 +372,7 @@ impl<'a> SitePicker<'a> {
             report: Default::default(),
             status: None,
             cells: CellsShared::default(),
+            viewing: None,
         }
         .pin_genes(&[])
         .with_refreshed_meta()
@@ -373,6 +380,11 @@ impl<'a> SitePicker<'a> {
 
     fn view(&self) -> &SiteView<'a> {
         &self.views[self.modality]
+    }
+
+    /// Whether this is `faba qc-view`'s view, which writes no fileset.
+    fn read_only(&self) -> bool {
+        self.viewing.is_some()
     }
 
     fn criterion(&self) -> Criterion {
@@ -499,15 +511,61 @@ impl<'a> SitePicker<'a> {
         let c = self.criterion();
         (!c.is_off(&self.filter)).then(|| self.column.key_of(c, c.get(&self.filter)))
     }
+
+    /// `s`, once a name is confirmed: the view's figure at its own size,
+    /// or read only the panel on screen (see [`Self::screen_panel`]),
+    /// saved under `prefix` (never over a file: the prompt refuses one).
+    fn save(&mut self, prefix: &str) {
+        let svg = match &self.viewing {
+            None => Ok(self.figure(Sheet::OWN).expect("its own size fits")),
+            Some((plan, sheet)) => self.screen_panel(plan, *sheet),
+        };
+        match svg {
+            Ok(svg) => self.controls.save(&svg, prefix),
+            Err(e) => self.status = Some(format!("not saved: {e}")),
+        }
+    }
+
+    /// The panel on screen as the paper panel `faba site-plot` draws of
+    /// it, laid out for `sheet` with `plan`'s marginals: the focused
+    /// pair in 2D, else the focused knob's histogram, each on the view's
+    /// scales and bins, at the thresholds now.
+    pub(super) fn screen_panel(
+        &self,
+        plan: &crate::qc::site_plot::Plan,
+        sheet: Sheet,
+    ) -> anyhow::Result<String> {
+        use crate::qc::site_plot::{Choice, Panels, Plan};
+        let v = self.view();
+        let pair = (self.two_d)
+            .then(|| v.shown_pairs().get(self.pair_at).map(|p| (p.0, p.1)))
+            .flatten();
+        let (hist, pairs) = match pair {
+            Some(p) => (Vec::new(), vec![p]),
+            None => (vec![Axis::of(self.criterion())], Vec::new()),
+        };
+        let plan = Plan {
+            hist: Choice::Given(hist),
+            pairs: Choice::Given(pairs),
+            marginals: plan.marginals,
+            scales: v.cache.scales,
+            bins: Some(v.cache.bins),
+        };
+        let panels = Panels::of_view(&v.sites(), &self.filter, &plan, sheet)?;
+        (panels.figures().pop())
+            .map(|f| f.svg)
+            .ok_or_else(|| anyhow::anyhow!("{} has no such panel", v.table.modality))
+    }
 }
 
 impl View for SitePicker<'_> {
+    /// Read only, there is nothing to apply.
     fn takes_apply(&self) -> bool {
-        true
+        !self.read_only()
     }
 
     fn stray_enter(&mut self) {
-        self.enter_hint = matches!(self.mode, Mode::Browse);
+        self.enter_hint = matches!(self.mode, Mode::Browse) && !self.read_only();
     }
 
     /// The report's chord, only while browsing: elsewhere it is dropped,
@@ -552,6 +610,7 @@ impl Screen for SitePicker<'_> {
     fn status(&self) -> Option<String> {
         Some(match self.mode {
             Mode::Writing => format!("writing {}", self.writer.output),
+            _ if self.read_only() => format!("viewing the site thresholds of {}", self.title),
             _ => format!("picking site thresholds for {}", self.title),
         })
     }
@@ -578,10 +637,11 @@ impl Screen for SitePicker<'_> {
 
     /// Ctrl-C asks first when the thresholds have changed, as `q` does;
     /// a second one leaves. A write under way finishes: stopping it would
-    /// leave half a fileset.
+    /// leave half a fileset. Read only, it leaves at once.
     fn interrupt(&mut self) {
         match self.mode {
             Mode::Writing => {}
+            _ if self.read_only() => self.decide(Picked::Cancelled),
             Mode::Leave(_) => self.decide(Picked::Cancelled),
             _ => self.leave(Picked::Cancelled),
         }
@@ -627,12 +687,7 @@ impl Screen for SitePicker<'_> {
             match self.controls.key(key) {
                 Key::Pass => {}
                 Key::Used => return,
-                Key::Save(prefix) => {
-                    return self.controls.save(
-                        &self.figure(Sheet::OWN).expect("its own size fits"),
-                        &prefix,
-                    )
-                }
+                Key::Save(prefix) => return self.save(&prefix),
             }
         }
         self.plot.invalidate();
@@ -1051,6 +1106,27 @@ pub fn run_site_picker(
     }
     let gff = picker.gff().map(Box::from);
     Ok((picker.decision.unwrap_or(Picked::Cancelled), gff))
+}
+
+/// Open the picker read only (`faba qc-view`) over the non-empty site
+/// tables at `filter`, as [`run_site_picker`] opens it but with nothing to
+/// apply: its knobs and 2D axes on `plan`'s scales, `s` saving the panel
+/// on screen as `plan` and `sheet` lay it out, each batch's `cells` on its
+/// page. Needs a terminal and at least one non-empty site table.
+pub fn run_site_viewer(
+    input_dir: &str,
+    (tables, site_cells): (&FxHashMap<Box<str>, SiteTable>, &super::sites::SiteCells),
+    filter: &SiteFilterArgs,
+    genes: (Option<&str>, &[Box<str>]),
+    (plan, sheet): (crate::qc::site_plot::Plan, Sheet),
+    cells: CellsShared,
+) -> anyhow::Result<()> {
+    let scales = (plan.scales, plan.bins_on(&sheet));
+    let mut picker = picker(input_dir, tables, site_cells, filter, genes, Some(scales))?;
+    picker.cells = cells;
+    picker.viewing = Some((plan, sheet));
+    picker.controls = Controls::new("qc_view").detect();
+    run_view(&mut picker)
 }
 
 #[cfg(test)]

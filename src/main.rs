@@ -27,6 +27,7 @@ mod tui;
 
 use crate::common::*;
 use crate::qc::site_plot::{run_site_plot, SitePlotArgs};
+use crate::qc::view::{run_qc_view, QcViewArgs};
 use crate::qc::{run_qc, QcArgs};
 use apa::run::*;
 use atoi::run::*;
@@ -482,6 +483,40 @@ Example:\n  \
     Qc(QcArgs),
 
     #[command(
+        name = "qc-view",
+        about = "View what a `faba qc` run kept and dropped, in its site view, read only",
+        long_about = view_help("View what a `faba qc` run kept and dropped, full screen, read only.\n\
+                      \n\
+                      Name the qc output directory (or its qc.run.json): the thresholds it applied are\n\
+                      read from qc.run.json, the kept sites from {modality}_sites.parquet and the\n\
+                      dropped ones, with their `reason`, from {modality}_sites_dropped.parquet, so every\n\
+                      site the run saw is shown, kept or dropped, the thresholds drawn. Cells per site\n\
+                      are counted as qc counted them, off the input it read when that is on this\n\
+                      machine. Each batch's cell QC comes from its {batch}_cell_qc_report.tsv, and\n\
+                      the metagene's annotation from the GFF recorded (--gff for another). Any other\n\
+                      faba output directory opens too, with no thresholds: every site is kept.\n\
+                      \n\
+                      The view is `faba qc`'s: each threshold's histogram with its kept and dropped\n\
+                      counts, the thresholds two at a time (`v`), the genes, the metagene and each\n\
+                      batch's cells. The thresholds move to show what another cut would keep, but\n\
+                      nothing is applied: there is no Ctrl+R, and q leaves at once. `s` saves the\n\
+                      panel on screen as a paper panel, as often as wanted and never over a file\n\
+                      (--fig-width, --fig-height, --font-size, --panel-only, --palette, --marginals,\n\
+                      --scale and --bins lay it out); Ctrl+E writes the page.\n\
+                      \n\
+                      --html FILE writes that page instead of opening the view, --plots -o DIR the\n\
+                      figures `faba qc --dry-run --plots` writes, and --batch-process (or no terminal)\n\
+                      prints the threshold table `faba qc --dry-run` prints. Nothing is written over."),
+        after_long_help = "\
+	Example:\n\
+	faba qc-view out_qc/\n\
+	faba qc-view out_qc/ --batch-process\n\
+	faba qc-view out_qc/ --html qc.html\n\
+	faba qc-view out_qc/ --plots -o figures/ --hist pv,cells --panel-only"
+    )]
+    QcView(QcViewArgs),
+
+    #[command(
         name = "site-plot",
         alias = "sp",
         about = "Draw a faba directory's site statistics as paper panels: histograms and pairs, no QC",
@@ -572,8 +607,8 @@ Example:\n  \
                       (`claude mcp add faba -- faba mcp`). The tools run the commands:\n\
                       the producers and `run` write a new directory, `qc` filters one\n\
                       into another, `cluster` writes its tables to a new directory, and\n\
-                      `pileup`, `metagene`, `pwm`, `cluster_view` and `docs` read what\n\
-                      was written. No tool replaces an existing directory or file, and no\n\
+                      `pileup`, `metagene`, `pwm`, `site_plot`, `qc_view`, `cluster_view`\n\
+                      and `docs` read what was written. No tool replaces an existing directory or file, and no\n\
                       tool opens a view."
     )]
     Mcp(mcp::McpArgs),
@@ -740,6 +775,7 @@ fn view_session(command: &Commands) -> Option<(&'static str, legume_tui::Options
         Commands::ClusterView(args) => Some(("cluster-view", args.view_session()?)),
         Commands::Metagene(args) => Some(("metagene", args.view_session()?)),
         Commands::Qc(args) => Some(("qc", args.view_session()?)),
+        Commands::QcView(args) => Some(("qc-view", args.view_session()?)),
         Commands::Run(args) => Some(("run", args.view_session()?)),
         _ => None,
     }
@@ -801,6 +837,7 @@ fn run(cli: Cli, cmd: clap::Command, matches: &clap::ArgMatches) -> anyhow::Resu
         Commands::Metagene(ref args) => run_metagene(args)?,
         Commands::Snp(ref args) => recorded(args.run_record(), || run_snp(args))?,
         Commands::Qc(ref args) => run_qc(args)?,
+        Commands::QcView(ref args) => run_qc_view(args)?,
         Commands::SitePlot(ref args) => run_site_plot(args)?,
         Commands::Docs(ref args) => run_docs(args)?,
         Commands::Run(ref args) => {
@@ -953,6 +990,10 @@ mod tests {
             (vec!["faba", "qc"], Some(("qc", false, false))),
             (vec!["faba", "qc", "out/"], Some(("qc", true, false))),
             (
+                vec!["faba", "qc-view", "out/"],
+                Some(("qc-view", true, false)),
+            ),
+            (
                 vec!["faba", "cluster-view", "out/"],
                 Some(("cluster-view", true, false)),
             ),
@@ -984,6 +1025,9 @@ mod tests {
             vec!["faba", "pileup", "a.zarr", "--batch-process"],
             vec!["faba", "metagene", "--batch-process"],
             vec!["faba", "qc", "out/", "--batch-process"],
+            vec!["faba", "qc-view", "out/", "--batch-process"],
+            vec!["faba", "qc-view", "out/", "--html", "qc.html"],
+            vec!["faba", "qc-view", "out/", "--plots", "-o", "figs/"],
             vec!["faba", "cluster-view", "out/", "--html", "m.html"],
             vec!["faba", "run", "--batch-process"],
             vec!["faba", "count", "a.bam", "-g", "g.gff", "-o", "out/"],
@@ -1002,7 +1046,15 @@ mod tests {
     #[test]
     fn the_views_long_help_ends_with_their_session() {
         let mut cmd = faba_command();
-        for name in ["pwm", "pileup", "cluster-view", "metagene", "qc", "run"] {
+        for name in [
+            "pwm",
+            "pileup",
+            "cluster-view",
+            "metagene",
+            "qc",
+            "qc-view",
+            "run",
+        ] {
             let sub = cmd.find_subcommand_mut(name).unwrap();
             let help = sub.render_long_help().to_string();
             assert!(help.contains("detachable session"), "{name}: {help}");
