@@ -31,6 +31,7 @@ use super::matrix::{
 use super::path_tui::ask_paths;
 use super::progress::{FinishOnDrop, Progress};
 use super::repool::repool_gene_level;
+use super::site_plot::Plan;
 use super::site_tui::{qc_flags, run_site_picker, Batch, CellsShared, Figure, Picked, Writer};
 use super::sites::{
     accumulate_site_cells, read_site_table, site_matrix_rows, write_site_tables, SiteTable,
@@ -259,20 +260,37 @@ fn dry_plots_problem(args: &QcArgs) -> anyhow::Result<()> {
 }
 
 /// A dry run's figures: each modality's knobs and pairs, each batch's
-/// cells, under `-o DIR/qc_plots` (checked new or empty before anything
+/// cells, and the site panels, under `-o DIR/qc_plots` (checked new or empty before anything
 /// was read, see [`dry_plots_problem`]).
-fn write_dry_plots(args: &QcArgs, batch: &mut Batch) -> anyhow::Result<()> {
+fn write_dry_plots(args: &QcArgs, batch: &mut Batch, (plan, sheet): Figures) -> anyhow::Result<()> {
     let out = args.output.as_deref().unwrap_or_default();
-    let page = args
-        .size
-        .page_at_least((crate::qc::site_tui::QC_LEAST_W, 0.0), "a qc figure")?;
-    let figures = batch.figures(page)?;
+    let figures = batch.figures(Some(plan), sheet)?;
     let failed = save_figures(out, &figures, &Progress::default());
     if let Some((stem, e)) = failed.first() {
         anyhow::bail!("qc_plots/{stem}: not saved: {e}");
     }
     info!("wrote {} figures under {out}/qc_plots", figures.len());
     Ok(())
+}
+
+/// The figures' page and look, checked before anything is read: a knob
+/// figure's table and plots need a width (their height, which depends on
+/// the plots shown, is checked before the view opens and as each is
+/// drawn), unless --panel-only draws the plot alone.
+fn figure_sheet(args: &QcArgs) -> anyhow::Result<crate::figure::style::Sheet> {
+    use crate::qc::site_tui::{knob_least, knob_room};
+    let sheet = crate::figure::style::Sheet::new(&args.size, &args.style)?;
+    knob_room(&sheet, knob_least(&sheet, None), "a qc figure")?;
+    Ok(sheet)
+}
+
+/// The site panels asked for and the page and look of every figure, read
+/// and checked once per run.
+type Figures<'a> = (&'a Plan, crate::figure::style::Sheet);
+
+/// [`Plan::bins_on`] its sheet: the scales and bins every figure reads.
+fn scales_of((plan, sheet): Figures) -> (crate::qc::scale::Scales, usize) {
+    (plan.scales, plan.bins_on(&sheet))
 }
 
 /// `--html`'s page, at the thresholds given, its folder made first; never
@@ -293,9 +311,11 @@ fn write_html(args: &QcArgs, batch: &mut Batch) -> anyhow::Result<()> {
 
 pub fn run_qc(args: &QcArgs) -> anyhow::Result<()> {
     html_problem(args)?;
+    let plan = args.panels.plan()?;
+    let sheet = figure_sheet(args)?;
     dry_plots_problem(args)?;
     if args.dry_run {
-        return dry_run(args);
+        return dry_run(args, (&plan, sheet));
     }
     anyhow::ensure!(
         args.batch_process || terminal_available(),
@@ -316,7 +336,7 @@ pub fn run_qc(args: &QcArgs) -> anyhow::Result<()> {
         .input("genome", genome.as_deref())
         .options(args);
     let given = gff.clone();
-    let outcome = filter_fileset(args, input, out_dir, &mut gff);
+    let outcome = filter_fileset(args, input, out_dir, &mut gff, (&plan, sheet));
     // Recorded after the view, which may have read another annotation.
     let mut record = record.input("gff", gff.as_deref());
     if gff != given {
@@ -341,7 +361,7 @@ pub fn run_qc(args: &QcArgs) -> anyhow::Result<()> {
 /// threshold's counts per modality, as TSV on stdout; then, after a blank
 /// line, the pairs Auto picks to show two at a time, a TSV of their own.
 /// No fileset; the figures and the page when asked.
-fn dry_run(args: &QcArgs) -> anyhow::Result<()> {
+fn dry_run(args: &QcArgs, figures: Figures) -> anyhow::Result<()> {
     let input = args
         .input_dir
         .as_deref()
@@ -368,7 +388,7 @@ fn dry_run(args: &QcArgs) -> anyhow::Result<()> {
         &prep.site_cells,
         &args.site,
         (gff.as_deref(), &args.genes),
-        cells_of(&prep.decisions),
+        (cells_of(&prep.decisions), Some(scales_of(figures))),
     )?;
     let (counts, pairs) = batch.counts();
     for t in counts {
@@ -391,13 +411,14 @@ fn dry_run(args: &QcArgs) -> anyhow::Result<()> {
     }
     print!("{out}");
     if args.plots {
-        write_dry_plots(args, &mut batch)?;
+        write_dry_plots(args, &mut batch, figures)?;
     }
     write_html(args, &mut batch)
 }
 
-/// `figures` saved under `out/qc_plots/` as PDF and PNG, in parallel, each
-/// a step on `progress`; those not saved, and why.
+/// `figures` saved under `out/qc_plots/` as PDF and PNG (a stem's
+/// folder made first), in parallel, each a step on `progress`; those not
+/// saved, and why.
 fn save_figures(out: &str, figures: &[Figure], progress: &Progress) -> Vec<(String, String)> {
     use rayon::prelude::*;
     if figures.is_empty() {
@@ -408,9 +429,13 @@ fn save_figures(out: &str, figures: &[Figure], progress: &Progress) -> Vec<(Stri
     (figures.par_iter())
         .filter_map(|f| {
             progress.next(format!("qc_plots/{}", f.stem));
+            let prefix = format!("{dir}/{}", f.stem);
             let saved = made.clone().and_then(|()| {
-                crate::figure::save_with_png(&f.svg, &format!("{dir}/{}", f.stem))
-                    .map_err(|e| e.to_string())
+                let folder = std::path::Path::new(&prefix).parent();
+                folder
+                    .map_or(Ok(()), std::fs::create_dir_all)
+                    .map_err(|e| e.to_string())?;
+                crate::figure::save_with_png(&f.svg, &prefix).map_err(|e| e.to_string())
             });
             saved.err().map(|e| (f.stem.clone(), e))
         })
@@ -445,11 +470,9 @@ fn filter_fileset(
     input: &str,
     out_dir: &str,
     gff: &mut Option<Box<str>>,
+    (plan, sheet): Figures,
 ) -> anyhow::Result<Option<SiteFilterArgs>> {
-    // The figures' page, checked before anything is read: their table and
-    // plots need a width (their height is checked as each is drawn).
-    let least = (crate::qc::site_tui::QC_LEAST_W, 0.0);
-    let page = args.size.page_at_least(least, "a qc figure")?;
+    let scales = scales_of((plan, sheet));
     let prep = prepare(args, input)?;
     let has_sites = prep.tables.values().any(|t| !t.is_empty());
     if args.batch_process || !has_sites {
@@ -466,12 +489,12 @@ fn filter_fileset(
                 &prep.site_cells,
                 &args.site,
                 (gff.as_deref(), &args.genes),
-                cells,
+                (cells, Some(scales)),
             )?),
             false => None,
         };
         let figures = match (&mut batch, args.plots) {
-            (Some(b), true) => b.figures(page)?,
+            (Some(b), true) => b.figures(Some(plan), sheet)?,
             _ => Vec::new(),
         };
         write_fileset(
@@ -495,12 +518,13 @@ fn filter_fileset(
             &prep.tables,
             &prep.site_cells,
             &args.site,
-            gff.as_deref(),
-            &args.genes,
+            (gff.as_deref(), &args.genes),
+            scales,
             Writer {
                 output: out_dir,
                 progress: &progress,
-                page,
+                sheet,
+                panels: Some(plan.clone()),
                 cells: cells_of(&prep.decisions),
                 start: Some(Box::new(|site: SiteFilterArgs, figures: Vec<Figure>| {
                     let (prep, progress) = (&prep, &progress);
@@ -1024,6 +1048,24 @@ mod tests {
             empty.path().display()
         ));
         assert!(dry_plots_problem(&fresh).is_ok());
+    }
+
+    /// The figures' page is checked before anything is read: narrower than
+    /// a knob figure's table is refused, naming --panel-only, which draws
+    /// the plot alone at any size.
+    #[test]
+    fn a_narrow_page_is_refused_unless_the_panel_is_drawn_alone() {
+        let narrow = parse("faba qc in --batch-process -o out --plots --fig-width 2.5");
+        let e = figure_sheet(&narrow).unwrap_err().to_string();
+        assert!(e.contains("--panel-only"), "{e}");
+        let alone = parse(
+            "faba qc in --batch-process -o out --plots --fig-width 2.5 --panel-only --font-size 6",
+        );
+        let sheet = figure_sheet(&alone).unwrap();
+        assert_eq!(sheet.page, (Some(180.0), None));
+        assert!(sheet.look.panel_only && sheet.look.font_size == Some(6.0));
+        let bad = parse("faba qc in --batch-process -o out --plots --font-size 0");
+        assert!(figure_sheet(&bad).is_err());
     }
 
     #[test]

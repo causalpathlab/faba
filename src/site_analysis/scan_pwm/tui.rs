@@ -5,7 +5,7 @@
 //! site itself (position 0) is marked in the accent colour. A cursor reads
 //! out a position's counts.
 
-use crate::figure::size::{Page, OWN};
+use crate::figure::style::Sheet;
 use crate::tui::ui::{header, help_line, panel, Screen, DIM, HIGHLIGHT, PLAIN};
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
@@ -231,20 +231,30 @@ impl PwmView {
     }
 
     /// The logo as a figure, letters stretched to their heights, laid out
-    /// for `page`: a side not asked for its shape on screen, grown alike on
-    /// both sides until its letters are 8 points wide at least, else a page
-    /// of readable letters.
-    fn figure(&self, page: Page) -> String {
+    /// for `sheet`'s page: a side not asked for its shape on screen, grown
+    /// alike on both sides until its letters are 8 points wide at least,
+    /// else a page of readable letters; its text and margins from the
+    /// sheet's font. Alone (`--panel-only`), no title.
+    fn figure(&self, sheet: Sheet) -> String {
         let n = self.columns.len().max(1) as f64;
-        let (width, height) = crate::figure::size::fill(page, || {
-            match self.controls.page(self.drawn, least(self.columns.len())) {
-                Some(size) => size,
-                None => (MARGINS + (560.0 / n).clamp(8.0, 40.0) * n, 330.0),
+        let (width, height) =
+            sheet.fill(
+                || match self.controls.page(self.drawn, least(self.columns.len())) {
+                    Some(size) => size,
+                    None => (MARGINS + (560.0 / n).clamp(8.0, 40.0) * n, 330.0),
+                },
+            );
+        let style = sheet.style((width, height));
+        let mut c = Canvas::styled(width, height, &style);
+        let head = match style.panel_only {
+            true => 0.0,
+            false => {
+                let em = c.em();
+                c.bold(16.0 * em, 22.0 * em, &self.title, 12.0, Anchor::Start, INK);
+                30.0 * em
             }
-        });
-        let mut c = Canvas::new(width, height);
-        c.bold(16.0, 22.0, &self.title, 12.0, Anchor::Start, INK);
-        self.draw_logo(&mut c, (0.0, 30.0, width, height - 30.0), None);
+        };
+        self.draw_logo(&mut c, (0.0, head, width, height - head), None);
         c.finish()
     }
 
@@ -257,19 +267,27 @@ impl PwmView {
         cursor: Option<usize>,
     ) {
         let n = self.columns.len().max(1);
-        let (left, top, bottom) = (x0 + 56.0, y0 + 10.0, 50.0);
-        let cw = ((w - MARGINS) / n as f64).max(1.0);
-        let ph = (h - 10.0 - bottom).max(1.0);
+        let em = c.em();
+        let (left, top, bottom) = (x0 + 56.0 * em, y0 + 10.0 * em, 50.0 * em);
+        let cw = ((w - MARGINS * em) / n as f64).max(1.0);
+        let ph = (h - 10.0 * em - bottom).max(1.0);
         let top_value = self.mode.top();
         for f in [0.0, 0.5, 1.0] {
             let y = top + ph - f * ph;
-            c.line(left - 4.0, y, left, y, INK, 0.6);
+            c.line(left - 4.0 * em, y, left, y, INK, 0.6);
             let label = format!("{}", f * top_value);
-            c.text(left - 7.0, y + 3.0, &label, 8.0, Anchor::End, MUTED);
+            c.text(
+                left - 7.0 * em,
+                y + 3.0 * em,
+                &label,
+                8.0,
+                Anchor::End,
+                MUTED,
+            );
         }
         c.line(left, top, left, top + ph, INK, 0.6);
         c.line(left, top + ph, left + cw * n as f64, top + ph, INK, 0.6);
-        c.vtext(x0 + 18.0, top + ph / 2.0, self.mode.name(), 9.0, MUTED);
+        c.vtext(x0 + 18.0 * em, top + ph / 2.0, self.mode.name(), 9.0, MUTED);
         for (j, col) in self.columns.iter().enumerate() {
             let x = left + j as f64 * cw;
             let heights = col.heights(self.mode);
@@ -283,14 +301,14 @@ impl PwmView {
             let rel = self.rel(j);
             if rel == 0 {
                 // The site: an accent tick under the axis.
-                c.rect(x + 0.5, top + ph + 1.0, cw - 1.0, 2.5, ACCENT);
+                c.rect(x + 0.5, top + ph + em, cw - 1.0, 2.5 * em, ACCENT);
             }
             if rel % 5 == 0 || n <= 25 {
                 let colour = if rel == 0 { ACCENT } else { INK };
                 let label = rel.to_string();
                 c.text(
                     x + cw / 2.0,
-                    top + ph + 13.0,
+                    top + ph + 13.0 * em,
                     &label,
                     8.0,
                     Anchor::Middle,
@@ -298,13 +316,13 @@ impl PwmView {
                 );
             }
             if cursor == Some(j) {
-                c.rect(x + 0.5, top + ph + 17.0, cw - 1.0, 3.0, INK);
+                c.rect(x + 0.5, top + ph + 17.0 * em, cw - 1.0, 3.0 * em, INK);
             }
         }
         let mid = left + cw * n as f64 / 2.0;
         c.text(
             mid,
-            top + ph + 34.0,
+            top + ph + 34.0 * em,
             "position relative to the site",
             8.0,
             Anchor::Middle,
@@ -445,7 +463,7 @@ impl Screen for PwmView {
         match self.controls.key(key) {
             Key::Pass => self.plot.invalidate(),
             Key::Used => return,
-            Key::Save(prefix) => return self.controls.save(&self.figure(OWN), &prefix),
+            Key::Save(prefix) => return self.controls.save(&self.figure(Sheet::OWN), &prefix),
         }
         match key.code {
             KeyCode::Left | KeyCode::Char('h') => self.move_cursor(-1),
@@ -522,20 +540,21 @@ impl Screen for PwmView {
     }
 }
 
-/// The logo's margins, across, in points.
+/// The logo's margins, across, in points at 8-point text.
 const MARGINS: f64 = 76.0;
 
-/// The least page a logo of `columns` positions is laid out on, in points:
-/// its letters 8 points wide at least.
+/// The least page a logo of `columns` positions saved from the view grows
+/// to, in points: its letters 8 points wide at least. A page asked for is
+/// taken as it is, the letters filling what room there is.
 pub fn least(columns: usize) -> (f64, f64) {
     (MARGINS + 8.0 * columns.max(1) as f64, 200.0)
 }
 
 /// The logo as the view first shows it, drawn without a terminal, laid out
-/// for `page` (see [`crate::figure::SizeArgs`], checked against [`least`]
-/// by the caller).
-pub fn figure(title: &str, pwm: &[DnaBaseCount], window: i64, page: Page) -> String {
-    PwmView::new(title, pwm, window).figure(page)
+/// for `sheet` (see [`crate::figure::SizeArgs`] and
+/// [`crate::figure::style::StyleArgs`]).
+pub fn figure(title: &str, pwm: &[DnaBaseCount], window: i64, sheet: Sheet) -> String {
+    PwmView::new(title, pwm, window).figure(sheet)
 }
 
 /// Show the logo full screen until the user quits.

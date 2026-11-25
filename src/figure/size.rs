@@ -9,8 +9,17 @@ use clap::Args;
 /// Points per inch: a figure's SVG is drawn in points.
 pub const PT: f64 = 72.0;
 
-/// The smallest figure laid out, in inches: its labels need the room.
-pub const MIN: (f64, f64) = (2.0, 1.5);
+/// The smallest figure laid out, in inches: below a paper's smallest
+/// panel, its text and margins shrinking with the font (see
+/// [`super::style`]).
+pub const MIN: (f64, f64) = (1.0, 0.75);
+
+/// The smallest a figure whose margins do not shrink with its text takes,
+/// in inches: pileup's Miami figure, cluster-view's trace and batches.
+pub const FIXED_MIN: (f64, f64) = (2.0, 1.5);
+
+/// [`FIXED_MIN`] in points, as [`at_least`] takes it.
+pub const FIXED_LEAST: (f64, f64) = (FIXED_MIN.0 * PT, FIXED_MIN.1 * PT);
 
 /// `--fig-width` and `--fig-height`.
 #[derive(Args, Debug, Clone, Copy, Default, PartialEq, serde::Serialize)]
@@ -123,17 +132,28 @@ mod tests {
             page(Some(7.0), Some(4.0)).unwrap(),
             (Some(504.0), Some(288.0))
         );
-        for (w, h) in [(Some(1.0), None), (None, Some(0.0)), (Some(f64::NAN), None)] {
+        for (w, h) in [(Some(0.9), None), (None, Some(0.0)), (Some(f64::NAN), None)] {
             let e = page(w, h).unwrap_err().to_string();
-            assert!(e.contains("at least 2 by 1.5 inches"), "{e}");
+            assert!(e.contains("at least 1 by 0.75 inches"), "{e}");
         }
+        // A paper's panel, as small as 1.8 by 1.4 inches, taken as asked.
+        assert_eq!(
+            page(Some(1.8), Some(1.4)).unwrap(),
+            (Some(1.8 * PT), Some(1.4 * PT))
+        );
         assert_eq!(fill((Some(252.0), None), || (500.0, 300.0)), (252.0, 300.0));
         let not_asked = || -> (f64, f64) { panic!("both sides given") };
         assert_eq!(fill((Some(1.0), Some(2.0)), not_asked), (1.0, 2.0));
         // A figure's own floor: only a side asked for is held to it.
         assert!(at_least((Some(300.0), None), (360.0, 200.0), "a profile").is_err());
         assert!(at_least((None, Some(250.0)), (360.0, 200.0), "a profile").is_ok());
-        let e = SizeArgs::new(Some(4.0), None).page_at_least((360.0, 200.0), "a profile");
+        // A figure whose margins do not shrink keeps the old floor.
+        let fixed = SizeArgs::new(Some(1.9), None).page_at_least(FIXED_LEAST, "a track");
+        let e = fixed.unwrap_err().to_string();
+        assert!(e.contains("a track is at least 2.0 by 1.5 inches"), "{e}");
+        let fits = SizeArgs::new(Some(2.0), Some(1.5)).page_at_least(FIXED_LEAST, "a track");
+        assert_eq!(fits.unwrap(), (Some(2.0 * PT), Some(1.5 * PT)));
+        let e = at_least((Some(288.0), None), (360.0, 200.0), "a profile");
         assert!(e
             .unwrap_err()
             .to_string()

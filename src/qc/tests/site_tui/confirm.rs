@@ -56,7 +56,8 @@ fn confirming_writes_in_the_view_and_shows_progress() {
     let start = SiteFilterArgs::default_values();
     let mut p = picker(&t, None, start.clone());
     p.writer = Writer {
-        page: crate::figure::size::OWN,
+        sheet: Default::default(),
+        panels: None,
         cells: Default::default(),
         output: "out_qc",
         progress: &progress,
@@ -141,7 +142,7 @@ fn figures_cover_every_modality_and_leave_the_view_as_it_was() {
     assert_eq!(p.gene_list().len(), 1);
     let (modality, focus, gene) = (p.modality, p.focus, p.gene());
 
-    let figures = p.figures(crate::figure::size::OWN).unwrap();
+    let figures = p.figures(crate::figure::style::Sheet::OWN).unwrap();
     // The filter is put back for the view, and kept out of the figures:
     // every one, of either modality, has its gene panel.
     assert_eq!(p.list.find, "ne3");
@@ -303,7 +304,8 @@ fn a_kill_lets_a_write_under_way_finish() {
     let start = SiteFilterArgs::default_values();
     let mut p = picker(&t, None, start);
     p.writer = Writer {
-        page: crate::figure::size::OWN,
+        sheet: Default::default(),
+        panels: None,
         cells: Default::default(),
         output: "out_qc",
         progress: &progress,
@@ -320,4 +322,99 @@ fn a_kill_lets_a_write_under_way_finish() {
     p.tick();
     assert!(p.done());
     assert!(matches!(p.decision, Some(Picked::Apply(_))));
+}
+
+/// Applied in the view alone (`--panel-only`), the writer is handed the
+/// site panels under `panels/`, at the thresholds applied, in place of
+/// the `{m}_pairs` figure the panels stand for.
+#[test]
+fn applying_alone_hands_the_writer_the_site_panels() {
+    use crate::figure::style::{Sheet, StyleArgs};
+    use crate::qc::site_plot::PanelArgs;
+    let progress = Progress::default();
+    let started = std::cell::RefCell::new(None);
+    let t = table(M6A, 300);
+    let start = SiteFilterArgs::default_values();
+    let mut p = picker(&t, Some(cells(t.len())), start.clone());
+    p.writer = Writer {
+        sheet: Sheet {
+            page: (Some(1.8 * 72.0), Some(1.4 * 72.0)),
+            look: StyleArgs {
+                panel_only: true,
+                ..StyleArgs::default()
+            },
+        },
+        panels: Some(PanelArgs::default().plan().unwrap()),
+        cells: Default::default(),
+        output: "out_qc",
+        progress: &progress,
+        start: Some(Box::new(|f, figures| {
+            *started.borrow_mut() = Some((f, figures))
+        })),
+    };
+    focus_on(&mut p, Criterion::MinCoverage);
+    press(&mut p, KeyCode::Right);
+    let applied = p.filter.clone();
+    apply_key(&mut p);
+    apply_key(&mut p);
+    assert!(p.tick());
+    let (f, figures) = started.borrow_mut().take().expect("the writer starts");
+    assert_eq!(qc_flags(&f), qc_flags(&applied));
+    let stems: Vec<&str> = figures.iter().map(|f| f.stem.as_str()).collect();
+    assert!(!stems.iter().any(|s| s.ends_with("_pairs")), "{stems:?}");
+    let hist = format!("panels/{M6A}_hist_coverage");
+    assert!(stems.contains(&hist.as_str()), "{stems:?}");
+    assert!(
+        stems
+            .iter()
+            .any(|s| s.starts_with("panels/") && s.contains("_vs_")),
+        "{stems:?}"
+    );
+}
+
+/// A page too short for a knob's figure is refused before the view
+/// opens, as one too narrow is; and should one still be short on apply
+/// (an annotation read in the view adds the metagene), the view says so
+/// and stays open, the writer not started.
+#[test]
+fn a_page_too_short_is_refused_before_the_view_and_said_on_apply() {
+    use crate::figure::style::Sheet;
+    let short = Sheet {
+        page: (None, Some(400.0)),
+        ..Sheet::default()
+    };
+    let t = with_genes(table(M6A, 300));
+    let start = SiteFilterArgs::default_values();
+    let p = picker(&t, None, start.clone());
+    let e = p.page_problem(&short).unwrap_err().to_string();
+    assert!(e.contains("at least") && e.contains("--panel-only"), "{e}");
+    let plain = table(M6A, 300);
+    let tall = Sheet {
+        page: (None, Some(360.0)),
+        ..Sheet::default()
+    };
+    assert!(picker(&plain, None, start.clone())
+        .page_problem(&tall)
+        .is_ok());
+
+    let progress = Progress::default();
+    let started = std::cell::Cell::new(false);
+    let mut p = picker(&t, None, start);
+    p.writer = Writer {
+        sheet: short,
+        panels: None,
+        cells: Default::default(),
+        output: "out_qc",
+        progress: &progress,
+        start: Some(Box::new(|_, _| started.set(true))),
+    };
+    apply_key(&mut p);
+    apply_key(&mut p);
+    assert!(matches!(p.mode, Mode::Writing));
+    assert!(p.tick());
+    assert!(!started.get() && !p.done());
+    assert!(matches!(p.mode, Mode::Browse));
+    let said = p.status.clone().unwrap_or_default();
+    assert!(said.contains("at least"), "{said}");
+    assert!(p.writer.start.is_some());
 }

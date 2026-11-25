@@ -1,5 +1,5 @@
 //! Figures behind the full-screen views: each view draws itself as an SVG
-//! here, and [`save`] writes that one drawing as a vector PDF and a PNG, so
+//! here, and [`save_with_png`] writes that one drawing as a vector PDF and a PNG, so
 //! the exported figure is the same whatever the terminal could show.
 
 use std::fmt::Write as _;
@@ -11,9 +11,10 @@ pub const GUTTER: u16 = 6;
 pub mod gallery;
 pub mod logo;
 pub mod size;
+pub mod style;
 pub mod term;
 
-pub use size::{Page, SizeArgs};
+pub use size::SizeArgs;
 
 use crate::tui::ui::{compact, help_line, input_line, Scale, DIM, HIGHLIGHT, PLAIN};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
@@ -93,22 +94,53 @@ impl Anchor {
     }
 }
 
-/// An SVG drawing in points, white background.
+/// An SVG drawing in points, white background, in a [`style::Style`]:
+/// its labels sized from the style's font.
 pub struct Canvas {
     width: f64,
     height: f64,
     body: String,
+    style: style::Style,
 }
 
 impl Canvas {
     pub fn new(width: f64, height: f64) -> Self {
+        Self::styled(width, height, &style::Style::default())
+    }
+
+    /// A drawing whose labels follow `style`: each size given as for 8-point
+    /// text scaled to its font, or every one at the font when asked so.
+    pub fn styled(width: f64, height: f64, style: &style::Style) -> Self {
         let mut c = Self {
             width,
             height,
             body: String::new(),
+            style: *style,
         };
         c.rect(0.0, 0.0, width, height, "#ffffff");
         c
+    }
+
+    /// What the room around labels is scaled by: 1 at 8-point text.
+    pub fn em(&self) -> f64 {
+        self.style.em()
+    }
+
+    /// The look it is drawn in.
+    pub fn style(&self) -> &style::Style {
+        &self.style
+    }
+
+    /// A label's size as written, for one laid out at `size` points: as
+    /// given in the figures' own style, else scaled or set by the style, to
+    /// two decimals.
+    fn size(&self, size: f64) -> String {
+        let s = &self.style;
+        if s.font == style::OWN_FONT && !s.uniform {
+            return size.to_string();
+        }
+        let pt = if s.uniform { s.font } else { size * s.em() };
+        ((pt * 100.0).round() / 100.0).to_string()
     }
 
     /// A filled rectangle; empty ones (zero or negative size) are skipped,
@@ -141,6 +173,7 @@ impl Canvas {
     }
 
     pub fn text(&mut self, x: f64, y: f64, s: &str, size: f64, anchor: Anchor, fill: &str) {
+        let size = self.size(size);
         let _ = writeln!(
             self.body,
             r#"<text x="{x:.2}" y="{y:.2}" font-family="{FONT}" font-size="{size}" text-anchor="{}" fill="{fill}">{}</text>"#,
@@ -151,6 +184,7 @@ impl Canvas {
 
     /// Text turned to read bottom to top, centred on `(x, y)`.
     pub fn vtext(&mut self, x: f64, y: f64, s: &str, size: f64, fill: &str) {
+        let size = self.size(size);
         let _ = writeln!(
             self.body,
             r#"<text transform="translate({x:.2} {y:.2}) rotate(-90)" font-family="{FONT}" font-size="{size}" text-anchor="middle" fill="{fill}">{}</text>"#,
@@ -161,6 +195,7 @@ impl Canvas {
     /// Text turned 90° counter-clockwise, reading bottom to top, anchored
     /// at `(x, y)` as `anchor` says along its length.
     pub fn rotated(&mut self, x: f64, y: f64, s: &str, size: f64, anchor: Anchor, fill: &str) {
+        let size = self.size(size);
         let _ = writeln!(
             self.body,
             r#"<text transform="translate({x:.2} {y:.2}) rotate(-90)" font-family="{FONT}" font-size="{size}" text-anchor="{}" fill="{fill}">{}</text>"#,
@@ -170,6 +205,7 @@ impl Canvas {
     }
 
     pub fn bold(&mut self, x: f64, y: f64, s: &str, size: f64, anchor: Anchor, fill: &str) {
+        let size = self.size(size);
         let _ = writeln!(
             self.body,
             r#"<text x="{x:.2}" y="{y:.2}" font-family="{FONT}" font-size="{size}" font-weight="bold" text-anchor="{}" fill="{fill}">{}</text>"#,
@@ -221,6 +257,7 @@ impl Canvas {
             width: 0.0,
             height: 0.0,
             body: String::new(),
+            style: style::Style::default(),
         }
     }
 
@@ -381,12 +418,56 @@ pub struct Bars<'a> {
     pub rotated: bool,
 }
 
+/// The room around a bar panel, in points at the canvas' font: left,
+/// right, top and bottom, the top without a title when drawn alone.
+fn bar_margins(c: &Canvas, ticks: &[(usize, String)], rotated: bool) -> [f64; 4] {
+    let top = if c.style().panel_only { 8.0 } else { 20.0 };
+    let bottom = 38.0 + tick_room(ticks, rotated);
+    [52.0, 12.0, top, bottom].map(|m| m * c.em())
+}
+
+/// A bar panel's frame: the canvas' em, the plot's box `(x, y, w, h)`
+/// inside the panel's margins, and the palette's colours for what a
+/// threshold drops and for its line.
+struct BarFrame {
+    em: f64,
+    plot: (f64, f64, f64, f64),
+    dropped: &'static str,
+    line: &'static str,
+}
+
+impl BarFrame {
+    /// The frame of a bar panel in `(x, y, w, h)` with `ticks` (turned when
+    /// `rotated`), its `title` drawn over it unless it is drawn alone.
+    fn draw(
+        c: &mut Canvas,
+        (x, y, w, h): (f64, f64, f64, f64),
+        (ticks, rotated): (&[(usize, String)], bool),
+        title: &str,
+    ) -> Self {
+        let em = c.em();
+        let [left, right, top, bottom] = bar_margins(c, ticks, rotated);
+        if !c.style().panel_only {
+            c.bold(x + left, y + 13.0 * em, title, 11.0, Anchor::Start, INK);
+        }
+        let roles = c.style().palette.roles();
+        Self {
+            em,
+            plot: (x + left, y + top, w - left - right, h - top - bottom),
+            dropped: roles.dropped,
+            line: roles.line,
+        }
+    }
+}
+
 impl Bars<'_> {
     pub fn draw(&self, c: &mut Canvas, x: f64, y: f64, w: f64, h: f64) {
-        let (left, right, top) = (52.0, 12.0, 20.0);
-        let bottom = 38.0 + tick_room(&self.ticks, self.rotated);
-        let (px, py, pw, ph) = (x + left, y + top, w - left - right, h - top - bottom);
-        c.bold(x + left, y + 13.0, &self.title, 11.0, Anchor::Start, INK);
+        let BarFrame {
+            em,
+            plot: (px, py, pw, ph),
+            dropped,
+            line,
+        } = BarFrame::draw(c, (x, y, w, h), (&self.ticks, self.rotated), &self.title);
         let n = self.values.len().max(1);
         let bw = pw / n as f64;
         let tallest = self
@@ -416,9 +497,16 @@ impl Bars<'_> {
             } else {
                 "0".into()
             };
-            c.text(px - 5.0, gy + 3.0, &label, 8.0, Anchor::End, MUTED);
+            c.text(
+                px - 5.0 * em,
+                gy + 3.0 * em,
+                &label,
+                8.0,
+                Anchor::End,
+                MUTED,
+            );
         }
-        c.vtext(x + 12.0, py + ph / 2.0, &self.y_title, 8.0, MUTED);
+        c.vtext(x + 12.0 * em, py + ph / 2.0, &self.y_title, 8.0, MUTED);
 
         let gap = if bw > 3.0 { 0.15 * bw } else { 0.0 };
         let mut bars = |values: &[f64], colour: &dyn Fn(usize) -> &'static str| {
@@ -432,7 +520,7 @@ impl Bars<'_> {
         };
         let tone = |i: usize| {
             if (self.accent)(i) {
-                ACCENT
+                dropped
             } else {
                 (self.colour)(i)
             }
@@ -447,23 +535,23 @@ impl Bars<'_> {
 
         if let Some(p) = self.pointer {
             let cx = px + (p as f64 + 0.5) * bw;
-            c.dashed(cx, py, cx, py + ph, ACCENT, 0.8);
+            c.dashed(cx, py, cx, py + ph, line, 0.8);
         }
         c.line(px, py + ph, px + pw, py + ph, INK, 0.6);
         c.line(px, py, px, py + ph, INK, 0.6);
         for &m in &self.marks {
             let mx = px + (m as f64 + 0.5) * bw;
-            c.line(mx, py + ph, mx, py + ph + 3.0, MUTED, 0.5);
+            c.line(mx, py + ph, mx, py + ph + 3.0 * em, MUTED, 0.5);
         }
         for &d in &self.dividers {
             let dx = px + d as f64 * bw;
-            c.dashed(dx, py, dx, py + ph + 4.0, MUTED, 0.8);
+            c.dashed(dx, py, dx, py + ph + 4.0 * em, MUTED, 0.8);
         }
         let stub = self.dividers.is_empty();
         x_ticks(c, &self.ticks, (px, bw, py + ph), stub, self.rotated);
         c.text(
             px + pw / 2.0,
-            y + h - 6.0,
+            y + h - 6.0 * em,
             &self.x_title,
             8.0,
             Anchor::Middle,
@@ -535,15 +623,16 @@ fn x_ticks(
     stub: bool,
     rotated: bool,
 ) {
+    let em = c.em();
     for (i, label) in ticks {
         let tx = px + (*i as f64 + 0.5) * bw;
         if stub {
-            c.line(tx, base, tx, base + 4.0, INK, 0.6);
+            c.line(tx, base, tx, base + 4.0 * em, INK, 0.6);
         }
         if rotated {
-            c.rotated(tx + 3.0, base + 6.0, label, 8.0, Anchor::End, INK);
+            c.rotated(tx + 3.0 * em, base + 6.0 * em, label, 8.0, Anchor::End, INK);
         } else {
-            c.text(tx, base + 13.0, label, 8.0, Anchor::Middle, INK);
+            c.text(tx, base + 13.0 * em, label, 8.0, Anchor::Middle, INK);
         }
     }
 }
@@ -600,10 +689,12 @@ pub struct Mirror<'a> {
 
 impl Mirror<'_> {
     pub fn draw(&self, c: &mut Canvas, x: f64, y: f64, w: f64, h: f64) {
-        let (left, right, top) = (52.0, 12.0, 20.0);
-        let bottom = 38.0 + tick_room(&self.ticks, self.rotated);
-        let (px, py, pw, ph) = (x + left, y + top, w - left - right, h - top - bottom);
-        c.bold(x + left, y + 13.0, &self.title, 11.0, Anchor::Start, INK);
+        let BarFrame {
+            em,
+            plot: (px, py, pw, ph),
+            dropped,
+            line,
+        } = BarFrame::draw(c, (x, y, w, h), (&self.ticks, self.rotated), &self.title);
         let n = self.up.values.len().max(self.down.values.len()).max(1);
         let bw = pw / n as f64;
         let all = self.up.values.iter().chain(self.down.values);
@@ -630,9 +721,9 @@ impl Mirror<'_> {
                 "" => &own,
                 l => l,
             };
-            c.text(px - 5.0, gy + 3.0, label, 8.0, Anchor::End, MUTED);
+            c.text(px - 5.0 * em, gy + 3.0 * em, label, 8.0, Anchor::End, MUTED);
         }
-        c.vtext(x + 12.0, py + ph / 2.0, &self.y_title, 8.0, MUTED);
+        c.vtext(x + 12.0 * em, py + ph / 2.0, &self.y_title, 8.0, MUTED);
         let gap = if bw > 3.0 { 0.15 * bw } else { 0.0 };
         for (half, sign) in [(&self.up, -1.0), (&self.down, 1.0)] {
             let mut bars = |values: &[f64], colour: &'static str| {
@@ -646,23 +737,18 @@ impl Mirror<'_> {
             match half.front {
                 Some(front) => {
                     bars(half.values, FAINT);
-                    bars(front, ACCENT);
+                    bars(front, dropped);
                 }
                 None => bars(half.values, half.colour),
             }
         }
-        c.text(px + 4.0, py + 9.0, &self.up.name, 8.0, Anchor::Start, MUTED);
-        c.text(
-            px + 4.0,
-            py + ph - 3.0,
-            &self.down.name,
-            8.0,
-            Anchor::Start,
-            MUTED,
-        );
+        let (nx, up_y) = (px + 4.0 * em, py + 9.0 * em);
+        c.text(nx, up_y, &self.up.name, 8.0, Anchor::Start, MUTED);
+        let down_y = py + ph - 3.0 * em;
+        c.text(nx, down_y, &self.down.name, 8.0, Anchor::Start, MUTED);
         if let Some(p) = self.pointer {
             let cx = px + (p as f64 + 0.5) * bw;
-            c.dashed(cx, py, cx, py + ph, ACCENT, 0.8);
+            c.dashed(cx, py, cx, py + ph, line, 0.8);
         }
         c.line(px, zero, px + pw, zero, INK, 0.6);
         c.line(px, py, px, py + ph, INK, 0.6);
@@ -670,7 +756,7 @@ impl Mirror<'_> {
         x_ticks(c, &self.ticks, (px, bw, base), true, self.rotated);
         c.text(
             px + pw / 2.0,
-            y + h - 6.0,
+            y + h - 6.0 * em,
             &self.x_title,
             8.0,
             Anchor::Middle,
@@ -736,7 +822,8 @@ fn options() -> usvg::Options<'static> {
     }
 }
 
-/// Write `svg` as `{prefix}.pdf` (vector); returns the path written.
+/// Write `svg` as `{prefix}.pdf` (vector) alone; returns the path written.
+#[cfg(test)]
 pub fn save(svg: &str, prefix: &str) -> anyhow::Result<Vec<String>> {
     let tree = usvg::Tree::from_str(svg, &options())?;
     Ok(vec![write_pdf(&tree, prefix)?])
@@ -744,7 +831,12 @@ pub fn save(svg: &str, prefix: &str) -> anyhow::Result<Vec<String>> {
 
 /// `svg` as PNG bytes, `scale` pixels per point, on white.
 pub fn png(svg: &str, scale: f32) -> anyhow::Result<Vec<u8>> {
-    let pixmap = term::pixmap(&usvg::Tree::from_str(svg, &options())?, scale)?;
+    png_of(&usvg::Tree::from_str(svg, &options())?, scale)
+}
+
+/// `tree` as PNG bytes, `scale` pixels per point, on white.
+fn png_of(tree: &usvg::Tree, scale: f32) -> anyhow::Result<Vec<u8>> {
+    let pixmap = term::pixmap(tree, scale)?;
     let (w, h) = (pixmap.width(), pixmap.height());
     let picture = image::RgbaImage::from_raw(w, h, pixmap.take())
         .ok_or_else(|| anyhow::anyhow!("pixel buffer size mismatch"))?;
@@ -753,14 +845,15 @@ pub fn png(svg: &str, scale: f32) -> anyhow::Result<Vec<u8>> {
     Ok(out.into_inner())
 }
 
-/// [`save`], and `{prefix}.png` at two pixels per point beside it: what
-/// `--figure` writes without a view.
+/// `svg` as `{prefix}.pdf` (vector, its labels as text) and `{prefix}.png`
+/// at two pixels per point beside it, from one parse: what `--figure`
+/// writes without a view; the paths written.
 pub fn save_with_png(svg: &str, prefix: &str) -> anyhow::Result<Vec<String>> {
-    let mut paths = save(svg, prefix)?;
-    let path = format!("{}.png", strip_extension(prefix));
-    std::fs::write(&path, png(svg, 2.0)?)?;
-    paths.push(path);
-    Ok(paths)
+    let tree = usvg::Tree::from_str(svg, &options())?;
+    let [_, png_path] = saved_paths(prefix);
+    let pdf = write_pdf(&tree, prefix)?;
+    std::fs::write(&png_path, png_of(&tree, 2.0)?)?;
+    Ok(vec![pdf, png_path])
 }
 
 /// The PDF of `tree` under `prefix`.
@@ -772,7 +865,7 @@ fn write_pdf(tree: &usvg::Tree, prefix: &str) -> anyhow::Result<String> {
     Ok(path)
 }
 
-/// [`save`], and a picture of it for the gallery's thumbnail, drawn in
+/// `svg` as `{prefix}.pdf`, and a picture of it for the gallery's thumbnail, drawn in
 /// memory only.
 fn save_picture(svg: &str, prefix: &str) -> anyhow::Result<(Vec<String>, image::RgbaImage)> {
     let tree = usvg::Tree::from_str(svg, &options())?;
@@ -1192,6 +1285,37 @@ impl Controls {
     pub fn prompting(&self) -> bool {
         self.save.active()
     }
+}
+
+/// Each label of a drawing as its font size, text and baseline (none
+/// when turned), sequence-logo letters (scaled to their boxes) left out.
+#[cfg(test)]
+pub(crate) fn labels(svg: &str) -> Vec<(String, String, Option<f64>)> {
+    let attr = |l: &str, key: &str| -> Option<String> {
+        let rest = l.split(&format!(" {key}=\"")).nth(1)?;
+        Some(rest.split('"').next()?.to_string())
+    };
+    (svg.lines())
+        .filter(|l| l.starts_with("<text") && !l.contains(" scale("))
+        .map(|l| {
+            let text = l.split('>').nth(1).and_then(|r| r.split('<').next());
+            let y = attr(l, "y").and_then(|y| y.parse().ok());
+            (
+                attr(l, "font-size").unwrap_or_default(),
+                text.unwrap_or("").into(),
+                y,
+            )
+        })
+        .collect()
+}
+
+/// A short fingerprint of a drawing (FNV-1a), for tests that pin a
+/// figure's output.
+#[cfg(test)]
+pub(crate) fn fingerprint(svg: &str) -> u64 {
+    svg.bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| {
+        (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+    })
 }
 
 #[cfg(test)]

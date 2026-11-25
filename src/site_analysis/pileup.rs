@@ -1077,9 +1077,11 @@ impl PileupArgs {
 }
 
 pub fn run_pileup(args: &PileupArgs) -> anyhow::Result<()> {
-    // The figure's size, refused before anything is read (its tracks'
-    // floor, which depends on the panels, is checked as it is drawn).
-    args.size.inches()?;
+    // The figure's size, refused before anything is read: its margins do
+    // not shrink with its text (see `FIXED_MIN`); its tracks' floor, which
+    // depends on the panels, is checked as it is drawn.
+    let fixed = crate::figure::size::FIXED_LEAST;
+    args.size.page_at_least(fixed, "a pileup figure")?;
     let mut base = args.clone();
     if base.data_files.is_empty() {
         let ask = crate::site_analysis::input_picker::ask_inputs(

@@ -2,6 +2,7 @@
 //! kept apart from the rest, a square's colour deeper as it holds more; and
 //! the frame they are drawn in, its ticks and titles.
 
+use crate::figure::style::Palette;
 use crate::figure::{mixed, rgb, Anchor, Canvas, FAINT, INK, MUTED};
 
 /// A kept site or barcode, drawn in this.
@@ -41,21 +42,28 @@ impl Squares {
     /// most of it is, deeper as it holds more of the busiest; none when
     /// empty.
     pub fn colour(&self, at: usize) -> Option<(u8, u8, u8)> {
+        self.tone(at, Palette::Colour)
+    }
+
+    /// [`Squares::colour`] in `palette`'s kept and removed colours.
+    pub fn tone(&self, at: usize, palette: Palette) -> Option<(u8, u8, u8)> {
         let (k, o) = (self.kept[at], self.other[at]);
         let n = k + o;
         (n > 0).then(|| {
             let depth = 0.18 + 0.82 * (n as f64).ln_1p() / (self.top as f64).ln_1p();
-            let base = if k >= o { KEPT } else { REMOVED };
+            let roles = palette.roles();
+            let base = if k >= o { roles.kept } else { roles.removed };
             mixed((255.0, 255.0, 255.0), rgb(base), depth)
         })
     }
 
-    /// Drawn over `plot`'s box.
+    /// Drawn over `plot`'s box, in the canvas' palette.
     pub fn draw(&self, c: &mut Canvas, plot: &Plot) {
+        let palette = c.style().palette;
         let (cw, ch) = (plot.pw / self.bins as f64, plot.ph / self.bins as f64);
         for by in 0..self.bins {
             for bx in 0..self.bins {
-                if let Some((r, g, b)) = self.colour(by * self.bins + bx) {
+                if let Some((r, g, b)) = self.tone(by * self.bins + bx, palette) {
                     let (x, y) = (
                         plot.px + bx as f64 * cw,
                         plot.py + plot.ph - (by + 1) as f64 * ch,
@@ -87,10 +95,19 @@ pub struct Plot {
 }
 
 impl Plot {
-    /// The plot in the box `(x, y, w, h)` over `xr` by `yr`, with room for
-    /// ticks and titles at a font size fit to the box.
-    pub fn new((x, y, w, h): (f64, f64, f64, f64), xr: (f64, f64), yr: (f64, f64)) -> Self {
-        let size = (w.min(h) / 26.0).clamp(7.0, 10.0);
+    /// The plot on `c` in the box `(x, y, w, h)` over `xr` by `yr`, with
+    /// room for ticks and titles at the canvas' font when one was asked
+    /// for (every label at it), else at a size fit to the box.
+    pub fn on(
+        c: &Canvas,
+        (x, y, w, h): (f64, f64, f64, f64),
+        xr: (f64, f64),
+        yr: (f64, f64),
+    ) -> Self {
+        let size = match c.style().uniform {
+            true => c.style().font,
+            false => (w.min(h) / 26.0).clamp(7.0, 10.0),
+        };
         let (l, r, t, b) = (size * 4.6, size, size * 0.6, size * 3.6);
         Self {
             px: x + l,

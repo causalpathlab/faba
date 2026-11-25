@@ -308,7 +308,7 @@ fn saves_the_view_as_pdf_and_png() {
     assert!(dir.path().join("view1.pdf").exists());
     assert!(!dir.path().join("view1.png").exists(), "PDF only");
     assert!(!p.done(), "saving does not leave the view");
-    let svg = p.figure(crate::figure::size::OWN).unwrap();
+    let svg = p.figure(crate::figure::style::Sheet::OWN).unwrap();
     assert!(svg.contains("kept") && svg.contains(figure::ACCENT));
 }
 
@@ -322,7 +322,7 @@ fn a_saved_view_keeps_its_shape_on_screen() {
     for (w, h) in [(160, 40), (100, 50), (120, 26), (13, 26)] {
         let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
         term.draw(|f| p.render(f)).unwrap();
-        let (fw, fh) = figure::svg_size(&p.figure(crate::figure::size::OWN).unwrap());
+        let (fw, fh) = figure::svg_size(&p.figure(crate::figure::style::Sheet::OWN).unwrap());
         let on_screen = w as f64 * cw / (h as f64 * ch);
         assert!((fw / fh - on_screen).abs() < 1e-6, "{w}x{h}: {fw}x{fh}");
         assert!(fw >= 720.0, "never narrower than its table and plots: {fw}");
@@ -433,9 +433,9 @@ fn site_figures_draw_every_knob_without_a_view() {
     let figures_at = |page| {
         let none = FxHashMap::default();
         let cells = CellsShared::default();
-        Batch::new("in", &tables, &none, &f, (None, &[]), cells)?.figures(page)
+        Batch::new("in", &tables, &none, &f, (None, &[]), (cells, None))?.figures(None, page)
     };
-    let figures = figures_at(crate::figure::size::OWN).unwrap();
+    let figures = figures_at(crate::figure::style::Sheet::OWN).unwrap();
     // A figure per modality and knob, and each modality's 2D panels.
     let expected = threshold_counts(&tables, &FxHashMap::default(), &f).len() + tables.len();
     assert_eq!(figures.len(), expected);
@@ -449,12 +449,256 @@ fn site_figures_draw_every_knob_without_a_view() {
     // its plots would not fit.
     let at = |w: f64| {
         let page = (Some(w * crate::figure::size::PT), None);
-        figures_at(page)
+        figures_at(crate::figure::style::Sheet::of(page))
     };
     let wide = at(12.0).unwrap();
     assert!(wide
         .iter()
         .all(|f| crate::figure::svg_size(&f.svg).0 == 864.0));
     let e = at(4.0).err().expect("refused").to_string();
-    assert!(e.contains("at least 10.0 by"), "{e}");
+    assert!(
+        e.contains("at least 10.0 by") && e.contains("--panel-only"),
+        "{e}"
+    );
+}
+
+/// A knob figure narrower than its table is refused, naming --panel-only;
+/// with it the focused histogram alone is drawn at exactly the size
+/// asked, every label at the font asked, in gray when asked.
+#[test]
+fn a_knob_panel_is_drawn_alone_at_any_size() {
+    use crate::figure::style::{Palette, Sheet, StyleArgs};
+    let t = table(M6A, 600);
+    let p = picker(&t, Some(cells(t.len())), SiteFilterArgs::default_values());
+    let page = (Some(2.5 * 72.0), Some(1.8 * 72.0));
+    let e = p
+        .figure(crate::figure::style::Sheet::of(page))
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("--panel-only"), "{e}");
+    let look = StyleArgs {
+        font_size: Some(6.0),
+        panel_only: true,
+        palette: Palette::Gray,
+    };
+    let svg = p.figure(Sheet { page, look }).unwrap();
+    assert_eq!(figure::svg_size(&svg), (180.0, 129.6));
+    let labels = figure::labels(&svg);
+    assert!(labels.iter().all(|l| l.0 == "6"), "{labels:?}");
+    for gone in [
+        "threshold",
+        "sites out",
+        "filtered out",
+        "Bars:",
+        "metagene",
+        "kept",
+    ] {
+        assert!(
+            labels.iter().all(|l| !l.1.contains(gone)),
+            "{gone}: {labels:?}"
+        );
+    }
+    assert!(!svg.contains(figure::ACCENT), "gray, no accent");
+    let (kept, removed) = (Palette::Gray.roles().kept, Palette::Gray.roles().removed);
+    assert!(svg.contains(kept) && svg.contains(removed), "{svg}");
+    // Its own size, with --panel-only and no size asked for: drawn too.
+    let own = Sheet {
+        page: crate::figure::size::OWN,
+        look,
+    };
+    assert!(p.figure(own).is_ok());
+}
+
+/// Each knob's histogram starts on its quantity's scale (`--scale`, else
+/// the default), as the panels draw it: in the view, its saved figure and
+/// the page; `x` still steps it on from there.
+#[test]
+fn a_knob_starts_on_its_quantitys_scale() {
+    use crate::qc::scale::Scales;
+    let t = table(M6A, 600);
+    let mut p = picker(&t, Some(cells(t.len())), SiteFilterArgs::default_values());
+    let at = |p: &mut SitePicker, c: Criterion| {
+        focus_on(p, c);
+        let svg = p.figure(crate::figure::style::Sheet::OWN).unwrap();
+        (p.scale(), svg)
+    };
+    // The defaults: -log10 p and the edit ratio linear, counts on a log.
+    let (scale, svg) = at(&mut p, Criterion::MaxPv);
+    assert_eq!(scale, Scale::Linear);
+    assert!(svg.contains("-log10 p (linear bins)"), "{svg}");
+    assert_eq!(at(&mut p, Criterion::MinCoverage).0, Scale::Log);
+    assert_eq!(at(&mut p, Criterion::MinEditRatio).0, Scale::Linear);
+    let scales = Scales::parse(&["pv=log", "coverage=linear", "edit_ratio=log"]).unwrap();
+    p.set_scales(scales, 40);
+    let (scale, svg) = at(&mut p, Criterion::MaxPv);
+    assert_eq!(scale, Scale::Log);
+    assert!(svg.contains("-log10 p (log bins)"), "{svg}");
+    assert_eq!(at(&mut p, Criterion::MinCoverage).0, Scale::Linear);
+    assert_eq!(at(&mut p, Criterion::MaxEditRatio).0, Scale::Log);
+    let page = serde_json::to_value(p.report_source().data()).unwrap();
+    let knob = (page["criteria"].as_array().unwrap().iter())
+        .find(|k| k["id"] == Criterion::MinCoverage as usize)
+        .unwrap();
+    let at = knob["scale"].as_u64().unwrap() as usize;
+    assert_eq!(knob["scales"][at], "linear");
+    // `x` steps on from it.
+    focus_on(&mut p, Criterion::MinCoverage);
+    press(&mut p, KeyCode::Char('x'));
+    assert_ne!(p.scale(), Scale::Linear);
+}
+
+/// Each `<text>` of `svg` as the box it takes, left, top, right, bottom,
+/// with what it says: about 0.55 of its size a character across, 0.75
+/// above its baseline and 0.25 below; a turned one centred on its anchor.
+fn text_boxes(svg: &str) -> Vec<((f64, f64, f64, f64), String)> {
+    let attr = |l: &str, name: &str| -> Option<String> {
+        let key = format!(" {name}=\"");
+        let start = l.find(&key)? + key.len();
+        Some(l[start..start + l[start..].find('"')?].to_string())
+    };
+    let num = |l: &str, name: &str| attr(l, name).unwrap().parse::<f64>().unwrap();
+    (svg.lines().filter(|l| l.starts_with("<text")))
+        .map(|l| {
+            let s = l[l.find('>').unwrap() + 1..l.rfind("</text>").unwrap()].to_string();
+            let size = num(l, "font-size");
+            let w = s.chars().count() as f64 * size * 0.55;
+            let (up, down) = (0.75 * size, 0.25 * size);
+            let b = match attr(l, "transform") {
+                Some(t) => {
+                    let inner = &t["translate(".len()..t.find(')').unwrap()];
+                    let mut it = inner.split([' ', ',']).map(|v| v.parse::<f64>().unwrap());
+                    let (x, y) = (it.next().unwrap(), it.next().unwrap());
+                    (x - up, y - w / 2.0, x + down, y + w / 2.0)
+                }
+                None => {
+                    let (x, y) = (num(l, "x"), num(l, "y"));
+                    let left = match attr(l, "text-anchor").as_deref() {
+                        Some("middle") => x - w / 2.0,
+                        Some("end") => x - w,
+                        _ => x,
+                    };
+                    (left, y - up, left + w, y + down)
+                }
+            };
+            (b, s)
+        })
+        .collect()
+}
+
+/// A knob's figure alone at a paper panel's size (1.8 by 1.6 inches, 6
+/// point text) keeps its labels apart: no tick label runs into another,
+/// none into a title, and every one is on the page.
+#[test]
+fn a_knob_panel_keeps_its_labels_apart() {
+    use crate::figure::style::{Palette, Sheet, StyleArgs};
+    let t = table(M6A, 600);
+    let mut p = picker(&t, Some(cells(t.len())), SiteFilterArgs::default_values());
+    let (w, h) = (1.8 * 72.0, 1.6 * 72.0);
+    let look = StyleArgs {
+        font_size: Some(6.0),
+        panel_only: true,
+        palette: Palette::Colour,
+    };
+    let sheet = Sheet {
+        page: (Some(w), Some(h)),
+        look,
+    };
+    for c in p.view().criteria.clone() {
+        focus_on(&mut p, c);
+        let svg = p.figure(sheet).unwrap();
+        let boxes = text_boxes(&svg);
+        assert!(boxes.len() >= 4, "{c:?}: {boxes:?}");
+        for (i, (a, s)) in boxes.iter().enumerate() {
+            let on = a.0 >= -0.01 && a.1 >= -0.01 && a.2 <= w + 0.01 && a.3 <= h + 0.01;
+            assert!(on, "{c:?}: {s} at {a:?} off the page");
+            for (b, z) in &boxes[i + 1..] {
+                let apart = a.2 <= b.0 || b.2 <= a.0 || a.3 <= b.1 || b.3 <= a.1;
+                assert!(apart, "{c:?}: {s} at {a:?} runs into {z} at {b:?}");
+            }
+        }
+    }
+}
+
+/// Alone (`--panel-only`), a knob's figure is the histogram `faba
+/// site-plot` draws of its quantity at the same thresholds, scale and
+/// size: one paper panel, drawn one way; and the pairs are left to the
+/// site panels, no `{m}_pairs` figure drawn.
+#[test]
+fn a_knob_panel_is_site_plots_histogram() {
+    use crate::figure::style::{Palette, Sheet, StyleArgs};
+    use crate::qc::site_plot::{Cut, PanelArgs, Panels};
+    let t = table(M6A, 600);
+    let n = cells(t.len());
+    let mut p = picker(&t, Some(n.clone()), SiteFilterArgs::default_values());
+    let panels = PanelArgs {
+        scale: vec!["pv=log".into(), "coverage=linear".into()],
+        ..PanelArgs::default()
+    };
+    let mut plan = panels.plan().unwrap();
+    let look = StyleArgs {
+        font_size: Some(6.0),
+        panel_only: true,
+        palette: Palette::Gray,
+    };
+    let (w, h) = (1.8 * 72.0, 1.6 * 72.0);
+    let sheet = Sheet {
+        page: (Some(w), Some(h)),
+        look,
+    };
+    p.set_scales(plan.scales, plan.bins_on(&sheet));
+    let cut = Cut::of_qc(&p.filter);
+    plan.pairs = crate::qc::site_plot::Choice::Given(Vec::new());
+    let site_plot = Panels::new(&t, Some(&n), &cut, &plan, sheet, false).unwrap();
+    for c in [
+        Criterion::MaxPv,
+        Criterion::MinCoverage,
+        Criterion::MaxEditRatio,
+    ] {
+        focus_on(&mut p, c);
+        let q = Axis::of(c);
+        assert_eq!(
+            p.figure(sheet).unwrap(),
+            site_plot.hist_figure(q, (w, h)),
+            "{c:?}"
+        );
+    }
+    let stems: Vec<String> = (p.figures(sheet).unwrap().into_iter())
+        .map(|f| f.stem)
+        .collect();
+    assert!(stems.iter().any(|s| s == "m6a_max-pv"), "{stems:?}");
+    assert!(!stems.iter().any(|s| s.ends_with("_pairs")), "{stems:?}");
+    let full = Sheet {
+        look: StyleArgs::default(),
+        page: (None, None),
+    };
+    let stems: Vec<String> = (p.figures(full).unwrap().into_iter())
+        .map(|f| f.stem)
+        .collect();
+    assert!(stems.iter().any(|s| s == "m6a_pairs"), "{stems:?}");
+}
+
+/// On `--scale q=log` a knob's histogram reads `ln(1 + v)`, as the site
+/// panels' ruler does (see `crate::qc::scale::along`): its bins even on
+/// that line, whatever the values' size (-log10 p here, all below 20).
+#[test]
+fn a_knob_on_log_bins_on_the_rulers_line() {
+    use crate::qc::scale::{along, Scale as Of, Scales};
+    let t = table(M6A, 600);
+    let mut p = picker(&t, None, SiteFilterArgs::default_values());
+    p.set_scales(Scales::parse(&["pv=log"]).unwrap(), 40);
+    focus_on(&mut p, Criterion::MaxPv);
+    let col = &p.column;
+    assert!(col.hi > 1.0 && col.hi < 20.0, "{}", col.hi);
+    let top = along(Of::Log, col.hi);
+    let mut checked = 0;
+    for &d in &col.display {
+        let at = 50.0 * along(Of::Log, d as f64) / top;
+        // Values on a bin's edge are left to rounding.
+        if (at - at.round()).abs() < 1e-6 {
+            continue;
+        }
+        assert_eq!(col.hist.bins.key(d as f64), at.floor() as i32, "{d}");
+        checked += 1;
+    }
+    assert!(checked > 100, "{checked}");
 }

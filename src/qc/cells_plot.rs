@@ -3,7 +3,8 @@
 //! coloured by the verdict data-beans' cell QC gave it (kept, a MAD outlier
 //! or near empty).
 
-use super::density::{decades, Plot, Squares, BINS, KEPT, REMOVED};
+use super::density::{decades, Plot, Squares, BINS};
+use crate::figure::style::{Palette, Style};
 use crate::figure::{Anchor, Canvas, INK, MUTED};
 
 /// A cells figure's own size, in points, when the page sets neither side.
@@ -24,11 +25,14 @@ pub enum Verdict {
 impl Verdict {
     pub const ALL: [Verdict; 3] = [Verdict::Kept, Verdict::Outlier, Verdict::NearEmpty];
 
-    pub fn colour(self) -> &'static str {
+    /// Its colour in `palette`: kept and removed as the sites', near empty
+    /// a mid gray.
+    pub fn colour(self, palette: Palette) -> &'static str {
+        let roles = palette.roles();
         match self {
-            Verdict::Kept => KEPT,
-            Verdict::Outlier => REMOVED,
-            Verdict::NearEmpty => "#8a8f8b",
+            Verdict::Kept => roles.kept,
+            Verdict::Outlier => roles.removed,
+            Verdict::NearEmpty => roles.near_empty,
         }
     }
 
@@ -94,29 +98,44 @@ impl Cells {
         n
     }
 
-    /// The figure, `w` by `h`: the knee on the left, genes by counts on the
-    /// right, the verdicts' key and counts over them.
-    pub fn figure(&self, (w, h): (f64, f64)) -> String {
-        crate::figure::svg(w, h, |c| {
-            let [kept, outlier, empty] = self.tally();
-            let title = format!(
-                "{} cells: {kept} kept, {outlier} MAD outliers, {empty} near empty, of {}",
-                self.batch,
-                self.counts.len()
-            );
-            c.text(12.0, 16.0, &title, 11.0, Anchor::Start, INK);
-            let mut x = 12.0;
-            for v in Verdict::ALL {
-                c.rect(x, 24.0, 9.0, 9.0, v.colour());
-                c.text(x + 13.0, 32.0, v.said(), 9.0, Anchor::Start, MUTED);
-                x += 100.0;
-            }
-            let half = (w - 12.0) / 2.0;
-            let note = "right: a square blue where most of its barcodes are kept, orange where not";
-            c.text(12.0 + half, 32.0, note, 9.0, Anchor::Start, MUTED);
-            self.knee(c, (6.0, 40.0, half - 6.0, h - 46.0));
-            self.density(c, (6.0 + half, 40.0, half - 6.0, h - 46.0));
-        })
+    /// The figure, `w` by `h` in `style`: the knee on the left, genes by
+    /// counts on the right, the verdicts' key and counts over them; alone
+    /// (`--panel-only`), the two plots only.
+    pub fn figure(&self, (w, h): (f64, f64), style: &Style) -> String {
+        let mut c = Canvas::styled(w, h, &style.for_boxes());
+        let half = (w - 12.0) / 2.0;
+        let top = if style.panel_only { 0.0 } else { 40.0 };
+        if !style.panel_only {
+            self.key(&mut c, half, style.palette);
+        }
+        let palette = style.palette;
+        self.knee(&mut c, (6.0, top, half - 6.0, h - top - 6.0), palette);
+        self.density(&mut c, (6.0 + half, top, half - 6.0, h - top - 6.0));
+        c.finish()
+    }
+
+    /// The title, the verdicts' key and what the right plot's colours say,
+    /// over plots `half` wide.
+    fn key(&self, c: &mut Canvas, half: f64, palette: Palette) {
+        let [kept, outlier, empty] = self.tally();
+        let title = format!(
+            "{} cells: {kept} kept, {outlier} MAD outliers, {empty} near empty, of {}",
+            self.batch,
+            self.counts.len()
+        );
+        c.text(12.0, 16.0, &title, 11.0, Anchor::Start, INK);
+        let mut x = 12.0;
+        for v in Verdict::ALL {
+            c.rect(x, 24.0, 9.0, 9.0, v.colour(palette));
+            c.text(x + 13.0, 32.0, v.said(), 9.0, Anchor::Start, MUTED);
+            x += 100.0;
+        }
+        let r = palette.roles();
+        let note = format!(
+            "right: a square {} where most of its barcodes are kept, {} where not",
+            r.kept_name, r.removed_name
+        );
+        c.text(12.0 + half, 32.0, &note, 9.0, Anchor::Start, MUTED);
     }
 
     /// The knee as drawn: each barcode's log10 rank and log10 counts,
@@ -143,13 +162,13 @@ impl Cells {
     }
 
     /// Counts by rank, both on log scales, the curve coloured by verdict.
-    fn knee(&self, c: &mut Canvas, area: (f64, f64, f64, f64)) {
+    fn knee(&self, c: &mut Canvas, area: (f64, f64, f64, f64), palette: Palette) {
         let (points, end) = self.knee_points(KNEE_STEPS);
         let top = points.first().map_or(1.0, |p| p.1);
-        let plot = Plot::new(area, (0.0, end), (0.0, top.max(1.0)));
+        let plot = Plot::on(c, area, (0.0, end), (0.0, top.max(1.0)));
         for pair in points.windows(2) {
             let (a, b) = (plot.at(pair[0].0, pair[0].1), plot.at(pair[1].0, pair[1].1));
-            c.line(a.0, a.1, b.0, b.1, pair[1].2.colour(), 1.6);
+            c.line(a.0, a.1, b.0, b.1, pair[1].2.colour(palette), 1.6);
         }
         let ticks = [decades(plot.xr), decades(plot.yr)];
         plot.axes(c, [&ticks[0], &ticks[1]], ["barcode rank", "counts"]);
@@ -192,7 +211,7 @@ impl Cells {
     /// which most of its barcodes are, deeper as it holds more.
     fn density(&self, c: &mut Canvas, area: (f64, f64, f64, f64)) {
         let g = self.density_grid();
-        let plot = Plot::new(area, g.xr, g.yr);
+        let plot = Plot::on(c, area, g.xr, g.yr);
         g.squares.draw(c, &plot);
         let ticks = [decades(g.xr), decades(g.yr)];
         plot.axes(c, [&ticks[0], &ticks[1]], ["counts", "genes detected"]);
@@ -232,7 +251,7 @@ mod tests {
             ]
         );
         assert_eq!(c.tally(), [2, 1, 1]);
-        let svg = c.figure((720.0, 320.0));
+        let svg = c.figure((720.0, 320.0), &Default::default());
         assert!(svg.contains("wt_rep1 cells: 2 kept, 1 MAD outliers, 1 near empty, of 4"));
         assert!(svg.contains("barcode rank") && svg.contains("genes detected"));
         assert!(crate::figure::png(&svg, 1.0).is_ok());

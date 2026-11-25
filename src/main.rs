@@ -26,6 +26,7 @@ mod test_util;
 mod tui;
 
 use crate::common::*;
+use crate::qc::site_plot::{run_site_plot, SitePlotArgs};
 use crate::qc::{run_qc, QcArgs};
 use apa::run::*;
 use atoi::run::*;
@@ -481,6 +482,32 @@ Example:\n  \
     Qc(QcArgs),
 
     #[command(
+        name = "site-plot",
+        alias = "sp",
+        about = "Draw a faba directory's site statistics as paper panels: histograms and pairs, no QC",
+        long_about = "Draw a faba directory's site statistics as paper panels: histograms and pairs, no QC.\n\
+            \n\
+            Reads one modality's {modality}_sites.parquet and its {batch}_{modality}_site matrices\n\
+            (cells: the cells with a converted read at a site, over every cell, no cell QC),\n\
+            and writes figures only, each as PDF (labels as text) and PNG:\n\
+            {modality}_hist_{q} per --hist quantity and {modality}_{y}_vs_{x} per --pairs pair.\n\
+            \n\
+            Each quantity is read on one scale, range and set of bins in every figure of it\n\
+            (--scale to change one), so a histogram, a pair's axis and its --marginals line up.\n\
+            Thresholds are optional, named as `faba qc`'s: given ones are drawn as dashed lines\n\
+            and the sites they remove are drawn apart from those kept; with none, every site is\n\
+            drawn as kept. --fig-width and --fig-height (or --width, --height) are kept exactly;\n\
+            --font-size sets the labels, --panel-only leaves only the plot, its axes and titles.\n\
+            `faba qc --plots` writes the same panels at its thresholds under qc_plots/panels/.",
+        after_long_help = "\
+\tExample:\n\
+\tfaba site-plot out/ -o panels/\n\
+\tfaba site-plot out/ -o panels/ --hist pv,cells --pairs pv:cells,fold:pv --marginals top,right \\\n\
+\t  --fig-width 1.8 --fig-height 1.8 --font-size 6 --panel-only --palette gray --site-max-pv 0.05"
+    )]
+    SitePlot(SitePlotArgs),
+
+    #[command(
         name = "docs",
         about = "Print the method write-ups compiled into this binary",
         long_about = "Print the method write-ups compiled into this binary.\n\
@@ -774,6 +801,7 @@ fn run(cli: Cli, cmd: clap::Command, matches: &clap::ArgMatches) -> anyhow::Resu
         Commands::Metagene(ref args) => run_metagene(args)?,
         Commands::Snp(ref args) => recorded(args.run_record(), || run_snp(args))?,
         Commands::Qc(ref args) => run_qc(args)?,
+        Commands::SitePlot(ref args) => run_site_plot(args)?,
         Commands::Docs(ref args) => run_docs(args)?,
         Commands::Run(ref args) => {
             let run_cmd = cmd.find_subcommand("run").cloned();
@@ -797,6 +825,55 @@ fn run(cli: Cli, cmd: clap::Command, matches: &clap::ArgMatches) -> anyhow::Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Pileup's Miami figure and cluster-view's trace and batches keep
+    /// the floor their fixed margins need: a smaller side is refused before
+    /// anything is read, saying the least.
+    #[test]
+    fn figures_with_fixed_margins_refuse_a_smaller_page_first() {
+        let run_line = |line: &[&str]| {
+            let m = faba_command().try_get_matches_from(line).unwrap();
+            match parse(&m).unwrap().commands {
+                Commands::Pileup(ref args) => run_pileup(args),
+                Commands::ClusterView(ref args) => run_modules(args),
+                _ => unreachable!(),
+            }
+        };
+        let floor = "at least 2.0 by 1.5 inches";
+        let e = run_line(&["faba", "pileup", "/no/such.zarr", "--fig-width", "1.5"]);
+        assert!(e.unwrap_err().to_string().contains(floor));
+        let e = run_line(&["faba", "pileup", "/no/such.zarr", "--fig-height", "1"]);
+        assert!(e.unwrap_err().to_string().contains(floor));
+        for plot in ["trace", "batches"] {
+            let line = [
+                "faba",
+                "cluster-view",
+                "/no/such",
+                "--figure",
+                "f",
+                "--plot",
+                plot,
+            ];
+            let line: Vec<&str> = line
+                .iter()
+                .chain(&["--fig-width", "1.5"])
+                .copied()
+                .collect();
+            let e = run_line(&line).unwrap_err().to_string();
+            assert!(e.contains(floor), "{plot}: {e}");
+        }
+        let line = [
+            "faba",
+            "cluster-view",
+            "/no/such",
+            "--figure",
+            "f",
+            "--fig-width",
+            "1.5",
+        ];
+        let e = run_line(&line).unwrap_err().to_string();
+        assert!(!e.contains(floor), "{e}");
+    }
 
     #[test]
     fn what_is_given_to_cluster_is_noted_at_parse_time() {

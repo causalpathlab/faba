@@ -5,7 +5,7 @@
 //! move live from their table.
 
 use super::*;
-use crate::figure::size::Page;
+use crate::figure::style::Sheet;
 use ratatui::style::Color;
 use std::sync::Arc;
 
@@ -161,12 +161,20 @@ impl SitePicker<'_> {
     }
 
     /// The 2D figure of modality `m` at the thresholds now, laid out for
-    /// `page`.
-    pub(super) fn pairs_figure(&self, m: usize, page: Page) -> String {
+    /// `sheet`.
+    pub(super) fn pairs_figure(&self, m: usize, sheet: Sheet) -> String {
         let v = &self.views[m];
         let title = format!("{} sites, two thresholds at a time", v.table.modality);
-        let size = crate::figure::size::fill(page, || OWN_SIZE);
-        pairs::figure(&v.sites(), &v.shown_pairs(), &self.filter, size, &title)
+        let size = sheet.fill(|| OWN_SIZE);
+        let style = sheet.style(size);
+        pairs::figure(
+            &v.sites(),
+            &v.shown_pairs(),
+            &self.filter,
+            size,
+            &title,
+            &style,
+        )
     }
 }
 

@@ -108,6 +108,7 @@ fn the_figure_draws_each_pair() {
         &f,
         (720.0, 640.0),
         "m6a sites, two thresholds at a time",
+        &Default::default(),
     );
     assert!(
         svg.starts_with("<svg") && svg.contains("stroke-dasharray"),
@@ -116,6 +117,95 @@ fn the_figure_draws_each_pair() {
     );
     assert_eq!(svg.matches("in the box: ").count(), 4);
     assert!(svg.contains("auto: "));
+}
+
+/// Every fill of a drawing is a gray (or white).
+fn all_gray(svg: &str) -> bool {
+    svg.split("fill=\"#")
+        .skip(1)
+        .chain(svg.split("stroke=\"#").skip(1))
+        .all(|rest| {
+            let hex = &rest[..6];
+            hex[0..2] == hex[2..4] && hex[2..4] == hex[4..6]
+        })
+}
+
+/// The panels alone: no title, colour key or notes, only the squares,
+/// their boxes, axes and axis titles; in gray, darker where more sites.
+#[test]
+fn the_pairs_panels_alone_in_gray() {
+    use crate::figure::style::{Palette, Sheet, StyleArgs};
+    let t = table("m6a", 800);
+    let f = SiteFilterArgs::default_values();
+    let v = SiteView::new(&t, Some(cells(800)), &f);
+    let s = v.sites();
+    let picked: Vec<_> = (pairs::auto_pairs(&s, 4).into_iter())
+        .map(|p| (p.x, p.y, p.why()))
+        .collect();
+    let look = StyleArgs {
+        font_size: None,
+        panel_only: true,
+        palette: Palette::Gray,
+    };
+    let sheet = Sheet {
+        page: (Some(360.0), Some(320.0)),
+        look,
+    };
+    let style = sheet.style((360.0, 320.0));
+    let svg = pairs::figure(&s, &picked, &f, (360.0, 320.0), "TITLE1", &style);
+    let first = format!("{} by {}", picked[0].1.short(), picked[0].0.short());
+    for gone in [
+        "TITLE1",
+        "in the box",
+        "auto:",
+        "kept by every",
+        "darker:",
+        &first,
+    ] {
+        assert!(!svg.contains(gone), "{gone}");
+    }
+    assert!(svg.contains(picked[0].0.name()), "axis titles stay");
+    assert!(all_gray(&svg), "{svg}");
+    assert!(!all_gray(&pairs::figure(
+        &s,
+        &picked,
+        &f,
+        (360.0, 320.0),
+        "T",
+        &Default::default()
+    )));
+}
+
+/// The cells figure alone: no title or key; in gray.
+#[test]
+fn the_cells_figure_alone_in_gray() {
+    use crate::figure::style::{Palette, StyleArgs};
+    let report = data_beans::qc_lib::QcReport {
+        train_keep: vec![true, true, false, true],
+        near_empty: vec![false, false, false, true],
+        feature_keep: vec![],
+        n_genes: vec![900.0, 700.0, 9000.0, 1.0],
+        total_counts: vec![3000.0, 2000.0, 60000.0, 2.0],
+        mito_frac: None,
+        ribo_frac: None,
+        n_cells_dropped: 1,
+        n_features_dropped: 0,
+    };
+    let c = crate::qc::cells_plot::Cells::of("B1", &report);
+    let look = StyleArgs {
+        font_size: Some(6.0),
+        panel_only: true,
+        palette: Palette::Gray,
+    };
+    let style = look.style((300.0, 150.0), true);
+    let svg = c.figure((300.0, 150.0), &style);
+    for gone in ["B1 cells", "MAD outlier", "near empty", "right: "] {
+        assert!(!svg.contains(gone), "{gone}");
+    }
+    assert!(svg.contains("barcode rank") && svg.contains("genes detected"));
+    let labels = crate::figure::labels(&svg);
+    assert!(labels.iter().all(|l| l.0 == "6"), "{labels:?}");
+    assert!(all_gray(&svg), "{svg}");
 }
 
 /// The screen as text, drawn at `w` by `h`.
@@ -189,11 +279,92 @@ fn a_zero_p_value_does_not_stretch_the_axis() {
     let v = SiteView::new(&t, Some(cells(600)), &f);
     let s = v.sites();
     assert!(t.pv.contains(&0.0));
-    let (_, hi) = s.column(Axis::Pvalue).range;
+    let (_, hi) = s.ruler(Axis::Pvalue, &f).span();
     assert!(hi < 20.0, "{hi}");
     let g = pairs::grid(&s, (Axis::LogOdds, Axis::Pvalue), &f, pairs::BINS);
     assert_eq!(
         g.squares.kept.iter().chain(&g.squares.other).sum::<u32>(),
         600
     );
+}
+
+/// The knob, pairs and cells figures at their own size, no font asked for,
+/// are drawn as they always were; the knob and the pairs on each
+/// quantity's one scale (see `crate::qc::scale`), as the site panels draw
+/// it: the p-value's knob on linear bins.
+#[test]
+fn the_default_qc_figures_are_unchanged() {
+    let t = table("m6a", 800);
+    let f = SiteFilterArgs::default_values();
+    let p = picker(&t, Some(cells(800)), f.clone());
+    let knob = p.figure(crate::figure::style::Sheet::OWN).unwrap();
+    let pairs = p.pairs_figure(0, crate::figure::style::Sheet::OWN);
+    let report = data_beans::qc_lib::QcReport {
+        train_keep: vec![true, true, false, true],
+        near_empty: vec![false, false, false, true],
+        feature_keep: vec![],
+        n_genes: vec![900.0, 700.0, 9000.0, 1.0],
+        total_counts: vec![3000.0, 2000.0, 60000.0, 2.0],
+        mito_frac: None,
+        ribo_frac: None,
+        n_cells_dropped: 1,
+        n_features_dropped: 0,
+    };
+    let cells =
+        crate::qc::cells_plot::Cells::of("B1", &report).figure((720.0, 320.0), &Default::default());
+    let shown = [&knob, &pairs, &cells].map(|s| crate::figure::fingerprint(s));
+    assert_eq!(
+        shown,
+        [
+            1047802977818497795,
+            12215480049523947226,
+            12252359045459261505
+        ]
+    );
+}
+
+/// Each axis of the 2D view is drawn on its quantity's ruler, on the scale
+/// the cache holds (`--scale`), reaching the thresholds on: its range, its
+/// values and its ticks.
+#[test]
+fn each_axis_is_drawn_on_its_quantitys_ruler() {
+    use crate::qc::scale::{spread, Ruler, Scales};
+    let t = table("m6a", 600);
+    let f = SiteFilterArgs::default_values();
+    let mut v = SiteView::new(&t, Some(cells(600)), &f);
+    let scales = Scales::parse(&["pv=log", "coverage=linear"]).unwrap();
+    v.cache = pairs::Cache::new(scales, 30);
+    let s = v.sites();
+    for a in Axis::ALL {
+        let shown: Vec<f32> = (0..t.len()).map(|i| a.value(&s, i) as f32).collect();
+        let on = |c: Criterion| s.criteria.contains(&c) && !c.is_off(&f);
+        let (r, _) = Ruler::cut((a, scales.of(a)), spread(&shown), &f, on, 30);
+        assert_eq!(s.ruler(a, &f), r, "{a:?}");
+        let i = shown.iter().position(|v| v.is_finite()).unwrap();
+        let col = s.column(a);
+        assert_eq!(col.values[i], r.along(shown[i] as f64) as f32);
+    }
+    assert!(s.ruler(Axis::Pvalue, &f).axis.log);
+    assert!(!s.ruler(Axis::Coverage, &f).axis.log);
+    let g = pairs::grid(&s, (Axis::Coverage, Axis::Pvalue), &f, pairs::BINS);
+    let ticks = [Axis::Coverage, Axis::Pvalue].map(|a| s.ruler(a, &f).ticks());
+    assert_eq!(g.ticks, ticks);
+    let ranges = [Axis::Coverage, Axis::Pvalue].map(|a| s.ruler(a, &f).span());
+    assert_eq!([g.xr, g.yr], ranges);
+}
+
+/// A site whose p-value is not a number has no place on the -log10 p
+/// axis: it is left out of a panel's squares, not drawn at 0.
+#[test]
+fn a_nan_p_value_is_left_out_of_the_panels() {
+    let mut t = table("m6a", 300);
+    t.pv[3] = f32::NAN;
+    let f = SiteFilterArgs::default_values();
+    let v = SiteView::new(&t, Some(cells(300)), &f);
+    let s = v.sites();
+    assert!(Axis::Pvalue.value(&s, 3).is_nan());
+    assert!(Axis::Pvalue.shown(f64::NAN).is_nan());
+    let g = pairs::grid(&s, (Axis::Coverage, Axis::Pvalue), &f, pairs::BINS);
+    let binned: u32 = g.squares.kept.iter().chain(&g.squares.other).sum();
+    assert_eq!(binned as usize, t.len() - 1);
 }

@@ -61,3 +61,21 @@ fn a_figure_with_nothing_to_draw_says_why() {
     assert!(err.contains("one batch"), "{err}");
     assert!(draw(&m, Plot::Trace, Look::Shift, "a fit", OWN).is_err());
 }
+
+/// The trace's and the batches' margins do not shrink with their text:
+/// a side under 2 by 1.5 inches is refused before any fit is read, saying
+/// so; the grid lays itself out and says what it needs as it is drawn.
+#[test]
+fn the_trace_and_the_batches_keep_their_floor() {
+    use super::super::figure::page;
+    use crate::figure::SizeArgs;
+    for plot in [Plot::Trace, Plot::Batches] {
+        for (w, h) in [(Some(1.9), None), (None, Some(1.4))] {
+            let e = page(plot, &SizeArgs::new(w, h)).unwrap_err().to_string();
+            assert!(e.contains("at least 2.0 by 1.5 inches"), "{plot:?}: {e}");
+        }
+        assert!(page(plot, &SizeArgs::new(Some(2.0), Some(1.5))).is_ok());
+    }
+    let small = SizeArgs::new(Some(1.2), Some(0.9));
+    assert_eq!(page(Plot::Modules, &small).unwrap(), small.page().unwrap());
+}

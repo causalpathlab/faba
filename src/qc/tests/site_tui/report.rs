@@ -640,3 +640,86 @@ fn ctrl_e_again_while_writing_keeps_the_first_reports_outcome_in_view() {
         "{said}"
     );
 }
+
+/// The page places each axis' raw values along its line as the view does:
+/// its own `asShown` and `placed`, run under node on the rulers it is
+/// given, against the view's columns (on a log p-value too, and a p-value
+/// that is not a number, left out); and each threshold at its edge, as
+/// `crate::qc::scale::edge` puts it: a count's on a linear ruler half a
+/// count out, on a log one at the count.
+#[test]
+fn the_page_places_values_on_the_views_rulers() {
+    use crate::qc::scale::{along, edge};
+    let page = crate::qc::site_tui::report::FRAGMENT;
+    let line = |name: &str| {
+        (page.lines())
+            .find(|l| l.starts_with(&format!("const {name} = ")))
+            .unwrap_or_else(|| panic!("no {name} in the page"))
+            .to_string()
+    };
+    let enc = |x: f64| {
+        if x.is_finite() {
+            serde_json::json!(x)
+        } else {
+            serde_json::json!(x.to_string())
+        }
+    };
+    let mut t = table(M6A, 400);
+    t.pv[5] = f32::NAN;
+    for scales in [
+        &["pv=log"][..],
+        &["coverage=linear", "converted=linear", "cells=linear"],
+    ] {
+        let mut p = picker(&t, Some(cells(t.len())), SiteFilterArgs::default_values());
+        p.set_scales(crate::qc::scale::Scales::parse(scales).unwrap(), 40);
+        let data = report_json(&p);
+        let rulers = &data["modalities"][0]["rulers"];
+        let knobs = &data["criteria"];
+        let v = p.view();
+        let s = v.sites();
+        let (mut cases, mut edges) = (Vec::new(), Vec::new());
+        for a in crate::qc::pairs::axes(&s) {
+            for i in (0..t.len()).step_by(5) {
+                let raw = a.criteria()[0].raw(&t, i, v.cells(i));
+                let want = s.column(a).values[i] as f64;
+                cases.push(serde_json::json!([a, enc(raw), enc(want)]));
+            }
+            let scale = v.cache.scales.of(a);
+            for &c in a.criteria().iter().filter(|c| v.criteria.contains(c)) {
+                let k = (knobs.as_array().unwrap().iter())
+                    .find(|k| k["id"] == serde_json::json!(c as usize))
+                    .unwrap();
+                for raw in [c.get(&p.filter), 0.01, 3.0, 12.0] {
+                    let want = along(scale, edge(a, scale, c, raw));
+                    edges.push(serde_json::json!([a, k, enc(raw), enc(want)]));
+                }
+            }
+        }
+        let script = format!(
+            "{}\n{}\n{}\n{}\nconst m = {{ rulers: new Map({rulers}) }};\n\
+             const num = x => typeof x === 'string' ? Number(x.replace('inf', 'Infinity')) : x;\n\
+             const near = (got, w) => got === w || (got !== got && w !== w) || Math.abs(got - w) <= 1e-5 * Math.max(1, Math.abs(w));\n\
+             const bad = {}.filter(([k, raw, want]) => !near(placed(m, k, asShown(k, num(raw))), num(want)));\n\
+             const off = {}.filter(([key, k, raw, want]) => !near(edgeOf(m, key, k, num(raw)), num(want)));\n\
+             if (bad.length || off.length) {{ console.log(JSON.stringify([bad.slice(0, 5), off.slice(0, 5)])); process.exit(1); }}",
+            line("rmax"),
+            line("asShown"),
+            line("placed"),
+            line("edgeOf"),
+            serde_json::Value::Array(cases),
+            serde_json::Value::Array(edges),
+        );
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("placed.js");
+        std::fs::write(&path, script).unwrap();
+        match std::process::Command::new("node").arg(&path).output() {
+            Ok(out) => assert!(
+                out.status.success(),
+                "{scales:?}: {}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            ),
+            Err(_) => eprintln!("no node: the page's placing is not checked"),
+        }
+    }
+}

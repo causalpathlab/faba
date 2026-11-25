@@ -9,8 +9,9 @@
 //! agree least, spread over the criteria.
 
 use super::args::SiteFilterArgs;
+pub use super::density::BINS;
 use super::density::{Plot, Squares};
-pub use super::density::{BINS, KEPT, REMOVED};
+use super::scale::{along, edge, spread, Ruler, Scale, Scales};
 use super::sites::{Criterion, SiteTable};
 use crate::figure::{Anchor, Canvas, INK, MUTED};
 
@@ -27,7 +28,7 @@ pub struct Sites<'a> {
     pub table: &'a SiteTable,
     /// Kept cells per site, when a `_site` matrix gave them.
     pub n_cells: Option<&'a [usize]>,
-    /// Per site, a bit (`1 << c as u8`) for every threshold it fails.
+    /// Per site, a bit ([`Criterion::bit`]) for every threshold it fails.
     pub fails: &'a [u8],
     /// The criteria that apply.
     pub criteria: &'a [Criterion],
@@ -35,7 +36,7 @@ pub struct Sites<'a> {
     pub cache: &'a Cache,
 }
 
-impl Sites<'_> {
+impl<'a> Sites<'a> {
     fn len(&self) -> usize {
         self.fails.len()
     }
@@ -44,34 +45,81 @@ impl Sites<'_> {
         self.n_cells.map(|c| c[i])
     }
 
-    /// Axis `a`'s values per site, on its drawn scale, and its range.
-    pub fn column(&self, a: Axis) -> &Column {
-        self.cache.0[a as usize].get_or_init(|| {
+    /// Axis `a`'s values per site, as shown and along its line (on the
+    /// scale the cache holds for it).
+    pub fn column(&self, a: Axis) -> &'a Column {
+        self.cache.columns[a as usize].get_or_init(|| {
             use rayon::prelude::*;
-            let values: Vec<f32> = (0..self.len())
+            let shown: Vec<f32> = (0..self.len())
                 .into_par_iter()
                 .map(|i| a.value(self, i) as f32)
                 .collect();
-            let range = range_of(&values, a);
-            Column { values, range }
+            let scale = self.cache.scales.of(a);
+            let values = (shown.par_iter())
+                .map(|&v| along(scale, v as f64) as f32)
+                .collect();
+            Column {
+                spread: spread(&shown),
+                shown,
+                values,
+            }
         })
+    }
+
+    /// Axis `a`'s ruler at the thresholds `f`, reaching those that apply
+    /// and are on: what the panels `faba site-plot` draws read it on.
+    pub fn ruler(&self, a: Axis, f: &SiteFilterArgs) -> Ruler {
+        let on = |c: Criterion| self.criteria.contains(&c) && !c.is_off(f);
+        let scale = self.cache.scales.of(a);
+        Ruler::cut((a, scale), self.column(a).spread, f, on, self.cache.bins).0
     }
 }
 
-/// One axis' values per site, on its drawn scale, and the range it is
-/// drawn over.
+/// One axis' values per site: as shown (see [`Axis::shown`]) and along its
+/// line (see [`super::scale::along`]); and where the shown ones spread,
+/// read once (see [`spread`]).
 pub struct Column {
+    pub shown: Vec<f32>,
     pub values: Vec<f32>,
-    pub range: (f64, f64),
+    pub spread: Option<(f64, f64)>,
 }
 
-/// Each axis' [`Column`], filled as it is first asked for.
-#[derive(Default)]
-pub struct Cache([std::sync::OnceLock<Column>; 7]);
+/// Each axis' [`Column`], filled as it is first asked for, on `scales`;
+/// its rulers in about `bins` bins.
+pub struct Cache {
+    columns: [std::sync::OnceLock<Column>; 7],
+    pub scales: Scales,
+    pub bins: usize,
+}
 
-/// What a panel's axis shows: a criterion's raw value, drawn on a scale
-/// that spreads it (logs for counts, `-log10` for p-values). The edit ratio
-/// carries both its bounds.
+impl Default for Cache {
+    /// On the default scales, in a histogram's own bins.
+    fn default() -> Self {
+        let width = super::site_plot::HIST_OWN.0;
+        Self::new(Scales::default(), data_beans::figure::bins_for(width))
+    }
+}
+
+impl Cache {
+    /// Empty, each axis to be read on its scale in `scales`, its ruler in
+    /// about `bins` bins.
+    pub fn new(scales: Scales, bins: usize) -> Self {
+        Self {
+            columns: Default::default(),
+            scales,
+            bins,
+        }
+    }
+
+    /// The columns read so far, by `Axis as usize`.
+    pub fn into_columns(self) -> [Option<Column>; 7] {
+        self.columns.map(std::sync::OnceLock::into_inner)
+    }
+}
+
+/// What a panel's axis shows: a criterion's raw value as shown (a p-value
+/// as `-log10 p`), on its quantity's [`Scale`]. The edit ratio carries both
+/// its bounds. Every site figure takes these as its quantities.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Axis {
@@ -108,9 +156,16 @@ impl Axis {
         }
     }
 
+    /// The quantity criterion `c` thresholds.
+    pub fn of(c: Criterion) -> Self {
+        (Axis::ALL.into_iter())
+            .find(|a| a.criteria().contains(&c))
+            .expect("every criterion thresholds a quantity")
+    }
+
     /// Its thresholds' bits in a site's failed checks.
     pub fn bits(self) -> u8 {
-        self.criteria().iter().fold(0, |b, &c| b | 1 << c as u8)
+        self.criteria().iter().fold(0, |b, &c| b | c.bit())
     }
 
     /// What it is, as an axis title.
@@ -119,7 +174,7 @@ impl Axis {
             Axis::Coverage => "coverage (reads)",
             Axis::Converted => "converted reads",
             Axis::EditRatio => "edit ratio",
-            Axis::Fold => "fold over control (log2)",
+            Axis::Fold => "fold over control",
             Axis::LogOdds => "log odds",
             Axis::Pvalue => "-log10 p",
             Axis::Cells => "cells with a converted read",
@@ -139,57 +194,81 @@ impl Axis {
         }
     }
 
-    /// `raw` (its criterion's raw value) on the drawn scale.
-    pub fn scaled(self, raw: f64) -> f64 {
+    /// Its name on the command line and in file names.
+    pub fn key(self) -> &'static str {
         match self {
-            Axis::Coverage => raw.max(1.0).log10(),
-            Axis::Converted | Axis::Cells => (raw + 1.0).log10(),
-            Axis::EditRatio | Axis::LogOdds => raw,
-            Axis::Fold => raw.log2(),
-            // A p-value of 0 is past any scale: infinite, drawn at its end.
-            Axis::Pvalue if raw <= 0.0 => f64::INFINITY,
-            Axis::Pvalue => -raw.log10(),
+            Axis::Coverage => "coverage",
+            Axis::Converted => "converted",
+            Axis::EditRatio => "edit_ratio",
+            Axis::Fold => "fold",
+            Axis::LogOdds => "log_odds",
+            Axis::Pvalue => "pv",
+            Axis::Cells => "cells",
         }
     }
 
-    /// Its ticks within the drawn range `r`, each a drawn position and its
-    /// label: on a count's log scale at 0 (where the scale has it), 1, 10,
-    /// 100 and on, as counts read; otherwise about five round values, with
-    /// the decimals their step needs.
-    pub fn ticks(self, r: (f64, f64)) -> Vec<(f64, String)> {
-        let inside = |p: f64| p >= r.0 - 1e-9 && p <= r.1 + 1e-9;
-        let decades = |from: i32| (from..10).map(|k| 10f64.powi(k));
-        // The values ticked, and where each is drawn: log10(v) for
-        // coverage; log10(v + 1) for the rest, from 0 then 10 (1 would
-        // crowd 0).
-        let (values, at): (Vec<f64>, fn(f64) -> f64) = match self {
-            Axis::Coverage => (decades(0).collect(), f64::log10),
-            Axis::Converted | Axis::Cells => {
-                (std::iter::once(0.0).chain(decades(1)).collect(), |v| {
-                    (v + 1.0).log10()
-                })
-            }
-            _ => {
-                let (values, step) = round_ticks(r);
-                let places = (-step.log10().floor()).max(0.0) as usize;
-                return (values.into_iter())
-                    .map(|v| (v, format!("{v:.places$}")))
-                    .collect();
-            }
-        };
-        let all: Vec<(f64, String)> = (values.into_iter())
-            .map(|v| (at(v), crate::tui::ui::compact(v)))
-            .filter(|(p, _)| inside(*p))
-            .collect();
-        // Every other decade when there are many.
-        let every = all.len().div_ceil(6).max(1);
-        all.into_iter().step_by(every).collect()
+    /// The quantity named `s`: its [`Axis::key`], with `-` for `_`, or
+    /// `pvalue`.
+    pub fn parse(s: &str) -> anyhow::Result<Self> {
+        let s = s.trim().to_ascii_lowercase().replace('-', "_");
+        let s = if s == "pvalue" { "pv" } else { s.as_str() };
+        Axis::ALL.into_iter().find(|a| a.key() == s).ok_or_else(|| {
+            let known: Vec<&str> = Axis::ALL.iter().map(|a| a.key()).collect();
+            anyhow::anyhow!("no quantity {s}: one of {}", known.join(", "))
+        })
     }
 
-    /// Site `i`'s value on the drawn scale: infinite at a clean control,
-    /// NaN where there is none.
+    /// Its scale unless `--scale` says otherwise: `-log10 p` linear (it is
+    /// already a log, and the strong sites spread out on it); fold on a log,
+    /// as a ratio reads (1 near the start, the long tail folded in); counts
+    /// on a log, their tails long; the edit ratio (0 to 1) and the log odds
+    /// (signed, so it has no log) linear.
+    pub fn default_scale(self) -> Scale {
+        match self {
+            Axis::Coverage | Axis::Converted | Axis::Cells | Axis::Fold => Scale::Log,
+            Axis::EditRatio | Axis::LogOdds | Axis::Pvalue => Scale::Linear,
+        }
+    }
+
+    /// Whether a log scale can show it: not the signed log odds.
+    pub fn can_log(self) -> bool {
+        self != Axis::LogOdds
+    }
+
+    /// Whether it counts reads or cells.
+    pub fn integer(self) -> bool {
+        matches!(self, Axis::Coverage | Axis::Converted | Axis::Cells)
+    }
+
+    /// Its title on a paper's panel: short.
+    pub fn title(self) -> &'static str {
+        match self {
+            Axis::Coverage => "coverage",
+            Axis::Converted => "converted reads",
+            Axis::EditRatio => "edit ratio",
+            Axis::Fold => "fold over control",
+            Axis::LogOdds => "log odds",
+            Axis::Pvalue => "-log10 p",
+            Axis::Cells => "cells",
+        }
+    }
+
+    /// `raw` (its criterion's raw value) as shown: a p-value as `-log10 p`
+    /// (infinite at 0, NaN where it is, so the site is left out), the rest
+    /// as they are.
+    pub fn shown(self, raw: f64) -> f64 {
+        match self {
+            Axis::Pvalue if raw <= 0.0 => f64::INFINITY,
+            Axis::Pvalue if raw.is_nan() => raw,
+            Axis::Pvalue => (-raw.log10()).max(0.0),
+            _ => raw,
+        }
+    }
+
+    /// Site `i`'s value as shown: infinite at a clean control, NaN where
+    /// there is none.
     pub fn value(self, s: &Sites, i: usize) -> f64 {
-        self.scaled(self.criteria()[0].raw(s.table, i, s.cells(i)))
+        self.shown(self.criteria()[0].raw(s.table, i, s.cells(i)))
     }
 
     /// Whether the sites have it: fold and log odds need a control arm,
@@ -198,15 +277,17 @@ impl Axis {
         self.criteria().iter().any(|c| s.criteria.contains(c))
     }
 
-    /// Where its thresholds pass, on the drawn scale: a lower and an upper
-    /// end, none for an end no threshold holds (an off one, or none).
+    /// Where its thresholds pass, along its line, each at its edge (see
+    /// [`super::scale::edge`]): a lower and an upper end, none for an end
+    /// no threshold holds (an off one, or none).
     pub fn passes(self, f: &SiteFilterArgs, s: &Sites) -> (Option<f64>, Option<f64>) {
         let (mut lo, mut hi) = (None, None);
+        let scale = s.cache.scales.of(self);
         for &c in self.criteria() {
             if !s.criteria.contains(&c) || c.is_off(f) {
                 continue;
             }
-            let v = self.scaled(c.get(f));
+            let v = along(scale, edge(self, scale, c, c.get(f)));
             // A p-value's upper bound is a lower one on -log10.
             match (c.is_max(), self == Axis::Pvalue) {
                 (true, false) => hi = Some(v),
@@ -329,28 +410,6 @@ fn rank_correlation(a: &[f32], b: &[f32]) -> f64 {
     }
 }
 
-/// The range axis `a` is drawn over: its finite values' 0.1% to 99.9%
-/// quantiles (on a sample), widened a little; a value past it is drawn at
-/// its end.
-fn range_of(values: &[f32], a: Axis) -> (f64, f64) {
-    let step = values.len().div_ceil(SAMPLE * 4).max(1);
-    let v: Vec<f32> = (values.iter().step_by(step))
-        .copied()
-        .filter(|x| x.is_finite())
-        .collect();
-    if v.is_empty() {
-        return (0.0, 1.0);
-    }
-    let q = legume_numeric::matrix::utils::quantiles(&v, &[0.001, 0.999]);
-    let (lo, hi) = (q[0] as f64, q[1] as f64);
-    let pad = ((hi - lo) * 0.02).max(1e-6);
-    match a {
-        Axis::EditRatio => (0.0, 1.0),
-        Axis::Coverage | Axis::Converted | Axis::Cells | Axis::Pvalue => (lo.min(0.0), hi + pad),
-        _ => (lo - pad, hi + pad),
-    }
-}
-
 /// One panel's sites, binned: kept and removed per square, and the sites
 /// in the box where both drawn thresholds pass.
 #[derive(Clone, Debug)]
@@ -360,6 +419,8 @@ pub struct Grid {
     pub xr: (f64, f64),
     pub yr: (f64, f64),
     pub squares: Squares,
+    /// Each axis' ticks along its line, from its ruler.
+    pub ticks: [Vec<(f64, String)>; 2],
     /// The box, on the drawn scales (an open end at the range's).
     pub xbox: (f64, f64),
     pub ybox: (f64, f64),
@@ -374,7 +435,8 @@ pub struct Grid {
 pub fn grid(s: &Sites, (x, y): (Axis, Axis), f: &SiteFilterArgs, bins: usize) -> Grid {
     use rayon::prelude::*;
     let (cx, cy) = (s.column(x), s.column(y));
-    let (xr, yr) = (cx.range, cy.range);
+    let (rx, ry) = (s.ruler(x, f), s.ruler(y, f));
+    let (xr, yr) = (rx.span(), ry.span());
     let open = |(lo, hi): (Option<f64>, Option<f64>)| {
         (lo.unwrap_or(f64::NEG_INFINITY), hi.unwrap_or(f64::INFINITY))
     };
@@ -425,6 +487,7 @@ pub fn grid(s: &Sites, (x, y): (Axis, Axis), f: &SiteFilterArgs, bins: usize) ->
         xr,
         yr,
         squares: Squares::new(bins, kept, removed),
+        ticks: [rx.ticks(), ry.ticks()],
         xbox: (xlo.max(xr.0), xhi.min(xr.1)),
         ybox: (ylo.max(yr.0), yhi.min(yr.1)),
         in_kept,
@@ -453,7 +516,7 @@ impl Grid {
     /// `title` over it (none when empty).
     pub fn draw(&self, canvas: &mut Canvas, (x, y, w, h): (f64, f64, f64, f64), title: &str) {
         let head = if title.is_empty() { 0.0 } else { 14.0 };
-        let plot = Plot::new((x, y + head, w, h - head), self.xr, self.yr);
+        let plot = Plot::on(canvas, (x, y + head, w, h - head), self.xr, self.yr);
         if !title.is_empty() {
             canvas.text(plot.px, y + 10.0, title, 10.0, Anchor::Start, INK);
         }
@@ -471,27 +534,12 @@ impl Grid {
                 canvas.dashed(a, b, c, d, INK, 1.0);
             }
         }
-        let ticks = [self.x.ticks(self.xr), self.y.ticks(self.yr)];
         plot.axes(
             canvas,
-            [&ticks[0], &ticks[1]],
+            [&self.ticks[0], &self.ticks[1]],
             [self.x.name(), self.y.name()],
         );
     }
-}
-
-/// About five round ticks within `r` (legume-tui's), and their step.
-fn round_ticks((lo, hi): (f64, f64)) -> (Vec<f64>, f64) {
-    let values = legume_tui::hist::Axis::linear(lo, hi).ticks();
-    let step = match values.as_slice() {
-        [a, b, ..] => b - a,
-        _ => 1.0,
-    };
-    // -0 written as 0.
-    let values = (values.into_iter())
-        .map(|v| if v.abs() < step * 1e-9 { 0.0 } else { v })
-        .collect();
-    (values, step)
 }
 
 /// Auto's `k` pairs over `s` as panels: the axes and why each was picked.
@@ -502,24 +550,30 @@ pub fn auto_panels(s: &Sites, k: usize) -> Vec<(Axis, Axis, String)> {
 }
 
 /// The panels of `pairs` (with why each was picked) over `s` at `f`, as one
-/// figure of `w` by `h`: two by two, the legend over them, the panels
-/// binned in parallel.
+/// figure of `w` by `h` in `style`: two by two, the legend over them, the
+/// panels binned in parallel. Alone (`--panel-only`), the panels' squares,
+/// boxes, axes and axis titles only.
 pub fn figure(
     s: &Sites,
     pairs: &[(Axis, Axis, String)],
     f: &SiteFilterArgs,
     (w, h): (f64, f64),
     title: &str,
+    style: &crate::figure::style::Style,
 ) -> String {
     use rayon::prelude::*;
     let grids: Vec<Grid> = (pairs.par_iter())
         .map(|(x, y, _)| grid(s, (*x, *y), f, BINS))
         .collect();
-    crate::figure::svg(w, h, |c| {
+    let mut canvas = Canvas::styled(w, h, &style.for_boxes());
+    let c = &mut canvas;
+    let alone = style.panel_only;
+    if !alone {
         c.text(12.0, 16.0, title, 11.0, Anchor::Start, INK);
+        let roles = style.palette.roles();
         let key = [
-            (12.0, KEPT, "kept by every threshold"),
-            (150.0, REMOVED, "removed by at least one"),
+            (12.0, roles.kept, "kept by every threshold"),
+            (150.0, roles.removed, "removed by at least one"),
         ];
         for (x, colour, said) in key {
             c.rect(x, 24.0, 9.0, 9.0, colour);
@@ -527,22 +581,29 @@ pub fn figure(
         }
         let note = "darker: more sites · dashed: where both drawn thresholds pass";
         c.text(300.0, 32.0, note, 9.0, Anchor::Start, MUTED);
-        let (top, cols) = (40.0, 2usize);
-        let rows = pairs.len().div_ceil(cols).max(1);
-        let (pw, ph) = ((w - 12.0) / cols as f64, (h - top) / rows as f64);
-        for (k, ((x, y, why), g)) in pairs.iter().zip(&grids).enumerate() {
-            let (cx, cy) = (6.0 + (k % cols) as f64 * pw, top + (k / cols) as f64 * ph);
-            let title = format!("{} by {}", y.short(), x.short());
-            g.draw(c, (cx, cy, pw - 6.0, ph - 22.0), &title);
-            c.text(
-                cx + 6.0,
-                cy + ph - 12.0,
-                &g.in_box(false),
-                8.0,
-                Anchor::Start,
-                MUTED,
-            );
-            c.text(cx + 6.0, cy + ph - 3.0, why, 7.5, Anchor::Start, MUTED);
+    }
+    // Room over the panels for the key, and under each for its notes.
+    let (top, notes) = if alone { (0.0, 0.0) } else { (40.0, 22.0) };
+    let cols = 2usize;
+    let rows = pairs.len().div_ceil(cols).max(1);
+    let (pw, ph) = ((w - 12.0) / cols as f64, (h - top) / rows as f64);
+    for (k, ((x, y, why), g)) in pairs.iter().zip(&grids).enumerate() {
+        let (cx, cy) = (6.0 + (k % cols) as f64 * pw, top + (k / cols) as f64 * ph);
+        if alone {
+            g.draw(c, (cx, cy, pw - 6.0, ph), "");
+            continue;
         }
-    })
+        let title = format!("{} by {}", y.short(), x.short());
+        g.draw(c, (cx, cy, pw - 6.0, ph - notes), &title);
+        c.text(
+            cx + 6.0,
+            cy + ph - 12.0,
+            &g.in_box(false),
+            8.0,
+            Anchor::Start,
+            MUTED,
+        );
+        c.text(cx + 6.0, cy + ph - 3.0, why, 7.5, Anchor::Start, MUTED);
+    }
+    canvas.finish()
 }

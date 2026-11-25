@@ -53,7 +53,7 @@ mcp = ["dep:legume-mcp"]
 hdf5 = ["data-beans/hdf5"]
 
 [dependencies]
-data-beans = { version = "0.14", default-features = false, features = ["aux", "tui"] }
+data-beans = { version = "0.14.2", default-features = false, features = ["aux", "tui"] }
 # Detachable sessions for the views, the image protocol of the attached
 # terminal, the runner of the child `faba run` follows, and the file
 # browser, flag form and command scripts the views share.
