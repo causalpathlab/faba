@@ -42,6 +42,8 @@ fn args(hist: &[&str], pairs: &[&str], marginals: &[&str], scale: &[&str]) -> Pa
         marginals: own(marginals),
         scale: own(scale),
         bins: None,
+        xlab: Vec::new(),
+        ylab: Vec::new(),
     }
 }
 
@@ -105,6 +107,62 @@ fn the_panels_asked_for_are_read_by_name() {
         .unwrap_err()
         .to_string();
     assert!(e.contains("bogus") && e.contains("edit_ratio"), "{e}");
+}
+
+/// `--xlab` and `--ylab` title a quantity's axis, `q=TEXT`, in every
+/// panel of it: on the axis named, else on the other; `--ylab sites=`
+/// titles the histograms' counts. The rest keep their own titles; a title
+/// that names no quantity is refused.
+#[test]
+fn axis_titles_are_given_by_quantity() {
+    use Quantity::*;
+    let mut a = args(&["pv", "cells"], &["pv:cells", "cells:coverage"], &[], &[]);
+    a.xlab = vec!["pv=-log10 p (wt vs. mut)".into()];
+    a.ylab = vec![
+        "cells=cells with a converted read".into(),
+        "sites=number of sites".into(),
+    ];
+    let plan = a.plan().unwrap();
+    let t = many(300);
+    let n = cells(t.len());
+    let s = sheet(144.0, 130.0, Some(7.0), true);
+    let p = Panels::new(&t, Some(&n), &Cut::none(), &plan, s, true).unwrap();
+    let h = p.hist(Pvalue);
+    assert_eq!(
+        (&*h.x_title, &*h.y_title),
+        ("-log10 p (wt vs. mut)", "number of sites")
+    );
+    assert_eq!(p.hist(Cells).x_title, "cells with a converted read");
+    let d = p.pair(Pvalue, Cells);
+    assert_eq!(
+        (&*d.x_title, &*d.y_title),
+        ("-log10 p (wt vs. mut)", "cells with a converted read")
+    );
+    let d = p.pair(Cells, Coverage);
+    assert_eq!(
+        (&*d.x_title, &*d.y_title),
+        ("cells with a converted read", "coverage")
+    );
+    let svg = p.figures().into_iter().map(|f| f.svg).collect::<String>();
+    assert!(svg.contains(">-log10 p (wt vs. mut)<"), "{svg}");
+    assert!(svg.contains(">cells with a converted read<"), "{svg}");
+    // Without any, each its own.
+    let plain = args(&["pv"], &["none"], &[], &[]).plan().unwrap();
+    let p = Panels::new(&t, Some(&n), &Cut::none(), &plain, s, true).unwrap();
+    let h = p.hist(Pvalue);
+    assert_eq!((&*h.x_title, &*h.y_title), ("-log10 p", "sites"));
+    for (x, y) in [
+        (&["-log10 p"][..], &[][..]),
+        (&["bogus=TEXT1"], &[]),
+        (&["sites=TEXT1"], &[]),
+        (&[], &["pv"]),
+    ] {
+        let mut bad = args(&[], &[], &[], &[]);
+        bad.xlab = x.iter().map(|s| s.to_string()).collect();
+        bad.ylab = y.iter().map(|s| s.to_string()).collect();
+        let e = bad.plan().unwrap_err().to_string();
+        assert!(e.contains("--xlab") || e.contains("--ylab"), "{e}");
+    }
 }
 
 /// The sites `faba qc`'s 2D view reads, with every criterion and the fail

@@ -5,7 +5,7 @@
 //! site itself (position 0) is marked in the accent colour. A cursor reads
 //! out a position's counts.
 
-use crate::figure::style::Sheet;
+use crate::figure::style::{AxisTitles, Palette, Sheet};
 use crate::tui::ui::{header, help_line, panel, Screen, DIM, HIGHLIGHT, PLAIN};
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
@@ -31,9 +31,19 @@ const BASE_RGB: [(u8, u8, u8); 4] = [
     (0xd6, 0x28, 0x39),
 ];
 
-fn base_hex(b: usize) -> String {
-    let (r, g, bl) = BASE_RGB[b];
-    format!("#{r:02x}{g:02x}{bl:02x}")
+/// The letters' shades in [`BASES`] order for `--palette gray`, dark to
+/// light, each its own.
+const BASE_GRAY: [&str; 4] = ["#1a1a1a", "#555555", "#8c8c8c", "#bfbfbf"];
+
+/// Base `b`'s fill in `palette`: the logo colours, or a gray of its own.
+fn base_fill(b: usize, palette: Palette) -> String {
+    match palette {
+        Palette::Colour => {
+            let (r, g, bl) = BASE_RGB[b];
+            format!("#{r:02x}{g:02x}{bl:02x}")
+        }
+        Palette::Gray => BASE_GRAY[b].into(),
+    }
 }
 
 fn base_style(b: usize) -> Style {
@@ -172,6 +182,8 @@ pub struct PwmView {
     offset: usize,
     controls: Controls,
     plot: PlotImage,
+    /// The axis titles asked for, in place of the logo's own.
+    titles: AxisTitles,
     done: bool,
 }
 
@@ -193,6 +205,7 @@ impl PwmView {
             controls: Controls::new("pwm_logo"),
             drawn: Rect::default(),
             plot: PlotImage::default(),
+            titles: AxisTitles::default(),
             done: false,
         }
     }
@@ -279,7 +292,14 @@ impl PwmView {
         }
         c.line(left, top, left, top + ph, INK, 0.6);
         c.line(left, top + ph, left + cw * n as f64, top + ph, INK, 0.6);
-        c.vtext(x0 + 18.0, top + ph / 2.0, self.mode.name(), 9.0, MUTED);
+        let y_title = self.titles.y(self.mode.name());
+        c.vtext(x0 + 18.0, top + ph / 2.0, &y_title, 9.0, MUTED);
+        let palette = c.style().palette;
+        let site = match palette {
+            Palette::Colour => ACCENT,
+            Palette::Gray => INK,
+        };
+        let every = self.label_step(cw);
         for (j, col) in self.columns.iter().enumerate() {
             let x = left + j as f64 * cw;
             let heights = col.heights(self.mode);
@@ -288,15 +308,15 @@ impl PwmView {
             for &b in &order {
                 let lh = heights[b] / top_value * ph;
                 y -= lh;
-                c.glyph(x + 0.5, y, cw - 1.0, lh, BASES[b], &base_hex(b));
+                c.glyph(x + 0.5, y, cw - 1.0, lh, BASES[b], &base_fill(b, palette));
             }
             let rel = self.rel(j);
             if rel == 0 {
-                // The site: an accent tick under the axis.
-                c.rect(x + 0.5, top + ph + 1.0, cw - 1.0, 2.5, ACCENT);
+                // The site: a tick under the axis.
+                c.rect(x + 0.5, top + ph + 1.0, cw - 1.0, 2.5, site);
             }
-            if rel % 5 == 0 || n <= 25 {
-                let colour = if rel == 0 { ACCENT } else { INK };
+            if rel % every == 0 {
+                let colour = if rel == 0 { site } else { INK };
                 let label = rel.to_string();
                 c.text(
                     x + cw / 2.0,
@@ -315,11 +335,30 @@ impl PwmView {
         c.text(
             mid,
             top + ph + 34.0,
-            "position relative to the site",
+            &self.titles.x("position relative to the site"),
             8.0,
             Anchor::Middle,
             MUTED,
         );
+    }
+
+    /// Every how many positions a label is drawn under columns `cw`
+    /// points wide (at 8-point text): every one, else every 5, 10, 25, 50
+    /// and so on, the first whose labels keep apart. 0 is always one.
+    fn label_step(&self, cw: f64) -> i64 {
+        let last = self.rel(self.columns.len().saturating_sub(1));
+        let chars = [self.first, last].map(|r| r.to_string().chars().count());
+        // About 0.56 em a character, and a space between.
+        let room = (chars.into_iter().max().unwrap_or(1) as f64 + 1.0) * 0.56 * 8.0;
+        let fits = |step: i64| step as f64 * cw >= room;
+        let mut step = 1;
+        for next in [5, 10, 25, 50, 100, 250, 500, 1000] {
+            if fits(step) {
+                break;
+            }
+            step = next;
+        }
+        step
     }
 
     /// Draw the stacks into `area`: letters over all rows but the last two
@@ -572,9 +611,17 @@ pub fn least(columns: usize) -> (f64, f64) {
 
 /// The logo as the view first shows it, drawn without a terminal, laid out
 /// for `sheet` (see [`crate::figure::SizeArgs`] and
-/// [`crate::figure::style::StyleArgs`]).
-pub fn figure(title: &str, pwm: &[DnaBaseCount], window: i64, sheet: Sheet) -> String {
-    PwmView::new(title, pwm, window).figure(sheet)
+/// [`crate::figure::style::StyleArgs`]), its axes titled as `titles` asks.
+pub fn figure(
+    title: &str,
+    pwm: &[DnaBaseCount],
+    window: i64,
+    sheet: Sheet,
+    titles: &AxisTitles,
+) -> String {
+    let mut view = PwmView::new(title, pwm, window);
+    view.titles = titles.clone();
+    view.figure(sheet)
 }
 
 /// Show the logo full screen until the user quits.

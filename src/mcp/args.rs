@@ -651,4 +651,34 @@ mod tests {
         let e = typed_flags("qc", &Arguments(json!({ "palette": "blue" }))).unwrap_err();
         assert!(e.to_string().contains("one of colour, gray"), "{e}");
     }
+
+    /// Axis titles: a text each on the logo and the profile, a `q=TEXT`
+    /// each quantity on the site panels, each value whole however it reads
+    /// (one led by `-` joined to its flag, lest it read as one).
+    #[test]
+    fn figure_tools_take_axis_titles() {
+        let a = Arguments(json!({ "xlab": "-log10 p (wt vs. mut)", "ylab": "TEXT1, TEXT2" }));
+        for tool in ["metagene", "pwm"] {
+            assert_eq!(
+                typed_flags(tool, &a).unwrap(),
+                ["--xlab=-log10 p (wt vs. mut)", "--ylab", "TEXT1, TEXT2"],
+                "{tool}"
+            );
+        }
+        let a = Arguments(json!({
+            "xlab": ["pv=-log10 p (wt vs. mut)", "fold=TEXT1, TEXT2"],
+            "ylab": ["cells=cells with a converted read"],
+        }));
+        assert_eq!(
+            typed_flags("site_plot", &a).unwrap(),
+            [
+                "--xlab",
+                "pv=-log10 p (wt vs. mut)",
+                "--xlab",
+                "fold=TEXT1, TEXT2",
+                "--ylab",
+                "cells=cells with a converted read"
+            ]
+        );
+    }
 }

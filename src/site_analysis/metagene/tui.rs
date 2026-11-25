@@ -9,7 +9,7 @@
 //! unconverted reads, both, and the sites), each region in its colour, as
 //! `faba qc` draws its metagene.
 
-use crate::figure::style::Sheet;
+use crate::figure::style::{AxisTitles, Sheet};
 use crate::tui::ui::{header, help_line, panel, Scale, Screen, DIM, HIGHLIGHT};
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -22,7 +22,7 @@ use crate::figure::{self, Anchor, Bars, Canvas, Controls, Key, INK, MUTED};
 use crate::site_analysis::show::Show;
 
 use super::{
-    region_key, GeneFeatureHistogram, RegionGlyphs, CDS, NCRNA, REGION_COLOURS, REGION_NAMES, UTR3,
+    region_fill, region_key, GeneFeatureHistogram, RegionGlyphs, CDS, NCRNA, REGION_NAMES, UTR3,
     UTR5,
 };
 
@@ -144,6 +144,8 @@ pub struct MetageneView<'a> {
     show: Show,
     controls: Controls,
     plot: PlotImage,
+    /// The axis titles asked for, in place of the profile's own.
+    titles: AxisTitles,
     done: bool,
 }
 
@@ -170,6 +172,7 @@ impl<'a> MetageneView<'a> {
             controls: Controls::new("metagene"),
             drawn: Rect::default(),
             plot: PlotImage::default(),
+            titles: AxisTitles::default(),
             done: false,
         };
         view.cursor_to_start();
@@ -267,23 +270,35 @@ impl<'a> MetageneView<'a> {
             self.draw_track(&mut c, (0.0, 0.0, w, h), None, String::new());
             return c.finish();
         }
-        c.bold(16.0, 22.0, &self.title, 12.0, Anchor::Start, INK);
+        // The title and the regions' totals within the page's width: the
+        // title shortened from the front, the totals wrapped onto further
+        // lines, the bars below them taking the rest.
+        let room = w - 24.0;
+        let title = fit_from_front(&self.title, room, c.label_size(12.0) * 0.6);
+        c.bold(16.0, 22.0, &title, 12.0, Anchor::Start, INK);
         let totals: Vec<String> = self
             .track
             .regions()
             .iter()
             .map(|&r| format!("{} {}", REGION_NAMES[r], count_text(self.region_total(r))))
             .collect();
-        c.text(
-            16.0,
-            38.0,
-            &format!("{} per region: {}", self.unit(), totals.join(", ")),
-            9.0,
-            Anchor::Start,
-            MUTED,
-        );
+        let head = format!("{} per region:", self.unit());
+        let per = c.label_size(9.0) * 0.56;
+        let lines = wrap_list(&head, &totals, (room / per) as usize);
+        let step = 1.2 * c.label_size(9.0);
+        for (i, line) in lines.iter().enumerate() {
+            c.text(
+                16.0,
+                38.0 + step * i as f64,
+                line,
+                9.0,
+                Anchor::Start,
+                MUTED,
+            );
+        }
+        let below = step * lines.len().saturating_sub(1) as f64;
         let title = format!("{} bin(s) per bar", self.shown_merge);
-        let track = (8.0, 48.0, w - 16.0, h - 56.0);
+        let track = (8.0, 48.0 + below, w - 16.0, h - 56.0 - below);
         self.draw_track(&mut c, track, None, title);
         c.finish()
     }
@@ -304,12 +319,13 @@ impl<'a> MetageneView<'a> {
             .map(|(i, _)| i)
             .filter(|&i| i > 0)
             .collect();
+        let palette = c.style().palette;
         Bars {
             rotated: false,
             values: &values,
             front: front.as_deref(),
             accent: &|_| false,
-            colour: &|i| REGION_COLOURS[bars[i].region],
+            colour: &|i| region_fill(bars[i].region, palette),
             y_scale: self.y_scale,
             y_max: None,
             ticks,
@@ -317,8 +333,8 @@ impl<'a> MetageneView<'a> {
             marks: Vec::new(),
             dividers,
             title,
-            x_title: "metagene position (MetaPlotR scale)".into(),
-            y_title: self.unit(),
+            x_title: self.titles.x("metagene position (MetaPlotR scale)"),
+            y_title: self.titles.y(&self.unit()),
         }
         .draw(c, x, y, w, h);
     }
@@ -554,9 +570,48 @@ pub const LEAST: (f64, f64) = (360.0, 200.0);
 
 /// The profile as the view first shows it, drawn without a terminal, laid
 /// out for `sheet` (see [`crate::figure::SizeArgs`] and
-/// [`crate::figure::style::StyleArgs`]).
-pub fn figure(title: &str, hist: &GeneFeatureHistogram, sheet: Sheet) -> String {
-    MetageneView::new(title, hist).figure(sheet)
+/// [`crate::figure::style::StyleArgs`]), its axes titled as `titles` asks.
+pub fn figure(
+    title: &str,
+    hist: &GeneFeatureHistogram,
+    sheet: Sheet,
+    titles: &AxisTitles,
+) -> String {
+    let mut view = MetageneView::new(title, hist);
+    view.titles = titles.clone();
+    view.figure(sheet)
+}
+
+/// `s` in at most `room` points, `per` points a character: as it is, or
+/// shortened from the front behind an ellipsis.
+fn fit_from_front(s: &str, room: f64, per: f64) -> String {
+    let (n, fits) = (s.chars().count(), (room / per) as usize);
+    match n > fits && fits > 1 {
+        true => std::iter::once('…')
+            .chain(s.chars().skip(n + 1 - fits))
+            .collect(),
+        false => s.to_string(),
+    }
+}
+
+/// `head` and then `items`, comma-separated, as lines of at most `fits`
+/// characters, broken only between items; an item longer than a line has
+/// one of its own.
+fn wrap_list(head: &str, items: &[String], fits: usize) -> Vec<String> {
+    let mut lines = vec![head.to_string()];
+    for (i, item) in items.iter().enumerate() {
+        let last = lines.last_mut().expect("a line");
+        let comma = if i + 1 < items.len() { "," } else { "" };
+        let n = last.chars().count() + 1 + item.chars().count() + comma.len();
+        if n <= fits {
+            last.push(' ');
+            last.push_str(item);
+            last.push_str(comma);
+        } else {
+            lines.push(format!("{item}{comma}"));
+        }
+    }
+    lines
 }
 
 /// Show the profile full screen until the user quits.

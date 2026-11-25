@@ -144,9 +144,15 @@ impl Canvas {
     /// given, or the layout's own 8 points when every label is set at the
     /// font, which the scale prints at that font.
     fn size(&self, size: f64) -> String {
+        self.label_size(size).to_string()
+    }
+
+    /// The size, in the layout's points, a label laid out at `size` is
+    /// written at (see [`Canvas::size`]): what its width is reckoned by.
+    pub fn label_size(&self, size: f64) -> f64 {
         match self.style.uniform {
-            true => style::OWN_FONT.to_string(),
-            false => size.to_string(),
+            true => style::OWN_FONT,
+            false => size,
         }
     }
 
@@ -1324,6 +1330,52 @@ pub(crate) fn labels(svg: &str) -> Vec<(String, String, Option<f64>)> {
         out.push((size, text.unwrap_or("").into(), y.map(|y| y * scale)));
     }
     out
+}
+
+/// Each `<text>` of `svg` as the box it takes, left, top, right, bottom,
+/// with what it says (unescaped): about 0.55 of its size a character
+/// across, 0.75 above its baseline and 0.25 below; a turned one centred on
+/// its anchor. Sequence-logo letters (scaled to their boxes) are left out.
+#[cfg(test)]
+pub(crate) fn text_boxes(svg: &str) -> Vec<((f64, f64, f64, f64), String)> {
+    let attr = |l: &str, name: &str| -> Option<String> {
+        let key = format!(" {name}=\"");
+        let start = l.find(&key)? + key.len();
+        Some(l[start..start + l[start..].find('"')?].to_string())
+    };
+    let num = |l: &str, name: &str| attr(l, name).unwrap().parse::<f64>().unwrap();
+    (svg.lines()
+        .filter(|l| l.starts_with("<text") && !l.contains(" scale(")))
+    .map(|l| {
+        let s = l[l.find('>').unwrap() + 1..l.rfind("</text>").unwrap()]
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&quot;", "\"")
+            .replace("&apos;", "'")
+            .replace("&amp;", "&");
+        let size = num(l, "font-size");
+        let w = s.chars().count() as f64 * size * 0.55;
+        let (up, down) = (0.75 * size, 0.25 * size);
+        let b = match attr(l, "transform") {
+            Some(t) => {
+                let inner = &t["translate(".len()..t.find(')').unwrap()];
+                let mut it = inner.split([' ', ',']).map(|v| v.parse::<f64>().unwrap());
+                let (x, y) = (it.next().unwrap(), it.next().unwrap());
+                (x - up, y - w / 2.0, x + down, y + w / 2.0)
+            }
+            None => {
+                let (x, y) = (num(l, "x"), num(l, "y"));
+                let left = match attr(l, "text-anchor").as_deref() {
+                    Some("middle") => x - w / 2.0,
+                    Some("end") => x - w,
+                    _ => x,
+                };
+                (left, y - up, left + w, y + down)
+            }
+        };
+        (b, s)
+    })
+    .collect()
 }
 
 /// A short fingerprint of a drawing (FNV-1a), for tests that pin a

@@ -72,6 +72,73 @@ pub struct PanelArgs {
         help = "Bins along each quantity's axis (default: about one per 6 points of the figure's width, 20 to 60)"
     )]
     pub bins: Option<usize>,
+
+    #[arg(
+        long = "xlab",
+        value_name = "Q=TEXT",
+        allow_hyphen_values = true,
+        help = "A quantity's axis title on x, e.g. pv=\"-log10 p (wt vs. mut)\"; repeat for more (default: the quantity's name)"
+    )]
+    pub xlab: Vec<String>,
+
+    #[arg(
+        long = "ylab",
+        value_name = "Q=TEXT",
+        allow_hyphen_values = true,
+        help = "A quantity's axis title on y, e.g. cells=\"cells with a converted read\"; sites=TEXT for the histograms' counts; repeat for more"
+    )]
+    pub ylab: Vec<String>,
+}
+
+/// Axis titles asked for (`--xlab`, `--ylab`), by quantity: a quantity's
+/// title on the axis it was given for, else on the other, else its name;
+/// the histograms' counts their own.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Titles {
+    x: [Option<String>; 7],
+    y: [Option<String>; 7],
+    sites: Option<String>,
+}
+
+impl Titles {
+    /// `--xlab` and `--ylab`, each `q=TEXT`.
+    fn parse(xlab: &[String], ylab: &[String]) -> anyhow::Result<Self> {
+        let mut t = Self::default();
+        for (flag, given, y) in [("--xlab", xlab, false), ("--ylab", ylab, true)] {
+            for g in given {
+                let Some((q, text)) = g.split_once('=') else {
+                    anyhow::bail!("{flag} {g}: write a title as q=TEXT, e.g. pv=TEXT");
+                };
+                let q = q.trim();
+                if q.eq_ignore_ascii_case("sites") {
+                    anyhow::ensure!(y, "{flag} {g}: sites are counted on y; give it with --ylab");
+                    t.sites = Some(text.into());
+                    continue;
+                }
+                let q = Quantity::parse(q).map_err(|e| anyhow::anyhow!("{flag} {g}: {e}"))?;
+                let at = if y { &mut t.y } else { &mut t.x };
+                at[q as usize] = Some(text.into());
+            }
+        }
+        Ok(t)
+    }
+
+    /// `q`'s title on x.
+    pub fn x(&self, q: Quantity) -> String {
+        let at = q as usize;
+        (self.x[at].as_ref().or(self.y[at].as_ref())).map_or_else(|| q.title().into(), Clone::clone)
+    }
+
+    /// `q`'s title on y.
+    pub fn y(&self, q: Quantity) -> String {
+        let at = q as usize;
+        (self.y[at].as_ref().or(self.x[at].as_ref())).map_or_else(|| q.title().into(), Clone::clone)
+    }
+
+    /// The histograms' counts' title.
+    pub fn sites(&self) -> String {
+        self.sites.clone().unwrap_or_else(|| "sites".into())
+    }
 }
 
 /// What was asked for, or Auto's.
@@ -89,6 +156,7 @@ pub struct Plan {
     pub marginals: Marginals,
     pub scales: Scales,
     pub bins: Option<usize>,
+    pub titles: Titles,
 }
 
 impl Plan {
@@ -145,6 +213,7 @@ impl PanelArgs {
             marginals,
             scales: Scales::parse(&self.scale)?,
             bins: self.bins,
+            titles: Titles::parse(&self.xlab, &self.ylab)?,
         })
     }
 }
@@ -305,6 +374,7 @@ pub struct Panels<'a> {
     marginals: Marginals,
     kept: Option<Vec<bool>>,
     drawn: [Option<Drawn<'a>>; 7],
+    titles: Titles,
     sheet: Sheet,
 }
 
@@ -438,6 +508,7 @@ impl<'a> Panels<'a> {
             marginals: plan.marginals,
             kept,
             drawn,
+            titles: plan.titles.clone(),
             sheet,
         })
     }
@@ -481,6 +552,7 @@ impl<'a> Panels<'a> {
             marginals: plan.marginals,
             kept,
             drawn,
+            titles: plan.titles.clone(),
             sheet,
         })
     }
@@ -533,8 +605,8 @@ impl<'a> Panels<'a> {
             values: &d.values,
             kept: self.kept.as_deref(),
             edges: d.edges.clone(),
-            x_title: q.title().into(),
-            y_title: "sites".into(),
+            x_title: self.titles.x(q),
+            y_title: self.titles.sites(),
             title: self.title(q.title().into()),
         }
     }
@@ -557,8 +629,8 @@ impl<'a> Panels<'a> {
             kept: self.kept.as_deref(),
             x_edges: dx.edges.clone(),
             y_edges: dy.edges.clone(),
-            x_title: x.title().into(),
-            y_title: y.title().into(),
+            x_title: self.titles.x(x),
+            y_title: self.titles.y(y),
             title: self.title(format!("{} by {}", y.title(), x.title())),
             marginals: self.marginals,
         }
