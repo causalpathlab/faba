@@ -72,13 +72,25 @@ fn the_view_style_draws_what_the_view_draws() {
                 assert_eq!(ours[at].svg, view, "{stem} {palette:?} {alone}");
                 // `faba site-plot` counts the cells over every cell (no
                 // cell QC): its cells are not called kept.
+                // Its x title, the one thing apart, is placed to fit as long
+                // as it is: the rest is the view's.
                 let kept = "kept cells with a converted read";
-                let over_all = view.replace(kept, "cells with a converted read");
-                assert_eq!(theirs[at].svg, over_all, "{stem} {palette:?} {alone}");
+                let all = "cells with a converted read";
+                let untitled = |svg: &str| {
+                    (svg.lines())
+                        .filter(|l| !l.contains(all))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                };
+                assert_eq!(
+                    untitled(&theirs[at].svg),
+                    untitled(&view),
+                    "{stem} {palette:?} {alone}"
+                );
                 let counted = c == Criterion::MinCells;
                 assert_eq!(view.contains(kept), counted, "{stem}");
                 assert!(!theirs[at].svg.contains(kept), "{stem}");
-                assert_eq!(over_all.contains("cells with a converted read"), counted);
+                assert_eq!(theirs[at].svg.contains(all), counted);
             }
             let g = crate::qc::pairs::grid(
                 &p.view().sites(),
@@ -87,7 +99,12 @@ fn the_view_style_draws_what_the_view_draws() {
                 crate::qc::pairs::BINS,
             );
             let title = if alone { "" } else { "cells by -log10 p" };
-            let view = drawn(sheet, |canvas, b| g.draw(canvas, b, title));
+            let how = crate::qc::pairs::PairLook {
+                arms: Default::default(),
+                titles: Some(&plan.titles),
+            };
+            let none = (Default::default(), 0.0);
+            let view = drawn(sheet, |canvas, b| g.draw_with(canvas, b, title, none, &how));
             assert_eq!(ours[3].stem, "m6a_cells_vs_pv");
             assert_eq!(ours[3].svg, view, "pair {palette:?} {alone}");
             assert_eq!(theirs[3].svg, view, "pair {palette:?} {alone}");
@@ -156,4 +173,115 @@ fn bins_set_the_view_styles_histograms() {
         assert_eq!(a.stem, b.stem);
         assert_ne!(a.svg, b.svg, "{}: --bins 8 drawn as the view's own", a.stem);
     }
+}
+
+/// Made-up m6A sites with a control arm, spread as real ones are: most
+/// near-uniform, a third with a strong signal; their cells per site.
+fn made_up(n: usize) -> (SiteTable, Vec<usize>) {
+    let mut seed = 0x2545_f491_4f6c_dd1du64;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        (seed >> 11) as f64 / (1u64 << 53) as f64
+    };
+    let mut cells = Vec::with_capacity(n);
+    let rows: Vec<crate::qc::fixtures::Row> = (0..n)
+        .map(|_| {
+            let strong = next() < 0.35;
+            let cov = (3.0 * (next() * 4.5).exp()) as u64 + 1;
+            let ctl_cov = (2.0 * (next() * 4.2).exp()) as u64;
+            let rate = if strong {
+                0.1 + 0.5 * next()
+            } else {
+                0.02 * next()
+            };
+            let conv = ((cov as f64) * rate * (0.5 + next())) as u64 % (cov + 1);
+            let ctl_conv = ((ctl_cov as f64) * 0.02 * next() * 2.0) as u64 % (ctl_cov + 1);
+            let pv = match strong {
+                true => 10f64.powf(-1.0 - 25.0 * next() * next()) as f32,
+                false => next().max(1e-3) as f32,
+            };
+            let pv = if next() < 0.01 { 0.0 } else { pv };
+            cells.push((conv as f64 * (0.3 + next())) as usize);
+            (pv, cov, conv, ctl_cov, ctl_conv)
+        })
+        .collect();
+    (
+        crate::qc::fixtures::site_table(M6A, 50, &rows, |i| i),
+        cells,
+    )
+}
+
+/// Mock-ups of the view style, from made-up m6A sites with a control arm,
+/// 2.4 by 1.8 inches at 7 points, in gray: histograms of pv, cells,
+/// coverage and the edit ratio, two pairs with short marginals, one with
+/// the control arm in front; and the view on screen at 160 by 44. Written
+/// where `FABA_MOCKUPS_DIR` names, the screen where `FABA_SCREENSHOTS_DIR`
+/// does.
+#[test]
+#[ignore = "writes mock-ups to look at; run by hand"]
+fn view_style_mockups() {
+    let Some(dir) = std::env::var_os("FABA_MOCKUPS_DIR") else {
+        eprintln!("FABA_MOCKUPS_DIR is not set");
+        return;
+    };
+    let dir = std::path::PathBuf::from(dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (t, n) = made_up(6000);
+    let cut = crate::qc::site_plot::Thresholds {
+        site_max_pv: Some(0.05),
+        site_min_cells: Some(10),
+        site_min_coverage: Some(10),
+        site_min_edit_ratio: Some(0.05),
+        ..Default::default()
+    }
+    .cut();
+    let sheet = sheet(Palette::Gray, true);
+    let draw = |args: PanelArgs, suffix: &str| {
+        let plan = args.plan().unwrap();
+        let figures = Panels::new(&t, Some(&n), &cut, &plan, sheet, true)
+            .unwrap()
+            .figures();
+        for f in figures {
+            let prefix = dir.join(format!("{}{suffix}", f.stem));
+            crate::figure::save_with_png(&f.svg, &prefix.to_string_lossy()).unwrap();
+        }
+    };
+    let view = |hist: &[&str], pairs: &[&str]| PanelArgs {
+        hist: hist.iter().map(|s| s.to_string()).collect(),
+        pairs: pairs.iter().map(|s| s.to_string()).collect(),
+        style: PanelStyle::View,
+        marginals: vec!["both".into()],
+        marginal_size: Some(0.12),
+        key: true,
+        ..PanelArgs::default()
+    };
+    draw(
+        view(
+            &["pv", "cells", "coverage", "edit_ratio"],
+            &["pv:cells", "coverage:edit_ratio"],
+        ),
+        "",
+    );
+    let front = PanelArgs {
+        front: Some(crate::qc::arms::Front::Mut),
+        ..view(&["coverage"], &["coverage:edit_ratio"])
+    };
+    draw(front, "_front_mut");
+    let mut p = picker(&t, Some(n.clone()), cut.filter.clone());
+    focus_on(&mut p, Criterion::MinCoverage);
+    let mut term = Terminal::new(TestBackend::new(160, 44)).unwrap();
+    term.draw(|f| p.render(f)).unwrap();
+    // Where `FABA_SCREENSHOTS_DIR` names (the same folder, set by hand).
+    crate::tui::screenshot::save("qc_view_screen", term.backend().buffer());
+    let save = |stem: &str, svg: &str| {
+        let prefix = dir.join(stem);
+        crate::figure::save_with_png(svg, &prefix.to_string_lossy()).unwrap();
+    };
+    save("qc_figure", &p.figure(Sheet::OWN).unwrap());
+    save("qc_pairs_figure", &p.pairs_figure(0, Sheet::OWN));
+    press(&mut p, KeyCode::Char('v'));
+    term.draw(|f| p.render(f)).unwrap();
+    crate::tui::screenshot::save("qc_view_screen_2d", term.backend().buffer());
 }

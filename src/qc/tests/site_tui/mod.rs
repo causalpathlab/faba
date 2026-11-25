@@ -12,6 +12,7 @@ use ratatui::crossterm::event::KeyModifiers;
 use ratatui::Terminal;
 use std::sync::Arc;
 
+mod arms;
 mod confirm;
 mod genes;
 mod keys;

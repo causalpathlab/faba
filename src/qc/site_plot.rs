@@ -10,6 +10,7 @@
 //! every cell: no cell QC), and writes figures only.
 
 use super::args::SiteFilterArgs;
+use super::arms::{ArmLook, Front, PAxis};
 use super::layout::{scan_input_dir, InputLayout, SITE_MODALITIES};
 use super::matrix::{open_matrix, row_nnz_over_columns, select_columns};
 use super::pairs::{self, Axis as Quantity, Cache, Sites};
@@ -71,6 +72,29 @@ pub struct PanelArgs {
         help = "With --style view, each marginal's depth as a fraction of the plot's shorter side, above 0 and below 1 (default: 0.2); the panel style's marginals keep their own fifth"
     )]
     pub marginal_size: Option<f64>,
+
+    #[arg(
+        long = "p-axis",
+        value_enum,
+        value_name = "p|neglog10",
+        help = "With --style view, how the p-value's ticks read: p itself (1, 0.2, 1e-3) or -log10 p; the bars sit on -log10 p either way (default: p)"
+    )]
+    pub p_axis: Option<PAxis>,
+
+    #[arg(
+        long = "front",
+        value_enum,
+        value_name = "wt|mut",
+        help = "With --style view, which arm is drawn in front: wt (the signal arm) or mut (the control arm), in histograms, squares and marginals alike (default: wt)"
+    )]
+    pub front: Option<Front>,
+
+    #[arg(
+        long = "key",
+        default_value_t = false,
+        help = "With --style view, keep each histogram's key (its series and their colours) under --panel-only, which drops it otherwise"
+    )]
+    pub key: bool,
 
     #[arg(
         long = "scale",
@@ -152,7 +176,46 @@ impl Titles {
 
     /// The histograms' counts' title.
     pub fn sites(&self) -> String {
-        self.sites.clone().unwrap_or_else(|| "sites".into())
+        self.sites_or("sites")
+    }
+
+    /// `q`'s title on x as asked (on either axis), else `own`.
+    pub fn x_or(&self, q: Quantity, own: &str) -> String {
+        let at = q as usize;
+        (self.x[at].as_ref().or(self.y[at].as_ref())).map_or_else(|| own.into(), Clone::clone)
+    }
+
+    /// `q`'s title on y as asked (on either axis), else `own`.
+    pub fn y_or(&self, q: Quantity, own: &str) -> String {
+        let at = q as usize;
+        (self.y[at].as_ref().or(self.x[at].as_ref())).map_or_else(|| own.into(), Clone::clone)
+    }
+
+    /// The histograms' counts' title as asked, else `own`.
+    pub fn sites_or(&self, own: &str) -> String {
+        self.sites.clone().unwrap_or_else(|| own.into())
+    }
+
+    /// The title asked for `q` on x (`y` false) or on y, none for its own.
+    pub fn given(&self, q: Quantity, y: bool) -> Option<&str> {
+        let at = if y { &self.y } else { &self.x };
+        at[q as usize].as_deref()
+    }
+
+    /// The histograms' counts' title asked for, none for their own.
+    pub fn given_sites(&self) -> Option<&str> {
+        self.sites.as_deref()
+    }
+
+    /// Title `q` on x (`y` false) or on y `text`, or its own with none.
+    pub fn set(&mut self, q: Quantity, y: bool, text: Option<String>) {
+        let at = if y { &mut self.y } else { &mut self.x };
+        at[q as usize] = text;
+    }
+
+    /// Title the histograms' counts `text`, or their own with none.
+    pub fn set_sites(&mut self, text: Option<String>) {
+        self.sites = text;
     }
 }
 
@@ -188,6 +251,9 @@ pub struct Plan {
     /// The view style's marginals' depth, a fraction of the plot's
     /// shorter side.
     pub marginal_size: f64,
+    /// The view style's arms: which in front, how the p-value reads,
+    /// whether the key stays alone.
+    pub look: ArmLook,
     pub scales: Scales,
     pub bins: Option<usize>,
     pub titles: Titles,
@@ -256,12 +322,29 @@ impl PanelArgs {
                 f
             }
         };
+        let view_only = |given: bool, flag: &str| {
+            let view = self.style == PanelStyle::View;
+            anyhow::ensure!(
+                !given || view,
+                "{flag} sets how --style view draws the panels; the panel style has no arms to draw apart"
+            );
+            Ok(())
+        };
+        view_only(self.p_axis.is_some(), "--p-axis")?;
+        view_only(self.front.is_some(), "--front")?;
+        view_only(self.key, "--key")?;
+        let look = ArmLook {
+            front: self.front.unwrap_or_default(),
+            p_axis: self.p_axis.unwrap_or_default(),
+            key: self.key,
+        };
         Ok(Plan {
             hist,
             pairs,
             marginals,
             style: self.style,
             marginal_size,
+            look,
             scales: Scales::parse(&self.scale)?,
             bins: self.bins,
             titles: Titles::parse(&self.xlab, &self.ylab)?,
@@ -466,12 +549,22 @@ fn view_figures(
     let bins = plan.bins.unwrap_or(pairs::BINS);
     let hists = (hists.par_iter()).map(|&q| Figure {
         stem: hist_stem(modality, q),
-        svg: super::site_tui::view_hist(s, f, q, (plan.bins, kept_cells), hist, &hist_style),
+        svg: super::site_tui::view_hist(
+            s,
+            (f, q),
+            (plan.bins, kept_cells),
+            (hist, &hist_style),
+            (plan.look, &plan.titles),
+        ),
     });
     let marginals = (plan.marginals, plan.marginal_size);
+    let how = pairs::PairLook {
+        arms: plan.look,
+        titles: Some(&plan.titles),
+    };
     let pairs = (pairs.par_iter()).map(|&p| Figure {
         stem: pair_stem(modality, p),
-        svg: pairs::view_pair(s, p, f, bins, (pair, &pair_style), marginals),
+        svg: pairs::view_pair(s, p, f, bins, (pair, &pair_style), (marginals, &how)),
     });
     hists.chain(pairs).collect()
 }

@@ -26,6 +26,7 @@ use rustc_hash::FxHashMap;
 
 use crate::figure::term::PlotImage;
 use crate::figure::{self, Anchor, Bars, Canvas, Controls, Key, INK, MUTED};
+use crate::qc::arms::ArmLook;
 
 use crate::site_analysis::metagene::{
     region_fill, region_key, MetaLayout, MetaModels, RegionGlyphs, REGION_COLOURS, REGION_NAMES,
@@ -48,6 +49,7 @@ use crate::tui::{
 };
 
 mod annotation;
+mod arm_hist;
 mod column;
 mod draw;
 mod frame;
@@ -59,6 +61,7 @@ mod report;
 mod writer;
 
 use annotation::*;
+use arm_hist::*;
 use column::*;
 pub(crate) use draw::{knob_least, knob_room, view_hist};
 use draw::{render_gff, render_leave, KNOB_Y_SCALE, LEGEND};
@@ -243,6 +246,13 @@ enum Mode {
     Edit(String),
     /// Typing into the gene list's filter.
     Find,
+    /// Typing the x title (`y` false) of the panel `s` saves, then its y
+    /// title, the x one typed kept in `x`; empty, its own.
+    Title {
+        y: bool,
+        buf: String,
+        x: Option<String>,
+    },
     /// Asking before the thresholds are applied and the fileset written.
     Confirm,
     /// Writing the fileset; keys wait until it is done.
@@ -281,6 +291,13 @@ struct SitePicker<'a> {
     y_scale: Scale,
     column: Column,
     tally: Tally,
+    /// The focused knob's histogram on both arms, at the thresholds now.
+    arm_hist: ArmHist,
+    /// How the arms are drawn: which in front (`f`), how the p-value reads
+    /// (`u`).
+    arm_look: ArmLook,
+    /// The axis titles asked for (`--xlab`, `--ylab`, `t`).
+    titles: crate::qc::site_plot::Titles,
     mode: Mode,
     panel: Panel,
     /// Plain Enter was pressed: say how to apply instead.
@@ -337,6 +354,7 @@ impl<'a> SitePicker<'a> {
         let x_scale = knob_scales(&views[0].cache.scales);
         let column = Column::new(&views[0].sites(), c, c.scales()[x_scale[c as usize]]);
         let tally = Tally::new(&views[0].sites(), c, &column);
+        let arm_hist = ArmHist::new(&views[0].sites(), c, &filter, column.hist.bins);
         Self {
             title: title.to_string(),
             views,
@@ -348,6 +366,9 @@ impl<'a> SitePicker<'a> {
             y_scale: KNOB_Y_SCALE,
             column,
             tally,
+            arm_hist,
+            arm_look: ArmLook::default(),
+            titles: Default::default(),
             mode: Mode::Browse,
             panel: Panel::Thresholds,
             enter_hint: false,
@@ -383,6 +404,13 @@ impl<'a> SitePicker<'a> {
         &self.views[self.modality]
     }
 
+    /// Read only, `s` saving the panel on screen as `plan` and `sheet` lay
+    /// it out, the arms and the axis titles starting as `plan` asks.
+    fn view_only(&mut self, plan: crate::qc::site_plot::Plan, sheet: Sheet) {
+        (self.arm_look, self.titles) = (plan.look, plan.titles.clone());
+        self.viewing = Some((plan, sheet));
+    }
+
     /// Whether this is `faba qc-view`'s view, which writes no fileset.
     fn read_only(&self) -> bool {
         self.viewing.is_some()
@@ -399,6 +427,7 @@ impl<'a> SitePicker<'a> {
 
     fn retally(&mut self) {
         self.tally = Tally::new(&self.view().sites(), self.criterion(), &self.column);
+        self.arm_hist = self.binned_arms();
         self.refresh_meta();
         self.refresh_genes(false);
     }
@@ -508,12 +537,6 @@ impl<'a> SitePicker<'a> {
         self.decision = Some(picked);
     }
 
-    /// The histogram bin holding the focused threshold, `None` when off.
-    fn pointer_key(&self) -> Option<i32> {
-        let c = self.criterion();
-        self.column.pointer(c, &self.filter)
-    }
-
     /// `s`, once a name is confirmed: the view's figure at its own size,
     /// or read only the panel on screen (see [`Self::screen_panel`]),
     /// saved under `prefix` (never over a file: the prompt refuses one).
@@ -552,13 +575,18 @@ impl<'a> SitePicker<'a> {
             marginals: plan.marginals,
             style: plan.style,
             marginal_size: plan.marginal_size,
+            // The arms as the view shows them now (`f`, `u`).
+            look: ArmLook {
+                key: plan.look.key,
+                ..self.arm_look
+            },
             scales: v.cache.scales,
             // The view style draws on the view's own bins unless asked.
             bins: match plan.style {
                 PanelStyle::View => plan.bins,
                 PanelStyle::Panel => Some(v.cache.bins),
             },
-            titles: plan.titles.clone(),
+            titles: self.titles.clone(),
         };
         let panels = Panels::of_view(&v.sites(), &self.filter, &plan, sheet)?;
         (panels.figures().pop())
@@ -593,7 +621,9 @@ impl View for SitePicker<'_> {
             // The footer has them all.
             Mode::Confirm | Mode::Leave(_) => self.mode_keys()?,
             Mode::Browse => self.browse_help(),
-            Mode::Edit(_) | Mode::Find | Mode::Gff(_) | Mode::Writing => return None,
+            Mode::Edit(_) | Mode::Title { .. } | Mode::Find | Mode::Gff(_) | Mode::Writing => {
+                return None
+            }
         };
         Some(crate::tui::keys(&keys))
     }
@@ -702,6 +732,7 @@ impl Screen for SitePicker<'_> {
         match self.mode {
             Mode::Gff(_) => self.gff_key(key),
             Mode::Edit(_) => self.edit_key(key),
+            Mode::Title { .. } => self.title_key(key),
             Mode::Find => self.find_key(key),
             Mode::Confirm => self.confirm_key(key),
             Mode::Leave(_) => self.leave_key_press(key),
@@ -870,6 +901,10 @@ impl<'a> Batch<'a> {
     ) -> anyhow::Result<Vec<Figure>> {
         match &mut self.picker {
             Some(p) => {
+                // The arms and the titles as asked: no view changed them.
+                if let Some(plan) = plan {
+                    (p.arm_look, p.titles) = (plan.look, plan.titles.clone());
+                }
                 p.meta.wait();
                 if let Meta::Unavailable(why) = &p.meta {
                     log::warn!("qc_plots without a metagene: {why}");
@@ -1105,6 +1140,10 @@ pub fn run_site_picker(
     )?;
     picker.page_problem(&writer.sheet)?;
     picker.cells = writer.cells.clone();
+    if let Some(plan) = &writer.panels {
+        picker.arm_look = plan.look;
+        picker.titles = plan.titles.clone();
+    }
     picker.writer = writer;
     picker.controls = Controls::new("qc_sites").detect();
     match run_view(&mut picker) {
@@ -1134,7 +1173,7 @@ pub fn run_site_viewer(
     let scales = (plan.scales, plan.bins_on(&sheet));
     let mut picker = picker(input_dir, tables, site_cells, filter, genes, Some(scales))?;
     picker.cells = cells;
-    picker.viewing = Some((plan, sheet));
+    picker.view_only(plan, sheet);
     picker.controls = Controls::new("qc_view").detect();
     run_view(&mut picker)
 }

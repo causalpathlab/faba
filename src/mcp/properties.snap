@@ -349,18 +349,21 @@ qc block_size type="integer" minimum=0.0
 qc column_nnz_cutoff type="integer" minimum=0.0
 qc dry_run type="boolean"
 qc font_size type="number"
+qc front type="string" enum=["mut","wt"]
 qc genes type="array" items="string"
 qc gff type="string"
 qc height type="number" minimum=0.75
 qc hist type="array" items="string"
 qc html type="string"
 qc input type="string"
+qc key type="boolean"
 qc marginal_size type="number"
 qc marginals type="array" items="string"
 qc no_cell_qc type="boolean"
 qc no_zip type="boolean"
 qc options type="array" items="string"
 qc out type="string"
+qc p_axis type="string" enum=["neglog10","p"]
 qc pairs type="array" items="string"
 qc palette type="string" enum=["colour","gray"]
 qc panel_only type="boolean"
@@ -384,16 +387,19 @@ qc xlab type="array" items="string"
 qc ylab type="array" items="string"
 qc_view bins type="integer" minimum=0.0
 qc_view font_size type="number"
+qc_view front type="string" enum=["mut","wt"]
 qc_view genes type="array" items="string"
 qc_view gff type="string"
 qc_view height type="number" minimum=0.75
 qc_view hist type="array" items="string"
 qc_view html type="string"
 qc_view input type="string"
+qc_view key type="boolean"
 qc_view marginal_size type="number"
 qc_view marginals type="array" items="string"
 qc_view options type="array" items="string"
 qc_view out type="string"
+qc_view p_axis type="string" enum=["neglog10","p"]
 qc_view pairs type="array" items="string"
 qc_view palette type="string" enum=["colour","gray"]
 qc_view panel_only type="boolean"
@@ -471,14 +477,17 @@ run umi_tag type="string"
 run writer_genes type="array" items="string"
 site_plot bins type="integer" minimum=0.0
 site_plot font_size type="number"
+site_plot front type="string" enum=["mut","wt"]
 site_plot height type="number" minimum=0.75
 site_plot hist type="array" items="string"
 site_plot input type="string"
+site_plot key type="boolean"
 site_plot marginal_size type="number"
 site_plot marginals type="array" items="string"
 site_plot modality type="string" enum=["atoi","m6a"]
 site_plot options type="array" items="string"
 site_plot out type="string"
+site_plot p_axis type="string" enum=["neglog10","p"]
 site_plot pairs type="array" items="string"
 site_plot palette type="string" enum=["colour","gray"]
 site_plot panel_only type="boolean"

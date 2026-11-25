@@ -421,12 +421,49 @@ pub(crate) fn scaled(scale: Scale, v: f64) -> f64 {
     }
 }
 
-fn unscaled(scale: Scale, t: f64) -> f64 {
+pub(crate) fn unscaled(scale: Scale, t: f64) -> f64 {
     match scale {
         Scale::Log => 10f64.powf(t) - 1.0,
         Scale::Sqrt => t * t,
         Scale::Linear => t,
     }
+}
+
+/// About how wide `s` sets at `size` points.
+pub fn text_width(s: &str, size: f64) -> f64 {
+    data_beans::figure::text_width(s, size)
+}
+
+/// `s` as it fits `room` points across at `size`: as it is, else without
+/// a parenthetical at its end, else without what follows a colon too,
+/// else cut short with an ellipsis.
+pub fn fit_text(s: &str, room: f64, size: f64) -> String {
+    if text_width(s, size) <= room {
+        return s.to_string();
+    }
+    let head = (s.strip_suffix(')').and_then(|t| t.rsplit_once(" ("))).map_or(s, |(head, _)| head);
+    // Then what it is, without what is said of it after a colon.
+    let what = head.split_once(": ").map_or(head, |(what, _)| what);
+    for shorter in [head, what] {
+        if !shorter.is_empty() && text_width(shorter, size) <= room {
+            return shorter.to_string();
+        }
+    }
+    let fits = ((room / (size * 0.55)).floor() as usize).saturating_sub(1);
+    let cut: String = s.chars().take(fits).collect();
+    format!("{}…", cut.trim_end())
+}
+
+/// Where a title `s` wanted centred at `at` goes in the box from `x` to
+/// `x + w`, and what of it: centred where it fits so; else moved over as
+/// little as keeps it inside; else shortened to the box (see
+/// [`fit_text`]). Laid out at `size` on `c`.
+pub fn place_title(c: &Canvas, s: &str, at: f64, (x, w): (f64, f64), size: f64) -> (f64, String) {
+    let size = c.label_size(size);
+    let (lo, hi) = (x + 2.0, x + w - 2.0);
+    let text = fit_text(s, hi - lo, size);
+    let half = text_width(&text, size) / 2.0;
+    (at.clamp(lo + half, (hi - half).max(lo + half)), text)
 }
 
 /// A bar panel matching a terminal histogram: one bar per value, an optional
@@ -576,14 +613,8 @@ impl Bars<'_> {
         }
         let stub = self.dividers.is_empty();
         x_ticks(c, &self.ticks, (px, bw, py + ph), stub, self.rotated);
-        c.text(
-            px + pw / 2.0,
-            y + h - 6.0,
-            &self.x_title,
-            8.0,
-            Anchor::Middle,
-            MUTED,
-        );
+        let (at, x_title) = place_title(c, &self.x_title, px + pw / 2.0, (x, w), 8.0);
+        c.text(at, y + h - 6.0, &x_title, 8.0, Anchor::Middle, MUTED);
     }
 }
 
@@ -779,14 +810,8 @@ impl Mirror<'_> {
         c.line(px, py, px, py + ph, INK, 0.6);
         let base = py + ph;
         x_ticks(c, &self.ticks, (px, bw, base), true, self.rotated);
-        c.text(
-            px + pw / 2.0,
-            y + h - 6.0,
-            &self.x_title,
-            8.0,
-            Anchor::Middle,
-            MUTED,
-        );
+        let (at, x_title) = place_title(c, &self.x_title, px + pw / 2.0, (x, w), 8.0);
+        c.text(at, y + h - 6.0, &x_title, 8.0, Anchor::Middle, MUTED);
     }
 }
 

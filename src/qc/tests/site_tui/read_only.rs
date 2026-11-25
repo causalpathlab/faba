@@ -15,7 +15,7 @@ fn viewer<'a>(
     sheet: Sheet,
 ) -> SitePicker<'a> {
     let mut p = picker(t, n_cells, SiteFilterArgs::default_values());
-    p.viewing = Some((panels.plan().unwrap(), sheet));
+    p.view_only(panels.plan().unwrap(), sheet);
     p
 }
 
