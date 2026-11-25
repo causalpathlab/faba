@@ -22,7 +22,12 @@ struct Client {
 
 impl Client {
     fn start(dir: &Path) -> Self {
-        let mut child = Command::new(EXE)
+        Self::start_from(Path::new(EXE), dir)
+    }
+
+    /// The server run from the executable `exe`.
+    fn start_from(exe: &Path, dir: &Path) -> Self {
+        let mut child = Command::new(exe)
             .arg("mcp")
             .current_dir(dir)
             .stdin(Stdio::piped())
@@ -58,13 +63,17 @@ impl Client {
         }
     }
 
-    /// A tool's result: its structured content, its text, or its error.
+    /// A tool's result: its structured content when that comes first, its
+    /// first text, or its error.
     fn call(&mut self, name: &str, args: Value) -> Result<Value, String> {
         let r = self.request("tools/call", json!({ "name": name, "arguments": args }));
         let r = &r["result"];
+        let first = r["content"][0]["text"].as_str().unwrap_or_default();
         if r["isError"] == json!(true) {
-            Err(r["content"][0]["text"].as_str().unwrap().to_string())
-        } else if r["structuredContent"].is_object() {
+            Err(first.to_string())
+        } else if r["structuredContent"].is_object()
+            && serde_json::from_str::<Value>(first).ok().as_ref() == Some(&r["structuredContent"])
+        {
             Ok(r["structuredContent"].clone())
         } else {
             Ok(r["content"][0]["text"].clone())
@@ -111,6 +120,12 @@ fn tools_read_and_refuse_to_replace() {
 
     let listing = c.call("docs", json!({})).unwrap();
     assert!(listing.as_str().unwrap().contains("profiling"));
+    // The server says its version, so an agent can tell which faba it has.
+    let docs = c.request("tools/call", json!({ "name": "docs", "arguments": {} }));
+    assert_eq!(
+        docs["result"]["structuredContent"]["version"],
+        env!("CARGO_PKG_VERSION")
+    );
     let section = c.call("docs", json!({ "query": ["qc"] })).unwrap();
     assert!(section.as_str().unwrap().contains("qc"));
     let missing = c.call("docs", json!({ "query": ["no-such-section"] }));
@@ -518,4 +533,43 @@ fn cluster_view_plots_without_a_figure_go_to_the_results_folder() {
         .iter()
         .all(|p| name(p).starts_with("count_blockmodel.cluster_view-4.")));
     assert_eq!(std::fs::read(&planted).unwrap(), b"kept");
+}
+
+/// A server whose own executable is replaced by another version: on macOS
+/// the new file is what a call runs, so calls are refused, naming both
+/// versions, and nothing runs; on Linux the server runs its own image
+/// (`/proc/self/exe`), whose version is the server's, so calls go on.
+#[cfg(unix)]
+#[test]
+fn a_replaced_faba_of_another_version_is_refused() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let exe = dir.path().join("faba");
+    std::fs::copy(EXE, &exe).unwrap();
+    let mut c = Client::start_from(&exe, dir.path());
+    c.request("initialize", json!({ "protocolVersion": "2025-06-18" }));
+    assert!(c.call("docs", json!({})).is_ok());
+
+    // Another version renamed over it, as an install does.
+    let next = dir.path().join("next");
+    std::fs::write(&next, "#!/bin/sh\necho 'faba 0.0.1'\n").unwrap();
+    std::fs::set_permissions(&next, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::rename(&next, &exe).unwrap();
+    #[cfg(target_os = "macos")]
+    {
+        let err = c.call("docs", json!({})).unwrap_err();
+        assert!(err.contains("0.0.1"), "{err}");
+        assert!(err.contains(env!("CARGO_PKG_VERSION")), "{err}");
+        assert!(err.contains("replaced since this server started"), "{err}");
+        assert!(err.contains("restart or reconnect"), "{err}");
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let docs = c.request("tools/call", json!({ "name": "docs", "arguments": {} }));
+        assert_ne!(docs["result"]["isError"], json!(true), "{docs}");
+        assert_eq!(
+            docs["result"]["structuredContent"]["version"],
+            env!("CARGO_PKG_VERSION")
+        );
+    }
 }

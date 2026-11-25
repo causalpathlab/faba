@@ -228,7 +228,7 @@ Producers write every candidate and apply no p-value cutoff. qc is where cells, 
 
 The producers (count, depth, atoi, dartseq, apa, snp, run, qc, cluster) take `background`: on large BAMs set it, and the call returns a job id at once.
 
-Every write goes to `out`, which must not exist. Leave `out` out and the output goes in today's results folder, named after the input and the tool. Paths resolve against the server's working directory. Every flag of a tool's command is an argument of the tool, typed, named after the flag (`--min-coverage` is `min_coverage`), but those naming the output or opening a view; `options` remains for anything else, as `faba <command> --help` lists it, and a flag given both ways is refused. Results give the paths written and what the run recorded (`results`: a fit's ELBO verdict, its cluster sizes).
+Every write goes to `out`, which must not exist. Leave `out` out and the output goes in today's results folder, named after the input and the tool. Paths resolve against the server's working directory. Every flag of a tool's command is an argument of the tool, typed, named after the flag (`--min-coverage` is `min_coverage`), but those naming the output or opening a view; `options` remains for anything else, as `faba <command> --help` lists it, and a flag given both ways is refused. Results give the paths written and what the run recorded (`results`: a fit's ELBO verdict, its cluster sizes). docs gives this server's `version`. A call is refused when the faba it would run is another version than the server's, or is the server's own file rebuilt since it started: the server then needs a restart or a reconnect.
 ```
 
 legume-mcp adds where the records are and the background jobs below. The project's notebook (open with a plan: the question, the data, how the result will be checked) is the `legume` server's, not faba's.
@@ -255,6 +255,10 @@ argument and in `options` is refused.
 ### Long runs in the background
 
 On large BAMs a producer can outlast a client's wait on one call. Give it `background: true` and it returns at once with `{job, written}`; the agent follows the job with `job_wait` or `job_status` (or stops it with `job_cancel`), and uses `written` only once it is done. A job that succeeds is recorded like any step. Jobs end with their server: a run longer than a client session is for `faba` on the command line.
+
+### One faba, one version
+
+Each tool runs the server's own `faba` path as a child. When that file is replaced while the server runs (a `cargo install`), what happens depends on the platform. On macOS a call runs the new file: if it is another version, the call is refused, naming both versions and that the file was replaced since the server started; if it is the same version rebuilt (its size, modified time or inode changed), the call is refused as rebuilt. Either way nothing runs until the server is restarted or reconnected. On Linux the server keeps running its own image (through `/proc/self/exe`), so calls go on with the version the server started as, and its schema still matches; restart it to pick up the new faba. A `faba` the server did not start from is refused only when its version differs. The binary's `--version` is asked once per file, again only when the file changes. `docs` returns the server's `version`.
 
 ### Records and watching
 
