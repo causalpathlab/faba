@@ -262,12 +262,12 @@ impl<'a> MetageneView<'a> {
         });
         let style = sheet.style((w, h));
         let mut c = Canvas::styled(w, h, &style);
+        let (w, h) = c.page();
         if style.panel_only {
             self.draw_track(&mut c, (0.0, 0.0, w, h), None, String::new());
             return c.finish();
         }
-        let em = c.em();
-        c.bold(16.0 * em, 22.0 * em, &self.title, 12.0, Anchor::Start, INK);
+        c.bold(16.0, 22.0, &self.title, 12.0, Anchor::Start, INK);
         let totals: Vec<String> = self
             .track
             .regions()
@@ -275,15 +275,15 @@ impl<'a> MetageneView<'a> {
             .map(|&r| format!("{} {}", REGION_NAMES[r], count_text(self.region_total(r))))
             .collect();
         c.text(
-            16.0 * em,
-            38.0 * em,
+            16.0,
+            38.0,
             &format!("{} per region: {}", self.unit(), totals.join(", ")),
             9.0,
             Anchor::Start,
             MUTED,
         );
         let title = format!("{} bin(s) per bar", self.shown_merge);
-        let track = (8.0 * em, 48.0 * em, w - 16.0 * em, h - 56.0 * em);
+        let track = (8.0, 48.0, w - 16.0, h - 56.0);
         self.draw_track(&mut c, track, None, title);
         c.finish()
     }

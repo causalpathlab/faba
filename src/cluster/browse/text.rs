@@ -70,7 +70,7 @@ pub struct Shown {
     #[arg(
         long = "go",
         conflicts_with = "html",
-        help = "Print the GO terms (or --gmt gene sets) over-represented in each gene module"
+        help = "Print the GO terms (or --gmt gene sets) over-represented in each gene module: hypergeometric against the fit's annotated genes, BH over every module and term, each with its counts, odds, p, q and genes"
     )]
     pub go: bool,
 

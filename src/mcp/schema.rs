@@ -2,6 +2,7 @@
 //! from every other flag of a tool's command, read from its clap
 //! definition.
 
+use crate::figure::size::Figure;
 use legume_mcp::ToolSpec;
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
@@ -77,13 +78,6 @@ fn hand_written() -> Vec<ToolSpec> {
             "description": "Where the inputs came from (a URL or accession, and its version), kept in data/README.md"
         })
     };
-    let modality = || json!({ "type": "string", "enum": ["m6a", "atoi"] });
-    let fit_modality = || {
-        json!({
-            "type": "string", "enum": ["m6a", "atoi", "count"],
-            "description": "m6a or atoi: site reads. count: gene counts, the first of two rounds"
-        })
-    };
     let dir = || {
         json!({
             "type": "string",
@@ -113,7 +107,6 @@ fn hand_written() -> Vec<ToolSpec> {
             schema(
                 json!({
                     "bam": bam(),
-                    "resolution_kb": { "type": "number", "exclusiveMinimum": 0 },
                     "valid_cells": { "type": "string", "description": "A `faba count` directory whose {batch}_cells.tsv.gz names the cells to keep" },
                     "out": out(), "source": source(), "options": options(),
                 }),
@@ -146,7 +139,6 @@ fn hand_written() -> Vec<ToolSpec> {
                 json!({
                     "bam": bam(), "gff": gff(),
                     "utr_bed": { "type": "string", "description": "3'-UTR intervals as BED, each taken as one block; in place of `gff`" },
-                    "method": { "type": "string", "enum": ["mixture", "simple"] },
                     "out": out(), "source": source(), "options": options(),
                 }),
                 &["bam"],
@@ -154,13 +146,11 @@ fn hand_written() -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "snp",
-            "Discover and genotype SNPs (`faba snp`). With `gff`, also writes a per-cell allele-frequency matrix; `bulk` writes the call set only. Writes a new directory.",
+            "Discover and genotype SNPs (`faba snp`). With `gff`, also writes a per-cell allele-frequency matrix; `bulk` writes the call set only; `skip_discovery` genotypes the `known_snps` only. Writes a new directory.",
             schema(
                 json!({
                     "bam": bam(), "genome": genome(), "gff": gff(),
                     "known_snps": { "type": "string", "description": "Known sites (VCF/BCF/Parquet) to force-call" },
-                    "bulk": { "type": "boolean" },
-                    "skip_discovery": { "type": "boolean", "description": "Genotype `known_snps` only" },
                     "out": out(), "source": source(), "options": options(),
                 }),
                 &["bam", "genome"],
@@ -180,17 +170,24 @@ fn hand_written() -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "qc",
-            "Filter a faba directory into a new one (`faba qc --batch-process`). Cells are cut on `{batch}_count` and the same cells are kept in every matrix; sites are cut on the thresholds given (marginal p-values, no FDR). Omit a threshold to keep faba's default. Try thresholds first with `dry_run`: it returns what the cell QC keeps per batch and what each threshold removes per modality, writing nothing. The dry run's `pairs` are the pairs of thresholds Auto picks to show two at a time: those splitting the most sites (pass one, fail the other) on axes that agree least. With `plots`, the view's figures go to `qc_plots/`: each threshold's histogram, each modality's thresholds two at a time ({m}_pairs: kept sites against removed, the box where both pass; not drawn with `panel_only`, whose pairs are the panels) and each batch's cell QC ({batch}_cells); and the site panels `site_plot` draws go to `qc_plots/panels/`. Both come back as images, at most 8: the view's figures first, then the panels, each in name order, half the room each and the rest to whichever has more. With `html`, a page to share goes to that file (dry run too); a file that exists is refused, never replaced: ask the user for another path.",
+            "Filter a faba directory into a new one (`faba qc --batch-process`). Cells are cut on `{batch}_count` and the same cells are kept in every matrix; sites are cut on the thresholds given (marginal p-values, no FDR). Omit a threshold to keep faba's default. Try thresholds first with `dry_run`: it returns what the cell QC keeps per batch and what each threshold removes per modality, writing nothing. The dry run's `pairs` are the pairs of thresholds Auto picks to show two at a time: those splitting the most sites (pass one, fail the other) on axes that agree least. With `plots`, the view's figures go to `qc_plots/`: each threshold's histogram, each modality's thresholds two at a time ({m}_pairs: kept sites against removed, the box where both pass; not drawn with `panel_only`, whose pairs are the panels) and each batch's cell QC ({batch}_cells); and the site panels `site_plot` draws go to `qc_plots/panels/`, chosen by `hist`, `pairs`, `marginals`, `scale` and `bins` as `site_plot`'s are. Both come back as images, at most 8: the view's figures first, then the panels, each in name order, half the room each and the rest to whichever has more. With `html`, a page to share goes to that file (dry run too); a file that exists is refused, never replaced: ask the user for another path.",
             schema(qc_properties(&dir(), &out(), &options()), &["input"]),
         ),
         ToolSpec::new(
             "site_plot",
             "Draw a faba directory's site statistics as paper panels (`faba site-plot`), no QC: for one `modality`, a histogram of each `hist` quantity (pv, fold, log_odds, coverage, converted, edit_ratio, cells; default every one that applies) and each of `pairs` two at a time (\"x:y\", e.g. \"pv:cells\"; default the pairs `qc` picks), with `marginals` (top, right) on the pair's own axes. Each quantity has one scale, range and set of bins in every figure (`scale`: \"pv=log\", \"fold=linear\"; defaults: -log10 p, edit ratio and log odds linear, fold and counts log). cells counts the cells with a converted read at a site, over every cell. Thresholds are optional: given ones are drawn as dashed lines and the sites they remove drawn apart; none given, every site is kept. Writes only figures to `out`, a new directory: {modality}_hist_{q} and {modality}_{y}_vs_{x}, each .pdf (labels as text) and .png; returns their paths and the PNGs as images. `qc` with `plots` writes the same panels under qc_plots/panels/.",
-            schema(site_plot_properties(&dir(), &out(), &options(), &modality()), &["input"]),
+            schema(
+                json!({
+                    "input": dir(),
+                    "out": { "type": "string", "description": "Directory the figures go to; must not exist. Omitted, a new directory in today's results folder" },
+                    "options": options(),
+                }),
+                &["input"],
+            ),
         ),
         ToolSpec::new(
             "qc_view",
-            "Read back what a `qc` run kept and dropped (`faba qc-view --batch-process`), cutting nothing: `input` is the qc output directory, whose qc.run.json gives the thresholds it applied; its kept sites and its dropped ones (with their reason) are read together, each site's cells counted as qc counted them (off the input it read, when that is still there; else the dropped sites read 0 cells, as it warns). Any other faba directory opens too, with no thresholds: every site kept. Returns the table `qc`'s `dry_run` returns, at the thresholds applied: `table`, what the cell QC kept per batch (off its reports) and what each threshold removes per modality (`removes` every site failing it, `only_this` those failing it alone), and `pairs`, the pairs Auto picks to show two at a time. With `plots`, the figures `qc` draws with `plots` go to `out`/qc_plots/ (the site panels to qc_plots/panels/) and come back as images, as `qc`'s do; with `html`, the page to share goes to that file. Neither may exist: an existing file or directory is refused, never replaced: ask the user for another path.",
+            "Read back what a `qc` run kept and dropped (`faba qc-view --batch-process`), cutting nothing: `input` is the qc output directory, whose qc.run.json gives the thresholds it applied; its kept sites and its dropped ones (with their reason) are read together, each site's cells counted as qc counted them (off the input it read, when that is still there; else the dropped sites read 0 cells, as it warns). Any other faba directory opens too, with no thresholds: every site kept. Returns the table `qc`'s `dry_run` returns, at the thresholds applied: `table`, what the cell QC kept per batch (off its reports) and what each threshold removes per modality (`removes` every site failing it, `only_this` those failing it alone), and `pairs`, the pairs Auto picks to show two at a time. With `plots`, the figures `qc` draws with `plots` go to `out`/qc_plots/ (the site panels to qc_plots/panels/, chosen by `hist`, `pairs`, `marginals`, `scale` and `bins` as `site_plot`'s are) and come back as images, as `qc`'s do; with `html`, the page to share goes to that file. Neither may exist: an existing file or directory is refused, never replaced: ask the user for another path.",
             schema(qc_view_properties(&dir(), &options()), &["input"]),
         ),
         ToolSpec::new(
@@ -199,15 +196,6 @@ fn hand_written() -> Vec<ToolSpec> {
             schema(
                 json!({
                     "data": { "type": "array", "items": { "type": "string" }, "description": "A faba directory, or site (or, with `modality` count, count) matrices; required unless `within` is given" },
-                    "modality": fit_modality(),
-                    "cell_roles": { "type": "integer", "minimum": 1 },
-                    "gene_roles": { "type": "integer", "minimum": 1 },
-                    "chains": { "type": "integer", "minimum": 1 },
-                    "svi_epochs": { "type": "integer", "minimum": 0, "description": "Stochastic epochs before coordinate ascent" },
-                    "batch_size": { "type": "integer", "minimum": 1, "description": "Cells per minibatch" },
-                    "epochs": { "type": "integer", "minimum": 1, "description": "Epochs at most" },
-                    "tol": { "type": "number", "minimum": 0, "description": "Converged when an epoch moves the ELBO by less than this per count (per read for a site fit)" },
-                    "fit": { "type": "string", "description": "Fit only matrices whose path matches this pattern (`*`, `?`); the rest are assigned after" },
                     "batch_map": {
                         "description": "With `within`: which of the count fit's batches each of the sites' batches is, taken before any pairing by name. An object {\"SITES\": \"COUNT\"} or a list of \"SITES=COUNT\"; an empty COUNT leaves that batch unmatched. Give it when the run is refused as ambiguous: the refusal lists each choice",
                         "anyOf": [
@@ -222,28 +210,10 @@ fn hand_written() -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "cluster_view",
-            "View a `cluster` fit (`faba cluster-view --batch-process --json`), level by level as the browser does; every level comes back as JSON, an object a level, its rows objects with named fields. With no level named, the `overview`: the verdict (`verdict` ELBO ok or check, `said`), how many gene and cell modules, each cell module's size (`cell_sizes`) and each gene module's genes and top genes by weight (`gene_sizes`); GO is never read for it. `grid` gives the gene modules against the cell modules (level 1: `modules`, a row a gene module, its `values` a value and reads (cells) in each cell module); `module` one gene module's genes and sites with their values in each cell module (level 2); `gene` one gene's sites in each cell module over every gene module (levels 3 and 4); `cells` the cell modules' sizes; `go` the GO terms (or `gmt` gene sets) over-represented in each gene module, against the fit's own annotated genes (files default to lupin's cache), read only when asked: per module its `terms` (id, name, namespace, k, n, K, N, odds, p, q, genes) or `why_none`, with the `go_q` a term needs and the `min_weight` a gene needs; `batches` how each cell module spreads over the batches (shared, one condition's, or batch-specific: uneven over a condition's replicates), the conditions read off the batch names less a replicate token or given by `batch_groups`; `trace` each restart's ELBO by epoch, the verdict and its advice; `settings` the settings the fit ran with. Several may be given. Values are % converted for a site fit, UMIs per cell for a count fit (`unit`). With `figure` or `plots`, figures instead, each returned as an image with its PDF and PNG paths (`figures`): `plots` several in one call (modules, trace, batches; `plot` one), each `width` by `height` inches, its text at `font_size` points, `panel_only` the plot alone (no title, key or notes), `palette` gray in grays; the modules grid coloured by `look`. `data` is the fit's run record or the directory holding its tables; this never fits, and the record of an MCMC fit of faba before 0.19 is refused. A within record ({m}_within.run.json, from `cluster` with `within`) gives the count fit's modules, each group's fit (cells, status; why one was skipped) and the modules within each fitted group; with `group`, every argument applies to the fit within that cell module, and without it the levels asked for are the count fit's. With `html`, write one self-contained page to a new file instead; a within record without `group` writes a page a fit, `html` for the count fit and {stem}.{group}.html beside it for each group, linked to each other.",
+            "View a `cluster` fit (`faba cluster-view --batch-process --json`), level by level as the browser does; every level comes back as JSON, an object a level, its rows objects with named fields (a level argument's own text says it prints, as the command's help does: here it is that JSON). With no level named, the tool returns the `overview` (a within record opened whole, with no `group`: its listing instead): the verdict (`verdict` ELBO ok or check, `said`), how many gene and cell modules, each cell module's size (`cell_sizes`) and each gene module's genes and top genes by weight (`gene_sizes`); GO is never read for it. `grid` gives the gene modules against the cell modules (level 1: `modules`, a row a gene module, its `values` a value and reads (cells) in each cell module); `module` one gene module's genes and sites with their values in each cell module (level 2); `gene` one gene's sites in each cell module over every gene module (levels 3 and 4); `cells` the cell modules' sizes; `go` the GO terms (or `gmt` gene sets) over-represented in each gene module, against the fit's own annotated genes (files default to lupin's cache), read only when asked: per module its `terms` (id, name, namespace, k, n, K, N, odds, p, q, genes) or `why_none`, with the `go_q` a term needs and the `min_weight` a gene needs; `batches` how each cell module spreads over the batches (shared, one condition's, or batch-specific: uneven over a condition's replicates), the conditions read off the batch names less a replicate token or given by `batch_groups`; `trace` each restart's ELBO by epoch, the verdict and its advice; `settings` the settings the fit ran with. Several may be given. Values are % converted for a site fit, UMIs per cell for a count fit (`unit`). With `figure` or `plots`, figures instead, each returned as an image with its PDF and PNG paths (`figures`): `plots` several in one call (modules, trace, batches; `plot` one), each `width` by `height` inches, its text at `font_size` points, `panel_only` the plot alone (no title, key or notes), `palette` gray in grays; the modules grid coloured by `look`. `data` is the fit's run record or the directory holding its tables; this never fits, and the record of an MCMC fit of faba before 0.19 is refused. A within record ({m}_within.run.json, from `cluster` with `within`) gives the count fit's modules, each group's fit (cells, status; why one was skipped) and the modules within each fitted group; with `group`, every argument applies to the fit within that cell module, and without it the levels asked for are the count fit's. With `html`, write one self-contained page to a new file instead; the page shows every level, so no level argument is taken beside `html` (leave them out, or drop `html` to get them as JSON); a within record without `group` writes a page a fit, `html` for the count fit and {stem}.{group}.html beside it for each group, linked to each other.",
             schema(
                 json!({
                     "data": { "type": "string", "description": "A `cluster` fit: its run record `{m}_blockmodel.run.json`, the output directory holding its block tables, or a within record `{m}_within.run.json`" },
-                    "modality": fit_modality(),
-                    "group": { "type": "string", "description": "Of a within record: the cell module of the count fit whose fit to view, as C3 or 3" },
-                    "overview": { "type": "boolean", "description": "The fit at a glance: its verdict, its gene and cell modules' sizes and each gene module's top genes by weight; what comes back when no level is named. GO only with `go`" },
-                    "grid": { "type": "boolean", "description": "The gene modules against the cell modules (level 1), a row a gene module" },
-                    "module": { "type": "string", "description": "A gene module's genes and sites, as M3 or 3" },
-                    "gene": { "type": "string", "description": "A gene's sites, by key or symbol" },
-                    "cells": { "type": "boolean", "description": "The cell modules and their sizes" },
-                    "batches": { "type": "boolean", "description": "How each cell module spreads over the batches: shared, one condition's, or batch-specific" },
-                    "go": { "type": "boolean", "description": "The GO terms over-represented in each gene module (hypergeometric against the fit's annotated genes, BH over every module and term), each with its counts, odds, p, q and genes; read only when asked" },
-                    "gaf": { "type": "string", "description": "GO annotations for `go` (default: lupin's cached GO Consortium file for the genes' species)" },
-                    "obo": { "type": "string", "description": "The GO graph for `gaf` (default: lupin's cached go-basic.obo)" },
-                    "gmt": { "type": "string", "description": "Gene sets to test for `go` instead of GO, a GMT file" },
-                    "go_min_weight": { "type": "number", "minimum": 0, "maximum": 1, "description": "A gene counts in its main gene module for `go` at this weight or more (default 0.5)" },
-                    "go_q": { "type": "number", "exclusiveMinimum": 0, "maximum": 1, "description": "A term (or `gmt` set) is listed for `go` at this BH q or less (default 0.05)" },
-                    "batch_groups": { "type": "string", "description": "Which condition each batch is a replicate of, as rep1_mut=mut,rep2_mut=mut; the rest are read off their names" },
-                    "trace": { "type": "boolean", "description": "Each restart's trace, the verdict and its advice" },
-                    "settings": { "type": "boolean", "description": "The settings the fit ran with" },
-                    "gtf": { "type": "string", "description": "Gene annotation for the models drawn in the HTML page" },
                     "html": { "type": "string", "description": "Write the page here; must not exist" },
                     "figure": { "type": "string", "description": "Write a figure as {figure}.pdf and {figure}.png, or with several `plots` each as {figure}.{plot}.pdf and .png (none may exist), and return each as an image. Omitted with `plots`, in today's results folder" },
                     "plot": { "type": "string", "enum": ["modules", "trace", "batches"], "description": "Which figure: the modules grid (gene modules against cell modules; default), the fit's trace, or the cell modules against the batches" },
@@ -262,7 +232,6 @@ fn hand_written() -> Vec<ToolSpec> {
                     "data": { "type": "array", "items": { "type": "string" }, "minItems": 1, "description": "Site matrices, or a faba output directory" },
                     "genes": { "type": "array", "items": { "type": "string" }, "description": "Gene symbols or Ensembl ids" },
                     "regions": { "type": "array", "items": { "type": "string" }, "description": "Regions as chr:lb-ub" },
-                    "modality": modality(),
                     "figure": { "type": "boolean", "description": "Write the Miami SVG instead of the TSV" },
                     "gtf": { "type": "string", "description": "Gene annotation for the figure's gene model" },
                     "bam": { "type": "array", "items": { "type": "string" }, "description": "BAMs for the figure's read-depth track" },
@@ -279,8 +248,6 @@ fn hand_written() -> Vec<ToolSpec> {
                 json!({
                     "data": { "type": "array", "items": { "type": "string" }, "minItems": 1, "description": "Site parquets, or faba output directories" },
                     "gff": gff(),
-                    "modality": modality(),
-                    "bins": { "type": "integer", "minimum": 1, "description": "Bins across the metagene (default 200)" },
                     "dist_measures": { "type": "string", "description": "Also write MetaPlotR's per-site distance table here; must not exist" },
                     "figure": { "type": "boolean", "description": "Also draw the figure beside the table (`{out stem}.pdf` and `.png`) and return it as an image; default true" },
                     "out": file_out(), "options": options(),
@@ -295,9 +262,6 @@ fn hand_written() -> Vec<ToolSpec> {
                 json!({
                     "data": { "type": "array", "items": { "type": "string" }, "minItems": 1, "description": "Site parquets or faba output directories; BAMs too when source is reads" },
                     "genome": genome(),
-                    "modality": modality(),
-                    "source": { "type": "string", "enum": ["reference", "reads"] },
-                    "window": { "type": "integer", "minimum": 0, "description": "Half-window in bp (default 10)" },
                     "figure": { "type": "boolean", "description": "Also draw the figure beside the table (`{out stem}.pdf` and `.png`) and return it as an image; default true" },
                     "out": file_out(), "options": options(),
                 }),
@@ -318,142 +282,6 @@ fn hand_written() -> Vec<ToolSpec> {
     }
     specs
 }
-
-/// The producers that read cell barcodes from BAM tags.
-const TAGGED: &[&str] = &["count", "depth", "atoi", "dartseq", "apa", "snp", "run"];
-
-/// The producers that also count genes and UMIs.
-const TAGGED_GENES: &[&str] = &["count", "atoi", "dartseq", "apa", "snp", "run"];
-
-/// Flags whose arguments say more than their help: the tools taking each,
-/// its key and description. Each is an argument as every other flag
-/// is (see [`generate`]); this only words it.
-const TYPED: &[(&[&str], &str, &str)] = &[
-    (
-        TAGGED,
-        "cell_barcode_tag",
-        "BAM tag holding the cell barcode",
-    ),
-    (
-        TAGGED_GENES,
-        "gene_barcode_tag",
-        "BAM tag holding the gene",
-    ),
-    (
-        TAGGED_GENES,
-        "umi_tag",
-        "BAM tag holding the UMI",
-    ),
-    (
-        TAGGED_GENES,
-        "gene_type",
-        "Keep genes of this biotype only (protein_coding, lncRNA, pseudogene)",
-    ),
-    (
-        &["atoi", "dartseq", "apa", "run"],
-        "mixture",
-        "Also fit the per-gene mixture matrices (a slow EM)",
-    ),
-    (&["run"], "skip_snp", "Skip the SNP step"),
-    (
-        &["run"],
-        "skip_count",
-        "Skip the gene counts",
-    ),
-    (&["run"], "skip_atoi", "Skip A-to-I"),
-    (&["run"], "skip_apa", "Skip APA"),
-    (
-        &["run"],
-        "depth_resolution_kb",
-        "Read-depth bin width in kb",
-    ),
-    (
-        &["cluster"],
-        "seed",
-        "Random seed; restart i uses seed + i (default 1)",
-    ),
-    (
-        &["cluster"],
-        "within",
-        "A count fit's run record (count_blockmodel.run.json): fit the sites within each of its cell modules",
-    ),
-    (
-        &["cluster"],
-        "within_min_cells",
-        "With `within`: a group with fewer cells to fit is skipped (default 50)",
-    ),
-    (
-        &["pileup"],
-        "cell_membership",
-        "Cell barcode to cell type (TSV/CSV/Parquet): one panel per type",
-    ),
-    (
-        &["pileup"],
-        "top_modality",
-        "Restrict the top track to these modalities, e.g. m6A",
-    ),
-    (
-        &["pileup"],
-        "track",
-        "Labelled tracks as LABEL=PATTERN over the input paths (`*`, `?`)",
-    ),
-    (
-        &["metagene"],
-        "isoforms",
-        "A site in k isoforms adds 1/k to each (weighted, the default) or 1 (all)",
-    ),
-    (
-        &["metagene"],
-        "include_non_coding",
-        "Also profile non-coding genes, on their own track",
-    ),
-    (
-        SITE_PANELS,
-        "hist",
-        "Site panels: quantities to draw a histogram of (pv, fold, log_odds, coverage, converted, edit_ratio, cells); default every one that applies, [\"none\"] for none",
-    ),
-    (
-        SITE_PANELS,
-        "pairs",
-        "Site panels: pairs to draw two at a time, each \"x:y\" (e.g. \"pv:cells\"); default the pairs qc picks, [\"none\"] for none",
-    ),
-    (
-        SITE_PANELS,
-        "marginals",
-        "Site panels: histograms beside each pair on its own axes, \"top\" (x) and/or \"right\" (y)",
-    ),
-    (
-        SITE_PANELS,
-        "scale",
-        "A quantity's scale in every figure of it, each \"q=linear\" or \"q=log\" (e.g. \"pv=log\"); log odds is linear only",
-    ),
-    (
-        SITE_PANELS,
-        "bins",
-        "Site panels: bins along each quantity's axis (default from the figure's width, 20 to 60)",
-    ),
-    (
-        PANELS,
-        "font_size",
-        "Every label's size in points, as printed (default: fit to the figure)",
-    ),
-    (
-        PANELS,
-        "panel_only",
-        "Draw the plot, its axes and their titles only: no title, file name, key or notes",
-    ),
-    (
-        PANELS,
-        "palette",
-        "Kept and removed sites in blue and orange (colour) or dark and light gray (gray)",
-    ),
-];
-
-/// The tools whose site figures take a paper panel's look.
-const PANELS: &[&str] = &["metagene", "pwm", "qc", "qc_view", "site_plot"];
-
-/// The tools drawing the site panels, which take their choice of panels.
-const SITE_PANELS: &[&str] = &["qc", "qc_view", "site_plot"];
 
 /// The flags no tool offers as an argument, each for the tools named
 /// (none: every tool), with why. Every other flag of a tool's command is
@@ -678,8 +506,6 @@ struct Renamed {
     tools: &'static [&'static str],
     long: &'static str,
     key: &'static str,
-    /// What a tool's property says beyond the flag's type and help.
-    patch: fn(&str) -> Value,
 }
 
 /// The flags offered under another key than their own.
@@ -689,25 +515,96 @@ const RENAMED: &[Renamed] = &[
         tools: &["pileup"],
         long: "height",
         key: "ascii_height",
-        patch: |_| json!({}),
     },
     Renamed {
         tools: &SIZED,
         long: "fig-width",
         key: "width",
-        patch: |tool| {
-            json!({ "minimum": least_size(tool).0,
-                "description": "The figure's width in inches, laid out for it, its text kept readable (e.g. 3.5 for a column, 7 for a page); alone or with `height`, the other the figure's own" })
-        },
     },
     Renamed {
         tools: &SIZED,
         long: "fig-height",
         key: "height",
+    },
+];
+
+/// What the arguments made from flags of the tools named say beyond each
+/// flag's type and help: a bound or the values it takes, which its value
+/// parser does not tell, or wording of the tool's own arguments.
+struct Patched {
+    tools: &'static [&'static str],
+    keys: &'static [&'static str],
+    /// Merged over a tool's property.
+    patch: fn(&str) -> Value,
+}
+
+/// The arguments made from flags that say more than their flags.
+const PATCHED: &[Patched] = &[
+    Patched {
+        tools: &SIZED,
+        keys: &["width"],
+        patch: |tool| {
+            json!({ "minimum": least_size(tool).0,
+                "description": format!("The figure's width in inches, laid out for it, its text kept readable (e.g. 3.5 for a column, 7 for a page); alone or with `height`, the other the figure's own{}", floors(tool)) })
+        },
+    },
+    Patched {
+        tools: &SIZED,
+        keys: &["height"],
         patch: |tool| {
             json!({ "minimum": least_size(tool).1,
-                "description": "The figure's height in inches; alone or with `width`, its text fit to it. A qc figure with its table needs 10 inches across unless `panel_only` (it says so)" })
+                "description": format!("The figure's height in inches; alone or with `width`, its text fit to it. A qc figure with its table needs 10 inches across unless `panel_only` (it says so){}", floors(tool)) })
         },
+    },
+    Patched {
+        tools: &["depth"],
+        keys: &["resolution_kb"],
+        patch: |_| json!({ "exclusiveMinimum": 0 }),
+    },
+    Patched {
+        tools: &["qc"],
+        keys: &["qc_mads"],
+        patch: |_| json!({ "exclusiveMinimum": 0 }),
+    },
+    Patched {
+        tools: &["cluster"],
+        keys: &["cell_roles", "gene_roles", "chains", "batch_size", "epochs"],
+        patch: |_| json!({ "minimum": 1 }),
+    },
+    Patched {
+        tools: &["cluster"],
+        keys: &["tol"],
+        patch: |_| json!({ "minimum": 0 }),
+    },
+    Patched {
+        tools: &["cluster", "cluster_view"],
+        keys: &["modality"],
+        patch: |_| json!({ "enum": ["m6a", "atoi", "count"] }),
+    },
+    Patched {
+        tools: &["pileup", "metagene", "pwm", "site_plot"],
+        keys: &["modality"],
+        patch: |_| json!({ "enum": ["m6a", "atoi"] }),
+    },
+    Patched {
+        tools: &["cluster_view"],
+        keys: &["go_min_weight"],
+        patch: |_| json!({ "minimum": 0, "maximum": 1 }),
+    },
+    Patched {
+        tools: &["cluster_view"],
+        keys: &["go_q"],
+        patch: |_| json!({ "exclusiveMinimum": 0, "maximum": 1 }),
+    },
+    Patched {
+        tools: &["metagene"],
+        keys: &["bins"],
+        patch: |_| json!({ "minimum": 1 }),
+    },
+    Patched {
+        tools: &["pwm"],
+        keys: &["window"],
+        patch: |_| json!({ "minimum": 0 }),
     },
 ];
 
@@ -769,19 +666,18 @@ fn generate() -> BTreeMap<String, Flags> {
                 ArgAction::Append => Many::Repeated,
                 _ => many_of(a),
             };
-            let typed = TYPED.iter().find(|t| t.0.contains(&tool) && t.1 == key);
             let path = take == Take::Value(Ty::Text)
                 && matches!(
                     a.get_value_hint(),
                     ValueHint::FilePath | ValueHint::DirPath | ValueHint::AnyPath
                 );
-            let about = match typed {
-                Some(t) => t.2.to_string(),
-                None => help_of(a, &take),
-            };
-            let mut schema = Generated::property(&take, many, &about);
-            if let (Some(r), Some(m)) = (renamed, schema.as_object_mut()) {
-                m.extend((r.patch)(tool).as_object().cloned().unwrap_or_default());
+            let mut schema = Generated::property(&take, many, &help_of(a, &take));
+            let patches = (PATCHED.iter())
+                .filter(|p| p.tools.contains(&tool) && p.keys.contains(&key.as_str()));
+            for p in patches {
+                if let (Value::Object(m), Value::Object(more)) = (&mut schema, (p.patch)(tool)) {
+                    m.extend(more);
+                }
             }
             flags.generated.push(Generated {
                 flag: format!("--{long}"),
@@ -820,24 +716,12 @@ const PRODUCERS: [&str; 9] = [
     "count", "depth", "atoi", "dartseq", "apa", "snp", "run", "qc", "cluster",
 ];
 
-/// `qc`'s arguments: the directory in, the directory out, and the site cuts.
+/// `qc`'s arguments: the directory in, the directory out, and the dry run,
+/// figures and page it plans; the site cuts are made from their flags.
 fn qc_properties(dir: &Value, out: &Value, options: &Value) -> Value {
     json!({
         "input": dir,
         "out": out,
-        "site_max_pv": { "type": "number", "description": "Keep a site with p-value at most this (marginal, no FDR)" },
-        "site_min_log_odds": { "type": "number", "description": "m6A: keep a site whose signal-versus-control log odds ratio is at least this" },
-        "site_min_coverage": { "type": "integer", "minimum": 0 },
-        "site_min_converted": { "type": "integer", "minimum": 0 },
-        "site_min_edit_ratio": { "type": "number" },
-        "site_max_edit_ratio": { "type": "number" },
-        "site_min_fold": { "type": "number", "description": "m6A: keep a site whose signal edit rate is at least this times the control's" },
-        "site_min_cells": { "type": "integer", "minimum": 0, "description": "Keep a site seen as converted in at least this many kept cells" },
-        "row_nnz_cutoff": { "type": "integer", "minimum": 0 },
-        "column_nnz_cutoff": { "type": "integer", "minimum": 0 },
-        "qc_mads": { "type": "number", "exclusiveMinimum": 0, "description": "MAD band for the cell outlier drops" },
-        "auto_cutoff": { "type": "boolean" },
-        "no_cell_qc": { "type": "boolean" },
         "dry_run": { "type": "boolean", "description": "Count what the thresholds remove, per batch and modality; write nothing (`out` is ignored)" },
         "plots": { "type": "boolean", "description": "Also draw each modality's and knob's figure, each modality's thresholds two at a time ({m}_pairs) and each batch's cell QC ({batch}_cells) under `qc_plots/`, and the site panels `site_plot` draws, at these thresholds, under `qc_plots/panels/` (`hist`, `pairs`, `marginals`, `scale`, `bins` choose them); both come back as images (see the tool's description)" },
         "html": { "type": "string", "description": "Also write the view's page here, to share (with `dry_run` too): the thresholds recounted live, their pairs two at a time and each batch's cell QC, carrying each modality's strongest 50,000 sites by p-value. Must not exist: an existing file is refused, never replaced" },
@@ -856,39 +740,6 @@ fn qc_view_properties(dir: &Value, options: &Value) -> Value {
     })
 }
 
-/// The site thresholds `qc` and `site_plot` take, as numbers.
-pub(super) const SITE_THRESHOLDS: [&str; 8] = [
-    "site_max_pv",
-    "site_min_log_odds",
-    "site_min_coverage",
-    "site_min_converted",
-    "site_min_edit_ratio",
-    "site_max_edit_ratio",
-    "site_min_fold",
-    "site_min_cells",
-];
-
-/// `site_plot`'s arguments: the directory in, the modality, the optional
-/// thresholds (as `qc`'s), the directory out.
-fn site_plot_properties(dir: &Value, out: &Value, options: &Value, modality: &Value) -> Value {
-    let qc = qc_properties(dir, out, options);
-    let mut p = json!({
-        "input": dir,
-        "modality": modality,
-        "out": { "type": "string", "description": "Directory the figures go to; must not exist. Omitted, a new directory in today's results folder" },
-        "options": options,
-    });
-    for key in SITE_THRESHOLDS {
-        let mut t = qc[key].clone();
-        t["description"] = json!(format!(
-            "Optional; drawn as a dashed line, the sites it removes drawn apart. {}",
-            t["description"].as_str().unwrap_or("As qc's")
-        ));
-        p[key] = t;
-    }
-    p
-}
-
 /// The tools that draw a figure, each taking its size as `width` and
 /// `height` in inches, passed as `--fig-width` and `--fig-height` (see
 /// [`with_typed`](super::args::with_typed)).
@@ -902,13 +753,45 @@ const SIZED: [&str; 7] = [
     "site_plot",
 ];
 
-/// The least `width` and `height` a [`SIZED`] tool's figure takes, in
-/// inches: pileup's and cluster_view's margins do not shrink with their
-/// text (see [`crate::figure::size::FIXED_MIN`]).
-fn least_size(tool: &str) -> (f64, f64) {
+/// The figures a [`SIZED`] tool draws.
+fn figures(tool: &str) -> &'static [Figure] {
     match tool {
-        "pileup" | "cluster_view" => crate::figure::size::FIXED_MIN,
-        _ => crate::figure::size::MIN,
+        "cluster_view" => &[Figure::Modules, Figure::Trace, Figure::Batches],
+        "pileup" => &[Figure::Pileup],
+        "metagene" => &[Figure::Metagene],
+        "pwm" => &[Figure::Logo],
+        "qc" | "qc_view" => &[Figure::Qc, Figure::SitePanels],
+        "site_plot" => &[Figure::SitePanels],
+        _ => &[],
+    }
+}
+
+/// The least `width` and `height` a [`SIZED`] tool takes, in inches: the
+/// least of its figures' (see [`Figure::least`]).
+fn least_size(tool: &str) -> (f64, f64) {
+    (figures(tool).iter().map(|f| f.least()))
+        .reduce(|a, b| (a.0.min(b.0), a.1.min(b.1)))
+        .unwrap_or(crate::figure::size::MIN)
+}
+
+/// What a tool's size says of its figures that need more than
+/// [`least_size`]: each by name, with its own least.
+fn floors(tool: &str) -> String {
+    let least = least_size(tool);
+    let more: Vec<String> = (figures(tool).iter())
+        .filter(|f| f.least() != least)
+        .map(|f| {
+            format!(
+                "{} at least {} by {} inches",
+                f.name(),
+                f.least().0,
+                f.least().1
+            )
+        })
+        .collect();
+    match more.is_empty() {
+        true => String::new(),
+        false => format!("; {}", more.join(", ")),
     }
 }
 
@@ -929,36 +812,246 @@ pub(super) fn commands() -> Vec<(String, clap::Command)> {
 mod tests {
     use super::commands;
     use crate::mcp::args::{typed_flags, with_typed, Arguments};
-    use clap::CommandFactory;
 
-    use super::{excluded, generated, tools, EXCLUDED, SIZED, TYPED};
+    use super::{
+        excluded, generated, least_size, properties, tools, Figure, EXCLUDED, PATCHED, SIZED,
+    };
     use crate::mcp::tools::sites::pileup_argv;
     use serde_json::json;
-    /// Every typed argument names a flag its command has, and its tool's
-    /// schema offers it.
+    /// Each tool's arguments, a line each: its key, its JSON type and the
+    /// bounds and choices it states.
+    fn shapes() -> String {
+        let mut lines = Vec::new();
+        for spec in tools() {
+            let props = spec.input_schema["properties"].as_object().unwrap();
+            for (key, p) in props {
+                let mut line = format!("{} {key}", spec.name);
+                let mut part = |name: &str, v: &serde_json::Value| {
+                    if !v.is_null() {
+                        line.push_str(&format!(" {name}={v}"));
+                    }
+                };
+                part("type", &p["type"]);
+                part("items", &p["items"]["type"]);
+                part("anyOf", &json!(p["anyOf"].as_array().map(|a| a.len())));
+                let mut choices: Vec<_> = (p["enum"].as_array().into_iter().flatten())
+                    .chain(p["items"]["enum"].as_array().into_iter().flatten())
+                    .filter_map(|c| c.as_str())
+                    .collect();
+                choices.sort_unstable();
+                part("enum", &json!(Some(choices).filter(|c| !c.is_empty())));
+                // A bound as a number: 1 and 1.0 are one bound to an agent.
+                for bound in ["minimum", "exclusiveMinimum", "maximum", "minItems"] {
+                    part(bound, &json!(p[bound].as_f64()));
+                }
+                lines.push(line);
+            }
+        }
+        lines.sort_unstable();
+        lines.join("\n") + "\n"
+    }
+
+    /// Every tool's arguments keep their keys, JSON types, bounds and
+    /// choices, as `properties.snap` lists them: an argument moved between
+    /// the hand-written ones and those made from flags is the same to an
+    /// agent.
     #[test]
-    fn typed_arguments_are_flags_of_their_commands() {
-        let cli = crate::Cli::command();
+    fn every_tools_arguments_keep_their_keys_and_types() {
+        let (got, want) = (shapes(), include_str!("properties.snap"));
+        let diff: Vec<String> = (want.lines().filter(|l| !got.lines().any(|g| g == *l)))
+            .map(|l| format!("- {l}"))
+            .chain(
+                (got.lines().filter(|l| !want.lines().any(|w| w == *l))).map(|l| format!("+ {l}")),
+            )
+            .collect();
+        assert!(diff.is_empty(), "arguments changed:\n{}", diff.join("\n"));
+    }
+
+    /// A hand-written argument under a flag's key is one the tool does
+    /// more with than pass on: a file it checks or notes, a figure or page
+    /// it plans, a value it joins or checks against another. Every other
+    /// flag's argument is made from the flag, its help and [`PATCHED`].
+    #[test]
+    fn a_hand_written_argument_for_a_flag_is_one_the_tool_composes() {
+        let composed: &[(&str, &[&str])] = &[
+            // Noted as inputs, or read before the command runs.
+            ("count", &["gff"]),
+            ("depth", &["valid_cells"]),
+            ("atoi", &["gff", "genome"]),
+            ("dartseq", &["gff", "genome"]),
+            ("apa", &["gff", "utr_bed"]),
+            ("snp", &["gff", "genome", "known_snps"]),
+            ("run", &["gff", "genome", "known_snps"]),
+            ("metagene", &["gff"]),
+            ("pwm", &["genome"]),
+            // A run without the cut, the figures and the page it plans.
+            ("qc", &["dry_run", "plots", "html"]),
+            ("qc_view", &["plots", "html"]),
+            // The figures, each planned and checked new.
+            ("cluster", &["batch_map"]),
+            ("cluster_view", &["html", "figure", "plot", "look"]),
+            ("pileup", &["genes", "regions", "gtf", "bam", "out"]),
+            ("metagene", &["dist_measures", "figure"]),
+            ("pwm", &["figure"]),
+        ];
+        let made = |tool: &str, key: &str| generated(tool).iter().any(|g| g.key == key);
+        let mut extra = Vec::new();
+        for (tool, sub) in commands() {
+            let props = properties(&tool).unwrap();
+            for a in sub.get_arguments().filter(|a| !a.is_hide_set()) {
+                let Some(long) = a.get_long() else { continue };
+                let key = long.replace('-', "_");
+                let kept =
+                    (composed.iter()).any(|(t, keys)| *t == tool && keys.contains(&key.as_str()));
+                if props.contains_key(&key) && !made(&tool, &key) && !kept {
+                    extra.push(format!("{tool} {key}"));
+                }
+            }
+        }
+        assert!(
+            extra.is_empty(),
+            "written by hand, but only passed on:\n{}",
+            extra.join("\n")
+        );
+    }
+
+    /// Each figure tool's `width` and `height` state the least of its
+    /// figures' floors, and its command refuses a side under a figure's
+    /// floor and takes one at it: one floor a figure (see
+    /// [`Figure::least`]). cluster_view's least is its modules grid's; its
+    /// description names the trace's and the batches', which are more.
+    #[test]
+    fn the_schema_states_the_floor_each_command_keeps() {
+        use crate::figure::SizeArgs;
         let specs = tools();
-        for &(tools, key, _) in TYPED {
-            let long = key.replace('_', "-");
-            for tool in tools {
-                // A tool is named after its command, `_` for `-`.
-                let sub = cli
-                    .find_subcommand(tool.replace('_', "-"))
-                    .unwrap_or_else(|| panic!("no command {tool}"));
+        for tool in SIZED {
+            let spec = specs.iter().find(|s| s.name == tool).unwrap();
+            let props = &spec.input_schema["properties"];
+            let (w, h) = (
+                props["width"]["minimum"].as_f64(),
+                props["height"]["minimum"].as_f64(),
+            );
+            let drawn = super::figures(tool);
+            assert!(!drawn.is_empty(), "{tool} draws no figure");
+            let least = |side: fn((f64, f64)) -> f64| {
+                drawn
+                    .iter()
+                    .map(|f| side(f.least()))
+                    .fold(f64::INFINITY, f64::min)
+            };
+            assert_eq!(
+                (w, h),
+                (Some(least(|l| l.0)), Some(least(|l| l.1))),
+                "{tool}"
+            );
+            for f in drawn {
+                let (fw, fh) = f.least();
+                for under in [
+                    SizeArgs::new(Some(fw - 0.01), None),
+                    SizeArgs::new(None, Some(fh - 0.01)),
+                ] {
+                    let e = f.page(&under).unwrap_err().to_string();
+                    assert!(e.contains("at least"), "{tool} {f:?}: {e}");
+                }
                 assert!(
-                    sub.get_arguments()
-                        .any(|a| a.get_long() == Some(long.as_str())),
-                    "`faba {tool}` has no --{long}"
+                    f.page(&SizeArgs::new(Some(fw), Some(fh))).is_ok(),
+                    "{tool} {f:?}"
                 );
-                let spec = specs.iter().find(|s| s.name == *tool).expect("a tool");
+                if f.least() != (w.unwrap(), h.unwrap()) {
+                    let said = props["width"]["description"].as_str().unwrap();
+                    let floor = format!("{} at least {fw} by {fh} inches", f.name());
+                    assert!(said.contains(&floor), "{tool}: {said}");
+                }
+            }
+        }
+        // Through the commands, which check the size before reading
+        // anything: a side under a figure's floor is refused saying so, one
+        // at it is not refused for its size.
+        let run = |line: Vec<String>| {
+            let m = crate::faba_command().try_get_matches_from(line).unwrap();
+            match crate::parse(&m).unwrap().commands {
+                crate::Commands::Pileup(ref args) => crate::run_pileup(args),
+                crate::Commands::ClusterView(ref args) => crate::run_modules(args),
+                _ => unreachable!(),
+            }
+        };
+        let view = ["cluster-view", "/no/such", "--figure", "f", "--plot"];
+        let lines = [
+            ("pileup", Figure::Pileup, vec!["pileup", "/no/such.zarr"]),
+            (
+                "cluster_view",
+                Figure::Modules,
+                [&view[..], &["modules"]].concat(),
+            ),
+            (
+                "cluster_view",
+                Figure::Trace,
+                [&view[..], &["trace"]].concat(),
+            ),
+            (
+                "cluster_view",
+                Figure::Batches,
+                [&view[..], &["batches"]].concat(),
+            ),
+        ];
+        let sized = |line: &[&str], w: f64, h: f64| {
+            let size = [
+                "--fig-width".to_string(),
+                w.to_string(),
+                "--fig-height".into(),
+                h.to_string(),
+            ];
+            let all = std::iter::once("faba")
+                .chain(line.iter().copied())
+                .map(String::from);
+            let e = run(all.chain(size).collect()).unwrap_err().to_string();
+            !e.contains("inches")
+        };
+        for tool in ["pileup", "cluster_view"] {
+            let (w, h) = least_size(tool);
+            let of = || lines.iter().filter(|l| l.0 == tool);
+            // The schema's least is one a figure of the tool takes, and
+            // none takes less.
+            assert!(
+                of().any(|(_, _, line)| sized(line, w, h)),
+                "{tool}: {w} by {h}"
+            );
+            for (_, f, line) in of() {
                 assert!(
-                    spec.input_schema["properties"].get(key).is_some(),
-                    "{tool}: no `{key}` in its schema"
+                    !sized(line, w - 0.01, h) && !sized(line, w, h - 0.01),
+                    "{tool} {f:?}"
+                );
+                let (fw, fh) = f.least();
+                assert!(sized(line, fw, fh), "{f:?}");
+                assert!(
+                    !sized(line, fw - 0.01, fh) && !sized(line, fw, fh - 0.01),
+                    "{f:?}"
                 );
             }
         }
+    }
+
+    /// Every patch is of an argument its tools make from a flag, and is in
+    /// the schema they offer; a choice made from a flag is one its command
+    /// takes.
+    #[test]
+    fn every_patch_is_of_an_argument_made_from_a_flag() {
+        for p in PATCHED {
+            for (tool, key) in (p.tools.iter()).flat_map(|t| p.keys.iter().map(move |k| (*t, *k))) {
+                assert!(
+                    generated(tool).iter().any(|g| g.key == key),
+                    "{tool}: `{key}` is not made from a flag"
+                );
+                let offered = &properties(tool).unwrap()[key];
+                for (k, v) in (p.patch)(tool).as_object().unwrap() {
+                    assert_eq!(&offered[k], v, "{tool} {key} {k}");
+                }
+            }
+        }
+        let apa = |method| typed_flags("apa", &Arguments(json!({ "method": method })));
+        assert_eq!(apa("simple").unwrap(), ["--method", "simple"]);
+        let e = apa("fast").unwrap_err().to_string();
+        assert!(e.contains("one of simple, mixture"), "{e}");
     }
 
     /// Every flag of every tool's command is an argument made from it, a
@@ -1048,21 +1141,19 @@ mod tests {
             "{argv:?}"
         );
         assert!(typed_flags("pwm", &Arguments(json!({ "width": "wide" }))).is_err());
-        // The schema states the least a figure takes: pileup's and
-        // cluster_view's, whose margins do not shrink, more.
+        // The schema states the least a figure takes: pileup's, whose
+        // margins do not shrink, more; cluster_view's, its modules grid's.
         let specs = tools();
         let least = |tool: &str, key: &str| {
             let t = specs.iter().find(|t| t.name == tool).unwrap();
             t.input_schema["properties"][key]["minimum"].clone()
         };
-        let (min, fixed) = (crate::figure::size::MIN, crate::figure::size::FIXED_MIN);
-        for tool in ["pwm", "metagene", "qc", "site_plot"] {
+        let (min, fixed) = (crate::figure::size::MIN, Figure::Pileup.least());
+        for tool in ["pwm", "metagene", "qc", "site_plot", "cluster_view"] {
             assert_eq!(least(tool, "width"), json!(min.0), "{tool}");
             assert_eq!(least(tool, "height"), json!(min.1), "{tool}");
         }
-        for tool in ["pileup", "cluster_view"] {
-            assert_eq!(least(tool, "width"), json!(fixed.0), "{tool}");
-            assert_eq!(least(tool, "height"), json!(fixed.1), "{tool}");
-        }
+        assert_eq!(least("pileup", "width"), json!(fixed.0));
+        assert_eq!(least("pileup", "height"), json!(fixed.1));
     }
 }

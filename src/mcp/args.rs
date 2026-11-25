@@ -66,27 +66,6 @@ impl Arguments {
         Ok(v)
     }
 
-    /// The numbers given among `keys`, as `--key-name value`. A value that
-    /// starts like a flag is `--key-name=-1`, so clap keeps the number.
-    pub(super) fn numbers(&self, keys: &[&str]) -> Result<Vec<String>> {
-        let mut v = vec![];
-        for k in keys {
-            match self.0.get(*k) {
-                None | Some(Value::Null) => {}
-                Some(n @ Value::Number(_)) => {
-                    let flag = format!("--{}", k.replace('_', "-"));
-                    v.extend(legume_tui::form::emit(
-                        &flag,
-                        legume_tui::form::Many::One,
-                        vec![n.to_string()],
-                    ));
-                }
-                Some(other) => bail!("`{k}` is a number, not {other}"),
-            }
-        }
-        Ok(v)
-    }
-
     /// `out`, or, when the agent names none, `{name}{ext}` in today's
     /// results folder, `-2`, `-3`… added to `name` (before `ext`) while
     /// `taken` says a name is in use.
@@ -464,11 +443,13 @@ mod tests {
                 // `options`, where the words go, takes them.
                 let passed = Arguments(json!({ "options": words })).options(&tool);
                 assert!(passed.is_ok(), "{tool} {}: {passed:?}", g.key);
-                let line = completed(
-                    &mut cli,
-                    &sub,
-                    needed.iter().cloned().chain(words.clone()).collect(),
-                );
+                // A required flag is given once: as the argument under test.
+                let mut line = needed.clone();
+                if let Some(i) = line.iter().position(|w| *w == g.flag) {
+                    line.drain(i..(i + 2).min(line.len()));
+                }
+                line.extend(words.clone());
+                let line = completed(&mut cli, &sub, line);
                 let all = cli
                     .try_get_matches_from_mut(&line)
                     .unwrap_or_else(|e| panic!("{tool} {}: {line:?}: {e}", g.key));
@@ -558,7 +539,7 @@ mod tests {
             ("qc", &["--html=p.html"]),
             ("qc", &["--plots"]),
             ("qc", &["--dry-run"]),
-            ("qc", &["--site-max-pv", "0.1"]),
+            ("qc_view", &["--html", "p.html"]),
         ] {
             let e = options(tool, o).unwrap_err().to_string();
             assert!(e.contains("not taken in `options`"), "{tool} {o:?}: {e}");

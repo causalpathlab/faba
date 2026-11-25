@@ -169,16 +169,23 @@ impl Ink {
     }
 }
 
-/// The page `asked` for `plot`: refused when a side is under the
-/// trace's or the batches' floor, their margins not shrinking with their
-/// text (see [`size::FIXED_MIN`]); the grid lays itself out, saying the
-/// least it needs as it is drawn.
-pub fn page(plot: Plot, asked: &crate::figure::SizeArgs) -> anyhow::Result<Page> {
-    match plot {
-        Plot::Modules => asked.page(),
-        Plot::Trace => asked.page_at_least(size::FIXED_LEAST, "the trace figure"),
-        Plot::Batches => asked.page_at_least(size::FIXED_LEAST, "the batches figure"),
+impl Plot {
+    /// The figure it is, by its floor.
+    pub fn figure(self) -> size::Figure {
+        match self {
+            Plot::Modules => size::Figure::Modules,
+            Plot::Trace => size::Figure::Trace,
+            Plot::Batches => size::Figure::Batches,
+        }
     }
+}
+
+/// The page `asked` for `plot`: refused when a side is under its floor
+/// (see [`size::Figure::least`]), the trace's and the batches' margins not
+/// shrinking with their text; the grid lays itself out, saying the least
+/// it needs as it is drawn.
+pub fn page(plot: Plot, asked: &crate::figure::SizeArgs) -> anyhow::Result<Page> {
+    plot.figure().page(asked)
 }
 
 /// What colours a block.

@@ -125,7 +125,12 @@ fn a_logo_of_any_width_is_not_refused() {
     use crate::figure::style::{Sheet, StyleArgs};
     let wide: Vec<DnaBaseCount> = (0..201).map(|i| count(i, 1, 1, 1)).collect();
     let size = crate::figure::SizeArgs::new(Some(1.8), Some(1.4));
-    let sheet = Sheet::new(&size, &StyleArgs::default()).unwrap();
+    let sheet = Sheet::new(
+        crate::figure::size::Figure::Logo,
+        &size,
+        &StyleArgs::default(),
+    )
+    .unwrap();
     let svg = super::figure("sites", &wide, 100, sheet);
     assert_eq!(crate::figure::svg_size(&svg), (129.6, 100.8));
 }
@@ -161,7 +166,11 @@ fn a_logo_panel_is_drawn_exactly_at_the_size_and_font_asked() {
     assert!(!panel.contains("TITLE1"), "{panel}");
     // The y axis 56 points in and 10 down at 8-point text, scaled by 5.5/8.
     assert!(
-        panel.contains(r#"x1="38.50" y1="6.88" x2="38.50""#),
+        panel.contains(r#"<g transform="scale(0.6875)">"#),
+        "{panel}"
+    );
+    assert!(
+        panel.contains(r#"x1="56.00" y1="10.00" x2="56.00""#),
         "{panel}"
     );
     assert!(panel.contains("position relative to the site"));

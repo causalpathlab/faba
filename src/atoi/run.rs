@@ -155,7 +155,11 @@ pub struct AtoICountArgs {
     )]
     pub exact_barcode_match: bool,
 
-    #[arg(long, value_enum, help = "Gene type filter")]
+    #[arg(
+        long,
+        value_enum,
+        help = "Keep genes of this biotype only (default: every biotype)"
+    )]
     #[serde(serialize_with = "crate::run_record::ser_debug")]
     gene_type: Option<GffGeneType>,
 

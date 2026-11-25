@@ -61,7 +61,7 @@ pub struct PanelArgs {
         long = "scale",
         value_name = "Q=linear|log,...",
         value_delimiter = ',',
-        help = "A quantity's scale, in every figure of it, e.g. pv=log,fold=linear (default: -log10 p, edit ratio and log odds linear; fold and counts log)"
+        help = "A quantity's scale, in every figure of it, e.g. pv=log,fold=linear (default: -log10 p, edit ratio and log odds linear; fold and counts log); log odds is linear only"
     )]
     pub scale: Vec<String>,
 
@@ -694,7 +694,11 @@ fn modality_of(
 
 pub fn run_site_plot(args: &SitePlotArgs) -> anyhow::Result<()> {
     let plan = args.panels.plan()?;
-    let sheet = Sheet::new(&args.size, &args.style)?;
+    let sheet = Sheet::new(
+        crate::figure::size::Figure::SitePanels,
+        &args.size,
+        &args.style,
+    )?;
     let (input, out) = (&*args.input_dir, &*args.output);
     if let Some(problem) = crate::tui::output_problem(out) {
         anyhow::bail!("-o {problem}: faba site-plot never writes over files; name another");

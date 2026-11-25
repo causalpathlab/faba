@@ -793,9 +793,11 @@ impl SitePicker<'_> {
 /// Each batch's cell QC, shared by the view, its report and its figures.
 pub type CellsShared = std::sync::Arc<[crate::qc::cells_plot::Cells]>;
 
-/// Each batch's cell QC as a figure, laid out for `sheet`.
+/// Each batch's cell QC as a figure, laid out for `sheet`: its own size
+/// grown to the font, a side asked for checked as a knob figure's is
+/// ([`knob_least`]).
 pub(crate) fn cell_figures(cells: &[crate::qc::cells_plot::Cells], sheet: Sheet) -> Vec<Figure> {
-    let size = sheet.fill(|| crate::qc::cells_plot::SIZE);
+    let size = sheet.fill_own(crate::qc::cells_plot::SIZE);
     let style = sheet.style(size);
     (cells.iter())
         .map(|c| Figure {

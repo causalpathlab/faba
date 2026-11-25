@@ -318,7 +318,7 @@ pub struct SnpArgs {
     #[arg(
         long,
         value_enum,
-        help = "Gene type filter",
+        help = "Keep genes of this biotype only (default: every biotype)",
         long_help = "Filter GFF genes by type (e.g., protein_coding, lncRNA).\n\
                      Only genes matching this type are processed.\n\
                      Ignored when --gff is not provided."

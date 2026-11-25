@@ -98,7 +98,7 @@ pub struct ModulesArgs {
         long = "gtf",
         value_name = "FILE",
         value_hint = clap::ValueHint::FilePath,
-        help = "Gene annotation GTF/GFF for the gene models over the pileups",
+        help = "Gene annotation GTF/GFF for the gene models over the pileups, in the view and the --html page",
         long_help = "Gene annotation GTF/GFF for the gene models over the pileups (exons,\n\
                      introns, strand). Without it, the GFF recorded next to the tables is\n\
                      used; when there is none on this machine, the browser asks for one, or\n\
