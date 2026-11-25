@@ -1,5 +1,6 @@
 use super::*;
 use crate::data::dna::Dna;
+use crate::figure::style::{AxisTitles, Palette, StyleArgs};
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::KeyModifiers;
 use ratatui::Terminal;
@@ -131,7 +132,7 @@ fn a_logo_of_any_width_is_not_refused() {
         &StyleArgs::default(),
     )
     .unwrap();
-    let svg = super::figure("sites", &wide, 100, sheet);
+    let svg = super::figure("sites", &wide, 100, sheet, &AxisTitles::default());
     assert_eq!(crate::figure::svg_size(&svg), (129.6, 100.8));
 }
 
@@ -148,7 +149,13 @@ fn a_logo_panel_is_drawn_exactly_at_the_size_and_font_asked() {
             panel_only,
             ..Default::default()
         };
-        super::figure("TITLE1", &pwm(), 2, Sheet { page, look })
+        super::figure(
+            "TITLE1",
+            &pwm(),
+            2,
+            Sheet { page, look },
+            &AxisTitles::default(),
+        )
     };
     for svg in [at(false), at(true)] {
         assert_eq!(crate::figure::svg_size(&svg), (129.6, 100.8));
@@ -184,6 +191,7 @@ fn the_logo_is_laid_out_for_a_size_asked_for() {
         &pwm(),
         2,
         crate::figure::style::Sheet::of((Some(504.0), Some(216.0))),
+        &AxisTitles::default(),
     );
     assert_eq!(crate::figure::svg_size(&svg), (504.0, 216.0));
 }
@@ -308,8 +316,142 @@ fn a_long_motif_keeps_readable_letters() {
 /// The logo at its own size, no font asked for, is drawn as it always was.
 #[test]
 fn the_default_logo_is_unchanged() {
-    let svg = super::figure("sites", &pwm(), 2, crate::figure::style::Sheet::OWN);
+    let svg = super::figure("sites", &pwm(), 2, Sheet::OWN, &AxisTitles::default());
     assert_eq!(crate::figure::fingerprint(&svg), 4045831948546200367);
+}
+
+/// A panel `w` by `h` inches with every label at `font` points, alone,
+/// in `palette`.
+fn panel(w: f64, h: f64, font: f64, palette: Palette) -> Sheet {
+    Sheet {
+        page: (Some(w * 72.0), Some(h * 72.0)),
+        look: StyleArgs {
+            font_size: Some(font),
+            panel_only: true,
+            palette,
+        },
+    }
+}
+
+/// `--xlab` and `--ylab` title the logo's axes in place of its own.
+#[test]
+fn the_axis_titles_asked_replace_the_logos_own() {
+    let sheet = panel(2.4, 1.8, 7.0, Palette::Colour);
+    let labels = |titles: &AxisTitles| -> Vec<String> {
+        let svg = super::figure("sites", &pwm(), 2, sheet, titles);
+        (crate::figure::labels(&svg).into_iter())
+            .map(|l| l.1)
+            .collect()
+    };
+    let own = labels(&AxisTitles::default());
+    for t in ["position relative to the site", "bits"] {
+        assert!(own.iter().any(|l| l == t), "{t}: {own:?}");
+    }
+    let titles = AxisTitles {
+        xlab: Some("position relative to the site (nt)".into()),
+        ylab: Some("information (bits)".into()),
+    };
+    let asked = labels(&titles);
+    for t in ["position relative to the site (nt)", "information (bits)"] {
+        assert!(asked.iter().any(|l| l == t), "{t}: {asked:?}");
+    }
+    for t in ["position relative to the site", "bits"] {
+        assert!(!asked.iter().any(|l| l == t), "{t}: {asked:?}");
+    }
+}
+
+/// Each letter's fill, by letter, in the logo `svg`.
+fn letter_fills(svg: &str) -> Vec<(char, String)> {
+    (svg.lines()
+        .filter(|l| l.contains(" scale(") && l.starts_with("<text")))
+    .map(|l| {
+        let fill = l.split(" fill=\"").nth(1).unwrap().split('"').next();
+        let ch = l[l.find('>').unwrap() + 1..].chars().next().unwrap();
+        (ch, fill.unwrap().to_string())
+    })
+    .collect()
+}
+
+/// `--palette gray` draws the letters in grays, each base its own shade,
+/// and the site's mark in ink; colour, the default, in the logo colours.
+#[test]
+fn a_gray_logo_tells_its_letters_apart_by_shade() {
+    let at = |palette| {
+        let sheet = panel(2.4, 1.8, 7.0, palette);
+        super::figure("sites", &pwm(), 2, sheet, &AxisTitles::default())
+    };
+    let colour = at(Palette::Colour);
+    for (ch, fill) in letter_fills(&colour) {
+        let b = BASES.iter().position(|&c| c == ch).unwrap();
+        assert_eq!(fill, base_fill(b, Palette::Colour), "{ch}");
+    }
+    assert!(colour.contains(ACCENT));
+    let gray = at(Palette::Gray);
+    let fills = letter_fills(&gray);
+    assert!(fills.len() >= 4, "{fills:?}");
+    let mut shades: Vec<(char, String)> = Vec::new();
+    for (ch, fill) in fills {
+        let (r, g, b) = crate::figure::rgb(&fill);
+        assert!(r == g && g == b, "{ch} in {fill}: not a gray");
+        match shades.iter().find(|s| s.0 == ch) {
+            Some(s) => assert_eq!(s.1, fill, "{ch} in one shade"),
+            None => shades.push((ch, fill)),
+        }
+    }
+    assert_eq!(shades.len(), 4, "{shades:?}");
+    for (i, a) in shades.iter().enumerate() {
+        for b in &shades[i + 1..] {
+            let (x, y) = (crate::figure::rgb(&a.1).0, crate::figure::rgb(&b.1).0);
+            assert!((x - y).abs() >= 40.0, "{a:?} and {b:?} too close");
+        }
+    }
+    assert!(!gray.contains(ACCENT), "no accent in gray");
+}
+
+/// The position labels under the logo `svg`, as the boxes they take: the
+/// numbers on the lowest line of numbers (the y axis' are above it).
+fn position_labels(svg: &str) -> Vec<((f64, f64, f64, f64), String)> {
+    let numbers: Vec<_> = (crate::figure::text_boxes(svg).into_iter())
+        .filter(|(_, s)| s.parse::<i64>().is_ok())
+        .collect();
+    let low = numbers.iter().map(|(b, _)| b.3).fold(f64::MIN, f64::max);
+    (numbers.into_iter())
+        .filter(|(b, _)| (b.3 - low).abs() < 0.01)
+        .collect()
+}
+
+/// At 2 inches across and 7 points, the window's position labels thin
+/// (every 5, then every 10) so none runs into another; 0 always shows,
+/// and with room every one does.
+#[test]
+fn position_labels_thin_to_keep_apart() {
+    let window: Vec<DnaBaseCount> = (0..21).map(|i| count(10 + i, 5, 5, 5)).collect();
+    let at = |w: f64, font: f64| {
+        let sheet = panel(w, 1.8, font, Palette::Colour);
+        position_labels(&super::figure(
+            "sites",
+            &window,
+            10,
+            sheet,
+            &AxisTitles::default(),
+        ))
+    };
+    for (w, font) in [(2.0, 7.0), (2.4, 7.0), (1.5, 7.0), (2.0, 8.0)] {
+        let ticks = at(w, font);
+        let shown: Vec<&str> = ticks.iter().map(|t| t.1.as_str()).collect();
+        assert!(
+            shown.contains(&"0") && shown.len() >= 3,
+            "{w} in: {shown:?}"
+        );
+        for (i, (a, s)) in ticks.iter().enumerate() {
+            for (b, z) in &ticks[i + 1..] {
+                let apart = a.2 <= b.0 || b.2 <= a.0;
+                assert!(apart, "{w} in: {s} at {a:?} runs into {z} at {b:?}");
+            }
+        }
+    }
+    assert_eq!(at(2.0, 7.0).len(), 5, "every 5 at 2 inches");
+    assert_eq!(at(7.0, 7.0).len(), 21, "every one with room");
 }
 
 #[test]

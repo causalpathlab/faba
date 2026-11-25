@@ -484,13 +484,14 @@ impl<'a> SitePicker<'a> {
     ) {
         let (ticks, dividers) = (meta_ticks(m.regions), meta_dividers(m.regions));
         let x_title = "metagene position (MetaPlotR scale)";
+        let palette = canvas.style().palette;
         kept_bars(
             canvas,
             m.kept,
             bbox,
             ticks,
             dividers,
-            &|i| REGION_COLOURS[meta_region(m.regions, i)],
+            &|i| region_fill(meta_region(m.regions, i), palette),
             title,
             x_title,
             self.weight.unit(),
@@ -756,6 +757,7 @@ impl<'a> SitePicker<'a> {
             marginal_size: crate::qc::site_plot::MARGINAL_SIZE,
             scales: v.cache.scales,
             bins: Some(v.cache.bins),
+            titles: Default::default(),
         };
         Panels::of_view(&v.sites(), &self.filter, &plan, sheet)
     }

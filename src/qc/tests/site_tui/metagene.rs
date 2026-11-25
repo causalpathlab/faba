@@ -63,6 +63,30 @@ fn the_metagene_panel_says_why_it_is_empty_and_draws_when_ready() {
     assert!(text.contains("metagene · y: read coverage per bin"));
 }
 
+/// In gray (`--palette gray`), the knob figure's metagene draws its
+/// regions in grays, as `faba metagene` does; in colour, in theirs.
+#[test]
+fn a_gray_knob_figure_draws_its_metagene_in_grays() {
+    use crate::figure::style::{Palette, Sheet, StyleArgs};
+    use crate::site_analysis::metagene::REGION_COLOURS;
+    let t = table(M6A, 400);
+    let mut p = picker(&t, None, SiteFilterArgs::default_values());
+    p.set_meta(Meta::ready(vec![Some(meta_layout(t.len()))], Vec::new()));
+    let at = |palette| {
+        let look = StyleArgs {
+            palette,
+            ..StyleArgs::default()
+        };
+        p.figure(Sheet { look, ..Sheet::OWN }).unwrap()
+    };
+    let (colour, gray) = (at(Palette::Colour), at(Palette::Gray));
+    let cds = format!("fill=\"{}\"", REGION_COLOURS[1]);
+    assert!(colour.contains(&cds), "the CDS in its colour");
+    for c in &REGION_COLOURS[..3] {
+        assert!(!gray.contains(&format!("fill=\"{c}\"")), "{c} in gray");
+    }
+}
+
 #[test]
 fn w_cycles_the_bars_from_read_coverage_to_converted_reads_and_sites() {
     let t = with_genes(table(M6A, 1500));

@@ -1,4 +1,5 @@
 use super::*;
+use crate::figure::style::{AxisTitles, Palette, StyleArgs};
 use crate::site_analysis::metagene::ScaleFactors;
 use ratatui::backend::TestBackend;
 use ratatui::crossterm::event::KeyModifiers;
@@ -312,7 +313,7 @@ fn a_panel_sized_page_is_not_refused() {
     let sheet =
         crate::figure::style::Sheet::new(crate::figure::size::Figure::Metagene, &size, &style)
             .unwrap();
-    let svg = super::figure("TITLE1", &hist(true), sheet);
+    let svg = super::figure("TITLE1", &hist(true), sheet, &AxisTitles::default());
     assert_eq!(crate::figure::svg_size(&svg), (129.6, 100.8));
     let labels = crate::figure::labels(&svg);
     assert!(labels.iter().any(|(_, t, _)| t.contains("CDS")), "{svg}");
@@ -338,7 +339,7 @@ fn a_panel_is_drawn_exactly_at_the_size_and_font_asked() {
             panel_only,
             ..Default::default()
         };
-        super::figure("TITLE1", &h, Sheet { page, look })
+        super::figure("TITLE1", &h, Sheet { page, look }, &AxisTitles::default())
     };
     for svg in [at(false), at(true)] {
         assert_eq!(crate::figure::svg_size(&svg), (129.6, 100.8));
@@ -368,6 +369,7 @@ fn a_figure_is_laid_out_for_a_size_asked_for() {
         "sites",
         &h,
         crate::figure::style::Sheet::of((Some(252.0), Some(144.0))),
+        &AxisTitles::default(),
     );
     assert_eq!(crate::figure::svg_size(&svg), (252.0, 144.0));
 }
@@ -396,8 +398,97 @@ fn a_saved_figure_keeps_the_views_shape() {
 #[test]
 fn the_default_profile_is_unchanged() {
     let h = hist(true);
-    let svg = super::figure("sites", &h, crate::figure::style::Sheet::OWN);
+    let svg = super::figure("sites", &h, Sheet::OWN, &AxisTitles::default());
     assert_eq!(crate::figure::fingerprint(&svg), 6676292108214670719);
+}
+
+/// A panel 2.8 by 1.8 inches, alone, every label at 7 points, in
+/// `palette`.
+fn panel(palette: Palette) -> Sheet {
+    Sheet {
+        page: (Some(2.8 * 72.0), Some(1.8 * 72.0)),
+        look: StyleArgs {
+            font_size: Some(7.0),
+            panel_only: true,
+            palette,
+        },
+    }
+}
+
+/// `--xlab` and `--ylab` title the profile's axes in place of its own.
+#[test]
+fn the_axis_titles_asked_replace_the_profiles_own() {
+    let h = hist_with_reads();
+    let labels = |titles: &AxisTitles| -> Vec<String> {
+        let svg = super::figure("sites", &h, panel(Palette::Colour), titles);
+        (crate::figure::labels(&svg).into_iter())
+            .map(|l| l.1)
+            .collect()
+    };
+    let own = labels(&AxisTitles::default());
+    for t in ["metagene position (MetaPlotR scale)", "converted reads"] {
+        assert!(own.iter().any(|l| l == t), "{t}: {own:?}");
+    }
+    let titles = AxisTitles {
+        xlab: Some("position along the transcript".into()),
+        ylab: Some("converted reads at sites".into()),
+    };
+    let asked = labels(&titles);
+    for t in ["position along the transcript", "converted reads at sites"] {
+        assert!(asked.iter().any(|l| l == t), "{t}: {asked:?}");
+    }
+    for t in ["metagene position (MetaPlotR scale)", "converted reads"] {
+        assert!(!asked.iter().any(|l| l == t), "{t}: {asked:?}");
+    }
+}
+
+/// Every rectangle's fill in `svg`, each once.
+fn fills(svg: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for l in svg.lines().filter(|l| l.starts_with("<rect")) {
+        let f = l
+            .split(" fill=\"")
+            .nth(1)
+            .unwrap()
+            .split('"')
+            .next()
+            .unwrap();
+        if !out.iter().any(|o| o == f) {
+            out.push(f.into());
+        }
+    }
+    out
+}
+
+/// `--palette gray` draws the regions in grays, each its own; colour, the
+/// default, in the regions' colours.
+#[test]
+fn a_gray_profile_draws_its_regions_in_grays() {
+    let h = hist(true);
+    let at = |palette| {
+        fills(&super::figure(
+            "sites",
+            &h,
+            panel(palette),
+            &AxisTitles::default(),
+        ))
+    };
+    let colour = at(Palette::Colour);
+    for r in [UTR5, CDS, UTR3] {
+        assert!(
+            colour.contains(&crate::site_analysis::metagene::REGION_COLOURS[r].to_string()),
+            "{r}: {colour:?}"
+        );
+    }
+    let gray = at(Palette::Gray);
+    for f in &gray {
+        let (r, g, b) = crate::figure::rgb(f);
+        assert!(r == g && g == b, "{f}: not a gray");
+    }
+    let shades: Vec<&String> = (gray.iter())
+        .filter(|f| *f != "#ffffff" && *f != crate::figure::FAINT)
+        .collect();
+    assert!(shades.len() >= 3, "a gray a region: {gray:?}");
 }
 
 /// Each with a bar mid-track at a merge of its own, so every move moves.
@@ -415,5 +506,52 @@ fn the_keys_listed_are_the_keys_bound() {
             press(&mut v, KeyCode::Right);
             v
         });
+    }
+}
+
+/// At a paper panel's size with its title and notes (2.4 by 1.8 inches,
+/// 7 points), every label is on the page: the
+/// regions' totals wrap onto further lines rather than run off its right
+/// edge, a long title is shortened from the front, the title and the note
+/// lines keep apart, and every region's total is still said.
+#[test]
+fn a_small_figure_keeps_its_notes_on_the_page() {
+    let h = hist_with_reads();
+    let (w, ht, font) = (2.4 * 72.0, 1.8 * 72.0, 7.0);
+    for title in [
+        "TITLE1",
+        "TITLE1_TITLE2_TITLE3_TITLE4_TITLE5_TITLE6_TITLE7_TITLE8",
+    ] {
+        let sheet = Sheet {
+            page: (Some(w), Some(ht)),
+            look: StyleArgs {
+                font_size: Some(font),
+                ..Default::default()
+            },
+        };
+        let svg = super::figure(title, &h, sheet, &AxisTitles::default());
+        // The labels are laid out at 8 points, the drawing scaled to the font.
+        let em = font / 8.0;
+        let boxes: Vec<_> = (crate::figure::text_boxes(&svg).into_iter())
+            .map(|(b, s)| ((b.0 * em, b.1 * em, b.2 * em, b.3 * em), s))
+            .collect();
+        for (b, s) in &boxes {
+            let on = b.0 >= -0.01 && b.1 >= -0.01 && b.2 <= w + 0.01 && b.3 <= ht + 0.01;
+            assert!(on, "{title}: {s} at {b:?} off the page");
+        }
+        let head: Vec<_> = (boxes.iter())
+            .filter(|(_, s)| s.contains("TITLE") || s.contains("per region") || s.contains("UTR"))
+            .collect();
+        assert!(head.len() >= 3, "{title}: the note wraps: {head:?}");
+        for (i, (a, s)) in head.iter().enumerate() {
+            for (b, z) in &head[i + 1..] {
+                let apart = a.2 <= b.0 || b.2 <= a.0 || a.3 <= b.1 || b.3 <= a.1;
+                assert!(apart, "{title}: {s} at {a:?} runs into {z} at {b:?}");
+            }
+        }
+        let said: String = head.iter().map(|(_, s)| s.as_str()).collect();
+        for r in ["5'UTR", "CDS", "3'UTR"] {
+            assert!(said.contains(r), "{title}: {r} in {said}");
+        }
     }
 }

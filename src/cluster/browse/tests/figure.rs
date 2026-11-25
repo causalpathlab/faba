@@ -3,25 +3,49 @@
 
 use super::super::figure::{draw, Look, Plot};
 use super::loaded;
-use crate::figure::style::{Palette, Sheet, StyleArgs};
+use crate::figure::style::{AxisTitles, Palette, Sheet, StyleArgs};
 
 #[test]
 fn the_modules_grid_is_drawn_under_each_look_and_for_a_size() {
     let m = loaded();
     for look in [Look::Shift, Look::Percent, Look::Z, Look::Hinton] {
-        let svg = draw(&m, Plot::Modules, look, "a fit", Sheet::OWN).unwrap();
+        let svg = draw(
+            &m,
+            Plot::Modules,
+            look,
+            "a fit",
+            Sheet::OWN,
+            &AxisTitles::default(),
+        )
+        .unwrap();
         assert!(
             svg.contains("M1") && svg.contains("C1") && svg.contains("C2"),
             "{look:?}"
         );
     }
-    let shift = draw(&m, Plot::Modules, Look::Shift, "a fit", Sheet::OWN).unwrap();
+    let shift = draw(
+        &m,
+        Plot::Modules,
+        Look::Shift,
+        "a fit",
+        Sheet::OWN,
+        &AxisTitles::default(),
+    )
+    .unwrap();
     assert!(shift.contains("shift (logit"));
     // 3.5 inches wide is 252 points, whatever the modules; given alone,
     // the height fits square cells, as tall as the grid's own is wide.
     let at = |page| {
         crate::figure::svg_size(
-            &draw(&m, Plot::Modules, Look::Shift, "a fit", Sheet::of(page)).unwrap(),
+            &draw(
+                &m,
+                Plot::Modules,
+                Look::Shift,
+                "a fit",
+                Sheet::of(page),
+                &AxisTitles::default(),
+            )
+            .unwrap(),
         )
     };
     assert_eq!(at((Some(252.0), Some(216.0))), (252.0, 216.0));
@@ -36,6 +60,7 @@ fn the_modules_grid_is_drawn_under_each_look_and_for_a_size() {
         Look::Shift,
         "a fit",
         Sheet::of((Some(60.0), Some(50.0))),
+        &AxisTitles::default(),
     )
     .unwrap_err();
     assert!(e.contains("needs at least"), "{e}");
@@ -48,7 +73,15 @@ fn the_modules_grid_is_drawn_under_each_look_and_for_a_size() {
 #[test]
 fn the_hinton_figure_sizes_each_square_by_its_magnitude() {
     let m = super::wide();
-    let svg = draw(&m, Plot::Modules, Look::Hinton, "a fit", Sheet::OWN).unwrap();
+    let svg = draw(
+        &m,
+        Plot::Modules,
+        Look::Hinton,
+        "a fit",
+        Sheet::OWN,
+        &AxisTitles::default(),
+    )
+    .unwrap();
     let num = |rect: &str, key: &str| -> f64 {
         let at = rect.find(&format!("{key}=\"")).unwrap() + key.len() + 2;
         rect[at..].split('"').next().unwrap().parse().unwrap()
@@ -137,7 +170,15 @@ fn each_figure_takes_the_panels_look() {
     ] {
         let drawn = |look: StyleArgs| {
             let sheet = Sheet { page, look };
-            draw(m, plot, Look::Shift, "TITLE1", sheet).unwrap()
+            draw(
+                m,
+                plot,
+                Look::Shift,
+                "TITLE1",
+                sheet,
+                &AxisTitles::default(),
+            )
+            .unwrap()
         };
         let own = drawn(StyleArgs::default());
         assert!(own.contains("TITLE1"), "{plot:?}");
@@ -179,7 +220,8 @@ fn each_figure_takes_the_panels_look() {
         Plot::Modules,
         Look::Shift,
         "t",
-        sheet(false)
+        sheet(false),
+        &AxisTitles::default(),
     )
     .unwrap()));
     assert!(!key(&draw(
@@ -187,7 +229,8 @@ fn each_figure_takes_the_panels_look() {
         Plot::Modules,
         Look::Shift,
         "t",
-        sheet(true)
+        sheet(true),
+        &AxisTitles::default(),
     )
     .unwrap()));
 }
@@ -195,9 +238,25 @@ fn each_figure_takes_the_panels_look() {
 #[test]
 fn a_figure_with_nothing_to_draw_says_why() {
     let m = loaded();
-    let err = draw(&m, Plot::Batches, Look::Shift, "a fit", Sheet::OWN).unwrap_err();
+    let err = draw(
+        &m,
+        Plot::Batches,
+        Look::Shift,
+        "a fit",
+        Sheet::OWN,
+        &AxisTitles::default(),
+    )
+    .unwrap_err();
     assert!(err.contains("one batch"), "{err}");
-    assert!(draw(&m, Plot::Trace, Look::Shift, "a fit", Sheet::OWN).is_err());
+    assert!(draw(
+        &m,
+        Plot::Trace,
+        Look::Shift,
+        "a fit",
+        Sheet::OWN,
+        &AxisTitles::default()
+    )
+    .is_err());
 }
 
 /// The trace's and the batches' margins do not shrink with their text:
@@ -216,4 +275,43 @@ fn the_trace_and_the_batches_keep_their_floor() {
     }
     let small = SizeArgs::new(Some(1.2), Some(0.9));
     assert_eq!(page(Plot::Modules, &small).unwrap(), small.page().unwrap());
+}
+
+/// `--xlab` and `--ylab` title the trace's axes in place of its own; the
+/// modules grid and the batches have no axis titles, are drawn as they
+/// are, and say so in a note.
+#[test]
+fn the_axis_titles_asked_title_the_trace() {
+    use super::super::figure::unused_titles;
+    let traced = super::trace::load(true, true);
+    let asked = AxisTitles {
+        xlab: Some("TEXT1 (-log10)".into()),
+        ylab: Some("TEXT2".into()),
+    };
+    let labels = |titles: &AxisTitles| -> Vec<String> {
+        let svg = draw(&traced, Plot::Trace, Look::Shift, "t", Sheet::OWN, titles).unwrap();
+        (crate::figure::labels(&svg).into_iter())
+            .map(|l| l.1)
+            .collect()
+    };
+    let own = labels(&AxisTitles::default());
+    for t in ["k-means iteration, then epoch", "ELBO"] {
+        assert!(own.iter().any(|l| l == t), "{t}: {own:?}");
+    }
+    let titled = labels(&asked);
+    for t in ["TEXT1 (-log10)", "TEXT2"] {
+        assert!(titled.iter().any(|l| l == t), "{t}: {titled:?}");
+    }
+    for t in ["k-means iteration, then epoch", "ELBO"] {
+        assert!(!titled.iter().any(|l| l == t), "{t}: {titled:?}");
+    }
+    assert_eq!(unused_titles(Plot::Trace, &asked), None);
+    let batched = super::batches::batched();
+    for (m, plot) in [(&loaded(), Plot::Modules), (&batched, Plot::Batches)] {
+        let at = |titles: &AxisTitles| draw(m, plot, Look::Shift, "t", Sheet::OWN, titles);
+        assert_eq!(at(&asked), at(&AxisTitles::default()), "{plot:?}");
+        let note = unused_titles(plot, &asked).unwrap();
+        assert!(note.contains("--xlab") && note.contains("trace"), "{note}");
+        assert_eq!(unused_titles(plot, &AxisTitles::default()), None);
+    }
 }

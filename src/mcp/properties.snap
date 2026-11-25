@@ -165,6 +165,8 @@ cluster_view plots type="array" items="string" enum=["batches","modules","trace"
 cluster_view settings type="boolean"
 cluster_view trace type="boolean"
 cluster_view width type="number" minimum=1.0
+cluster_view xlab type="string"
+cluster_view ylab type="string"
 count ambient_hi type="integer" minimum=0.0
 count ambient_lo type="integer" minimum=0.0
 count backend type="string" enum=["hdf5","zarr"]
@@ -282,6 +284,8 @@ metagene palette type="string" enum=["colour","gray"]
 metagene panel_only type="boolean"
 metagene sites type="string"
 metagene width type="number" minimum=1.0
+metagene xlab type="string"
+metagene ylab type="string"
 pileup ascii_height type="integer" minimum=0.0
 pileup bam type="array" items="string"
 pileup bins type="integer" minimum=0.0
@@ -326,6 +330,8 @@ pwm source type="string" enum=["reads","reference"]
 pwm threads type="integer" minimum=0.0
 pwm width type="number" minimum=1.0
 pwm window type="integer" minimum=0.0
+pwm xlab type="string"
+pwm ylab type="string"
 qc auto_cutoff type="boolean"
 qc background type="boolean"
 qc bins type="integer" minimum=0.0
@@ -364,6 +370,8 @@ qc site_min_fold type="number"
 qc site_min_log_odds type="number"
 qc style type="string" enum=["panel","view"]
 qc width type="number" minimum=1.0
+qc xlab type="array" items="string"
+qc ylab type="array" items="string"
 qc_view bins type="integer" minimum=0.0
 qc_view font_size type="number"
 qc_view genes type="array" items="string"
@@ -383,6 +391,8 @@ qc_view plots type="boolean"
 qc_view scale type="array" items="string"
 qc_view style type="string" enum=["panel","view"]
 qc_view width type="number" minimum=1.0
+qc_view xlab type="array" items="string"
+qc_view ylab type="array" items="string"
 run ambient_hi type="integer" minimum=0.0
 run ambient_lo type="integer" minimum=0.0
 run apa_em_pdui type="boolean"
@@ -473,6 +483,8 @@ site_plot site_min_fold type="number"
 site_plot site_min_log_odds type="number"
 site_plot style type="string" enum=["panel","view"]
 site_plot width type="number" minimum=1.0
+site_plot xlab type="array" items="string"
+site_plot ylab type="array" items="string"
 snp backend type="string" enum=["hdf5","zarr"]
 snp background type="boolean"
 snp bam type="array" items="string" minItems=1.0

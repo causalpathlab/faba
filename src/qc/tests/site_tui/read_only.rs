@@ -122,3 +122,25 @@ fn s_saves_the_panel_on_screen_as_a_paper_panel() {
     }
     assert_ne!(pair, hist);
 }
+
+/// `s` saves the panel on screen with the axis titles asked (`--xlab`,
+/// `--ylab`), as `faba site-plot` draws them.
+#[test]
+fn s_saves_the_panel_on_screen_with_the_titles_asked() {
+    let t = table(M6A, 300);
+    let panels = PanelArgs {
+        xlab: vec!["coverage=TITLE1 (x)".into()],
+        ylab: vec!["sites=TITLE2".into()],
+        ..PanelArgs::default()
+    };
+    let mut p = viewer(&t, Some(cells(300)), &panels, sheet(144.0, 108.0));
+    let (plan, sheet) = p.viewing.clone().unwrap();
+    focus_on(&mut p, Criterion::MinCoverage);
+    let hist = p.screen_panel(&plan, sheet).unwrap();
+    let labels: Vec<String> = (crate::figure::labels(&hist).into_iter())
+        .map(|l| l.1)
+        .collect();
+    for want in ["TITLE1 (x)", "TITLE2"] {
+        assert!(labels.iter().any(|l| l == want), "{want}: {labels:?}");
+    }
+}

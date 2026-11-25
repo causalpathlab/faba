@@ -28,7 +28,7 @@ use crate::figure::term::PlotImage;
 use crate::figure::{self, Anchor, Bars, Canvas, Controls, Key, INK, MUTED};
 
 use crate::site_analysis::metagene::{
-    region_key, MetaLayout, MetaModels, RegionGlyphs, REGION_COLOURS, REGION_NAMES,
+    region_fill, region_key, MetaLayout, MetaModels, RegionGlyphs, REGION_COLOURS, REGION_NAMES,
 };
 use crate::site_analysis::miami::genemodel::{
     gene_models_from_records, read_records_of, GeneModel,
@@ -558,6 +558,7 @@ impl<'a> SitePicker<'a> {
                 PanelStyle::View => plan.bins,
                 PanelStyle::Panel => Some(v.cache.bins),
             },
+            titles: plan.titles.clone(),
         };
         let panels = Panels::of_view(&v.sites(), &self.filter, &plan, sheet)?;
         (panels.figures().pop())

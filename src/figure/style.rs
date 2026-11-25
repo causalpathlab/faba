@@ -106,6 +106,38 @@ pub struct StyleArgs {
     pub palette: Palette,
 }
 
+/// `--xlab` and `--ylab`: a figure's axis titles, in place of its own.
+#[derive(Args, Debug, Clone, Default, PartialEq, serde::Serialize)]
+pub struct AxisTitles {
+    #[arg(
+        long = "xlab",
+        value_name = "TEXT",
+        allow_hyphen_values = true,
+        help = "The x axis' title (default: the figure's own)"
+    )]
+    pub xlab: Option<String>,
+
+    #[arg(
+        long = "ylab",
+        value_name = "TEXT",
+        allow_hyphen_values = true,
+        help = "The y axis' title (default: the figure's own)"
+    )]
+    pub ylab: Option<String>,
+}
+
+impl AxisTitles {
+    /// The x axis' title: the one asked for, else `own`.
+    pub fn x(&self, own: &str) -> String {
+        self.xlab.clone().unwrap_or_else(|| own.into())
+    }
+
+    /// The y axis' title: the one asked for, else `own`.
+    pub fn y(&self, own: &str) -> String {
+        self.ylab.clone().unwrap_or_else(|| own.into())
+    }
+}
+
 /// The text size a figure takes when none is asked for: 8 points on a
 /// figure of its own size, else fit to the page asked for, from 5 points on
 /// a small panel to 8 on a large one.
@@ -273,9 +305,9 @@ mod tests {
         assert_eq!(small.fill(|| (1.0, 80.0)), (100.0, 80.0));
     }
 
-    /// The look goes with the figure it lays out: on metagene and pwm only
-    /// with --figure, on qc only with --plots, as the size does; refused
-    /// rather than dropped.
+    /// The look and the axis titles go with the figure they lay out: on
+    /// metagene, pwm and cluster-view only with --figure, on qc only with
+    /// --plots, as the size does; refused rather than dropped.
     #[test]
     fn the_look_goes_with_a_figure() {
         let parse = |line: &[&str]| {
@@ -285,12 +317,15 @@ mod tests {
         for (command, input, needs) in [
             ("metagene", "out/", "--figure"),
             ("pwm", "out/", "--figure"),
+            ("cluster-view", "out/", "--figure"),
             ("qc", "in/", "--plots"),
         ] {
             for look in [
                 &["--font-size", "6"][..],
                 &["--panel-only"],
                 &["--palette", "gray"],
+                &["--xlab", "TEXT1"],
+                &["--ylab", "TEXT1"],
             ] {
                 let line: Vec<&str> = [command, input].iter().chain(look).copied().collect();
                 let e = parse(&line).unwrap_err();
