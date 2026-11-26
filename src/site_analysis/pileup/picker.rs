@@ -106,6 +106,9 @@ pub struct GenePicker<'a> {
     /// Lower-cased gene keys, for the filter.
     keys: Vec<String>,
     filter: String,
+    /// `/` pressed: the next letters are a search even when it is empty,
+    /// so a search can start with q.
+    searching: bool,
     /// Indices into `entries` passing the filter.
     shown: Vec<usize>,
     /// Position in `shown`.
@@ -124,6 +127,7 @@ impl<'a> GenePicker<'a> {
             entries,
             keys: entries.iter().map(|e| e.gene.to_lowercase()).collect(),
             filter: String::new(),
+            searching: false,
             shown: (0..entries.len()).collect(),
             selected: 0,
             offset: 0,
@@ -229,13 +233,22 @@ impl Screen for GenePicker<'_> {
                     self.decision = Some(Choice::Gene(i));
                 }
             }
-            // Esc backs out a step at a time: the search, the marks, the list.
-            KeyCode::Esc if self.filter.is_empty() && !self.marked.is_empty() => {
-                self.marked.clear()
+            // Esc backs out a step at a time, the search, then the marks,
+            // and never quits: `q` does, as in every view.
+            KeyCode::Esc if self.filter.is_empty() && !self.searching => self.marked.clear(),
+            KeyCode::Esc => {
+                self.searching = false;
+                self.set_filter("")
             }
-            KeyCode::Esc if self.filter.is_empty() => self.decision = Some(Choice::Quit),
-            // Esc, and `/` as in the browser, start the search over.
-            KeyCode::Esc | KeyCode::Char('/') => self.set_filter(""),
+            // `/`, as in the browser, starts the search over: what follows
+            // is typed, q included.
+            KeyCode::Char('/') => {
+                self.searching = true;
+                self.set_filter("")
+            }
+            KeyCode::Char('q') if self.filter.is_empty() && !self.searching => {
+                self.decision = Some(Choice::Quit)
+            }
             KeyCode::Backspace => {
                 self.filter.pop();
                 self.refilter();
@@ -280,12 +293,21 @@ impl Screen for GenePicker<'_> {
                     ),
                     (
                         "Esc",
-                        if !self.filter.is_empty() {
+                        if !self.filter.is_empty() || self.searching {
                             "clear search"
                         } else if !self.marked.is_empty() {
                             "clear all marks"
                         } else {
+                            "back"
+                        },
+                    ),
+                    ("/", "search (q included)"),
+                    (
+                        "q",
+                        if self.filter.is_empty() && !self.searching {
                             "quit"
+                        } else {
+                            "is typed"
                         },
                     ),
                 ],
