@@ -117,19 +117,38 @@ impl Plot {
         )
     }
 
-    /// Its axes, ticks (drawn positions and labels) and titles.
+    /// Its axes, ticks (drawn positions and labels) and titles. Every
+    /// tick is marked; where their labels would run into each other, every
+    /// second one is labelled (or third, ...), from the first.
     pub fn axes(&self, c: &mut Canvas, ticks: [&[(f64, String)]; 2], titles: [&str; 2]) {
         let (px, py, pw, ph, size) = (self.px, self.py, self.pw, self.ph, SIZE);
         c.line(px, py + ph, px + pw, py + ph, FAINT, 0.8);
         c.line(px, py, px, py + ph, FAINT, 0.8);
-        for (v, label) in ticks[0] {
-            let x = self.at(*v, self.yr.0).0;
+        let written = c.label_size(size);
+        let xs: Vec<f64> = ticks[0]
+            .iter()
+            .map(|(v, _)| self.at(*v, self.yr.0).0)
+            .collect();
+        let wide: Vec<f64> = (ticks[0].iter())
+            .map(|(_, l)| crate::figure::text_width(l, written))
+            .collect();
+        let every = thinned(&xs, &wide, 0.4 * size);
+        for (k, ((_, label), &x)) in ticks[0].iter().zip(&xs).enumerate() {
             c.line(x, py + ph, x, py + ph + 3.0, FAINT, 0.8);
-            c.text(x, py + ph + size * 1.4, label, size, Anchor::Middle, MUTED);
+            if k % every == 0 {
+                c.text(x, py + ph + size * 1.4, label, size, Anchor::Middle, MUTED);
+            }
         }
-        for (v, label) in ticks[1] {
-            let y = self.at(self.xr.0, *v).1;
+        let ys: Vec<f64> = ticks[1]
+            .iter()
+            .map(|(v, _)| self.at(self.xr.0, *v).1)
+            .collect();
+        let every = thinned(&ys, &vec![written; ys.len()], 0.15 * size);
+        for (k, ((_, label), &y)) in ticks[1].iter().zip(&ys).enumerate() {
             c.line(px - 3.0, y, px, y, FAINT, 0.8);
+            if k % every != 0 {
+                continue;
+            }
             c.text(
                 px - size * 0.5,
                 y + size * 0.35,
@@ -150,6 +169,19 @@ impl Plot {
         );
         c.vtext(x + size * 0.9, py + ph / 2.0, titles[1], size, INK);
     }
+}
+
+/// How many ticks apart labels go so none runs into the next: labels
+/// centred at `at`, each `wide` along the axis, `gap` clear at least; 1
+/// when every one fits, and as many as there are (the first alone) when
+/// no two do.
+pub(super) fn thinned(at: &[f64], wide: &[f64], gap: f64) -> usize {
+    let clear = |every: usize| {
+        let kept = || (0..at.len()).step_by(every);
+        (kept().zip(kept().skip(1)))
+            .all(|(a, b)| (at[b] - at[a]).abs() >= (wide[a] + wide[b]) / 2.0 + gap)
+    };
+    (1..=at.len().max(1)).find(|&e| clear(e)).unwrap_or(1)
 }
 
 /// Ticks at each decade from 10^ceil(lo) to 10^floor(hi) on a log10

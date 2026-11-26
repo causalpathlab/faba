@@ -92,7 +92,7 @@ pub struct PanelArgs {
     #[arg(
         long = "key",
         default_value_t = false,
-        help = "With --style view, keep each histogram's key (its series and their colours) under --panel-only, which drops it otherwise"
+        help = "With --style view, keep each histogram's key (its series and their colours) under --panel-only, which drops it otherwise; and draw each 2D panel's key to its kept squares' shades (a bar from 1 site to the busiest square's count) in the corner between its marginals, or in the plot's top right corner"
     )]
     pub key: bool,
 
@@ -127,6 +127,29 @@ pub struct PanelArgs {
         help = "With --style view, how dark a 2D square is for its sites (default: log1p)"
     )]
     pub count_scale: Option<CountScale>,
+
+    #[arg(
+        long = "ramp",
+        value_name = "LOW,HIGH|NAME",
+        help = "With --style view, the colours of a 2D panel's kept squares, from the fewest sites to the most (on --count-scale), and of its marginals' kept bars (the most's): two to nine colours, #rrggbb or a name (white, black, gray, red, blue, green, orange, purple, yellow), e.g. white,#d62728; or a named ramp: grays, reds, blues, ylgnbu, viridis (default: the palette's kept ink); the removed squares and the MUT arm keep theirs"
+    )]
+    pub ramp: Option<String>,
+
+    #[arg(
+        long = "threshold-colour",
+        visible_alias = "threshold-color",
+        value_name = "COLOUR",
+        help = "With --style view, the colour of the thresholds' dashed lines on the histograms and of a 2D panel's dashed box, #rrggbb or a name, e.g. black or #d62728 (default: red lines, a black box)"
+    )]
+    pub threshold_colour: Option<String>,
+
+    #[arg(
+        long = "marginal-kept",
+        value_enum,
+        value_name = "all|panel",
+        help = "With --style view, what a 2D panel's marginals count as kept: all (passing every threshold, as its squares are; default) or panel (passing the two thresholds on the panel's own axes, so the kept part of each bar ends at the box's edge)"
+    )]
+    pub marginal_kept: Option<super::arms::KeptBy>,
 
     #[arg(
         long = "scale",
@@ -379,6 +402,9 @@ impl PanelArgs {
         view_only(!self.yscale.is_empty(), "--yscale")?;
         view_only(self.marginal_scale.is_some(), "--marginal-scale")?;
         view_only(self.count_scale.is_some(), "--count-scale")?;
+        view_only(self.ramp.is_some(), "--ramp")?;
+        view_only(self.threshold_colour.is_some(), "--threshold-colour")?;
+        view_only(self.marginal_kept.is_some(), "--marginal-kept")?;
         let own = ArmLook::default();
         let look = ArmLook {
             front: self.front.unwrap_or_default(),
@@ -388,6 +414,17 @@ impl PanelArgs {
             y: YScales::parse(&self.yscale)?,
             marginal: self.marginal_scale.unwrap_or(own.marginal),
             count: self.count_scale.unwrap_or(own.count),
+            ramp: self
+                .ramp
+                .as_deref()
+                .map(super::arms::Ramp::parse)
+                .transpose()?,
+            threshold: (self.threshold_colour.as_deref())
+                .map(|c| {
+                    super::arms::colour(c).map_err(|e| anyhow::anyhow!("--threshold-colour: {e}"))
+                })
+                .transpose()?,
+            kept_by: self.marginal_kept.unwrap_or_default(),
         };
         Ok(Plan {
             hist,

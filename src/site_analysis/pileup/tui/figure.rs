@@ -165,8 +165,10 @@ impl PileupView<'_> {
         let fixed = self.fixed(&rows, &style, Some(c.page().0));
         let w = c.page().0 - fixed.right - 4.0;
         let bins = self.bins();
+        // A row's depth, about: its labels are chosen for it.
+        let row_h = c.page().1 / rows.len().max(1) as f64;
         let room = |p: &mut dyn Panel, c: &mut Canvas| {
-            let (ticks, turned) = self.ticks_for(c, w, p.left(c));
+            let (ticks, turned) = self.ticks_for(c, w, p.left(c, row_h));
             figure::tick_room(&ticks, turned)
         };
         (rows.into_iter())
@@ -377,7 +379,7 @@ impl PileupView<'_> {
             return bbox;
         }
         let draw = |p: &mut dyn Panel, c: &mut Canvas| {
-            let (ticks, rotated) = self.ticks_for(c, w, p.left(c));
+            let (ticks, rotated) = self.ticks_for(c, w, p.left(c, bbox.3));
             p.set_ticks(ticks, rotated);
             p.draw_in(c, bbox)
         };

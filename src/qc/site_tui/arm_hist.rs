@@ -715,9 +715,10 @@ impl ArmHist {
         canvas.line(px, base, px + pw, base, INK, 0.6);
         // The y axis up to the bars' full scale: over it the words' rows.
         canvas.line(px, base - bh, px, base, INK, 0.6);
+        let line_ink = how.look.threshold_ink(arms::THRESHOLD);
         for &(_, _, e) in &self.cuts {
             let lx = x_of(self.at[e]);
-            canvas.dashed(lx, py, lx, base, arms::THRESHOLD, 0.9);
+            canvas.dashed(lx, py, lx, base, &line_ink, 0.9);
         }
         for p in &placed {
             let ty = py + 7.0 + p.row as f64 * WORDS_ROW;

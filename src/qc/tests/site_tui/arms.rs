@@ -443,7 +443,7 @@ fn the_squares_and_their_marginals_count_the_same_sites_and_arms() {
         m as usize,
         both(Axis::Coverage, Axis::EditRatio, arms::mutant)
     );
-    let (cols, rows) = g.margins();
+    let (cols, rows) = g.margins_by(crate::qc::arms::KeptBy::All);
     let (mcols, mrows) = g.mutant_margins();
     for (wt_side, m_side) in [(&cols, &mcols), (&rows, &mrows)] {
         assert_eq!(wt_side.iter().map(|p| p.0 + p.1).sum::<f64>(), wt as f64);
@@ -461,7 +461,8 @@ fn the_squares_and_their_marginals_count_the_same_sites_and_arms() {
         g.mutant_margins(),
         (vec![0.0; g.squares.bins], vec![0.0; g.squares.bins])
     );
-    // Each control site sits in the square of its own two values.
+    // Each control site sits in the square of its own two values, its
+    // coverage the site's WT + MUT reads, as the coverage's cut reads it.
     let g = qp::grid(&s, (Axis::Coverage, Axis::Converted), &f, qp::BINS);
     let (rx, ry) = (
         s.arm_ruler(Axis::Coverage, &f),
@@ -478,7 +479,8 @@ fn the_squares_and_their_marginals_count_the_same_sites_and_arms() {
     };
     let mut want = vec![0u32; g.squares.bins * g.squares.bins];
     for i in 0..t.len() {
-        let (x, y) = (t.control_coverage[i] as f64, t.control_converted[i] as f64);
+        let x = (t.coverage[i] + t.control_coverage[i]) as f64;
+        let y = t.control_converted[i] as f64;
         want[square(&ry, y) * g.squares.bins + square(&rx, x)] += 1;
     }
     assert_eq!(g.mutant.as_ref(), Some(&want));

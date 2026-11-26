@@ -2005,67 +2005,51 @@ fn bar_boxes(svg: &str) -> Vec<(f64, f64, f64, f64)> {
         .collect()
 }
 
-/// The arms' names keep clear of the y labels' lines and of the bars, on
-/// every scale, even where the tallest bars stand at the left and a round
-/// label sits at the axis's top.
+/// The arms' names stay at the plot's left on every scale, wherever the
+/// bars stand, so every panel's are in one place: clear of the y labels'
+/// lines, and of the bars where the left leaves room (nudged toward the
+/// zero line), else over a white halo.
 #[test]
-fn the_arms_names_keep_clear_of_the_tick_labels_and_the_bars() {
-    // Tall bars under the left corner, to a top of a power of ten.
-    let tall = |i: i64| (5..40).contains(&i);
-    let m: Vec<(i64, f64)> = (0..60)
-        .map(|i| (1_000_000 + i * 50, if tall(i) { 1_000.0 } else { 3.0 }))
-        .collect();
-    let mut v = paper_view(&m, &m, &m);
-    v.window = (1_000_000, 1_008_000);
-    for scale in [Scale::Linear, Scale::Sqrt, Scale::Log] {
-        v.y_scale = scale;
-        let svg = paper_figure(&mut v, (1.0, 2.5), PAPER).unwrap();
-        let boxes = crate::figure::text_boxes(&svg);
-        let lines = gridlines(&svg);
-        assert!(lines.len() >= 3, "{scale:?}: {lines:?}");
-        let bars = bar_boxes(&svg);
-        for name in ["WT", "MUT"] {
-            let (l, t, r, b) = boxes.iter().find(|x| x.1 == name).unwrap().0;
-            for g in &lines {
-                assert!(
-                    *g <= t || *g >= b,
-                    "{scale:?}: {name} {t}..{b} on a line at {g}"
-                );
-            }
-            for &(bl, bt, br, bb) in &bars {
-                let apart = r <= bl || br <= l || b <= bt || bb <= t;
-                assert!(apart, "{scale:?}: {name} on a bar {bl},{bt},{br},{bb}");
-            }
-        }
-    }
-}
-
-/// Where tall bars stand at both ends of an arm, its name goes between
-/// them, clear of them and of the y labels' lines.
-#[test]
-fn an_arms_name_goes_between_bars_at_both_its_ends() {
+fn the_arms_names_stay_at_the_left_clear_of_the_lines() {
+    let halo = |svg: &str, name: &str| {
+        (svg.lines())
+            .find(|l| l.starts_with("<text") && l.ends_with(&format!(">{name}</text>")))
+            .is_some_and(|l| l.contains(r#"paint-order="stroke""#))
+    };
+    // Tall bars at the left; then at both ends, the middle low.
+    let left = |i: i64| (5..40).contains(&i);
     let ends = |i: i64| !(10..50).contains(&i);
-    let m: Vec<(i64, f64)> = (0..60)
-        .map(|i| (1_000_000 + i * 50, if ends(i) { 1_000.0 } else { 3.0 }))
-        .collect();
-    let mut v = paper_view(&m, &m, &m);
-    v.window = (1_000_000, 1_003_000);
-    for scale in [Scale::Linear, Scale::Sqrt, Scale::Log] {
-        v.y_scale = scale;
-        let svg = paper_figure(&mut v, (1.0, 2.5), PAPER).unwrap();
-        let boxes = crate::figure::text_boxes(&svg);
-        let bars = bar_boxes(&svg);
-        for name in ["WT", "MUT"] {
-            let (l, t, r, b) = boxes.iter().find(|x| x.1 == name).unwrap().0;
-            for g in gridlines(&svg) {
+    for (tall, at) in [(&left as &dyn Fn(i64) -> bool, 8_000), (&ends, 3_000)] {
+        let m: Vec<(i64, f64)> = (0..60)
+            .map(|i| (1_000_000 + i * 50, if tall(i) { 1_000.0 } else { 3.0 }))
+            .collect();
+        let mut v = paper_view(&m, &m, &m);
+        v.window = (1_000_000, 1_000_000 + at);
+        for scale in [Scale::Linear, Scale::Sqrt, Scale::Log] {
+            v.y_scale = scale;
+            let svg = paper_figure(&mut v, (1.0, 2.5), PAPER).unwrap();
+            let boxes = crate::figure::text_boxes(&svg);
+            let lines = gridlines(&svg);
+            let bars = bar_boxes(&svg);
+            let plot_left = (bars.iter().map(|b| b.0)).fold(f64::INFINITY, f64::min);
+            for name in ["WT", "MUT"] {
+                let (l, t, r, b) = boxes.iter().find(|x| x.1 == name).unwrap().0;
                 assert!(
-                    g <= t || g >= b,
-                    "{scale:?}: {name} {t}..{b} on a line at {g}"
+                    l <= plot_left + 8.0,
+                    "{scale:?}: {name} not at the left: {l}"
                 );
-            }
-            for &(bl, bt, br, bb) in &bars {
-                let apart = r <= bl || br <= l || b <= bt || bb <= t;
-                assert!(apart, "{scale:?}: {name} on a bar {bl},{bt},{br},{bb}");
+                for g in &lines {
+                    assert!(
+                        *g <= t || *g >= b,
+                        "{scale:?}: {name} {t}..{b} on a line at {g}"
+                    );
+                }
+                let on_bar = (bars.iter())
+                    .any(|&(bl, bt, br, bb)| !(r <= bl || br <= l || b <= bt || bb <= t));
+                assert!(
+                    !on_bar || halo(&svg, name),
+                    "{scale:?}: {name} on a bar, no halo"
+                );
             }
         }
     }
@@ -2168,7 +2152,7 @@ fn two_ticks_from_the_ends_of_three_lie_flat_before_turning() {
 
 /// An untitled panel's plot starts just past the y labels it draws: on a
 /// square-root or log axis its round labels, not its top's own count,
-/// which it does not write.
+/// which it does not write; and none runs past the panel's left edge.
 #[test]
 fn an_untitled_plot_starts_past_the_labels_it_draws() {
     let m: Vec<(i64, f64)> = (0..40)
@@ -2187,7 +2171,7 @@ fn an_untitled_plot_starts_past_the_labels_it_draws() {
             .map(|(b, _)| b.0);
         let least = lefts.fold(f64::INFINITY, f64::min);
         assert!(
-            least <= 6.0,
+            (0.0..=6.0).contains(&least),
             "{scale:?}: the labels start at {least}: {ys:?}"
         );
     }
@@ -2210,8 +2194,9 @@ fn a_position_labels_point_takes_a_points_width() {
     assert_eq!(ticks, want);
 }
 
-/// Where bars cover an arm end to end, its name goes where it overlaps
-/// them least, over a white halo; a name clear of the bars has none.
+/// A name over bars gets a white halo (it stays at the left, so bars there
+/// run under it when there is no room above them), and one clear of every
+/// bar none.
 #[test]
 fn a_name_over_bars_has_a_halo_and_a_clear_one_none() {
     let halo = |svg: &str, name: &str| {
@@ -2221,14 +2206,30 @@ fn a_name_over_bars_has_a_halo_and_a_clear_one_none() {
             .to_string();
         l.contains(r#"paint-order="stroke""#)
     };
-    let full: Vec<(i64, f64)> = (0..80).map(|i| (1_000_000 + i * 50, 1_000.0)).collect();
+    let on_bar = |svg: &str, name: &str| {
+        let boxes = crate::figure::text_boxes(svg);
+        let (l, t, r, b) = boxes.iter().find(|x| x.1 == name).unwrap().0;
+        (bar_boxes(svg).iter()).any(|&(bl, bt, br, bb)| !(r <= bl || br <= l || b <= bt || bb <= t))
+    };
+    // Sites from before the window to past it, every one at the top.
+    let full: Vec<(i64, f64)> = (0..120).map(|i| (999_000 + i * 50, 1_000.0)).collect();
     let mut v = paper_view(&full, &full, &full);
     v.window = (1_000_000, 1_004_000);
     let svg = paper_figure(&mut v, (1.0, 2.5), PAPER).unwrap();
-    assert!(halo(&svg, "WT") && halo(&svg, "MUT"), "{svg}");
+    for name in ["WT", "MUT"] {
+        assert!(!on_bar(&svg, name) || halo(&svg, name), "{name}: {svg}");
+    }
     let m = middle_sites();
     let total = doubled(&m);
     let mut v = paper_view(&m, &m, &total);
+    let svg = paper_figure(&mut v, (1.0, 2.5), PAPER).unwrap();
+    for name in ["WT", "MUT"] {
+        assert!(!on_bar(&svg, name) || halo(&svg, name), "{name}: {svg}");
+    }
+    // Clear of every bar, no halo.
+    let few: Vec<(i64, f64)> = vec![(1_003_500, 5.0)];
+    let mut v = paper_view(&few, &few, &few);
+    v.window = (1_000_000, 1_004_000);
     let svg = paper_figure(&mut v, (1.0, 2.5), PAPER).unwrap();
     assert!(!halo(&svg, "WT") && !halo(&svg, "MUT"), "{svg}");
 }

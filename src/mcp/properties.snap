@@ -592,3 +592,12 @@ view_open session type="string"
 view_open view type="string" enum=["cluster_view","metagene","pileup","pwm","qc_view"]
 view_state session type="string"
 view_state set type="object"
+qc marginal_kept type="string" enum=["all","panel"]
+qc ramp type="string"
+qc threshold_colour type="string"
+qc_view marginal_kept type="string" enum=["all","panel"]
+qc_view ramp type="string"
+qc_view threshold_colour type="string"
+site_plot marginal_kept type="string" enum=["all","panel"]
+site_plot ramp type="string"
+site_plot threshold_colour type="string"
