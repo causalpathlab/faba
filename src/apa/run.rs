@@ -452,9 +452,9 @@ pub struct CountApaArgs {
         default_value_t = true,
         action = clap::ArgAction::SetFalse,
         help = "Skip the per-cell APA PDUI matrix ({batch}_apa); written by default",
-        long_help = "The per-cell `{batch}_apa` matrix —\n\
+        long_help = "The per-cell `{batch}_apa` matrix,\n\
                      two count channels per 2-site gene (`{gene}/apa/proximal`, `{gene}/apa/distal`);\n\
-                     PDUI = distal/(distal+proximal) is derived downstream —\n\
+                     PDUI = distal/(distal+proximal) is derived downstream,\n\
                      is written BY DEFAULT (matching `faba run`).\n\
                      Pass `--no-pdui` to skip it (the poly-A EM still runs if `--mixture` needs it)."
     )]

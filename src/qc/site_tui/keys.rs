@@ -181,15 +181,18 @@ impl SitePicker<'_> {
     pub(super) fn browse_help(&self) -> Vec<(&'static str, &'static str)> {
         let mut keys = vec![("Tab/Shift+Tab", "next/previous panel")];
         keys.extend_from_slice(match self.panel {
-            Panel::Thresholds => &[("↑/↓ k/j", "knob"), ("←/→ h/l", "bin")][..],
+            Panel::Thresholds => &[
+                ("↑/↓ k/j", "knob"),
+                ("←/→ h/l", "threshold a bar left/right"),
+            ][..],
             Panel::Genes => &[
                 ("↑/↓ k/j", "gene"),
                 ("PgUp/PgDn", "ten genes up/down"),
-                ("←/→ h/l", "bin"),
+                ("←/→ h/l", "threshold a bar left/right"),
             ],
             Panel::Pairs => &[
-                ("x/y", "the panel's x/y axis"),
-                ("X/Y", "the panel's x/y axis back"),
+                ("x/y", "next quantity on the focused panel's x/y axis"),
+                ("X/Y", "previous quantity on its x/y axis"),
             ],
         });
         // The arrows step from panel to panel, where there are two.
@@ -197,7 +200,7 @@ impl SitePicker<'_> {
             keys.push(("↑/↓ k/j ←/→ h/l", "panel"));
         }
         keys.extend([
-            ("-/+ , . =", "threshold down/up a step"),
+            ("-/+ , . =", "loosen/tighten the threshold a step"),
             ("0-9 e", "type a threshold"),
             ("o", "threshold off"),
             ("r", "reset the threshold"),
@@ -219,7 +222,7 @@ impl SitePicker<'_> {
         ]);
         // In 2D the weight's plots are hidden: `w` changes nothing seen.
         match self.two_d {
-            true => keys.push(("A", "auto pairs")),
+            true => keys.push(("A", "let Auto pick the 2D pairs again")),
             false => keys.push(("w", "weight: coverage, converted reads or sites")),
         }
         if self.views.len() > 1 {
@@ -241,7 +244,33 @@ impl SitePicker<'_> {
                 ("q", "leave (asks when changed)"),
             ]),
         }
-        keys.push(("?", "these keys"));
+        keys.extend([
+            ("click", "focus a knob, gene or modality; the wheel steps"),
+            ("?", "these keys"),
+        ]);
+        // What the marks drawn mean, under the keys.
+        keys.extend_from_slice(match self.two_d {
+            true => &[
+                (
+                    "",
+                    "2D: blue WT mostly kept, deeper with more; outlined (░) mostly filtered",
+                ),
+                (
+                    "",
+                    "2D: light gray MUT; dashed box (images): both drawn thresholds pass",
+                ),
+            ][..],
+            false => &[
+                (
+                    "",
+                    "bars: gray MUT, outlined (░) WT filtered, dark (█) WT kept",
+                ),
+                (
+                    "",
+                    "orange dashed line (┊): a threshold, its words either side",
+                ),
+            ],
+        });
         keys
     }
 

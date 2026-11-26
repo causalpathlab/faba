@@ -434,19 +434,35 @@ impl crate::tui::View for MetageneView<'_> {
             ("Home", "first bar"),
             ("End", "last bar"),
             ("+/= ]", "finer: fewer bins a bar"),
-            ("- [", "coarser"),
+            ("- [", "coarser: more bins a bar"),
             ("0", "fit the bars to the width"),
-            ("y", "y scale"),
+            ("y", "y scale: linear, log10, sqrt"),
         ];
         if self.hist.has_reads() {
-            keys.push(("c", "converted, unconverted, both or sites"));
+            keys.push(("c", "bars count: converted, unconverted, both, sites"));
         }
         if self.two_tracks() {
             keys.push(("Tab/Shift+Tab", "coding or ncRNA track"));
         }
         self.controls.help_keys(&mut keys);
+        crate::tui::help::say_save(&mut keys, "save the track as a figure (.pdf)");
         keys.extend([("q", "quit"), ("?", "these keys")]);
-        Some(crate::tui::keys(&keys))
+        let mut list = crate::tui::keys(&keys);
+        list.push((
+            "▲".into(),
+            "the cursor's bar, read out under the plot".into(),
+        ));
+        list.push((
+            "█".into(),
+            "bar colour: its region, keyed under the plot".into(),
+        ));
+        if self.show == Show::Both {
+            list.push((
+                "░".into(),
+                "lit: converted reads; dim behind: all reads".into(),
+            ));
+        }
+        Some(list)
     }
 }
 

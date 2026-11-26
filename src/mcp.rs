@@ -44,60 +44,65 @@ gene counts, read depth, A-to-I editing, DART-seq m6A, alternative \
 polyadenylation and SNP genotypes. Row names are \
 {gene_key}/{modality}/{detail}.
 
-Producers write every candidate and apply no p-value cutoff. qc is where \
-cells, features and sites are cut, and it writes a new directory.
+The steps, in order:
+1. docs lists the method write-ups; with `query`, it prints the sections \
+named (a topic such as profiling, a command such as qc, or a section number).
+2. Producers write every candidate, with no p-value cutoff, each into a new \
+directory: count, atoi, dartseq, apa, depth and snp one modality each; run \
+the pipeline (SNP, then count, A-to-I, m6A, APA) at once. dartseq needs \
+control BAMs; without them, run skips m6A.
+3. qc cuts cells, features and sites into a new directory; the input is never \
+changed. Try thresholds first with its `dry_run`, which writes nothing and \
+returns what the cell QC keeps and what each threshold removes. qc_view reads \
+back a cut already made: the same counts at the thresholds it applied.
+4. cluster fits cells by their own reads (a blockmodel of cell and gene \
+modules, by variational inference), in two rounds: first with `modality` \
+count (gene counts; it writes count_blockmodel.run.json), then with `within` \
+naming that record and `modality` m6a or atoi, a fit within each cell \
+module ({m}_within.run.json). cluster_view reads a fit back: JSON levels \
+(an overview by default), figures, the browser's screen or a page.
+5. pileup (one gene's or region's sites), metagene (where sites sit over all \
+genes) and pwm (bases around the sites) read a directory's sites: a table, \
+and a figure as an image.
 
-1. docs lists the method write-ups. With `query` it prints the sections \
-named (a topic such as profiling, a command such as qc, or a section \
-number).
-2. count, atoi, dartseq, apa, depth and snp each write one modality. run \
-writes the pipeline (SNP, then count, A-to-I, m6A, APA) into one directory. \
-dartseq needs control BAMs; without them, run skips m6A.
-3. qc filters a directory into a new one, with the site thresholds given. It \
-does not edit the input. With `dry_run` it writes nothing and returns what \
-the cell QC keeps and what each threshold removes: try thresholds that way \
-first. qc_view reads back a qc output: the same counts at the thresholds it \
-applied, its dropped sites with its kept, and with `plots` or `html` its \
-figures and page.
-4. pileup, metagene and pwm read a directory's sites. metagene and pwm \
-return their table and its figure as an image. site_plot draws a \
-directory's site statistics as paper panels (histograms, pairs, \
-marginals), thresholds optional, and returns them as images. pileup returns a binned table \
-for a gene or region (and, with `figure`, the browser's figure as SVG, as an image too). \
-cluster_view shows a cluster fit level by level, from its run record \
-({m}_blockmodel.run.json) or the directory holding its tables, each level \
-as JSON rows: by default an overview (the ELBO verdict, the modules' sizes, \
-each gene module's top genes), then the modules grid, a gene module, a gene, \
-the cell modules, the batches, the trace, the settings, and GO terms only \
-with `go`; with `plots`, several figures as images.
-5. cluster fits cells by their own site reads (a blockmodel of cell and \
-gene modules, by variational inference) and writes its tables to `out`. In two rounds: first `modality` count, cell \
-modules by gene counts (it writes count_blockmodel.run.json); then, with \
-`within` naming that record, m6a or atoi within each of its cell modules. \
-The second round writes {m}_within.run.json, which cluster_view opens: the \
-list of its fits, and with `group` the fit within one cell module.
-6. When the user wants to arrange a figure by eye: view_open (qc_view or \
-cluster_view) returns an `attach` line such as `faba attach faba-qc-view-1`; \
-give it to the user to run in their terminal. When they say they are done, \
-view_state reads what they chose and view_export draws that figure. \
-view_list lists the live views.
+Which figure tool:
+- site_plot: paper panels (histograms, pairs, marginals) of a directory's \
+site statistics at any thresholds, no cut.
+- qc with `plots`: the same panels and the qc view's figures, at a cut being \
+made (or a `dry_run`); qc_view with `plots`: those of a cut already made.
+- qc_view with `figure`: the one panel a saved view state arranges, with no \
+live view.
+- cluster_view with `figure` or `plots`: paper figures of a fit (the modules \
+grid, the trace, the batches); with `screen`: the browser's screen as drawn \
+(the grid, the sites or GO beside it, the pinned genes), and with \
+`each_fit`, `each_group` or `each_module` one per fit, group or module.
+- view_export: what the user arranged by eye in a live view.
+
+When the user wants to arrange a figure by eye: view_open (qc_view or \
+cluster_view; pileup, metagene and pwm open for looking only) returns an \
+`attach` line such as `faba attach faba-qc-view-1`; give it to the user to \
+run in their terminal. They detach with Ctrl+] when done (q ends the view, \
+and then nothing can be read). view_state reads what they chose (and with \
+`set` changes it), view_export draws that figure and returns `replay`, the \
+batch command that draws it again. view_list lists the live views.
 
 The producers (count, depth, atoi, dartseq, apa, snp, run, qc, cluster) take \
-`background`: on large BAMs set it, and the call returns a job id at once.
+`background`: on large BAMs set it, and the call returns a `job` id at once; \
+follow it with job_wait or job_status.
 
-Every write goes to `out`, which must not exist. Leave `out` out and the \
-output goes in today's results folder, named after the input and the tool. \
-Paths resolve against the server's working directory. Every flag of a \
-tool's command is an argument of the tool, typed, named after the flag \
-(`--min-coverage` is `min_coverage`), but those naming the output or \
+Every write goes to `out`, which must not exist: no tool replaces a file or \
+a directory (when one exists, ask the user for another path). Leave `out` \
+out and the output goes in today's results folder, named after the input \
+and the tool. Paths resolve against the server's working directory. Every \
+flag of a tool's command is an argument of the tool, typed, named after the \
+flag (`--min-coverage` is `min_coverage`), but those naming the output or \
 opening a view; `options` remains for anything else, as `faba <command> \
---help` lists it, and a flag given both ways is refused. Results \
-give the paths written and what the run recorded (`results`: a fit's ELBO \
-verdict, its cluster sizes). \
-docs gives this server's `version`. A call is refused when the faba it \
-would run is another version than the server's, or is the server's own \
-file rebuilt since it started: the server then needs a restart or a \
-reconnect.";
+--help` lists it, and a flag given both ways is refused. A write returns \
+the paths `written` and what the run recorded (`results`: a fit's ELBO \
+verdict, its cluster sizes). docs gives this server's `version`. A call is \
+refused when the faba it would run is another version than the server's, \
+or is the server's own file rebuilt since it started: the server then \
+needs a restart or a reconnect.";
 
 pub fn run_mcp(_args: &McpArgs) -> Result<()> {
     let info = ServerInfo {

@@ -244,6 +244,62 @@ impl PileupView<'_> {
         keys
     }
 
+    /// [`PileupView::optional_keys`] as the `?` list says them, each in
+    /// full.
+    pub(super) fn optional_help(&self, hidden: bool) -> Vec<(&'static str, &'static str)> {
+        let full = |k: &'static str, short: &'static str| match k {
+            "c" => "bars: converted, unconverted, both, sites",
+            "d" => "difference row: difference (pp) or log2 fold",
+            "D" if self.difference => "hide the difference row",
+            "D" => "show the difference row",
+            "K" => "a saved figure's key: inside, right, alone",
+            "v" if self.mirror => "split mirrored tracks, a row each",
+            "v" => "mirror paired tracks on one zero line",
+            "[/]" => "scroll the track rows under those on top",
+            "m/M" => "the other modality's sites (m6A, A-to-I)",
+            _ => short,
+        };
+        (self.optional_keys(hidden).into_iter())
+            .map(|(k, short)| (k, full(k, short)))
+            .collect()
+    }
+
+    /// What the drawn marks mean, as the `?` list ends: the cursor and the
+    /// sites, then the mirrored rows, the difference row, the reads in
+    /// front of their total and the gene models, where they are drawn.
+    pub(super) fn legend(&self) -> crate::tui::KeyList {
+        let mut out = vec![(
+            "▲".to_string(),
+            "the cursor's bar, read out below; + a site".to_string(),
+        )];
+        if self.rows().iter().any(|r| matches!(r, Row::Mirror(..))) {
+            out.push((
+                "↕".into(),
+                "mirrored row: tracks up and down, as titled".into(),
+            ));
+        }
+        if let Some(c) = self.shown_contrast() {
+            let (a, b) = (self.tracks[c.a].label, self.tracks[c.b].label);
+            out.push((
+                "±".into(),
+                format!("{a} vs {b}: up where {a}'s {} fraction is higher", self.on),
+            ));
+        }
+        if self.key().is_some() {
+            out.push((
+                "█".into(),
+                format!("lit: {} reads; dim behind: all reads", self.on),
+            ));
+        }
+        if !self.genes.is_empty() {
+            out.push((
+                "›/‹".into(),
+                "gene strand, █ exons; // cut at the edge (images)".into(),
+            ));
+        }
+        out
+    }
+
     /// Row `row` as text in `inner`, the cursor at column `pointer` and
     /// the x axis labelled `ticks` (a label or none per column).
     fn render_row_text(

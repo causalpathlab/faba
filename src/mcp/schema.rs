@@ -87,15 +87,15 @@ fn hand_written() -> Vec<ToolSpec> {
     let mut specs = vec![
         ToolSpec::new(
             "docs",
-            "The method write-ups compiled into faba. Without `query`, the list of topics and sections; with it, those sections (a topic, a command named in a heading, or a section number).",
+            "The method write-ups compiled into faba. Without `query`, the list of topics and sections; with it, the text of those named (a topic such as profiling, a command such as qc, or a section number). Returns the text and this server's `version`.",
             schema(
-                json!({ "query": { "type": "array", "items": { "type": "string" } } }),
+                json!({ "query": { "type": "array", "items": { "type": "string" }, "description": "Topics, commands or section numbers to print; omitted, the list of them" } }),
                 &[],
             ),
         ),
         ToolSpec::new(
             "count",
-            "Count reads per gene (`faba count`): one sparse matrix per BAM, rows `{gene}/count/{spliced|unspliced}`. Writes a new directory.",
+            "Count reads per gene (`faba count`). Needs `bam` and `gff`. Writes a new directory (`out`): one sparse matrix per BAM, rows {gene}/count/{spliced|unspliced}. Returns `written` (the new directory), its `files` and the run's `results`; with `background`, a `job` id at once.",
             schema(
                 json!({ "bam": bam(), "gff": gff(), "out": out(), "source": source(), "options": options() }),
                 &["bam", "gff"],
@@ -103,7 +103,7 @@ fn hand_written() -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "depth",
-            "Bin the genome and count read coverage per cell (`faba depth`). `resolution_kb` is the bin size in kilobases. Writes a new directory.",
+            "Bin the genome and count read coverage per cell (`faba depth`). Needs `bam` and `resolution_kb` (the bin size in kilobases); `valid_cells` keeps only a count run's cells. Writes a new directory (`out`). Returns `written` (the new directory), its `files` and the run's `results`; with `background`, a `job` id at once.",
             schema(
                 json!({
                     "bam": bam(),
@@ -115,7 +115,7 @@ fn hand_written() -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "atoi",
-            "Call A-to-I editing sites (`faba atoi`). Every putative site is written with its p-value; `qc` is where a cutoff is applied. Writes a new directory.",
+            "Call A-to-I editing sites (`faba atoi`). Needs `bam`, `gff` and `genome`. Every candidate site is written with its p-value, uncut: `qc` applies the cutoffs. Writes a new directory (`out`). Returns `written` (the new directory), its `files` and the run's `results`; with `background`, a `job` id at once.",
             schema(
                 json!({ "bam": bam(), "gff": gff(), "genome": genome(), "out": out(), "source": source(), "options": options() }),
                 &["bam", "gff", "genome"],
@@ -123,7 +123,7 @@ fn hand_written() -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "dartseq",
-            "Call DART-seq m6A sites by a signal-versus-control contrast on C-to-T (`faba dartseq`). `control` is the catalytically dead arm; without it a genomic C/T cannot be told from an m6A. Writes a new directory.",
+            "Call DART-seq m6A sites (`faba dartseq`) by contrasting C-to-T in `bam` (the signal arm) against `control` (the catalytically dead arm, which tells an m6A from a genomic C/T). Needs `bam`, `control`, `gff` and `genome`. Every candidate site is written, uncut: `qc` applies the cutoffs. Writes a new directory (`out`). Returns `written` (the new directory), its `files` and the run's `results`; with `background`, a `job` id at once.",
             schema(
                 json!({
                     "bam": bam(), "control": bam(), "gff": gff(), "genome": genome(),
@@ -134,7 +134,7 @@ fn hand_written() -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "apa",
-            "Quantify alternative polyadenylation (`faba apa`). `method` is mixture (SCAPE, the default) or simple. Needs `gff` or `utr_bed`. Writes a new directory.",
+            "Quantify alternative polyadenylation (`faba apa`). Needs `bam` and one of `gff` or `utr_bed`. `method` is mixture (SCAPE, the default) or simple. Writes a new directory (`out`). Returns `written` (the new directory), its `files` and the run's `results`; with `background`, a `job` id at once.",
             schema(
                 json!({
                     "bam": bam(), "gff": gff(),
@@ -146,7 +146,7 @@ fn hand_written() -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "snp",
-            "Discover and genotype SNPs (`faba snp`). With `gff`, also writes a per-cell allele-frequency matrix; `bulk` writes the call set only; `skip_discovery` genotypes the `known_snps` only. Writes a new directory.",
+            "Discover and genotype SNPs (`faba snp`). Needs `bam` and `genome`. With `gff`, also a per-cell allele-frequency matrix; `bulk` writes the call set only; `skip_discovery` genotypes the `known_snps` only. Writes a new directory (`out`). Returns `written` (the new directory), its `files` and the run's `results`; with `background`, a `job` id at once.",
             schema(
                 json!({
                     "bam": bam(), "genome": genome(), "gff": gff(),
@@ -158,11 +158,11 @@ fn hand_written() -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "run",
-            "The whole pipeline (`faba run --batch-process`): SNP, gene counts, A-to-I, m6A, APA, into one new directory. m6A runs only when `control` is given. No view.",
+            "The whole pipeline (`faba run --batch-process`): SNP, gene counts, A-to-I, m6A and APA into one new directory, with no view. Needs `bam`, `gff` and `genome`; m6A runs only when `control` is given. Choose it over the single producers to make every modality at once. Returns `written` (the new directory), its `files` and the run's `results`; with `background`, a `job` id at once.",
             schema(
                 json!({
                     "bam": bam(), "gff": gff(), "genome": genome(), "control": bam(),
-                    "known_snps": { "type": "string" },
+                    "known_snps": { "type": "string", "description": "Known sites (VCF/BCF/Parquet) to force-call" },
                     "out": out(), "source": source(), "options": options(),
                 }),
                 &["bam", "gff", "genome"],
@@ -170,12 +170,12 @@ fn hand_written() -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "qc",
-            "Filter a faba directory into a new one (`faba qc --batch-process`). Cells are cut on `{batch}_count` and the same cells are kept in every matrix; sites are cut on the thresholds given (marginal p-values, no FDR). Omit a threshold to keep faba's default. Try thresholds first with `dry_run`: it returns what the cell QC keeps per batch and what each threshold removes per modality, writing nothing. The dry run's `pairs` are the pairs of thresholds Auto picks to show two at a time: those splitting the most sites (pass one, fail the other) on axes that agree least. With `plots`, the view's figures go to `qc_plots/`: each threshold's histogram, each modality's thresholds two at a time ({m}_pairs: kept sites against removed, the box where both pass; not drawn with `panel_only`, whose pairs are the panels) and each batch's cell QC ({batch}_cells); and the site panels `site_plot` draws go to `qc_plots/panels/`, chosen by `hist`, `pairs`, `marginals`, `style`, `marginal_size`, `p_axis`, `front`, `key`, `scale` and `bins` as `site_plot`'s are. Both come back as images, at most 8: the view's figures first, then the panels, each in name order, half the room each and the rest to whichever has more. With `html`, a page to share goes to that file (dry run too); a file that exists is refused, never replaced: ask the user for another path.",
+            "Cut a faba directory into a new one (`faba qc --batch-process`); the input is never changed. Needs `input`. Choose qc to make a cut; qc_view to read back a cut already made; site_plot for panels with no cut. Cells are cut per batch on {batch}_count and the same cells are kept in every matrix; sites are cut on the site thresholds given (`site_max_pv`, `site_min_cells`, ...: marginal p-values, no FDR), each one left out at faba's default. Try thresholds first with `dry_run`: nothing is cut or written (but `plots` and `html` when asked), and it returns `dry_run`, what the cell QC keeps per batch and what each threshold removes per modality (`removes` every site failing it, `only_this` those failing it alone), and `pairs`, the threshold pairs Auto shows two at a time (`split`: the sites one keeps and the other drops). Without `dry_run` it returns `written`, `files` and `results` (with `background`, a `job` id). `plots` also draws, under {out}/qc_plots/: each knob's histogram, each modality's thresholds two at a time ({m}_pairs; not drawn with `panel_only`) and each batch's cell QC ({batch}_cells); and under qc_plots/panels/ the panels site_plot draws, chosen by the same arguments (`hist`, `pairs`, `marginals`, `style`, `scale`, `bins`, ...). At most 8 come back as images, the view's figures first. `html` writes a page to share. A file or directory that exists is refused, never replaced: ask the user for another path.",
             schema(qc_properties(&dir(), &out(), &options()), &["input"]),
         ),
         ToolSpec::new(
             "site_plot",
-            "Draw a faba directory's site statistics as paper panels (`faba site-plot`), no QC: for one `modality`, a histogram of each `hist` quantity (pv, fold, log_odds, coverage, converted, edit_ratio, cells; default every one that applies) and each of `pairs` two at a time (\"x:y\", e.g. \"pv:cells\"; default the pairs `qc` picks), with `marginals` (top, right, both) on the pair's own axes. `style` \"view\" draws each panel as the qc view draws it (a histogram as its knob's, a pair as its 2D panel): the control arm (MUT) light gray behind the signal arm (WT), WT's filtered sites white and outlined over its kept dark, MUT only where the quantity has a value on each arm (coverage, converted, edit_ratio), each threshold dashed orange-red with the words for either side; its marginals `marginal_size` of the plot's shorter side deep, `front` \"mut\" the control arm in front, `p_axis` \"neglog10\" the p-value's ticks as -log10 p (else p), `key` the histogram's key kept with `panel_only`. Each quantity has one scale, range and set of bins in every figure (`scale`: \"pv=log\", \"fold=linear\"; defaults: -log10 p, edit ratio and log odds linear, fold and counts log). cells counts the cells with a converted read at a site, over every cell. Thresholds are optional: given ones are drawn as dashed lines and the sites they remove drawn apart; none given, every site is kept. Writes only figures to `out`, a new directory: {modality}_hist_{q} and {modality}_{y}_vs_{x}, each .pdf (labels as text) and .png; returns their paths and the PNGs as images. `qc` with `plots` writes the same panels under qc_plots/panels/.",
+            "Draw one modality's site statistics as paper panels (`faba site-plot`), cutting nothing. Needs `input`, a faba directory. Choose it for figures of the sites at any thresholds without a qc run; qc's `plots` draws the same panels at a real cut, and view_export the one panel a user arranged by eye. A histogram per `hist` quantity (pv, fold, log_odds, coverage, converted, edit_ratio, cells: the cells with a converted read at a site; default every one that applies) and a 2D panel per `pairs` entry (\"x:y\", e.g. \"pv:cells\"; default the pairs qc picks), with `marginals` (top, right, both). Thresholds (`site_max_pv`, ...) are optional: given ones are dashed lines and the sites they remove are drawn apart; none given, every site is kept. Each quantity keeps one scale, range and set of bins in every panel (`scale`, e.g. \"pv=log\"; `bins`). `style` \"view\" draws a panel as the qc view does: the control arm (MUT) light gray behind the signal arm (WT); WT's kept sites dark, its filtered ones white and outlined; MUT only for coverage, converted and edit_ratio, which each arm has; each threshold dashed orange-red, labelled on either side. With it, `front` mut puts MUT in front, `p_axis` neglog10 ticks p as -log10 p, `key_at` places the key (`key` keeps it under `panel_only`), `yscale`, `marginal_scale` and `count_scale` set the count axes, `marginal_size` the marginals' depth. Writes to `out`, a new directory: {modality}_hist_{q} and {modality}_{y}_vs_{x}, each .pdf (labels as text) and .png. Returns `written` and `files`, and up to 12 PNGs as images.",
             schema(
                 json!({
                     "input": dir(),
@@ -187,12 +187,12 @@ fn hand_written() -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "qc_view",
-            "Read back what a `qc` run kept and dropped (`faba qc-view --batch-process`), cutting nothing: `input` is the qc output directory, whose qc.run.json gives the thresholds it applied; its kept sites and its dropped ones (with their reason) are read together, each site's cells counted as qc counted them (off the input it read, when that is still there; else the dropped sites read 0 cells, as it warns). Any other faba directory opens too, with no thresholds: every site kept. Returns the table `qc`'s `dry_run` returns, at the thresholds applied: `table`, what the cell QC kept per batch (off its reports) and what each threshold removes per modality (`removes` every site failing it, `only_this` those failing it alone), and `pairs`, the pairs Auto picks to show two at a time. With `plots`, the figures `qc` draws with `plots` go to `out`/qc_plots/ (the site panels to qc_plots/panels/, chosen by `hist`, `pairs`, `marginals`, `style`, `marginal_size`, `p_axis`, `front`, `key`, `scale` and `bins` as `site_plot`'s are) and come back as images, as `qc`'s do; with `html`, the page to share goes to that file. Neither may exist: an existing file or directory is refused, never replaced: ask the user for another path.",
+            "Read back a qc run (`faba qc-view --batch-process`), cutting nothing. Needs `input`, the qc output directory: its qc.run.json gives the thresholds applied; its kept and dropped sites (with their reason) are read together, cells counted as qc counted them (off the input qc read, when still there; else dropped sites read 0 cells, with a warning). Any other faba directory opens too, with no thresholds: every site kept. Returns `table`, what the cell QC kept per batch and what each threshold removes per modality at the thresholds applied, as qc's `dry_run` returns it (`removes`, `only_this`), and `pairs`. `plots` also draws the figures qc's `plots` draws, under {out}/qc_plots/, at most 8 returned as images. `figure` (a prefix) draws the one panel the view's s key saves, arranged by `view_state` (a state file view_export kept, {prefix}.view.json, or a state view_state read), as {figure}.pdf and .png (`format`), returned as an image: what view_export draws, with no live view. `html` writes the page to share. None may exist: ask the user for another path.",
             schema(qc_view_properties(&dir(), &options()), &["input"]),
         ),
         ToolSpec::new(
             "cluster",
-            "Cluster cells by their site reads (`faba cluster`). `data` is a faba directory or site matrices. The model is a blockmodel of cell modules and gene modules, a methylation shift per pair and each cell's own level, fitted by variational inference from k-means starts (`chains` restarts, the best by ELBO kept; `svi_epochs`, `batch_size`, `epochs`, `tol`). The MCMC fits of faba before 0.19 are gone: `model` link or crp, `sweeps`, `burn_in`, `shift`, `profile_strength` and `holdout` are refused. Tables go to `out`, a new directory, not back into `data`. With `modality` count, cluster cells by their gene counts instead (count matrices), fitted alike: its verdict is whether the best restart's ELBO settled. With `within`, the run record of such a count fit (count_blockmodel.run.json), fit the sites within each of its cell modules, one fit a module, into `out`/within/{m}/{group}/, with `out`/{m}_within.run.json naming them all and {m}_within_cells.parquet giving each cell its nested label (C3.2); `data` may then be left out, and the matrices are those beside the count fit's inputs. `within` may instead be a cell table (.parquet, such as lupin's {out}.cell_annotation.parquet, or a .tsv/.csv of cell and group, header optional): its groups, taken as given, are fitted as the count fit's cell modules are, each named by its value made a file stem, into the same files, and cluster_view's `group` opens one by that name; `within_column` names the group column (default label, else cluster) and `within_cell_column` the cell column (default cell, barcode, cell_barcode or obs_names); a cell {barcode}@{batch} is that barcode of that batch less a matrix kind (b1_count is b1), its batch paired as a count fit's is (`batch_map` too), and a bare barcode is looked for in each site batch nothing pairs with; `data` defaults to the table's directory; a table whose cells match none of the sites' is refused, naming a cell of each. The sites' batches pair with the count fit's by name (the same, or one named with its folder: `b1` and `runs/a/b1`); when that is ambiguous the run is refused, listing each choice: ask the user which is meant, then run again with `batch_map`. While it fits, a progress line every 15 s says the restart and epoch, the ELBO per read (or count) and its last move against `tol`, the share of steps done and about how long is left (an upper bound: a restart that settles ends early); with `background`, job_status shows it as a `progress` stage (steps done of all, seconds taken and left) and the latest line in `last_lines`.",
+            "Fit cells by their own reads (`faba cluster`): a blockmodel of cell modules and gene modules (a methylation shift per pair, each cell's own level), by variational inference from k-means starts (`chains` restarts, the best ELBO kept; `svi_epochs`, `batch_size`, `epochs`, `tol`). Tables go to `out`, a new directory; `data` is never written to. Returns `written`, `files` and `results` (the ELBO verdict, the cluster sizes); with `background`, a `job` id at once (job_status then shows a `progress` stage and the latest line in `last_lines`). Read a fit back with cluster_view. Two rounds. First `modality` count with `data` the count matrices (or a faba directory): cell modules by gene counts, its verdict whether the best restart's ELBO settled; it writes count_blockmodel.run.json. Then `within` that record with `modality` m6a or atoi: a fit within each cell module, into {out}/within/{m}/{group}/, with {out}/{m}_within.run.json listing them and {m}_within_cells.parquet giving each cell its nested label (C3.2); `data` may be left out (the matrices beside the count fit's inputs are read). Without `within`, `data` (site matrices or a faba directory) is required. `within` may instead be a cell table (.parquet, or .tsv/.csv of cell and group, header optional): its groups are fitted as cell modules are, each named by its value as a file stem (cluster_view's `group` opens one by that name); `within_column` names the group column (default label, else cluster), `within_cell_column` the cell column (default cell, barcode, cell_barcode or obs_names); a cell {barcode}@{batch} is that barcode in that batch, less the batch's matrix kind (b1_count is b1); a bare barcode is looked for in each site batch nothing pairs with; `data` defaults to the table's directory; a table whose cells match none of the sites' is refused, naming a cell of each. The sites' batches pair with the count fit's by name (the same, or one with its folder: b1 and runs/a/b1); when that is ambiguous the call is refused, listing each choice: ask the user which is meant, then call again with `batch_map`. While it fits, a progress line every 15 s gives the restart and epoch, the ELBO per read (or count) and its last move against `tol`, the share done and an upper bound on the time left. The MCMC options of faba before 0.19 (model link or crp, sweeps, burn-in, shift, profile strength, holdout) are refused.",
             schema(
                 json!({
                     "data": { "type": "array", "items": { "type": "string" }, "description": "A faba directory, or site (or, with `modality` count, count) matrices; required unless `within` is given" },
@@ -210,7 +210,7 @@ fn hand_written() -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "cluster_view",
-            "View a `cluster` fit (`faba cluster-view --batch-process --json`), level by level as the browser does; every level comes back as JSON, an object a level, its rows objects with named fields (a level argument's own text says it prints, as the command's help does: here it is that JSON). With no level named, the tool returns the `overview` (a within record opened whole, with no `group`: its listing instead): the verdict (`verdict` ELBO ok or check, `said`), how many gene and cell modules, each cell module's size (`cell_sizes`) and each gene module's genes and top genes by weight (`gene_sizes`); GO is never read for it. `grid` gives the gene modules against the cell modules (level 1: `modules`, a row a gene module, its `values` a value and reads (cells) in each cell module); `module` one gene module's genes and sites with their values in each cell module (level 2); `gene` one gene's sites in each cell module over every gene module (levels 3 and 4); `cells` the cell modules' sizes; `go` the GO terms (or `gmt` gene sets) over-represented in each gene module, against the fit's own annotated genes (files default to lupin's cache), read only when asked: per module its `terms` (id, name, namespace, k, n, K, N, odds, p, q, genes) or `why_none`, with the `go_q` a term needs and the `min_weight` a gene needs; `batches` how each cell module spreads over the batches (shared, one condition's, or batch-specific: uneven over a condition's replicates), the conditions read off the batch names less a replicate token or given by `batch_groups`; `trace` each restart's ELBO by epoch, the verdict and its advice; `settings` the settings the fit ran with. Several may be given. Values are % converted for a site fit, UMIs per cell for a count fit (`unit`). With `figure` or `plots`, figures instead, each returned as an image with its PDF and PNG paths (`figures`): `plots` several in one call (modules, trace, batches; `plot` one), each `width` by `height` inches, its text at `font_size` points, `panel_only` the plot alone (no title, key or notes), `palette` gray in grays, `xlab` and `ylab` the trace's axis titles (the modules grid and the batches have none and leave them unused); the modules grid coloured by `look`, with `size_bars` and `read_bars` on its margins (sides: left for the gene modules, top or bottom for the cell modules; `marginal_size` their depth), `go_labels` (up to N of each gene module's GO terms on its right, a line each with its q after it, by p and none mostly within a term already shown, read as `go` reads them; a module with none left blank unless `go_none`), `key` (a small key kept under `panel_only`), `values` (each block's value in it) and `block_bars` (each block's reads as the bars look draws them, over the look's own block). `data` is the fit's run record or the directory holding its tables; this never fits, and the record of an MCMC fit of faba before 0.19 is refused. A within record ({m}_within.run.json, from `cluster` with `within`) gives the count fit's modules, each group's fit (cells, status; why one was skipped) and the modules within each fitted group; with `group`, every argument applies to the fit within that cell module, and without it the levels asked for are the count fit's. With `html`, write one self-contained page to a new file instead; the page shows every level, so no level argument is taken beside `html` (leave them out, or drop `html` to get them as JSON); a within record without `group` writes a page a fit, `html` for the count fit and {stem}.{group}.html beside it for each group, linked to each other.",
+            "Read a cluster fit back (`faba cluster-view --batch-process`); it never fits. Needs `data`: the run record ({m}_blockmodel.run.json), the directory holding its tables, or a within record ({m}_within.run.json); an MCMC fit of faba before 0.19 is refused. A within record opens as the list of its fits (the count fit's modules, each group's fit: cells, status, why one was skipped); with `group`, every argument applies to the fit within that cell module. Four kinds of answer, by the arguments given. (1) Levels as JSON, the default: with no level named, the `overview` (the verdict: `verdict` ok or check, `said`; the module counts; each cell module's size, `cell_sizes`; each gene module's genes and top genes by weight, `gene_sizes`). Name levels to get them instead, several at once: `grid` the gene modules against the cell modules (`modules`, a row a gene module, its `values` a value and reads in each cell module); `module` one gene module's genes and sites; `gene` one gene's sites in each cell module; `cells` the cell modules' sizes; `batches` how each cell module spreads over the batches (shared, one condition's, or batch-specific; conditions read off the batch names less a replicate token, or given by `batch_groups`); `trace` each restart's ELBO by epoch, the verdict and its advice; `settings` the settings the fit ran with; `go` the GO terms (or `gmt` sets) over-represented in each gene module against the fit's own annotated genes, read only when asked: per module its `terms` (id, name, namespace, k, n, K, N, odds, p, q, genes) or `why_none`, with the `go_q` and `min_weight` used. Values are % converted for a site fit, UMIs per cell for a count fit (`unit`). (2) Paper figures, with `figure` (a prefix) or `plots`: `plot` names one (modules, the default; trace; batches), `plots` several ({figure}.{plot} each); each is written as PDF and PNG, listed in `figures` and returned as an image. The modules grid is coloured by `look` (shift, percent, z, hinton: a square per block sized by |z|, red above the row's mean and blue below; bars) and takes `size_bars` and `read_bars` (sides left, top, bottom; `marginal_size` their depth), `go_labels` (up to N GO terms by each row; `go_none` says none), `key`, `values` and `block_bars`. All take `width`, `height`, `font_size`, `panel_only` and `palette`; `xlab` and `ylab` title the trace's axes only. (3) The browser's screen, with `screen` (a prefix): the grid, what is beside it (`side`: sites, go or none) and the pinned genes (`pin`, `pin_top`), laid out and drawn as the browser draws them (`preset` diagonal or blocks, `cell_order`, `module`, `region` all, grid, side or genes; `state` a saved view state; `format`). With `each_fit`, `each_group` or `each_module`, `screen` is a new directory holding a screen each. Returns `written` and up to 12 PNGs as images. Choose `screen` to show what the browser shows, `figure` for a single paper panel. (4) A page, with `html` (a new file): it shows every level, so no level argument goes with it; a within record without `group` writes a page a fit, `html` for the count fit and {stem}.{group}.html beside it for each group, linked to each other.",
             schema(
                 json!({
                     "data": { "type": "string", "description": "A `cluster` fit: its run record `{m}_blockmodel.run.json`, the output directory holding its block tables, or a within record `{m}_within.run.json`" },
@@ -226,13 +226,13 @@ fn hand_written() -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "pileup",
-            "A gene's or region's sites (`faba pileup --batch-process`). Returns a binned TSV. The ASCII histogram is the call's progress. With `figure` (or `gtf` or `bam`), write the figure the browser saves instead (`{out}.miami.svg`, returned as an image too; `out` is then the figure prefix): `window` sites (the default: centred on the gene's sites, their span and a quarter of it either side, 1 kb at least, or with `pad` the first site to the last and `pad` bases either side; the gene model cut there and its cut ends marked) or gene (TSS to TES), ticked in Mb, two alike `track`s (e.g. WT and MUT) one above the other mirrored on one zero line and one y scale, over the gene model, titled by the gene symbol, `width` by `height` inches with its text at `font_size` points (else fit to the page), `panel_only` without the window and row titles, `palette` gray in grays. It is drawn as the browser draws the gene: its bases per bar for that window (`bins` sets the bars), `yscale` (sqrt ticked at evenly spread round counts, log10 at powers of ten), the difference row with `difference`, the key `key_at` inside, right or alone (`{out}_key`; `panel_only` leaves it out unless `key`). Several `genes` (or a `gene_file`) draw a figure each, `{out}_{SYMBOL}.svg`, each `width` by `height`, and with `row` (or `grid` COLSxROWS) one of them all, `{out}_row.svg`, one key for all, the y axis titled on each row's first panel only; the files are listed and returned as images. A `gtf` draws the gene model (else the annotation recorded with the data, if any); `bam` (read depth) or `cell_membership` (a panel per cell type) draw the Miami figure instead, at least 2 by 1.5 inches.",
+            "A gene's or region's sites along the genome (`faba pileup --batch-process`). Needs `data` (site matrices or a faba directory) and `genes`, `gene_file` or `regions`. Choose it for one gene's sites; metagene for where sites sit over all genes. Without a figure: a binned TSV at `out`, every matched gene pooled; returns `written`, `lines` and `head` (its first lines). With `figure` (or `gtf`): the figure the browser saves of the gene, `out` its prefix, written as {out}.miami.svg and .pdf and returned as an image. Two alike `track`s (e.g. WT='*_wt_*' and MUT='*_mut_*') are drawn one above the other, mirrored on one zero line and one y scale, over the gene model (from `gtf`, else the annotation recorded with the data). `window` sites (the default: centred on the gene's sites, their span and a quarter of it either side, 1 kb at least; with `pad`, the first site to the last and `pad` bases either side; the gene model cut there, its cut ends marked) or gene (TSS to TES); `bins` sets the bars; `yscale` linear, sqrt or log10; `difference` adds the row comparing the first two tracks; `key_at` inside, right or alone ({out}_key.svg). Several `genes` or a `gene_file` draw a figure each, {out}_{SYMBOL}.svg, and with `row` or `grid` (COLSxROWS) also one of them all, {out}_row.svg or {out}_grid.svg, one key for all; then it returns `written`, the SVGs, and up to 8 as images, the combined one first. With `bam` (read depth) or `cell_membership` (a panel per cell type), the Miami figure instead.",
             schema(
                 json!({
                     "data": { "type": "array", "items": { "type": "string" }, "minItems": 1, "description": "Site matrices, or a faba output directory" },
                     "genes": { "type": "array", "items": { "type": "string" }, "description": "Gene symbols or Ensembl ids" },
                     "regions": { "type": "array", "items": { "type": "string" }, "description": "Regions as chr:lb-ub" },
-                    "figure": { "type": "boolean", "description": "Write the Miami SVG instead of the TSV" },
+                    "figure": { "type": "boolean", "description": "Draw the figure the browser saves instead of the TSV (the Miami figure with `bam` or `cell_membership`); `gtf` or `bam` draws it too" },
                     "gtf": { "type": "string", "description": "Gene annotation for the figure's gene model" },
                     "bam": { "type": "array", "items": { "type": "string" }, "description": "BAMs for the figure's read-depth track" },
                     "out": file_out(),
@@ -243,7 +243,7 @@ fn hand_written() -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "metagene",
-            "Where sites sit along 5'UTR, CDS and 3'UTR (`faba metagene --batch-process`), as a TSV and a figure. Bin heights are raw counts. The ASCII histogram is the call's progress.",
+            "Where sites sit along 5'UTR, CDS and 3'UTR over all genes (`faba metagene --batch-process`). Needs `data` (site parquets or faba directories); `gff` is the annotation. Writes a TSV at `out` (bin heights are raw counts) and, unless `figure` is false, its figure beside it ({out stem}.pdf and .png). Returns `written`, `lines` and `head` (the TSV's first lines), `figure` (the PDF and PNG paths) and the PNG as an image.",
             schema(
                 json!({
                     "data": { "type": "array", "items": { "type": "string" }, "minItems": 1, "description": "Site parquets, or faba output directories" },
@@ -257,7 +257,7 @@ fn hand_written() -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "pwm",
-            "Base frequencies in a window around the sites (`faba pwm --batch-process`), as a TSV and a sequence logo. `source` here is reads or reference, not where the file came from.",
+            "Base frequencies in a window around the sites (`faba pwm --batch-process`), as a TSV and a sequence logo. Needs `data`; `genome` gives the reference bases. `source` here is reads or reference (BAMs in `data` for reads), not where the file came from. Writes a TSV at `out` and, unless `figure` is false, the logo beside it. Returns `written`, `lines` and `head` (the TSV's first lines), `figure` (the PDF and PNG paths) and the PNG as an image.",
             schema(
                 json!({
                     "data": { "type": "array", "items": { "type": "string" }, "minItems": 1, "description": "Site parquets or faba output directories; BAMs too when source is reads" },
@@ -292,7 +292,7 @@ fn view_tools() -> Vec<ToolSpec> {
     vec![
         ToolSpec::new(
             "view_open",
-            "Use when the user wants to arrange a figure by eye (thresholds, scales, the panel, the look) rather than describe it in words. Starts the view as a detached session and returns at once with `session` and `attach`, the exact command for the user to run in their own terminal, of the form `faba attach faba-qc-view-1` (faba's full path; `LEGUME_TUI_DIR=...` in front when sessions live elsewhere). Give them that line verbatim. They arrange the view and tell you (the detach key, Ctrl+] by default, keeps it; q ends it, and then nothing can be read); then view_state reads what they chose and view_export draws the figure. qc_view and cluster_view answer view_state and view_export; pileup, metagene and pwm open for looking only. `args` are the arguments of the tool `view` names (`input` for qc_view, `data` for the others), without those that write files instead (`html`, `plots`, `out`, `figure`, `screen`). `open_window` (macOS) also tries a Terminal window for a few seconds; if macOS blocks it, `window` is false, `window_note` says why, and the session is still there to attach to.",
+            "Use when the user wants to arrange a figure by eye (thresholds, scales, the panel, the look) rather than describe it. Needs `view`. Starts the view as a detached session and returns at once with `session` and `attach`, the exact command for the user to run in their own terminal (`faba attach faba-qc-view-1`, faba's full path, with `LEGUME_TUI_DIR=...` in front when sessions live elsewhere). Give them that line verbatim. They arrange the view and tell you when done (Ctrl+] detaches and keeps it; q ends it, and then nothing can be read); then view_state reads what they chose and view_export draws it. qc_view and cluster_view answer view_state and view_export (`answers`); pileup, metagene and pwm open for looking only. `args` are the arguments of the tool `view` names (qc_view's `input`, cluster_view's `data`, pileup's `data`, ...), less those that write files in place of the view (qc_view's `html`, `plots`, `out`, `figure`, `format`; cluster_view's `html`, `figure`, `plot`, `plots`, `screen`; pileup's `figure`, `out`; metagene's `out`, `dist_measures`, `figure`; pwm's `out`, `figure`). `open_window` (macOS) also tries a Terminal window for a few seconds; if macOS blocks it, `window` is false, `window_note` says why, and the session is still there to attach to.",
             schema(
                 json!({
                     "view": { "type": "string", "enum": views, "description": "Which view" },
@@ -305,13 +305,13 @@ fn view_tools() -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "view_list",
-            "faba's live view sessions: each one's `session`, label, whether a terminal is attached, its command and status, whether it `answers` view_state and view_export, and `attach`, the command that shows it.",
+            "faba's live view sessions. Returns `sessions`, each with its `session`, label, whether a terminal is attached, its `command` and status, whether it `answers` view_state and view_export, and `attach`, the command that shows it.",
             schema(json!({}), &[]),
         )
         .read_only(),
         ToolSpec::new(
             "view_state",
-            "Read what the user arranged in a live view (from view_open), as JSON; with `set`, change it first (keys left out stay; the user sees it change) and return the state after. qc_view: `modality`, `panel`, `focus` (the knob), `thresholds` (null: off), `x_scale` per knob, `y_scale` per quantity, `marginal_scale`, `count_scale`, `two_d`, `pairs`, `pair_at`, `front`, `p_axis`, `key`, `key_at`, `titles`, `weight`, `scales`, `bins`, `style`, `marginals`, `marginal_size`; read only: `saves` (what `s` saves now), `gene`, `flags`. cluster_view: `preset`, `cell_order` (read only), `module`, `side` (sites, go), `go_terms`, `pins`. `command` is the view's command line.",
+            "Read what the user arranged in a live view (from view_open) as JSON. Needs `session`. With `set`, change it first (keys left out stay; the user sees it change), and return the state after. Returns the session as view_list lists it, with `state`. qc_view's state: `modality`, `panel`, `focus` (the knob), `thresholds` (null: off), `x_scale` per knob, `y_scale` per quantity, `marginal_scale`, `count_scale`, `two_d`, `pairs`, `pair_at`, `front`, `p_axis`, `key`, `key_at`, `titles`, `weight`, `scales`, `bins`, `style`, `marginals`, `marginal_size`; read only: `saves` (what s saves now), `gene`, `flags`. cluster_view's: `preset`, `cell_order` (read only), `module`, `side` (sites, go), `go_terms`, `pins`. `command` is the view's command line. pileup, metagene and pwm do not answer.",
             schema(
                 json!({
                     "session": session(),
@@ -322,7 +322,7 @@ fn view_tools() -> Vec<ToolSpec> {
         ),
         ToolSpec::new(
             "view_export",
-            "Draw the figure the live view's own `s` key saves, from what is on screen now, to `out` (formats default pdf and png); `width`, `height` (inches), `font_size`, `panel_only`, `palette` override the view's own. Writes the state beside it as {out}.view.json and returns `replay`, the batch command that draws the same figure again without the view, plus the paths, the state and the image. Never replaces a file.",
+            "Draw the figure the live view's s key saves, from what is on screen now: qc_view's panel on screen, or cluster_view's screen (as cluster_view's `screen` draws it). Needs `session`. Writes {out}.pdf and {out}.png (or as `formats` asks) and the state beside them as {out}.view.json; `width`, `height` (inches), `font_size`, `panel_only` and `palette` override the view's own. Returns `replay` (the batch command that draws the same figure again without the view), the paths, the `state` and the image. Never replaces a file.",
             schema(
                 json!({
                     "session": session(),
@@ -384,22 +384,22 @@ const EXCLUDED: &[(&[&str], &str, &str)] = &[
     (
         &["pileup"],
         "svg",
-        "the figure is the Miami SVG the tool returns: `figure`, `gtf` and `bam` ask for it",
+        "the tool writes the SVG and PDF itself: `figure`, `gtf` and `bam` ask for the figure",
     ),
     (
         &["pileup"],
         "png",
-        "the figure is the Miami SVG the tool returns: `figure`, `gtf` and `bam` ask for it",
+        "the tool writes the SVG and PDF itself: `figure`, `gtf` and `bam` ask for the figure",
     ),
     (
         &["pileup"],
         "no-pdf",
-        "the figure is the Miami SVG the tool returns: `figure`, `gtf` and `bam` ask for it",
+        "the tool writes the SVG and PDF itself: `figure`, `gtf` and `bam` ask for the figure",
     ),
     (
         &["pileup"],
         "format",
-        "the figure is the Miami SVG the tool returns: `figure`, `gtf` and `bam` ask for it",
+        "the tool writes the SVG and PDF itself: `figure`, `gtf` and `bam` ask for the figure",
     ),
 ];
 
@@ -1183,6 +1183,223 @@ mod tests {
             }
             assert!(found, "--{long}: no tool's command has it");
         }
+    }
+
+    /// The `name`-style words a text puts in backticks: a bare snake_case
+    /// word of two letters or more (a single letter is a key, `s`); each
+    /// with the tool it is of when the text says so: "`qc`'s `plots`" or
+    /// "qc's `plots`".
+    fn mentioned(text: &str) -> Vec<(Option<&str>, &str)> {
+        let snake = |w: &str| {
+            w.len() > 1
+                && w.starts_with(|c: char| c.is_ascii_lowercase())
+                && w.chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+        };
+        let parts: Vec<&str> = text.split('`').collect();
+        let mut out = Vec::new();
+        for i in (1..parts.len()).step_by(2) {
+            if !snake(parts[i]) {
+                continue;
+            }
+            let before = parts[i - 1];
+            let owner = match before.strip_suffix("'s ") {
+                Some("") if i >= 3 => Some(parts[i - 2]),
+                Some(before) => (before.rsplit(' ').next())
+                    .map(|t| t.trim_start_matches(|c: char| !c.is_ascii_alphanumeric()))
+                    .filter(|t| snake(t)),
+                // A list goes on with the tool its first was of.
+                None if [", ", " and ", ", and "].contains(&before) => {
+                    out.last().and_then(|(o, _)| *o)
+                }
+                None => None,
+            };
+            out.push((owner, parts[i]));
+        }
+        out
+    }
+
+    /// What a tool's text may name in backticks beyond its arguments and
+    /// the tools: the fields its result has, and the values an argument
+    /// takes that its text quotes.
+    fn returned(tool: &str) -> &'static [&'static str] {
+        match tool {
+            "qc" => &[
+                "dry_run",
+                "pairs",
+                "removes",
+                "only_this",
+                "split",
+                "plots",
+                "html",
+                "results",
+                "written",
+                "files",
+                "job",
+            ],
+            "qc_view" => &[
+                "table",
+                "pairs",
+                "removes",
+                "only_this",
+                "plots",
+                "html",
+                "figure",
+            ],
+            "site_plot" => &["written", "files"],
+            "cluster" => &[
+                "written",
+                "files",
+                "results",
+                "progress",
+                "last_lines",
+                "job",
+            ],
+            "cluster_view" => &[
+                "overview",
+                "verdict",
+                "said",
+                "cell_sizes",
+                "gene_sizes",
+                "modules",
+                "values",
+                "terms",
+                "why_none",
+                "min_weight",
+                "unit",
+                "figures",
+                "written",
+                "pages",
+                "images",
+            ],
+            "pileup" => &["written", "lines", "head"],
+            "metagene" | "pwm" => &["written", "lines", "head", "figure"],
+            "view_open" => &[
+                "session",
+                "attach",
+                "window",
+                "window_note",
+                "command",
+                "answers",
+                "note",
+            ],
+            "view_list" => &["sessions", "session", "attach", "answers", "command"],
+            "view_state" => &[
+                "state",
+                "command",
+                "modality",
+                "panel",
+                "focus",
+                "thresholds",
+                "x_scale",
+                "y_scale",
+                "marginal_scale",
+                "count_scale",
+                "two_d",
+                "pair_at",
+                "front",
+                "p_axis",
+                "key_at",
+                "titles",
+                "weight",
+                "scales",
+                "bins",
+                "style",
+                "marginals",
+                "marginal_size",
+                "saves",
+                "gene",
+                "flags",
+                "preset",
+                "cell_order",
+                "module",
+                "side",
+                "go_terms",
+                "pins",
+                "key",
+                "pairs",
+            ],
+            "view_export" => &["replay", "state", "written"],
+            "docs" => &["version"],
+            _ => &["written", "files", "results", "job"],
+        }
+    }
+
+    /// Words the instructions and every tool may name: the results every
+    /// write returns, and the tools of legume-mcp's own.
+    const SHARED: &[&str] = &[
+        "written",
+        "files",
+        "stdout",
+        "results",
+        "job",
+        "background",
+        "job_wait",
+        "job_status",
+        "job_cancel",
+        "attach",
+    ];
+
+    /// Every `name` a tool's description, or one of its hand-written
+    /// arguments' descriptions, puts in backticks is an argument of that
+    /// tool, a tool, or a field its result has; every one the server's
+    /// instructions name is an argument of some tool, a tool, or a field
+    /// a result has. An argument named in prose is in the schema.
+    #[test]
+    fn every_argument_named_in_prose_is_in_the_schema() {
+        let specs = tools();
+        let names: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
+        let mut wrong = Vec::new();
+        let mut every_key: Vec<&str> = SHARED.to_vec();
+        for spec in &specs {
+            let tool = spec.name.as_str();
+            let props = spec.input_schema["properties"].as_object().unwrap();
+            every_key.extend(props.keys().map(String::as_str));
+            every_key.extend(returned(tool));
+            // Its required arguments are named after "Needs".
+            let needs = spec.description.split("Needs ").nth(1).unwrap_or_default();
+            let needs = needs.split(". ").next().unwrap_or_default();
+            for r in spec.input_schema["required"].as_array().unwrap() {
+                let r = r.as_str().unwrap();
+                if !needs.contains(&format!("`{r}`")) {
+                    wrong.push(format!("{tool}: `{r}` required, not under \"Needs\""));
+                }
+            }
+            let made = generated(tool);
+            let hand = (props.iter())
+                .filter(|(k, _)| !made.iter().any(|g| &g.key == *k))
+                .filter_map(|(_, p)| p["description"].as_str());
+            for text in std::iter::once(spec.description.as_str()).chain(hand) {
+                for (owner, w) in mentioned(text) {
+                    let of = owner.filter(|o| names.contains(o)).unwrap_or(tool);
+                    let known = properties(of).is_some_and(|p| p.contains_key(w))
+                        || names.contains(&w)
+                        || returned(of).contains(&w)
+                        || SHARED.contains(&w);
+                    if !known {
+                        wrong.push(format!("{tool}: `{w}` (of {of})"));
+                    }
+                }
+            }
+        }
+        for (owner, w) in mentioned(crate::mcp::INSTRUCTIONS) {
+            let known = match owner.filter(|o| names.contains(o)) {
+                Some(of) => {
+                    properties(of).is_some_and(|p| p.contains_key(w)) || returned(of).contains(&w)
+                }
+                None => every_key.contains(&w) || names.contains(&w),
+            };
+            if !known {
+                wrong.push(format!("instructions: `{w}`"));
+            }
+        }
+        wrong.sort();
+        wrong.dedup();
+        assert!(
+            wrong.is_empty(),
+            "named in backticks, but no argument, tool or result field:\n{}",
+            wrong.join("\n")
+        );
     }
 
     /// Every figure tool takes `width` and `height` in inches, as the

@@ -399,25 +399,29 @@ impl crate::tui::View for PileupView<'_> {
         }
         let mut keys = vec![
             ("←/→ h/l", "previous/next bar"),
+            ("click", "the cursor to that bar; drag or wheel pans"),
             ("PgUp/PgDn", "half a view left/right"),
             ("n/N", "next/previous site"),
             ("+/=", "zoom in"),
-            ("-", "zoom out"),
+            ("-", "zoom out; past the gene, its flanks too"),
             ("0", "the whole gene, or its sites"),
-            ("y", "y scale"),
+            ("y", "y scale: linear, log10, sqrt"),
             ("Y", "lock y for the genes after, or unlock"),
         ];
-        keys.extend(self.optional_keys(self.rows_hidden()));
+        keys.extend(self.optional_help(self.rows_hidden()));
         if !self.from_cluster {
             keys.push(("/", "search a gene or chr:start-end"));
         }
         self.controls.help_keys(&mut keys);
+        crate::tui::help::say_save(&mut keys, "save the window as a figure (.pdf)");
         keys.extend([
             ("g/Esc", self.back_to()),
             ("q", "quit"),
             ("?", "these keys"),
         ]);
-        Some(crate::tui::keys(&keys))
+        let mut list = crate::tui::keys(&keys);
+        list.extend(self.legend());
+        Some(list)
     }
 }
 

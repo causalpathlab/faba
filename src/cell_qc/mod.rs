@@ -41,7 +41,7 @@ pub enum CellFilter {
     /// Keep barcodes with total count ≥ `min_counts`.
     #[value(name = "min-counts")]
     MinCounts,
-    /// No cell calling — keep every observed barcode (today's raw superset).
+    /// No cell calling: keep every observed barcode (today's raw superset).
     #[value(name = "nnz")]
     Nnz,
 }

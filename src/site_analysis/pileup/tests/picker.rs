@@ -52,7 +52,9 @@ fn typing_filters_and_enter_picks() {
     press(&mut p, KeyCode::Down);
     assert_eq!(p.selected, 2);
     press(&mut p, KeyCode::Esc);
-    assert_eq!(p.decision, Some(Choice::Quit), "then quits");
+    assert_eq!(p.decision, None, "Esc never quits");
+    press(&mut p, KeyCode::Char('q'));
+    assert_eq!(p.decision, Some(Choice::Quit), "q quits");
 }
 
 #[test]
@@ -124,7 +126,7 @@ fn every_footer_key_shows_at_60_columns() {
         "PgUp/PgDn page",
         "Enter open",
         "Space mark",
-        "Esc quit",
+        "q quit",
     ] {
         assert!(text.contains(key), "{key}\n{text}");
     }
@@ -160,7 +162,7 @@ fn space_marks_genes_and_the_apply_key_opens_them_together() {
 }
 
 #[test]
-fn esc_clears_the_search_then_the_marks_then_quits() {
+fn esc_clears_the_search_then_the_marks_and_never_quits() {
     let c = catalog_from_rows(rows());
     let mut p = GenePicker::new(&c);
     p.set_marked(&[0, 1]);
@@ -176,6 +178,24 @@ fn esc_clears_the_search_then_the_marks_then_quits() {
         "then every mark"
     );
     press(&mut p, KeyCode::Esc);
+    assert_eq!(p.decision, None, "Esc never quits");
+}
+
+/// With the search empty `q` quits, as in every view; `/` first types a
+/// search that starts with q; within a search `q` is a letter.
+#[test]
+fn q_quits_and_slash_types_a_search_starting_with_q() {
+    let c = catalog_from_rows(rows());
+    let mut p = GenePicker::new(&c);
+    press(&mut p, KeyCode::Char('/'));
+    press(&mut p, KeyCode::Char('q'));
+    assert_eq!((p.decision.clone(), p.filter.as_str()), (None, "q"));
+    let mut p = GenePicker::new(&c);
+    press(&mut p, KeyCode::Char('g'));
+    press(&mut p, KeyCode::Char('q'));
+    assert_eq!((p.decision.clone(), p.filter.as_str()), (None, "gq"));
+    let mut p = GenePicker::new(&c);
+    press(&mut p, KeyCode::Char('q'));
     assert_eq!(p.decision, Some(Choice::Quit));
 }
 

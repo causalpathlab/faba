@@ -348,8 +348,10 @@ pub struct PileupArgs {
 
     #[arg(
         long = "out",
-        help = "Output prefix for figure files (`<prefix>.miami.{svg,pdf,png}`)",
-        long_help = "Output prefix for figure files (`<prefix>.miami.{svg,pdf,png}`).\n\
+        help = "Output prefix for figure files: `<prefix>.miami.{svg,pdf,png}` for one gene, `<prefix>_{SYMBOL}`, `_row`, `_grid` and `_key` for several",
+        long_help = "Output prefix for figure files: `<prefix>.miami.{svg,pdf,png}` for one gene;\n\
+                     with several, `<prefix>_{SYMBOL}` each, `<prefix>_row` or `_grid` (--row, --grid)\n\
+                     and `<prefix>_key` (--key-at alone).\n\
                      Defaults to the gene label."
     )]
     out: Option<Box<str>>,
@@ -458,7 +460,7 @@ pub struct PileupArgs {
         long = "gene-file",
         value_name = "FILE",
         value_hint = clap::ValueHint::FilePath,
-        help = "Genes to draw, one figure each, read from a file (a symbol or ID a line, or separated by commas or spaces; `#` starts a comment), with any -q"
+        help = "Genes to draw, one figure each, read from a file (a symbol or ID a line, or separated by commas or spaces; `#` starts a comment), added to any -q genes"
     )]
     gene_file: Option<Box<str>>,
 

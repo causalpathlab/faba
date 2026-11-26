@@ -90,7 +90,7 @@ impl SitePicker<'_> {
     fn browse_footer(&self) -> Vec<(&'static str, &'static str)> {
         let mut keys = vec![("Tab/Shift+Tab", "panel")];
         match self.panel {
-            Panel::Thresholds => keys.extend([("↑/↓", "knob"), ("←/→", "bin")]),
+            Panel::Thresholds => keys.extend([("↑/↓", "knob"), ("←/→", "threshold")]),
             Panel::Genes => keys.extend([("↑/↓", "gene"), ("PgUp/PgDn", "page"), ("/", "find")]),
             Panel::Pairs => {
                 // The arrows step from panel to panel, where there are two.
@@ -111,7 +111,7 @@ impl SitePicker<'_> {
         }
         keys.extend([
             ("[ ]", "gene"),
-            ("-/+", "±1"),
+            ("-/+", "loosen/tighten"),
             ("0-9/e", "type"),
             ("o", "off"),
             ("r", "reset"),
