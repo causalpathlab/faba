@@ -30,6 +30,7 @@ impl ModulesView<'_> {
             side: if go { Beside::Go } else { Beside::Sites },
             go_terms: self.go_terms,
             pins: self.pins.iter().map(gene).collect(),
+            genes_yscale: self.genes_yscale,
         }
     }
 
@@ -62,6 +63,7 @@ impl ModulesView<'_> {
             models: &self.models,
             grid: &GridArgs::default(),
             region: Region::All,
+            genes: Default::default(),
             title: self.figure_title.as_deref().unwrap_or(&self.title),
             sheet,
         };

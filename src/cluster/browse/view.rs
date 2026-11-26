@@ -165,6 +165,8 @@ pub struct ModulesView<'a> {
     /// frame does (Hinton when every cell module fits, else bars).
     pub(super) look_set: bool,
     pub(super) ramp: Ramp,
+    /// The scale of the pinned genes' bars (`y` on the genes pane).
+    pub(super) genes_yscale: crate::cluster::browse::figure::screen::YScale,
     pub(super) sort: Sort,
     /// Sorted high to low (the module's order: as it is).
     pub(super) descending: bool,
@@ -245,6 +247,7 @@ impl<'a> ModulesView<'a> {
             looks: [Look::Bars; 2],
             look_set: false,
             ramp: Ramp::Sqrt,
+            genes_yscale: Default::default(),
             sort: Sort::Module,
             descending: false,
             pending: None,

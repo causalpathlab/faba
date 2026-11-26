@@ -232,6 +232,11 @@ impl ModulesView<'_> {
             KeyCode::Char('y') if grid.is_some_and(|k| self.looks[k] == Look::Percent) => {
                 self.ramp = self.ramp.next()
             }
+            KeyCode::Char('y') if genes && !self.pins.is_empty() => {
+                self.genes_yscale = self.genes_yscale.next();
+                let said = self.genes_yscale.name();
+                self.status = Some(format!("the pinned genes' bars on a {said} scale"));
+            }
             KeyCode::Char('o') if sites => self.next_sort(),
             KeyCode::Char('O') if sites && self.sort != Sort::Module => {
                 self.resort(self.sort, !self.descending)

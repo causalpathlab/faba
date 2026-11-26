@@ -253,10 +253,42 @@ pub struct GridArgs {
     )]
     pub block_bars: bool,
 
+    #[arg(
+        long = "grid-cap",
+        value_name = "Q",
+        value_parser = fraction,
+        requires = "drawn",
+        help = "Cap the modules grid's colours at quantile Q in (0, 1] of its blocks' values (their size, |value|, for shift and z), as 0.95: the blocks past it all at full colour, so one outlying block does not wash out the rest; the key's ends say so (≥, ≤); Hinton squares keep their true sizes, the values printed with --values are as they are"
+    )]
+    pub cap: Option<f64>,
+
+    #[arg(
+        long = "transpose",
+        requires = "drawn",
+        help = "Draw the modules grid transposed: the cell modules as rows (their names and bars on the left), the gene modules as columns (their names, turned, and bars on top, their shift ranges and GO terms under the columns, or over them with --go-side top); on --screen the pinned genes then go beside the grid, in the gene modules' order, each cell module's track on its grid row"
+    )]
+    pub transpose: bool,
+
+    #[arg(
+        long = "go-side",
+        value_enum,
+        requires = "transpose",
+        help = "With --transpose, where the gene modules' GO terms go: under the columns (bottom, default) or over them, above the modules' names (top)"
+    )]
+    pub go_side: Option<GoSide>,
+
     /// Each row's shift range right of the grid under every look, as the
     /// browser writes it (the bars look has it anyway): the screen's.
     #[arg(skip)]
     pub ranges: bool,
+}
+
+/// Where a transposed grid's GO terms go.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum GoSide {
+    #[default]
+    Bottom,
+    Top,
 }
 
 /// The margin bars' depth when `--marginal-size` is not given.
@@ -273,6 +305,9 @@ impl Default for GridArgs {
             go_labels: None,
             go_none: false,
             block_bars: false,
+            cap: None,
+            transpose: false,
+            go_side: None,
             ranges: false,
         }
     }
@@ -295,7 +330,7 @@ impl GridArgs {
 }
 
 /// A fraction in (0, 1].
-fn fraction(s: &str) -> Result<f64, String> {
+pub(super) fn fraction(s: &str) -> Result<f64, String> {
     let v: f64 = s.parse().map_err(|_| format!("{s} is not a number"))?;
     match v > 0.0 && v <= 1.0 {
         true => Ok(v),

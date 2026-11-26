@@ -2,6 +2,7 @@
 //! up in the accent, unconverted hanging below.
 
 use super::super::Count;
+use crate::cluster::browse::figure::screen::YScale;
 use crate::tui::ui::{ACCENTED, PLAIN};
 use ratatui::buffer::Buffer;
 use ratatui::style::{Modifier, Style};
@@ -19,13 +20,17 @@ pub(in crate::cluster::browse) fn peak<'r>(reads: impl IntoIterator<Item = &'r C
 
 /// A mirror bar in column `x` from row `y`: `lines` rows of converted reads
 /// rising to the zero line, then `lines` of unconverted hanging from it, on
-/// a scale where `peak` reads fill a side but its last eighth, so that rows
-/// stacked one under another never touch.
-pub(super) fn mirror(buf: &mut Buffer, x: u16, y: u16, lines: u16, reads: Count, peak: f64) {
-    let (up, down) = (
-        eighths(reads.up(), peak, lines),
-        eighths(reads.off(), peak, lines),
-    );
+/// `scale`, where `peak` reads fill a side but its last eighth, so that
+/// rows stacked one under another never touch.
+pub(super) fn mirror(
+    buf: &mut Buffer,
+    (x, y, lines): (u16, u16, u16),
+    reads: Count,
+    peak: f64,
+    scale: YScale,
+) {
+    let side = |v: f64| eighths(scale.share(v, peak), 1.0, lines);
+    let (up, down) = (side(reads.up()), side(reads.off()));
     for k in 0..lines {
         let e = up.saturating_sub(8 * k as usize).min(8);
         if e > 0 {

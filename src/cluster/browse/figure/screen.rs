@@ -36,6 +36,22 @@ pub enum Preset {
 }
 
 impl Preset {
+    /// The preset that draws the grid in `look`.
+    fn of(look: Look) -> Self {
+        match look {
+            Look::Bars => Preset::Blocks,
+            _ => Preset::Diagonal,
+        }
+    }
+
+    /// The grid's region's title, naming the GO terms when `go` are on it.
+    fn title(self, go: bool) -> String {
+        match go {
+            true => format!("gene modules · {} · GO terms", self.said()),
+            false => format!("gene modules · {}", self.said()),
+        }
+    }
+
     /// The grid look it draws with.
     pub fn look(self) -> Look {
         match self {
@@ -63,6 +79,49 @@ pub enum Beside {
     Go,
     /// Nothing: the grid takes the width.
     None,
+}
+
+/// The scale the pinned genes' mirror bars are drawn on: each side's
+/// reads (the posterior-mean reads at a site, summed over the cells of a
+/// track) as they are, their square root, or `log10(1 + reads)`, each
+/// track's peak filling a side (the "all" track's its own, the cell
+/// modules' one shared): the pileup's.
+pub use crate::site_analysis::pileup::YScale;
+
+/// Where a pinned gene's model goes: over its tracks (its name under
+/// them), or under them (its name over them).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum ModelAt {
+    #[default]
+    Top,
+    Bottom,
+}
+
+/// How the pinned genes are drawn on `--screen`, besides their scale.
+#[derive(clap::Args, Debug, Clone, Copy, Default, PartialEq)]
+pub struct GenesLook {
+    #[arg(
+        long = "gene-model",
+        value_enum,
+        default_value_t = ModelAt::Top,
+        requires = "screen",
+        help = "Where each pinned gene's model goes on --screen: top (over its tracks, its name and module under them) or bottom (under its tracks, its name and module over them)"
+    )]
+    pub model_at: ModelAt,
+
+    #[arg(
+        long = "no-all",
+        requires = "screen",
+        help = "Leave the pinned genes' \"all\" track (every fitted cell) out on --screen: a track a cell module alone"
+    )]
+    pub no_all: bool,
+
+    #[arg(
+        long = "no-track-labels",
+        requires = "screen",
+        help = "Leave the pinned genes' track labels (each track's name and cells, left of the genes) out on --screen"
+    )]
+    pub no_track_labels: bool,
 }
 
 /// Which of the screen's regions a figure draws.
@@ -100,6 +159,8 @@ pub struct State {
     pub go_terms: Option<usize>,
     /// The pinned genes, by key or symbol, in order.
     pub pins: Vec<String>,
+    /// The scale the pinned genes' bars are drawn on.
+    pub genes_yscale: YScale,
 }
 
 /// The GO terms a row shows when [`State::go_terms`] names none.
@@ -116,6 +177,7 @@ pub struct Placed {
     pub side: Beside,
     pub go_terms: usize,
     pub pins: Vec<Pin>,
+    pub genes_yscale: YScale,
 }
 
 /// A cell module named as C3 or 3, its role.
@@ -178,6 +240,7 @@ impl State {
             side: self.side,
             go_terms: self.go_terms.unwrap_or(GO_TERMS),
             pins,
+            genes_yscale: self.genes_yscale,
         })
     }
 
@@ -208,6 +271,7 @@ pub struct Ask<'a> {
     pub models: &'a FxHashMap<Box<str>, GeneModel>,
     pub grid: &'a GridArgs,
     pub region: Region,
+    pub genes: GenesLook,
     pub title: &'a str,
     pub sheet: Sheet,
 }
@@ -232,10 +296,13 @@ pub fn draw(m: &Modules, state: &Placed, ask: &Ask) -> Result<String, String> {
     // The text as the browser's: the screen's columns across the page,
     // unless a size is asked for.
     let (modules, sites) = columns(m, state);
-    let across = match beside {
-        Beside::Sites => modules + sites,
-        Beside::Go => modules + GO_COLUMNS,
-        Beside::None => modules,
+    let across = match (ask.grid.transpose && ask.region == Region::All, beside) {
+        // Transposed: the grid, a gene module a column, the genes beside
+        // it (the sites under them, the GO terms under its columns).
+        (true, _) => transposed_columns(m, state),
+        (false, Beside::Sites) => modules + sites,
+        (false, Beside::Go) => modules + GO_COLUMNS,
+        (false, Beside::None) => modules,
     };
     let mut sheet = ask.sheet;
     sheet.page = (Some(w), Some(h));
@@ -254,6 +321,12 @@ pub fn draw(m: &Modules, state: &Placed, ask: &Ask) -> Result<String, String> {
             return Err("no GO terms to show beside the grid".into())
         }
         Region::Genes if !pinned => return Err("no gene is pinned".into()),
+        Region::Side if beside == Beside::Go && ask.grid.transpose => {
+            return Err(
+                "with --transpose the GO terms are under the grid's columns: draw --region grid"
+                    .into(),
+            )
+        }
         _ => {}
     }
     let mut c = Canvas::new(w, h);
@@ -285,13 +358,17 @@ pub fn draw(m: &Modules, state: &Placed, ask: &Ask) -> Result<String, String> {
     let module_name = state
         .module
         .map_or(String::new(), |g| format!("M{}", g + 1));
-    let preset = match state.look {
-        Look::Bars => Preset::Blocks,
-        _ => Preset::Diagonal,
-    };
+    let preset = Preset::of(state.look);
+    if ask.grid.transpose && ask.region == Region::All {
+        let parts = transposed(&mut c, m, state, ask, (body, beside), ink)?;
+        return Ok(placed_over(c, &[parts]));
+    }
     if let Some(top) = top {
-        // The GO terms beside the grid, but for the grid alone.
-        let go_here = beside == Beside::Go && ask.go.is_some() && ask.region != Region::Grid;
+        // The GO terms beside the grid, but for the grid alone; a
+        // transposed grid's are its own, under its columns.
+        let go_here = beside == Beside::Go
+            && ask.go.is_some()
+            && (ask.region != Region::Grid || ask.grid.transpose);
         let grid_args = GridArgs {
             ranges: true,
             go_labels: go_here.then_some(state.go_terms),
@@ -349,10 +426,7 @@ pub fn draw(m: &Modules, state: &Placed, ask: &Ask) -> Result<String, String> {
                 parts.push(cropped(&svg, inner, go_x));
             }
             (_, _) => {
-                let title = match go_here {
-                    true => format!("gene modules · {} · GO terms", preset.said()),
-                    false => format!("gene modules · {}", preset.said()),
-                };
+                let title = preset.title(go_here);
                 let part = grid_region(
                     &mut c,
                     m,
@@ -371,16 +445,131 @@ pub fn draw(m: &Modules, state: &Placed, ask: &Ask) -> Result<String, String> {
         let title =
             format!("genes · {n} pinned · posterior-mean reads in the main module, fitted cells");
         let inner = frame(&mut c, area, (&title, framed), f);
-        super::genes::draw(&mut c, m, &state.pins, ask.models, inner, ink);
+        let how = super::genes::How::of(state, ask);
+        super::genes::draw(&mut c, m, &state.pins, ask.models, inner, ink, how);
     }
+    Ok(placed_over(c, &parts))
+}
+
+/// `c` drawn, `parts` placed over it.
+fn placed_over(c: Canvas, parts: &[String]) -> String {
     let drawn = c.finish();
     let end = drawn.rfind("</svg>").expect("a drawing ends its svg");
-    Ok(format!(
-        "{}{}{}",
-        &drawn[..end],
-        parts.concat(),
-        &drawn[end..]
-    ))
+    format!("{}{}{}", &drawn[..end], parts.concat(), &drawn[end..])
+}
+
+/// The whole screen of a transposed grid in `body`: the grid (as narrow
+/// as it is drawn) with the pinned genes beside it, in the gene modules'
+/// order, each cell module's track on its grid row; the sites under them
+/// when they are `beside` the grid. The grid's part, to place over `c`.
+fn transposed(
+    c: &mut Canvas,
+    m: &Modules,
+    state: &Placed,
+    ask: &Ask,
+    (body, beside): ((f64, f64, f64, f64), Beside),
+    ink: Ink,
+) -> Result<String, String> {
+    let f = ink.f;
+    let framed = !ink.panel_only;
+    let (top, sites) = match beside {
+        Beside::Sites => {
+            let top_h = body.3 * 0.6;
+            let low = (body.0, body.1 + top_h, body.2, body.3 - top_h);
+            ((body.0, body.1, body.2, top_h), Some(low))
+        }
+        _ => (body, None),
+    };
+    let go_here = beside == Beside::Go && ask.go.is_some();
+    let grid_args = GridArgs {
+        ranges: true,
+        go_labels: go_here.then_some(state.go_terms),
+        ..ask.grid.clone()
+    };
+    let title = Preset::of(state.look).title(go_here);
+    // The pins in the grid's columns' order, the genes beside it taking
+    // what they want of the width, the grid at least a third.
+    let order = rows(m, state.look);
+    let mut pins = state.pins.clone();
+    pins.sort_by_key(|p| {
+        order
+            .iter()
+            .position(|&g| g == p.role)
+            .unwrap_or(usize::MAX)
+    });
+    let how = super::genes::How::of(state, ask);
+    let wanted = match pins.is_empty() {
+        true => 0.0,
+        false => super::genes::wanted(m, &pins, f, how) + 2.0 * f,
+    };
+    let mut area = (top.0, top.1, (top.2 - wanted).max(top.2 / 3.0), top.3);
+    let draw_grid = |inner: (f64, f64, f64, f64)| {
+        let sheet = sub_sheet(ask.sheet, inner);
+        grid::placed(
+            m,
+            state.look,
+            &grid_args,
+            ask.go,
+            "",
+            sheet.page,
+            Ink::of(&sheet),
+        )
+        .map_err(|e| refused(e, sheet))
+    };
+    let genes_area = |area: (f64, f64, f64, f64)| {
+        let x = area.0 + area.2;
+        (x, top.1, top.0 + top.2 - x, top.3)
+    };
+    // Drawn once to learn how wide it is, then framed that wide (the
+    // whole width when squeezed too narrow for its cells: the genes then
+    // narrow to what is left); lowered when the genes' "all" track and
+    // their models or names over the first row would not fit over it.
+    if !pins.is_empty() {
+        let inner = inside(area, framed, f);
+        let (inner, placed) = match draw_grid(inner) {
+            Ok((_, placed)) => (inner, placed),
+            Err(_) => {
+                area.2 = top.2;
+                let inner = inside(area, framed, f);
+                (inner, draw_grid(inner)?.1)
+            }
+        };
+        area.2 = (placed.width + area.2 - inner.2).min(area.2);
+        let genes_top = inside(genes_area(area), framed, f).1;
+        let over = super::genes::over(how.look, !ask.models.is_empty(), f, placed.pitch);
+        let short = genes_top + over - (inner.1 + placed.rows_top);
+        if short > 0.0 {
+            (area.1, area.3) = (area.1 + short, area.3 - short);
+        }
+    }
+    let inner = frame(c, area, (&title, framed), f);
+    let (svg, placed) = draw_grid(inner)?;
+    if !pins.is_empty() {
+        let genes_area = genes_area(area);
+        let n = pins.len();
+        let said = format!("genes · {n} pinned · posterior-mean reads by cell module");
+        let inner_genes = frame(c, genes_area, (&said, framed), f);
+        let aligned = super::genes::Aligned {
+            top: inner.1 + placed.rows_top,
+            pitch: placed.pitch,
+        };
+        let how = super::genes::How {
+            aligned: Some(aligned),
+            ..how
+        };
+        super::genes::draw(c, m, &pins, ask.models, inner_genes, ink, how);
+    }
+    if let (Some(area), Some(g)) = (sites, state.module) {
+        let n = m.members[g].len();
+        let title = format!("sites · M{} · {n} sites · module order · bars", g + 1);
+        let inner = frame(c, area, (&title, framed), f);
+        let pinned: Vec<usize> = (state.pins.iter())
+            .filter(|p| p.role == g)
+            .map(|p| p.gene)
+            .collect();
+        super::sites::draw(c, m, g, &pinned, inner, ink);
+    }
+    Ok(nested(&svg, inner))
 }
 
 /// The page asked for, a side not asked for in the screen's own
@@ -425,6 +614,18 @@ fn columns(m: &Modules, state: &Placed) -> (f64, f64) {
     (modules, sites)
 }
 
+/// The columns a transposed screen needs across: the grid, every gene
+/// module six wide past the cell modules' names, and the pinned genes in
+/// one row past their tracks' labels.
+fn transposed_columns(m: &Modules, state: &Placed) -> f64 {
+    let grid = 8.0 + 6.0 * m.gene_roles as f64 + 2.0;
+    let genes = match state.pins.is_empty() {
+        true => 0.0,
+        false => 12.0 + super::genes::one_row(&super::genes::widths(m, &state.pins)),
+    };
+    grid + genes
+}
+
 /// A region's frame and title, as the browser's panes have them, when
 /// `framed`: the area inside it.
 fn frame(
@@ -433,10 +634,10 @@ fn frame(
     (title, framed): (&str, bool),
     f: f64,
 ) -> (f64, f64, f64, f64) {
+    let inner = inside((x, y, w, h), framed, f);
     if !framed {
-        return (x + 0.3 * f, y + 0.3 * f, w - 0.6 * f, h - 0.6 * f);
+        return inner;
     }
-    let pad = 0.5 * f;
     let (fx, fy, fw, fh) = (x + 0.3 * f, y + 0.6 * f, w - 0.6 * f, h - 0.9 * f);
     c.line(fx, fy, fx + fw, fy, FAINT, 0.6);
     c.line(fx, fy + fh, fx + fw, fy + fh, FAINT, 0.6);
@@ -453,6 +654,17 @@ fn frame(
         Anchor::Start,
         MUTED,
     );
+    inner
+}
+
+/// The area inside a region's frame (see [`frame`]), or inside its
+/// margin when it is not framed.
+fn inside((x, y, w, h): (f64, f64, f64, f64), framed: bool, f: f64) -> (f64, f64, f64, f64) {
+    if !framed {
+        return (x + 0.3 * f, y + 0.3 * f, w - 0.6 * f, h - 0.6 * f);
+    }
+    let pad = 0.5 * f;
+    let (fx, fy, fw, fh) = (x + 0.3 * f, y + 0.6 * f, w - 0.6 * f, h - 0.9 * f);
     (fx + pad, fy + 0.8 * f, fw - 2.0 * pad, fh - 0.8 * f - pad)
 }
 

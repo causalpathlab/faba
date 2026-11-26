@@ -200,11 +200,10 @@ impl ModulesView<'_> {
             for (j, col) in cols.iter().enumerate() {
                 mirror(
                     buf,
-                    x + j as u16,
-                    rows.top(area, t),
-                    rows.lines,
+                    (x + j as u16, rows.top(area, t), rows.lines),
                     col[self.track(t)],
                     top,
+                    self.genes_yscale,
                 );
             }
         }
