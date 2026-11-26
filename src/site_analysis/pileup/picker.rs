@@ -275,10 +275,8 @@ impl Screen for GenePicker<'_> {
     fn render(&mut self, frame: &mut Frame) {
         let line = match &self.status {
             Some(msg) => status_line(msg),
-            None => input_line(
-                "search gene or chr:start-end: ",
-                &self.filter,
-                &[
+            None => {
+                let mut keys = vec![
                     ("↑/↓", "move"),
                     ("PgUp/PgDn", "page"),
                     ("Enter", "open"),
@@ -291,27 +289,24 @@ impl Screen for GenePicker<'_> {
                             "open the marked together"
                         },
                     ),
-                    (
-                        "Esc",
-                        if !self.filter.is_empty() || self.searching {
-                            "clear search"
-                        } else if !self.marked.is_empty() {
-                            "clear all marks"
-                        } else {
-                            "back"
-                        },
-                    ),
-                    ("/", "search (q included)"),
-                    (
-                        "q",
-                        if self.filter.is_empty() && !self.searching {
-                            "quit"
-                        } else {
-                            "is typed"
-                        },
-                    ),
-                ],
-            ),
+                ];
+                // Esc listed only where it has something to clear.
+                if !self.filter.is_empty() || self.searching {
+                    keys.push(("Esc", "clear search"));
+                } else if !self.marked.is_empty() {
+                    keys.push(("Esc", "clear all marks"));
+                }
+                keys.push(("/", "search (q included)"));
+                keys.push((
+                    "q",
+                    if self.filter.is_empty() && !self.searching {
+                        "quit"
+                    } else {
+                        "is typed"
+                    },
+                ));
+                input_line("search gene or chr:start-end: ", &self.filter, &keys)
+            }
         };
         let help = crate::tui::wrap_help(line, frame.area().width);
         let [top, body, footer] = Layout::vertical([
