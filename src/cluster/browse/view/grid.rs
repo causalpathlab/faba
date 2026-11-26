@@ -5,6 +5,7 @@
 
 use super::bars::{mirror, peak};
 use super::{ModulesView, Spot};
+use crate::cluster::browse::figure::screen::YScale;
 use crate::cluster::browse::{standardized, Count, Modules};
 use crate::site_analysis::pileup::{channel_names, query_symbol};
 use crate::tui::hidden_marks;
@@ -472,7 +473,7 @@ fn grid_row(buf: &mut Buffer, area: Rect, reads: &[Count], (cols, cell_w): (&[us
             break;
         }
         for dx in 0..2 {
-            mirror(buf, x + dx, area.y, 1, *r, peak);
+            mirror(buf, (x + dx, area.y, 1), *r, peak, YScale::Linear);
         }
         if let (Some(n), true) = (r.number(), cell_w == CELL) {
             buf.set_string(x + 2, area.y, format!("{n:>3}"), DIM);

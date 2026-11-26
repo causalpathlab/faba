@@ -1,6 +1,6 @@
 //! The browser as a live view (see [`crate::tui::live`]): its state is
 //! the screen's [`State`] (`preset`, `cell_order`, `module`, `side`,
-//! `go_terms`, `pins`, as `--state` reads it), and its figure the screen
+//! `go_terms`, `pins`, `genes_yscale`, as `--state` reads it), and its figure the screen
 //! `s` saves, drawn by [`crate::cluster::browse::figure::screen::draw`].
 
 use super::{Look, ModulesView};
@@ -57,6 +57,7 @@ impl Live for ModulesView<'_> {
             self.select_module(g);
         }
         self.go_terms = want.go_terms;
+        self.genes_yscale = want.genes_yscale;
         if self.pins != placed.pins {
             self.pins = placed.pins;
             self.focus_pin(0, None);

@@ -27,6 +27,7 @@ mod screen;
 mod strip;
 mod text;
 mod trace;
+mod transpose;
 mod view;
 
 fn site(gene: &str, pos: i64) -> Site {

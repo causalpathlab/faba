@@ -239,7 +239,8 @@ impl Bars {
 
     /// The key to the bars from `(x, y)`: each side's swatch and what it
     /// is, and their scale.
-    fn key(&self, c: &mut Canvas, (x, y): (f64, f64), f: f64, per_cell: bool) {
+    /// Transposed, a gene module's bars are a column's.
+    fn key(&self, c: &mut Canvas, (x, y): (f64, f64), f: f64, (per_cell, tr): (bool, bool)) {
         let s = 0.8 * f;
         let mut at = x;
         let sides: &[(&str, bool)] = match per_cell {
@@ -255,7 +256,12 @@ impl Bars {
             c.text(at, y + s, said, f, Anchor::Start, MUTED);
             at += width(said, f) + 0.8 * f;
         }
-        c.text(at, y + s, "one scale a row", f, Anchor::Start, MUTED);
+        let scale = if tr {
+            "one scale a column"
+        } else {
+            "one scale a row"
+        };
+        c.text(at, y + s, scale, f, Anchor::Start, MUTED);
     }
 }
 
@@ -264,6 +270,11 @@ impl Bars {
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct Placed {
     pub go_x: Option<f64>,
+    /// The top of the grid's first row, and the rows' pitch (a cell).
+    pub rows_top: f64,
+    pub pitch: f64,
+    /// How much of the page's width the grid takes, from its left.
+    pub width: f64,
 }
 
 /// The figure of `m` under `look` with `grid`'s extras, `go` the terms for
@@ -299,11 +310,19 @@ pub(super) fn placed(
         true => all.iter().fold(0.0f64, |a, v| a.max(v.abs())),
         false => all.iter().fold(0.0f64, |a, &v| a.max(v)),
     };
+    // The colours' top: the largest value, or with `--grid-cap` that
+    // quantile of the blocks' values (|values| for a diverging look), the
+    // blocks past it at full colour; sizes keep the largest.
+    let shade_top = grid
+        .cap
+        .map_or(top, |q| quantile(&all, q, diverging).min(top));
+    let capped = shade_top < top;
     // The Hinton squares coloured as the browser's are, full red or blue
     // at its top |z|; in grays as the other looks.
     let z_top = Stretch::of(rows.iter().map(|&g| m.block(g)), Ramp::Sqrt).z_top;
+    let z_top = if capped { z_top.min(shade_top) } else { z_top };
     let square_fill = |v: f64| match ink.gray {
-        true => fill(v, top, diverging),
+        true => fill(v, shade_top, diverging),
         false => hinton_fill(v, z_top),
     };
     let what = match (look, m.per_cell()) {
@@ -316,24 +335,52 @@ pub(super) fn placed(
         (Look::Bars, _) => "reads in each block",
     };
     let f = ink.f;
+    // Transposed, the cell modules are the rows and the gene modules the
+    // columns: every block, name, margin and label goes to the other axis.
+    let tr = grid.transpose;
     let names: Vec<String> = (rows.iter())
         .map(|&g| format!("M{} ({} genes)", g + 1, m.gene_sizes[g]))
         .collect();
+    let cell_names: Vec<String> = (m.columns.iter()).map(|&c| format!("C{}", c + 1)).collect();
     let (cols, n) = (m.columns.len(), rows.len());
+    // The grid's columns and rows as drawn.
+    let (across, down) = match tr {
+        false => (cols, n),
+        true => (n, cols),
+    };
     let (genes, cell_margin) = margins(m, &rows);
     let (left, over, under) = (
         strips(grid, Side::Left),
         strips(grid, Side::Top),
         strips(grid, Side::Bottom),
     );
+    // The strips drawn by the grid's rows (left of it), over its columns
+    // and under them, and the modules each strip is of. Transposed, the
+    // gene modules' go over the columns and the cell modules' (top or
+    // bottom) left of the rows.
+    let cell_strips: Vec<Strip> = over.iter().chain(&under).copied().collect();
+    let (side_strips, top_strips, bottom_strips): (&[Strip], &[Strip], &[Strip]) = match tr {
+        false => (&left, &over, &under),
+        true => (&cell_strips, &left, &[]),
+    };
+    let (side_margin, cross_margin) = match tr {
+        false => (&genes, &cell_margin),
+        true => (&cell_margin, &genes),
+    };
     let per_cell = m.per_cell();
     let said: Vec<String> = (left.iter().map(|&s| genes.label(s, per_cell)))
-        .chain((over.iter().chain(&under)).map(|&s| cell_margin.label(s, per_cell)))
+        .chain(cell_strips.iter().map(|&s| cell_margin.label(s, per_cell)))
         .collect();
-    let label = (names.iter().chain(&said))
+    let row_names = if tr { &cell_names } else { &names };
+    let label = (row_names.iter().chain(&said))
         .map(|n| width(n, f))
         .fold(0.0, f64::max)
         + f;
+    // A transposed grid's gene module names, turned, over its columns.
+    let names_h = match tr {
+        true => names.iter().map(|s| width(s, f)).fold(0.0, f64::max) + 0.8 * f,
+        false => 0.0,
+    };
     // The plot alone: no title over it, no scale beside it, no note under;
     // the bars alone have no colour scale.
     let (mut head, scale, mut foot) = (
@@ -348,21 +395,26 @@ pub(super) fn placed(
     // Each margin is `depth` cells deep, a gap from the grid and the next.
     let gap = 0.4 * f;
     let depth = grid.marginal_size * cols.min(n).max(1) as f64;
-    let (nl, nt, nb) = (left.len() as f64, over.len() as f64, under.len() as f64);
-    if !over.is_empty() {
+    let (nl, nt, nb) = (
+        side_strips.len() as f64,
+        top_strips.len() as f64,
+        bottom_strips.len() as f64,
+    );
+    if tr {
+        // The title's room, the names turned, then the strips over the
+        // columns, a gap from the grid and each other.
+        head = ink.room(2.0 * f) + names_h + nt * gap;
+    } else if nt > 0.0 {
         // From half a line under the title down, then the columns' names.
         head = ink.room(2.0 * f) + 2.1 * f + (nt - 1.0) * gap;
     }
     // The left margins' labels go under the grid, or over it when only the
     // bottom has margins; a line each.
-    let labels_over = !left.is_empty() && over.is_empty() && !under.is_empty();
+    let labels_over = !tr && nl > 0.0 && nt == 0.0 && nb > 0.0;
     if labels_over {
         head += ((nl - 1.0) * 1.1 * f - 0.6 * f).max(0.0);
     }
     foot += nb * gap;
-    if !left.is_empty() && !labels_over {
-        foot += nl * 1.1 * f;
-    }
     // The key under the plot alone: a colour scale, and for the Hinton
     // look squares at reference |z|, their sides in cells.
     let small_key = ink.panel_only && grid.key;
@@ -390,8 +442,9 @@ pub(super) fn placed(
             .chain(none.iter().map(|s| go_width(s, f)))
             .fold(0.0, f64::max)
     });
-    // Each row's shift range right of the grid, as the browser has it,
-    // when the bars are drawn (or the screen asks for it).
+    // Each gene module's shift range beside its row (under its column,
+    // turned, when transposed), as the browser has it, when the bars are
+    // drawn (or the screen asks for it).
     let ranges: Vec<String> = match bars.is_some() || grid.ranges {
         true => (rows.iter())
             .map(|&g| format!("Δ{:.2}", m.shift_range(g)))
@@ -402,58 +455,105 @@ pub(super) fn placed(
         .map(|s| 0.6 * f + width(s, f))
         .fold(0.0, f64::max);
     // The grid laid out with the labels' width kept to `GO_CHARS` at most;
-    // then the labels take what they need of the width the page leaves.
+    // then the labels take what they need of the room the page leaves.
     let kept = go_need.map(|w| w.min(width("x", f) * GO_CHARS));
-    let beside = range_w + kept.map_or(0.0, |w| 0.6 * f + w);
+    let go_band = kept.map_or(0.0, |w| 0.6 * f + w);
+    let go_top = tr && grid.go_side == Some(super::GoSide::Top);
+    // Under a transposed grid: its ranges and GO terms under the columns,
+    // beside the left strips' labels, a line each.
+    let under_cols = range_w + if go_top { 0.0 } else { go_band };
+    let lines_h = nl * 1.1 * f;
+    match tr {
+        true => {
+            foot += under_cols.max(lines_h);
+            if go_top {
+                head += go_band;
+            }
+        }
+        false if nl > 0.0 && !labels_over => foot += lines_h,
+        false => {}
+    }
+    let beside = match tr {
+        true => 0.0,
+        false => range_w + go_band,
+    };
     let fixed = (label + nl * gap + beside + scale, head + foot);
     let units = (
-        cols as f64 + nl * depth,
-        n as f64 + (nt + nb) * depth + key_cells,
+        across as f64 + nl * depth,
+        down as f64 + (nt + nb) * depth + key_cells,
     );
     // Square boxes as large as the page allows (44 points without one).
     let (cell, (w, h)) = cells(size, 44.0, fixed, units)?;
-    let left_over = w - fixed.0 - cell * units.0;
+    let left_over = match tr {
+        false => w - fixed.0 - cell * units.0,
+        true => h - fixed.1 - cell * units.1,
+    };
     let go_w = (go_need.zip(kept)).map(|(need, kept)| need.min(kept + left_over.max(0.0)));
-    let beside = range_w + go_w.map_or(0.0, |w| 0.6 * f + w);
+    let grown = go_w.zip(kept).map_or(0.0, |(w, k)| w - k);
+    let beside = match tr {
+        true => 0.0,
+        false => range_w + go_w.map_or(0.0, |w| 0.6 * f + w),
+    };
     let d = depth * cell;
-    // The grid under its top margins.
-    let head = head + nt * d;
+    // The grid under its top margins (and a transposed grid's GO terms
+    // over them, as wide as they grew).
+    let head = head + nt * d + if go_top { grown } else { 0.0 };
     let font = (cell * 0.28).min(f);
     let gx = label + nl * (d + gap);
-    let right = gx + cell * cols as f64;
-    let bottom = head + cell * n as f64;
+    let right = gx + cell * across as f64;
+    let bottom = head + cell * down as f64;
+    // Row `i`'s (gene module's) block in column `j` (cell module's), its
+    // top left corner.
+    let at = |i: usize, j: usize| match tr {
+        false => (gx + cell * j as f64, head + cell * i as f64),
+        true => (gx + cell * i as f64, head + cell * j as f64),
+    };
     let (up_fill, off_fill) = match ink.gray {
         true => (READ_UP_GRAY, READ_OFF_GRAY),
         false => (READ_UP, READ_OFF),
     };
     let placed = Placed {
-        go_x: go_w.map(|_| right + range_w + 0.6 * f),
+        go_x: go_w.filter(|_| !tr).map(|_| right + range_w + 0.6 * f),
+        rows_top: head,
+        pitch: cell,
+        width: (fixed.0 + cell * units.0 + if tr { 0.0 } else { grown }).min(w),
     };
     let drawn = svg(w, h, |c: &mut Canvas| {
         ink.heading(c, title, w);
-        for (j, &role) in m.columns.iter().enumerate() {
-            let x = gx + cell * (j as f64 + 0.5);
-            c.text(
-                x,
-                head - f * 0.6,
-                &format!("C{}", role + 1),
-                f,
-                Anchor::Middle,
-                INK,
-            );
+        // The cell modules' names over the columns, or left of the rows.
+        for (j, said) in cell_names.iter().enumerate() {
+            let (x, y) = at(0, j);
+            match tr {
+                false => {
+                    let x = x + cell / 2.0;
+                    c.text(x, head - f * 0.6, said, f, Anchor::Middle, INK);
+                }
+                true => {
+                    let y = y + cell / 2.0 + f / 2.5;
+                    c.text(label - f * 0.6, y, said, f, Anchor::End, INK);
+                }
+            }
         }
+        // Over the top strips, the transposed grid's gene modules' names.
+        let strips_top = head - nt * (d + gap);
         for (i, (row, name)) in values.iter().zip(&names).enumerate() {
-            let y = head + cell * i as f64;
-            c.text(
-                label - f * 0.6,
-                y + cell / 2.0 + f / 2.5,
-                name,
-                f,
-                Anchor::End,
-                INK,
-            );
+            let (x, y) = at(i, 0);
+            match tr {
+                false => c.text(
+                    label - f * 0.6,
+                    y + cell / 2.0 + f / 2.5,
+                    name,
+                    f,
+                    Anchor::End,
+                    INK,
+                ),
+                true => {
+                    let x = x + cell / 2.0 + f / 2.5;
+                    c.rotated(x, strips_top - 0.4 * f, name, f, Anchor::Start, INK);
+                }
+            }
             for (j, v) in row.iter().enumerate() {
-                let x = gx + cell * j as f64;
+                let (x, y) = at(i, j);
                 let centre = (x + cell / 2.0, y + cell / 2.0);
                 // A value at the font size, where it fits in the cell.
                 let asked = (*v)
@@ -477,7 +577,7 @@ pub(super) fn placed(
                         (Look::Hinton, None) => {}
                         (_, v) => {
                             let colour = v.map_or("#ffffff".into(), |v| {
-                                ink.fill(v * UNDER_BARS, top, diverging).0
+                                ink.fill(v * UNDER_BARS, shade_top, diverging).0
                             });
                             c.rect(x + 1.0, y + 1.0, cell - 2.0, cell - 2.0, &colour);
                         }
@@ -516,7 +616,7 @@ pub(super) fn placed(
                     c.rect(x + 1.0, y + 1.0, cell - 2.0, cell - 2.0, "#ffffff");
                     continue;
                 };
-                let (colour, dark) = ink.fill(*v, top, diverging);
+                let (colour, dark) = ink.fill(*v, shade_top, diverging);
                 c.rect(x + 1.0, y + 1.0, cell - 2.0, cell - 2.0, &colour);
                 let text_ink = if dark { "#ffffff" } else { INK };
                 let (text, size) = match (grid.values, asked) {
@@ -543,43 +643,45 @@ pub(super) fn placed(
                 );
             }
         }
-        // The gene modules' margins, nearest the grid first, each bar by
-        // its row: sizes growing out from the grid, reads as mirror bars
-        // (converted out, unconverted in) on one scale.
+        // The margins by the rows (left of the grid), nearest the grid
+        // first, each bar by its row: sizes growing out from the grid,
+        // reads as mirror bars (converted out, unconverted in) on one scale.
         let mut lines_at = match labels_over {
             true => head - 0.6 * f,
             false => bottom + nb * (d + gap) + f,
         };
-        for (k, &strip) in left.iter().enumerate() {
+        for (k, &strip) in side_strips.iter().enumerate() {
             let x1 = gx - gap - k as f64 * (d + gap);
-            for i in 0..n {
+            for i in 0..down {
                 let y = head + cell * i as f64 + 1.0;
                 match strip {
                     Strip::Size => {
-                        let most = genes.sizes.iter().copied().fold(0.0, f64::max);
-                        let len = d * genes.sizes[i] / most.max(1e-12);
+                        let most = side_margin.sizes.iter().copied().fold(0.0, f64::max);
+                        let len = d * side_margin.sizes[i] / most.max(1e-12);
                         c.rect(x1 - len, y, len, cell - 2.0, SIZE_BAR);
                     }
                     Strip::Reads => {
-                        let (zero, peak) = (x1 - d / 2.0, genes.peak().max(1e-12));
-                        let r = genes.reads[i];
+                        let (zero, peak) = (x1 - d / 2.0, side_margin.peak().max(1e-12));
+                        let r = side_margin.reads[i];
                         let (up, off) = (d / 2.0 * r.up() / peak, d / 2.0 * r.off() / peak);
                         c.rect(zero - up, y, up, cell - 2.0, up_fill);
                         c.rect(zero, y, off, cell - 2.0, off_fill);
                     }
                 }
             }
-            let said = genes.label(strip, per_cell);
+            let said = side_margin.label(strip, per_cell);
             c.text(x1, lines_at, &said, f, Anchor::End, MUTED);
             lines_at += if labels_over { -1.1 * f } else { 1.1 * f };
         }
-        // The cell modules' margins, over or under the grid, nearest it
+        // The margins by the columns, over or under the grid, nearest it
         // first, each bar by its column, labelled on the left.
-        let sides = [(&over, -1.0), (&under, 1.0)];
+        let sides = [(&top_strips, -1.0), (&bottom_strips, 1.0)];
         for (strips, dir) in sides {
             for (k, &strip) in strips.iter().enumerate() {
-                // The strip's edge nearer the grid, and its far one.
+                // The strip's edge nearer the grid (past the columns' names
+                // over an upright grid), and its far one.
                 let near = match dir < 0.0 {
+                    true if tr => head - gap - k as f64 * (d + gap),
                     true => head - 1.6 * f - k as f64 * (d + gap),
                     false => bottom + gap + k as f64 * (d + gap),
                 };
@@ -587,39 +689,50 @@ pub(super) fn placed(
                     true => (near - d, near),
                     false => (near, near + d),
                 };
-                for j in 0..cols {
+                for j in 0..across {
                     let x = gx + cell * j as f64 + 1.0;
                     match strip {
                         Strip::Size => {
-                            let most = cell_margin.sizes.iter().copied().fold(0.0, f64::max);
-                            let len = d * cell_margin.sizes[j] / most.max(1e-12);
+                            let most = cross_margin.sizes.iter().copied().fold(0.0, f64::max);
+                            let len = d * cross_margin.sizes[j] / most.max(1e-12);
                             let y = if dir < 0.0 { y1 - len } else { y0 };
                             c.rect(x, y, cell - 2.0, len, SIZE_BAR);
                         }
                         Strip::Reads => {
-                            let (zero, peak) = ((y0 + y1) / 2.0, cell_margin.peak().max(1e-12));
-                            let r = cell_margin.reads[j];
+                            let (zero, peak) = ((y0 + y1) / 2.0, cross_margin.peak().max(1e-12));
+                            let r = cross_margin.reads[j];
                             let (up, off) = (d / 2.0 * r.up() / peak, d / 2.0 * r.off() / peak);
                             c.rect(x, zero - up, cell - 2.0, up, up_fill);
                             c.rect(x, zero, cell - 2.0, off, off_fill);
                         }
                     }
                 }
-                let said = cell_margin.label(strip, per_cell);
+                let said = cross_margin.label(strip, per_cell);
                 let y = (y0 + y1) / 2.0 + 0.35 * f;
                 c.text(gx - gap, y, &said, f, Anchor::End, MUTED);
             }
         }
-        // Each row's shift range right of the grid.
+        // Each gene module's shift range right of its row, or under its
+        // column, turned.
         for (i, said) in ranges.iter().enumerate() {
-            let y = head + cell * (i as f64 + 0.5) + f / 2.5;
-            c.text(right + 0.6 * f, y, said, f, Anchor::Start, MUTED);
+            let (x, y) = at(i, 0);
+            match tr {
+                false => {
+                    let y = y + cell / 2.0 + f / 2.5;
+                    c.text(right + 0.6 * f, y, said, f, Anchor::Start, MUTED);
+                }
+                true => {
+                    let x = x + cell / 2.0 + f / 2.5;
+                    c.rotated(x, bottom + 0.6 * f, said, f, Anchor::End, MUTED);
+                }
+            }
         }
-        // Each gene module's top GO terms on its row, right of the grid
-        // and the ranges, as many lines as the row holds.
+        // Each gene module's top GO terms by its row, right of the grid
+        // and the ranges (under or over its column, turned, when
+        // transposed), as many lines as the row holds.
         if let (Some(terms), Some(go_w)) = (&terms, go_w) {
             let x = right + range_w + 0.6 * f;
-            if !ink.panel_only {
+            if !ink.panel_only && !tr {
                 let q = go.map_or(0.0, |t| t.q);
                 c.text(
                     x,
@@ -630,33 +743,57 @@ pub(super) fn placed(
                     MUTED,
                 );
             }
+            // A transposed grid's terms: from under the ranges down, or
+            // from over the names up.
+            let (go_y, go_anchor) = match go_top {
+                false => (bottom + range_w + 0.6 * f, Anchor::End),
+                true => (strips_top - names_h - 0.2 * f, Anchor::Start),
+            };
             for (i, row) in terms.iter().enumerate() {
-                let yc = head + cell * (i as f64 + 0.5);
+                let (cx, cy) = at(i, 0);
+                let mid = match tr {
+                    false => cy + cell / 2.0,
+                    true => cx + cell / 2.0,
+                };
+                let line = |c: &mut Canvas, along: f64, said: &str, ink: &str| match tr {
+                    false => c.text(x, along, said, f, Anchor::Start, ink),
+                    true => c.rotated(along, go_y, said, f, go_anchor, ink),
+                };
                 if row.is_empty() {
                     if let Some(none) = &none {
                         let said = shortened(none, go_w, f);
-                        c.text(x, yc + 0.35 * f, &said, f, Anchor::Start, MUTED);
+                        line(c, mid + 0.35 * f, &said, MUTED);
                     }
                     continue;
                 }
                 // A line a term, the lines' capitals centred on the row.
                 let (shown, spacing) = go_lines(cell, f, row.len());
                 let block = (shown - 1) as f64 * spacing + CAP * f;
-                let first = yc - block / 2.0 + CAP * f;
+                let first = mid - block / 2.0 + CAP * f;
                 for (k, (name, q)) in row.iter().take(shown).enumerate() {
-                    let y = first + k as f64 * spacing;
+                    let along = first + k as f64 * spacing;
                     let name = shortened(name, go_w - go_width(q, f), f);
-                    c.text(x, y, &format!("{name}{q}"), f, Anchor::Start, INK);
+                    line(c, along, &format!("{name}{q}"), INK);
                 }
             }
         }
-        let low = if diverging { -top } else { 0.0 };
+        let low = if diverging { -shade_top } else { 0.0 };
         let tick = |v: f64| match look {
             Look::Z | Look::Hinton => format!("{v:.1}"),
             _ => format!("{v:.2}"),
         };
-        let below = (!left.is_empty() && !labels_over).then_some(nl * 1.1 * f);
-        let ky = bottom + nb * (d + gap) + below.unwrap_or(0.0) + 0.6 * f;
+        // A capped scale's ends say the blocks past them share their colour.
+        let end = |v: f64, said: String| match (capped, v) {
+            (true, v) if v > 0.0 && v >= shade_top => format!("≥{said}"),
+            (true, v) if v < 0.0 && v <= -shade_top => format!("≤{said}"),
+            _ => said,
+        };
+        let below = match tr {
+            true => under_cols.max(lines_h) + if go_top { 0.0 } else { grown },
+            false if nl > 0.0 && !labels_over => lines_h,
+            false => 0.0,
+        };
+        let ky = bottom + nb * (d + gap) + below + 0.6 * f;
         let x0 = 0.5 * f;
         if let Some(b) = bars.as_ref().filter(|_| bars_key) {
             // Under the colour key, or over the note, or in its place.
@@ -666,23 +803,27 @@ pub(super) fn placed(
                 // Under the Hinton key's squares and their labels too.
                 (true, _) => ky + (2.3 * f).max(key_cells * (cell - 2.0) + 1.4 * f),
             };
-            b.key(c, (x0, y), f, per_cell);
+            b.key(c, (x0, y), f, (per_cell, tr));
         }
         if small_key && look != Look::Bars {
             // Under everything, from the page's left: the colour scale
             // (labelled at its ends and middle), then for the Hinton look
             // squares at reference |z|, each its area as in the grid.
-            let ends = [tick(low), tick((top + low) / 2.0), tick(top)];
+            let ends = [
+                end(low, tick(low)),
+                tick((shade_top + low) / 2.0),
+                end(shade_top, tick(shade_top)),
+            ];
             let said = ends.iter().map(|t| width(t, f)).sum::<f64>() + 2.0 * f;
             let rw = said.max(6.0 * f).min(right - x0);
             // Lightened as the blocks are under the bars.
             let shade = if bars.is_some() { UNDER_BARS } else { 1.0 };
             let steps = 24;
             for k in 0..steps {
-                let v = low + (top - low) * (k as f64 + 0.5) / steps as f64;
+                let v = low + (shade_top - low) * (k as f64 + 0.5) / steps as f64;
                 let colour = match look {
                     Look::Hinton => square_fill(v * shade).0,
-                    _ => ink.fill(v * shade, top, diverging).0,
+                    _ => ink.fill(v * shade, shade_top, diverging).0,
                 };
                 let step = rw / steps as f64;
                 c.rect(x0 + step * k as f64, ky, step + 0.3, 0.7 * f, &colour);
@@ -727,15 +868,25 @@ pub(super) fn placed(
         if ink.panel_only {
             return;
         }
+        // A transposed grid's GO terms' q said in the note.
+        let what = match (tr, &terms, go) {
+            (true, Some(_), Some(t)) => format!("{what}; GO terms at q <= {}", t.q),
+            _ => what.to_string(),
+        };
+        // A transposed grid is narrow: its note kept to the page.
+        let what = match tr {
+            true => crate::figure::fit_text(&what, w - label - 0.5 * f, f),
+            false => what,
+        };
         if look == Look::Bars {
-            c.text(label, h - f, what, f, Anchor::Start, MUTED);
+            c.text(label, h - f, &what, f, Anchor::Start, MUTED);
             return;
         }
         // The scale: a column of steps from the top value down to its other
         // end, labelled at both ends and the middle, right of the GO terms.
-        let (sx, sy, sh, steps) = (right + beside + f, head, cell * n as f64, 40);
+        let (sx, sy, sh, steps) = (right + beside + f, head, cell * down as f64, 40);
         for k in 0..steps {
-            let v = top - (top - low) * (k as f64 + 0.5) / steps as f64;
+            let v = shade_top - (shade_top - low) * (k as f64 + 0.5) / steps as f64;
             let y = sy + sh * k as f64 / steps as f64;
             c.rect(
                 sx,
@@ -744,26 +895,40 @@ pub(super) fn placed(
                 sh / steps as f64 + 0.5,
                 &match look {
                     Look::Hinton => square_fill(v).0,
-                    _ => ink.fill(v, top, diverging).0,
+                    _ => ink.fill(v, shade_top, diverging).0,
                 },
             );
         }
-        let mid = (top + low) / 2.0;
+        let mid = (shade_top + low) / 2.0;
         for (v, y) in [
-            (top, sy + f * 0.4),
+            (shade_top, sy + f * 0.4),
             (mid, sy + sh / 2.0 + f * 0.35),
             (low, sy + sh),
         ] {
             c.text(
                 sx + f * 1.6,
                 y,
-                &format!("{v:.2}"),
+                &end(v, format!("{v:.2}")),
                 f * 0.9,
                 Anchor::Start,
                 MUTED,
             );
         }
-        c.text(label, h - f, what, f, Anchor::Start, MUTED);
+        c.text(label, h - f, &what, f, Anchor::Start, MUTED);
     });
     Ok((drawn, placed))
+}
+
+/// The `q` quantile (in (0, 1]) of `values`, of their sizes when
+/// `diverging`: the least that `q` of them are no more than.
+fn quantile(values: &[f64], q: f64, diverging: bool) -> f64 {
+    let mut v: Vec<f64> = (values.iter())
+        .map(|&v| if diverging { v.abs() } else { v })
+        .collect();
+    if v.is_empty() {
+        return 0.0;
+    }
+    v.sort_by(f64::total_cmp);
+    let at = ((q * v.len() as f64).ceil() as usize).clamp(1, v.len()) - 1;
+    v[at]
 }

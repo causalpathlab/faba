@@ -86,6 +86,18 @@ pub struct ScreenArgs {
     pub preset: Option<Preset>,
 
     #[arg(
+        long = "genes-yscale",
+        value_enum,
+        requires = "screen",
+        help = "The scale of the pinned genes' mirror bars on --screen (each side the posterior-mean reads at a site, summed over a track's cells): linear (default, as the browser opens), sqrt, or log10 (log10(1 + reads); log1p names it too), as faba pileup's; the \"all\" track on its own peak, the cell modules on one shared; in the browser, y on the genes pane steps them"
+    )]
+    pub genes_yscale: Option<screen::YScale>,
+
+    /// How the pinned genes are drawn on --screen.
+    #[command(flatten)]
+    pub genes: screen::GenesLook,
+
+    #[arg(
         long = "cell-order",
         value_name = "C,...",
         value_delimiter = ',',
@@ -257,6 +269,7 @@ pub(super) fn run(args: &ModulesArgs, inputs: &[Box<str>]) -> anyhow::Result<()>
             models: &models,
             grid: &args.grid,
             region: s.region,
+            genes: s.genes,
             title: &title,
             sheet,
         };
@@ -344,6 +357,9 @@ fn asked_state(args: &ModulesArgs, base: &State, m: &Modules) -> anyhow::Result<
     }
     if !s.pin.is_empty() {
         state.pins = s.pin.clone();
+    }
+    if let Some(scale) = s.genes_yscale {
+        state.genes_yscale = scale;
     }
     if let Some(n) = s.pin_top {
         state.pins = screen::top_genes(m, &rows_of(m, &state), n);

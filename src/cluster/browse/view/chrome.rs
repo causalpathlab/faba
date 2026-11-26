@@ -132,7 +132,11 @@ impl ModulesView<'_> {
                     keys.push(("↑/↓", "pinned gene"));
                 }
                 if !self.pins.is_empty() {
-                    keys.extend([("Del", "unpin"), ("Ctrl-drag", "move, off to unpin")]);
+                    keys.extend([
+                        ("Del", "unpin"),
+                        ("Ctrl-drag", "move, off to unpin"),
+                        ("y", "bar scale"),
+                    ]);
                 }
                 keys
             }
@@ -227,6 +231,7 @@ impl ModulesView<'_> {
                             "Ctrl-drag",
                             "a pinned gene along the strip moves it, off it unpins",
                         ),
+                        ("y", "the bars' scale: linear, sqrt, log10(1 + reads)"),
                         ("Enter", "open the gene in the pileup"),
                     ]);
                 }

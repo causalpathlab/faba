@@ -151,12 +151,16 @@ cluster_view font_size type="number"
 cluster_view format type="array" items="string" enum=["pdf","png","svg"]
 cluster_view gaf type="string"
 cluster_view gene type="string"
+cluster_view gene_model type="string" enum=["bottom","top"]
+cluster_view genes_yscale type="string" enum=["linear","log10","sqrt"]
 cluster_view gmt type="string"
 cluster_view go type="boolean"
 cluster_view go_labels type="integer" minimum=1.0 maximum=10.0
 cluster_view go_min_weight type="number" minimum=0.0 maximum=1.0
 cluster_view go_none type="boolean"
 cluster_view go_q type="number" exclusiveMinimum=0.0 maximum=1.0
+cluster_view go_side type="string" enum=["bottom","top"]
+cluster_view grid_cap type="number"
 cluster_view grid type="boolean"
 cluster_view group type="string"
 cluster_view gtf type="string"
@@ -167,6 +171,8 @@ cluster_view look type="string" enum=["bars","hinton","percent","shift","z"]
 cluster_view marginal_size type="number" exclusiveMinimum=0.0 maximum=1.0
 cluster_view modality type="string" enum=["atoi","count","m6a"]
 cluster_view module type="string"
+cluster_view no_all type="boolean"
+cluster_view no_track_labels type="boolean"
 cluster_view obo type="string"
 cluster_view options type="array" items="string"
 cluster_view overview type="boolean"
@@ -185,6 +191,7 @@ cluster_view side type="string" enum=["go","none","sites"]
 cluster_view size_bars type="array" items="string" enum=["bottom","left","top"]
 cluster_view state type="string"
 cluster_view trace type="boolean"
+cluster_view transpose type="boolean"
 cluster_view values type="boolean"
 cluster_view width type="number" minimum=1.0
 cluster_view xlab type="string"

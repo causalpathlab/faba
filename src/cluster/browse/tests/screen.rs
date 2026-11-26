@@ -19,6 +19,7 @@ fn drawn_screen(m: &Modules, state: &State, region: Region) -> Result<String, St
         models: &models,
         grid: &GridArgs::default(),
         region,
+        genes: Default::default(),
         title: "a fit",
         sheet: Sheet::OWN,
     };
@@ -47,6 +48,7 @@ fn a_state_is_plain_json_by_the_browsers_names() {
         side: Beside::Go,
         go_terms: Some(2),
         pins: vec!["GENE3".into(), "GENE1".into()],
+        genes_yscale: screen::YScale::Sqrt,
     };
     let json = serde_json::to_string(&state).unwrap();
     assert!(json.contains(r#""preset":"blocks""#), "{json}");
@@ -223,6 +225,7 @@ fn the_pins_keep_their_order_and_the_plot_alone_has_no_titles() {
         models: &models,
         grid: &GridArgs::default(),
         region: Region::All,
+        genes: Default::default(),
         title: "a fit",
         sheet,
     };
@@ -251,6 +254,7 @@ fn the_pinned_genes_are_the_browsers_mirror_bars() {
             models: &models,
             grid: &GridArgs::default(),
             region,
+            genes: Default::default(),
             title: "a fit",
             sheet,
         };
@@ -315,6 +319,7 @@ fn a_go_row_with_no_term_is_blank_unless_go_none() {
             models: &models,
             grid: &grid,
             region: Region::All,
+            genes: Default::default(),
             title: "a fit",
             sheet: Sheet::OWN,
         };

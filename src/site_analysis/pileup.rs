@@ -54,8 +54,20 @@ impl PileupSignal {
     }
 }
 
-/// How the bars' heights are spread up the y axis.
-#[derive(clap::ValueEnum, Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// How the bars' heights are spread up the y axis (the pileup's, and
+/// `faba cluster-view`'s pinned genes').
+#[derive(
+    clap::ValueEnum,
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[serde(rename_all = "lowercase")]
 pub enum YScale {
     /// As the values are.
     #[default]
@@ -64,7 +76,36 @@ pub enum YScale {
     Sqrt,
     /// On log10(1 + v), ticked at powers of ten (`log1p` names it too).
     #[value(name = "log10", alias = "log1p")]
+    #[serde(alias = "log1p")]
     Log10,
+}
+
+impl YScale {
+    /// `v` on this scale.
+    pub fn of(self, v: f64) -> f64 {
+        crate::figure::scaled(self.into(), v)
+    }
+
+    /// `v`'s share of a side whose top is `peak` (both as they are).
+    pub fn share(self, v: f64, peak: f64) -> f64 {
+        match peak > 0.0 {
+            true => self.of(v) / self.of(peak),
+            false => 0.0,
+        }
+    }
+
+    /// The next a key steps to: linear, sqrt, log10, linear.
+    pub fn next(self) -> Self {
+        match self {
+            YScale::Linear => YScale::Sqrt,
+            YScale::Sqrt => YScale::Log10,
+            YScale::Log10 => YScale::Linear,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        crate::tui::ui::Scale::from(self).name()
+    }
 }
 
 impl From<YScale> for crate::tui::ui::Scale {

@@ -5,13 +5,19 @@
 //! its soft size on the left: the posterior-mean reads at each of the
 //! gene's sites, methylated rising and unmethylated hanging, the "all"
 //! track on a scale of its own and the cell modules' on one shared scale,
-//! as the browser's are; the gene's symbol and module under it.
+//! as the browser's are, on the scale asked for (linear, as the browser
+//! opens; sqrt; log10(1 + reads)); the gene's symbol and module under it.
+//! The model can go under the tracks instead (the name then over them),
+//! the "all" track and the tracks' labels can be left out, and beside a
+//! transposed grid the genes are one row, each cell module's track on
+//! its grid row (see [`Aligned`]).
 
+use super::screen::{GenesLook, ModelAt, YScale};
 use super::{width, Ink, BLOCK_UP, BLOCK_UP_GRAY, MIRROR_LEAST, MIRROR_OFF};
 use crate::cluster::browse::data::bounds;
 use crate::cluster::browse::view::{columns, pack, peak, segment_width, Pin};
 use crate::cluster::browse::{Count, Modules};
-use crate::figure::{esc, Anchor, Canvas, FAINT, INK, MUTED};
+use crate::figure::{Anchor, Canvas, FAINT, INK, MUTED};
 use crate::site_analysis::miami::bin::BinEdges;
 use crate::site_analysis::miami::genemodel::{draw_gene_model, GeneModel};
 use crate::site_analysis::pileup::query_symbol;
@@ -25,7 +31,104 @@ const COLUMN: f64 = 0.6;
 const MODEL: f64 = 1.6;
 const NAME: f64 = 1.5;
 
-/// `pins` drawn in `(x, y, w, h)` on `c`, gene models from `models`.
+/// How the genes are drawn: their bars' scale, the look asked for, and
+/// for a transposed screen the grid's rows they share (see [`Aligned`]).
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) struct How {
+    pub scale: YScale,
+    pub look: GenesLook,
+    pub aligned: Option<Aligned>,
+}
+
+impl How {
+    /// As a screen's state and ask say, in packed rows.
+    pub fn of(state: &super::screen::Placed, ask: &super::screen::Ask) -> Self {
+        Self {
+            scale: state.genes_yscale,
+            look: ask.genes,
+            aligned: None,
+        }
+    }
+}
+
+/// The grid's rows a transposed screen's genes share: the top of its
+/// first cell module's row and the rows' pitch, in the canvas's points.
+/// The genes are then one row of them, in the order given, each cell
+/// module's track on its grid row (the "all" track a row over the first).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct Aligned {
+    pub top: f64,
+    pub pitch: f64,
+}
+
+/// The width `pins` want in one row, at the browser's columns, with
+/// their tracks' labels (unless `how` leaves them out).
+pub(super) fn wanted(m: &Modules, pins: &[Pin], f: f64, how: How) -> f64 {
+    let tracks = tracks(m, how.look);
+    label_width(m, &tracks, f, how.look) + one_row(&widths(m, pins)) * COLUMN * f
+}
+
+/// How far over a transposed grid's first row the genes beside it reach:
+/// the "all" track a row (`pitch`) over it, unless left out, and over
+/// that the models (when there are any and they go on top) or the names.
+pub(super) fn over(look: GenesLook, models: bool, f: f64, pitch: f64) -> f64 {
+    let all = if look.no_all { 0.0 } else { pitch };
+    let above = match (look.model_at, models) {
+        (ModelAt::Top, true) => MODEL * f,
+        (ModelAt::Top, false) => 0.0,
+        (ModelAt::Bottom, _) => NAME * f,
+    };
+    all + above
+}
+
+/// Each pin's segment's width, in the browser's columns.
+pub(super) fn widths(m: &Modules, pins: &[Pin]) -> Vec<u16> {
+    (pins.iter())
+        .map(|p| segment_width(m.genes(p.role)[p.gene].len()))
+        .collect()
+}
+
+/// The columns segments `widths` wide take in one row, a divider between
+/// each two.
+pub(super) fn one_row(widths: &[u16]) -> f64 {
+    let dividers = widths.len().saturating_sub(1) as f64;
+    widths.iter().map(|&w| f64::from(w)).sum::<f64>() + dividers
+}
+
+/// The tracks: "all" (unless left out), then each cell module, each with
+/// its cells, and whether it is "all".
+fn tracks(m: &Modules, look: GenesLook) -> Vec<(String, f64, bool)> {
+    let fitted: f64 = m.cell_sizes.iter().sum();
+    let all = (!look.no_all).then(|| ("all".to_string(), fitted, true));
+    (all.into_iter())
+        .chain((m.columns.iter()).map(|&c| (format!("C{}", c + 1), m.cell_sizes[c], false)))
+        .collect()
+}
+
+/// The tracks' labels' width: none when they are left out.
+fn label_width(m: &Modules, tracks: &[(String, f64, bool)], f: f64, look: GenesLook) -> f64 {
+    match look.no_track_labels {
+        true => 0.0,
+        false => {
+            (tracks.iter())
+                .map(|(name, n, _)| width(&format!("{name}  {}", m.cells_label(*n)), f))
+                .fold(0.0, f64::max)
+                + f
+        }
+    }
+}
+
+/// Where a row of genes falls: its tracks' top and depth, its models'
+/// band's top, and its names' baseline.
+struct Band {
+    tracks_top: f64,
+    track_h: f64,
+    model_y: f64,
+    name_y: f64,
+}
+
+/// `pins` drawn in `(x, y, w, h)` on `c`, gene models from `models`, as
+/// `how` says.
 pub(super) fn draw(
     c: &mut Canvas,
     m: &Modules,
@@ -33,27 +136,54 @@ pub(super) fn draw(
     models: &FxHashMap<Box<str>, GeneModel>,
     (x, y, w, h): (f64, f64, f64, f64),
     ink: Ink,
+    how: How,
 ) {
     if pins.is_empty() {
         return;
     }
     let f = ink.f;
-    let fitted: f64 = m.cell_sizes.iter().sum();
-    let tracks: Vec<(String, f64, bool)> = std::iter::once(("all".to_string(), fitted, true))
-        .chain((m.columns.iter()).map(|&c| (format!("C{}", c + 1), m.cell_sizes[c], false)))
-        .collect();
-    let label_w = (tracks.iter())
-        .map(|(name, n, _)| width(&format!("{name}  {}", m.cells_label(*n)), f))
-        .fold(0.0, f64::max)
-        + f;
-    let widths: Vec<u16> = (pins.iter())
-        .map(|p| segment_width(m.genes(p.role)[p.gene].len()))
-        .collect();
-    let room = ((w - label_w) / (COLUMN * f)).max(1.0) as u16;
-    let rows = pack(&widths, room);
-    let row_h = h / rows.len().max(1) as f64;
+    let tracks = tracks(m, how.look);
+    let label_w = label_width(m, &tracks, f, how.look);
+    let widths = widths(m, pins);
     let model_h = if models.is_empty() { 0.0 } else { MODEL * f };
-    let track_h = ((row_h - model_h - NAME * f) / tracks.len() as f64).max(1.0);
+    let top_model = how.look.model_at == ModelAt::Top;
+    // The rows of genes, and the columns' width: packed as the browser
+    // packs them, or one row narrowed to fit beside a transposed grid.
+    let (rows, col) = match how.aligned {
+        None => {
+            let room = ((w - label_w) / (COLUMN * f)).max(1.0) as u16;
+            (pack(&widths, room), COLUMN * f)
+        }
+        Some(_) => {
+            let one = std::iter::once(0..pins.len()).collect();
+            let cols = one_row(&widths).max(1.0);
+            (one, (COLUMN * f).min((w - label_w) / cols))
+        }
+    };
+    let row_h = h / rows.len().max(1) as f64;
+    let band = |k: usize| -> Band {
+        let n = tracks.len() as f64;
+        let (tracks_top, track_h) = match how.aligned {
+            Some(a) => (a.top - a.pitch * (n - m.columns.len() as f64), a.pitch),
+            None => {
+                let top = y + row_h * k as f64;
+                let track_h = ((row_h - model_h - NAME * f) / n).max(1.0);
+                let over = if top_model { model_h } else { NAME * f };
+                (top + over, track_h)
+            }
+        };
+        let bottom = tracks_top + track_h * n;
+        let (model_y, name_y) = match top_model {
+            true => (tracks_top - model_h, bottom + 1.1 * f),
+            false => (bottom, tracks_top - 0.4 * f),
+        };
+        Band {
+            tracks_top,
+            track_h,
+            model_y,
+            name_y,
+        }
+    };
     let up = match ink.gray {
         true => BLOCK_UP_GRAY,
         false => BLOCK_UP,
@@ -63,49 +193,63 @@ pub(super) fn draw(
         _ => INK,
     };
     for (k, row) in rows.iter().enumerate() {
-        let top = y + row_h * k as f64;
-        let tracks_top = top + model_h;
-        for (t, (name, n, all)) in tracks.iter().enumerate() {
-            let mid = tracks_top + track_h * (t as f64 + 0.5) + f / 2.5;
-            c.text(x, mid, name, f, Anchor::Start, ink_of(*all));
-            let size = m.cells_label(*n);
-            c.text(x + label_w - f, mid, &size, f, Anchor::End, MUTED);
+        let b = band(k);
+        if label_w > 0.0 {
+            for (t, (name, n, all)) in tracks.iter().enumerate() {
+                let mid = b.tracks_top + b.track_h * (t as f64 + 0.5) + f / 2.5;
+                c.text(x, mid, name, f, Anchor::Start, ink_of(*all));
+                let size = m.cells_label(*n);
+                c.text(x + label_w - f, mid, &size, f, Anchor::End, MUTED);
+            }
         }
         // Each gene as many columns wide as the browser makes it, a
         // divider a column, from the left: the rest of the row left blank.
-        let col = COLUMN * f;
         let mut at = x + label_w;
+        let bottom = b.tracks_top + b.track_h * tracks.len() as f64;
+        let (span_top, span_bottom) = match top_model {
+            true => (b.model_y, bottom),
+            false => (b.tracks_top, bottom + model_h),
+        };
         for p in row.clone() {
             if p > row.start {
                 let dx = at + col / 2.0;
-                let bottom = tracks_top + track_h * tracks.len() as f64;
-                c.line(dx, top, dx, bottom, FAINT, 0.5);
+                c.line(dx, span_top, dx, span_bottom, FAINT, 0.5);
                 at += col;
             }
             let seg = Segment {
                 x: at,
-                top,
                 col,
                 cols: widths[p],
             };
             let gene = m.gene_of(pins[p].role, m.genes(pins[p].role)[pins[p].gene].start);
             if let Some(model) = models.get(gene) {
-                seg.model(c, model, model_h, f);
+                seg.model(c, model, (b.model_y, model_h), f);
             }
-            seg.tracks(c, m, pins[p], (model_h, track_h), up, models.get(gene));
-            let name = format!("{} M{}", query_symbol(gene), pins[p].role + 1);
-            let ny = tracks_top + track_h * tracks.len() as f64 + 1.1 * f;
-            c.text(at, ny, &esc(&name), f, Anchor::Start, INK);
+            let reads = (b.tracks_top, b.track_h, how.scale, !how.look.no_all);
+            seg.tracks(c, m, pins[p], reads, up, models.get(gene));
+            // The name kept to its gene's width, lest it run into the next:
+            // the symbol shortened, its module kept, a letter clear of the
+            // next (a symbol's capitals set wider than the estimate).
+            let module = format!(" M{}", pins[p].role + 1);
+            let room = col * f64::from(widths[p]) - crate::figure::text_width(&module, f) - f;
+            let symbol = crate::figure::fit_text(&query_symbol(gene), room, f);
+            c.text(
+                at,
+                b.name_y,
+                &format!("{symbol}{module}"),
+                f,
+                Anchor::Start,
+                INK,
+            );
             at += col * f64::from(widths[p]);
         }
     }
 }
 
-/// One pinned gene's place: its left edge, its row's top, its columns'
-/// width and how many.
+/// One pinned gene's place: its left edge, its columns' width and how
+/// many.
 struct Segment {
     x: f64,
-    top: f64,
     col: f64,
     cols: u16,
 }
@@ -121,7 +265,7 @@ impl Segment {
 
     /// The gene's model across the segment, in the pileup figure's own
     /// drawing, its symbol left to the name under the tracks.
-    fn model(&self, c: &mut Canvas, g: &GeneModel, model_h: f64, f: f64) {
+    fn model(&self, c: &mut Canvas, g: &GeneModel, (top, model_h): (f64, f64), f: f64) {
         let (x0, w) = self.span();
         let edges = BinEdges::new(g.lo, g.hi - 1, usize::from(self.cols));
         let blank = GeneModel {
@@ -129,17 +273,18 @@ impl Segment {
             ..g.clone()
         };
         let band = (0.45 * model_h).min(0.8 * f);
-        draw_gene_model(c, &blank, &edges, x0, w, self.top + model_h / 2.0, band);
+        draw_gene_model(c, &blank, &edges, x0, w, top + model_h / 2.0, band);
     }
 
-    /// The tracks: all cells, then each cell module, each column's reads
-    /// of the gene's sites there as a mirror bar.
+    /// The tracks from `top`, `track_h` deep each: all cells (when
+    /// `all`), then each cell module, each column's reads of the gene's
+    /// sites there as a mirror bar on `scale`.
     fn tracks(
         &self,
         c: &mut Canvas,
         m: &Modules,
         pin: Pin,
-        (model_h, track_h): (f64, f64),
+        (top, track_h, scale, all): (f64, f64, YScale, bool),
         up: &str,
         model: Option<&GeneModel>,
     ) {
@@ -166,11 +311,12 @@ impl Segment {
         let least = MIRROR_LEAST * self.col / COLUMN;
         let reach = track_h / 2.0 * 0.9;
         let side = |reads: f64, peak: f64| match reads > 0.0 {
-            true => (reach * reads / peak).max(least),
+            true => (reach * scale.share(reads, peak)).max(least),
             false => 0.0,
         };
-        for t in 0..n {
-            let mid = self.top + model_h + track_h * (t as f64 + 0.5);
+        let first = usize::from(!all);
+        for t in first..n {
+            let mid = top + track_h * ((t - first) as f64 + 0.5);
             let peak = if t == 0 { all_peak } else { cell_peak };
             let (x0, x1) = (
                 self.x + self.col,
