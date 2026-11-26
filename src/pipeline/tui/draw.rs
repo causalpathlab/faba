@@ -792,8 +792,14 @@ pub(super) fn help_keys(app: &App) -> Vec<(&'static str, &'static str)> {
             keys
         }
     };
+    // On the inputs rows, Shift+Tab goes back to the BAM list first.
+    let turn = if app.page == Page::Inputs {
+        "next screen / the BAM list"
+    } else {
+        "next/previous screen"
+    };
     keys.extend([
-        ("Tab/Shift+Tab", "next/previous screen"),
+        ("Tab/Shift+Tab", turn),
         // The Run screen is there once a run is.
         if app.job.is_some() {
             ("1-4", "screen by number")

@@ -61,24 +61,22 @@ fn print_logo() {
     after_help = "\
 Feature naming convention:\n\
   All sparse matrix row names follow: {gene_key}/{modality}/{detail}\n\
-  where gene_key = {gene_id}_{symbol} (e.g. ENSG00000000001_GENE1)\n\n\
+  where gene_key = {gene_id}_{symbol} (e.g. ENSG00000000001_GENE1)\n\
   \n\
   * count:   {gene_key}/count/spliced, {gene_key}/count/unspliced\n\
-  * dartseq: {gene_key}/m6a/{channel} (gene), {gene_key}/m6a/{chr}:{pos}/{channel}\n\
-  * (site),  {gene_key}/m6a/{component}/{channel} (mixture)\n\
-  * atoi:    {gene_key}/atoi/{channel} (gene), {gene_key}/atoi/{chr}:{pos}/{channel}\n\
-  * (site),  {gene_key}/atoi/{component}/{channel} (mixture)\n\
-  * apa:     {gene_key}/apa/{proximal|distal} (gene),\n\
-  * (mixture){gene_key}/apa/{component}\n\
+  * dartseq: {gene_key}/m6a/{channel} (gene), {gene_key}/m6a/{chr}:{pos}/{channel} (site),\n\
+  *          {gene_key}/m6a/{component}/{channel} (mixture)\n\
+  * atoi:    {gene_key}/atoi/{channel} (gene), {gene_key}/atoi/{chr}:{pos}/{channel} (site),\n\
+  *          {gene_key}/atoi/{component}/{channel} (mixture)\n\
+  * apa:     {gene_key}/apa/{proximal|distal} (gene), {gene_key}/apa/{component} (mixture)\n\
   * baf:     {chr}:{pos}/baf/{alt|depth}\n\
   \n\
-  \n\
-Output layout (every matrix is per-replicate — one per input BAM):\n\
+Output layout (every matrix is per replicate, one per input BAM):\n\
   per-modality: {batch}_m6a, {batch}_atoi, ...\n\
-  depth:        {batch}_depth —> binned per-cell read depth (--depth-resolution-kb)\n\
+  depth:        {batch}_depth: binned per-cell read depth (faba depth, or faba run --depth-resolution-kb)\n\
   apa:          {batch}_apa (proximal/distal counts)\n\
   \n\
-  Mixture components are FIT ON the POOLED shared across batches\n\
+  Mixture components are FIT ON the batches POOLED\n\
   but COUNTED PER BATCH, so per-batch matrices share one row vocabulary\n\
   and stack directly.\n\
   \n\
@@ -114,7 +112,7 @@ enum Commands {
             - {batch}_m6a_site: per-site two-channel matrix,\n\
               keyed on the single-base {chr}:{pos} site\n\
             - {batch}_m6a_mixture (+ m6a_components.parquet), with --mixture:\n\
-              per-replicate mixture counts — components fit on pooled replicates,\n\
+              per-replicate mixture counts: components fit on pooled replicates,\n\
               counted per batch (shared row schema)\n\n\
 	      \n\
             Reference:\n\
@@ -234,7 +232,7 @@ Example:\n  \
     #[command(
         name = "pileup",
         alias = "inspect",
-        about = "Browse a gene's sites full screen; or an ASCII pileup, or a Miami plot (SVG/PDF)",
+        about = "Browse a gene's sites full screen; or print an ASCII pileup, or draw the browser's figure (a Miami plot with --bam)",
         long_about = view_help("Pileup of a gene's (or region's) modification sites.\n\
                       \n\
                       Give it a faba output directory (or a run record in it) and it takes\n\
@@ -251,11 +249,13 @@ Example:\n  \
                       positions along the gene body and prints a vertical histogram.\n\
                       Multiple files (e.g. replicates via a shell glob) are aggregated per position.\n\
                       \n\
-                      Miami figure mode: passing --bam, --format, --svg or --png\n\
-                      (or --gtf with --batch-process) renders a publication SVG/PDF instead —\n\
-                      a mirrored Manhattan with epi sites up, a GTF gene model in the middle,\n\
-                      and BAM read depth down,\n\
-                      faceted into one panel per cell type (--cell-membership)."),
+                      Figure mode (--batch-process with --gtf, or --svg, --png or --format):\n\
+                      the figure the browser saves of each gene, two alike --track arms\n\
+                      mirrored on one zero line over the gene model, at --window, as\n\
+                      {out}.miami.svg and .pdf; several genes (-q A,B or --gene-file) a figure\n\
+                      each, {out}_{SYMBOL}, and with --row or --grid one of them all.\n\
+                      With --bam or --cell-membership, the Miami figure instead: sites up,\n\
+                      the gene model in the middle, BAM read depth down, a panel per cell type."),
         after_long_help = "\
 	Examples:\n\
 	# browse an output directory's m6A sites, from its gene list\n\
@@ -264,10 +264,13 @@ Example:\n  \
 	# ASCII histogram\n\
 	faba pileup out/s1_wt_m6a_site.zarr.zip -q GENE1 --batch-process\n\
 	faba pileup out/s*_wt_m6a_site.zarr.zip -q GENE1 -s out/m6a_sites.parquet --batch-process\n\
-	# Miami figure: epi sites / gene model / read depth, faceted by cell type\n\
-	faba pileup out/s1_wt_m6a.zarr.zip -q GENE1 \n\
-	--gtf gencode.gtf --bam sample.bam --cell-membership cells.tsv \n\
-    --top-modality m6A --out gene1_miami --svg --png"
+	# The browser's figure of two genes, WT over MUT, and both in a row\n\
+	faba pileup out/ -q GENE1,GENE2 --gtf genes.gtf --batch-process \\\n\
+	  --track 'wt=*_wt_*' --track 'mut=*_mut_*' --row --out fig\n\
+	# Miami figure: sites / gene model / read depth, a panel per cell type\n\
+	faba pileup out/s1_wt_m6a.zarr.zip -q GENE1 \\\n\
+	  --gtf genes.gtf --bam sample.bam --cell-membership cells.tsv \\\n\
+	  --top-modality m6A --out gene1_miami --svg --png"
     )]
     Pileup(PileupArgs),
 
@@ -416,7 +419,7 @@ Example:\n  \
                       The GENOTYPE CALLS are the parquet/VCF.\n\
                       `{batch}_baf` is a different thing:\n\
                       an allele-frequency track carrying two read counts per cell per locus and no genotype,\n\
-                      no GQ, no rsid. Rows are `{chr}:{pos}/baf/{alt|depth}` —\n\
+                      no GQ, no rsid. Rows are `{chr}:{pos}/baf/{alt|depth}`,\n\
                       keyed on the LOCUS,\n\
                       since a variant is a coordinate and belongs to no gene.\n\
                       BAF = alt / depth per cell per locus; the channels nest (alt ≤ depth),\n\
@@ -505,8 +508,10 @@ Example:\n  \
                       --scale and --bins lay it out); Ctrl+E writes the page.\n\
                       \n\
                       --html FILE writes that page instead of opening the view, --plots -o DIR the\n\
-                      figures `faba qc --dry-run --plots` writes, and --batch-process (or no terminal)\n\
-                      prints the threshold table `faba qc --dry-run` prints. Nothing is written over."),
+                      figures `faba qc --dry-run --plots` writes, --figure PREFIX the panel `s` saves\n\
+                      (arranged by --view-state FILE, a state a live view's export kept), and\n\
+                      --batch-process (or no terminal) prints the threshold table `faba qc --dry-run`\n\
+                      prints. Nothing is written over."),
         after_long_help = "\
 	Example:\n\
 	faba qc-view out_qc/\n\
@@ -588,7 +593,7 @@ Example:\n  \
                       so the fast modalities finish first.\n\
                       \n\
                       Discovery runs in bulk, over all cells that passed step 1 at once,\n\
-                      for both ATOI and m6A —\n\
+                      for both ATOI and m6A,\n\
                       so the two modalities cannot disagree about which cells were compared.\n\
                       \n\
                       ATOI is reference-anchored and tested per site against a beta-binomial error null (no control).\n\
@@ -1104,5 +1109,101 @@ mod tests {
             .try_get_matches_from(["faba", "run"])
             .unwrap();
         assert!(!all.subcommand_matches("run").unwrap().get_flag("verbose"));
+    }
+
+    /// The flags `--x` the README names: one a `faba <command>` line uses
+    /// is a flag of that command, and one named alone is a flag of some
+    /// command; each command such a line names is one faba has.
+    #[test]
+    fn every_flag_the_readme_names_is_a_flag_of_its_command() {
+        let cli = faba_command();
+        let longs = |c: &clap::Command| -> Vec<String> {
+            (c.get_arguments().flat_map(|a| {
+                let mut names: Vec<&str> = a.get_long().into_iter().collect();
+                names.extend(a.get_all_aliases().into_iter().flatten());
+                names
+            }))
+            .map(String::from)
+            .chain(["help", "version"].map(String::from))
+            .collect()
+        };
+        let global = longs(&cli);
+        let every: Vec<String> = (cli.get_subcommands().flat_map(longs))
+            .chain(global.iter().cloned())
+            .collect();
+        let flag = |w: &str| -> Option<String> {
+            let w = w.trim_matches(|c: char| "`'\"(),;:.".contains(c));
+            let name = w.strip_prefix("--")?.split(['=', '[']).next()?;
+            let ok =
+                !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+            ok.then(|| name.to_string())
+        };
+        let readme = include_str!("../README.md");
+        let (mut wrong, mut fenced, mut line) = (Vec::new(), None::<bool>, String::new());
+        let check = |text: &str, wrong: &mut Vec<String>| {
+            // Each `faba <command>` in the text, with the words up to the next;
+            // another program's line (`cargo install --git`) is not faba's.
+            let words: Vec<&str> = text.split_whitespace().collect();
+            let tools = ["cargo", "git", "brew", "claude", "rustup", "xcode-select"];
+            let other = words.first().is_some_and(|w| tools.contains(w));
+            let first = words.first().is_some_and(|w| !w.starts_with("--"));
+            if other || (first && !words.iter().any(|w| w.trim_matches('`') == "faba")) {
+                return;
+            }
+            let mut sub: Option<&clap::Command> = None;
+            for (i, w) in words.iter().enumerate() {
+                if w.trim_start_matches('`').ends_with("faba") && i + 1 < words.len() {
+                    let name = words[i + 1].trim_matches('`');
+                    if name.starts_with(|c: char| c.is_ascii_lowercase()) && !name.contains('.') {
+                        sub = cli.find_subcommand(name);
+                        if sub.is_none() && !["mcp", "<command>"].contains(&name) {
+                            wrong.push(format!("faba {name}: no such command"));
+                        }
+                    }
+                    continue;
+                }
+                let Some(f) = flag(w) else { continue };
+                let known = match sub {
+                    Some(c) => longs(c).contains(&f) || global.contains(&f),
+                    None => every.contains(&f),
+                };
+                if !known {
+                    let of = sub.map_or("any command".into(), |c| format!("faba {}", c.get_name()));
+                    wrong.push(format!("--{f}: not a flag of {of}"));
+                }
+            }
+        };
+        for l in readme.lines() {
+            if let Some(lang) = l.trim_start().strip_prefix("```") {
+                // Shell blocks are read; another kind (`text`, `json`) is not.
+                fenced = match fenced {
+                    Some(_) => None,
+                    None => Some(["", "sh", "bash"].contains(&lang.trim())),
+                };
+                continue;
+            }
+            if fenced == Some(false) {
+                continue;
+            }
+            if fenced == Some(true) {
+                // A command goes on over lines ending in `\`.
+                line.push(' ');
+                line.push_str(l.trim_end_matches('\\'));
+                if !l.ends_with('\\') && !l.trim_start().starts_with('#') {
+                    check(&line, &mut wrong);
+                }
+                if !l.ends_with('\\') {
+                    line.clear();
+                }
+                continue;
+            }
+            // Outside a block, each `code` span on its own.
+            for span in l.split('`').skip(1).step_by(2) {
+                check(span, &mut wrong);
+            }
+        }
+        wrong.sort();
+        wrong.dedup();
+        assert!(wrong.is_empty(), "the README names:\n{}", wrong.join("\n"));
     }
 }

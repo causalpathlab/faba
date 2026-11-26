@@ -44,11 +44,11 @@ kills it), and refuses `q` while one runs; where leaving would lose work, `q` as
 
 ### Prerequisites
 
-These must be installed **before** running `cargo install` — Cargo only builds
+These must be installed **before** running `cargo install`: Cargo only builds
 Rust crates and cannot pull in a C toolchain or system libraries on its own. If
 they are missing, the build fails midway in the vendored-htslib build script.
 
-- **Rust** (stable, edition 2021+) — install via [rustup](https://rustup.rs).
+- **Rust** (stable, edition 2021+): install via [rustup](https://rustup.rs).
 - A **C/C++ toolchain** and the system libraries that
   [`rust-htslib`](https://github.com/rust-bio/rust-htslib) builds against
   (it vendors and compiles htslib, which needs the compression dev headers,
@@ -86,7 +86,7 @@ cargo install --git https://github.com/causalpathlab/faba
 Pin to a specific tag or branch if you need a reproducible build:
 
 ```sh
-cargo install --git https://github.com/causalpathlab/faba --tag v0.19.4
+cargo install --git https://github.com/causalpathlab/faba --tag v0.20.7
 cargo install --git https://github.com/causalpathlab/faba --branch main
 ```
 
@@ -109,7 +109,7 @@ cargo install --path .
 There is no `cuda` / `metal` feature: nothing on the BAM-to-matrix path touches a
 GPU.
 
-Add them with `--features`:
+Add them with `cargo install --features`:
 
 ```sh
 cargo install --git https://github.com/causalpathlab/faba --features hdf5
@@ -126,7 +126,7 @@ faba --help
 Almost all install failures come from the `hts-sys` build step (it compiles a
 vendored copy of htslib and generates bindings with `bindgen`). The fixes:
 
-- **`thread 'main' panicked ... Unable to find libclang`** — `bindgen` can't
+- **`thread 'main' panicked ... Unable to find libclang`**: `bindgen` can't
   locate libclang. Install `libclang-dev` (Debian/Ubuntu) or `brew install
   llvm` (macOS), then point to it:
 
@@ -138,17 +138,17 @@ vendored copy of htslib and generates bindings with `bindgen`). The fixes:
   export LIBCLANG_PATH="$(brew --prefix llvm)/lib"
   ```
 
-- **`fatal error: zlib.h / bzlib.h / lzma.h: No such file or directory`** — the
+- **`fatal error: zlib.h / bzlib.h / lzma.h: No such file or directory`**: the
   compression **dev headers** are missing (the runtime `.so` alone is not
   enough). Install `zlib1g-dev libbz2-dev liblzma-dev` (Debian/Ubuntu) or
   `brew install xz bzip2 zlib` (macOS).
 
-- **`error: linker 'cc' not found`** — no C toolchain. Install
+- **`error: linker 'cc' not found`**: no C toolchain. Install
   `build-essential` (Debian/Ubuntu) or Xcode Command Line Tools
   (`xcode-select --install`) on macOS.
 
-- **`failed to run custom build command for 'hdf5-sys'`** — you passed
-  `--features hdf5` without `libhdf5` on the host. Install `libhdf5-dev`
+- **`failed to run custom build command for 'hdf5-sys'`**: you passed
+  `cargo install --features hdf5` without `libhdf5` on the host. Install `libhdf5-dev`
   (Debian/Ubuntu) or `brew install hdf5`, or drop the feature.
 
 If a build fails after fixing a prerequisite, re-run with a clean rebuild of the
@@ -162,7 +162,7 @@ faba <COMMAND> [OPTIONS]
 
 | Command | Purpose |
 |---------|---------|
-| **Feature profiling — BAM → per-cell features** ||
+| **Feature profiling: BAM → per-cell features** ||
 | `dartseq` (`dart`, `m6a`) | Call DART-seq m6A sites by a WT-vs-MUT control contrast on C-to-T conversions |
 | `atoi` (`a2i`, `editing`) | Detect and quantify A-to-I RNA editing sites |
 | `apa` (`polya`)           | Quantify alternative polyadenylation sites per cell |
@@ -170,13 +170,13 @@ faba <COMMAND> [OPTIONS]
 | `depth` (`rd`)            | Compute read depth over genomic intervals |
 | `snp` (`genotype`)        | Discover and genotype SNP variants from BAM pileup |
 | `run` | Set up the pipeline in a view (inputs, steps, flags), preview and save the command, and run it: SNP → count → ATOI → m6A → APA; `S` stops a run |
-| **QC — choose and apply thresholds after profiling** ||
+| **QC: choose and apply thresholds after profiling** ||
 | `qc`                      | Pick thresholds in a full-screen view, then filter a faba output directory into a new fileset |
 | `qc-view`                 | View what a `qc` run kept and dropped in `qc`'s site view, read only: the thresholds it applied (from `qc.run.json`) drawn, every site shown kept or dropped with its reason, each batch's cells; `s` saves the panel on screen, `--html` writes the page, `--plots -o` the figures, `--batch-process` prints the threshold table |
 | `site-plot` (`sp`)        | Draw a directory's site statistics as paper panels, no QC: histograms, chosen pairs with marginals, each quantity on one scale, cells per site from the `_site` matrices; thresholds optional; PDF and PNG |
 | **Clustering: cells by their own sites** ||
 | `cluster`                 | Cluster cells by their site reads: cell and gene modules with a methylation shift per pair, fitted by variational inference. `--modality count` fits cell modules by gene counts instead; `--within` its run record then fits the sites within each of those cell modules (or within each group of a cell table, `--within cells.parquet`) |
-| `cluster-view` (`modules`, `blocks`) | View a `cluster` fit from its run record `{m}_blockmodel.run.json`, or from its input directory (it never fits: run `cluster` first): its gene modules against its cell modules, each module's sites, the genes you pin side by side, and a gene's full pileup, one track per cell module; GO terms beside the gene modules on demand; `--html` (Ctrl+E in the browser) writes it as one self-contained page to share, `--json` and `--overview` print its levels, `--figure` draws it. A `--within` record (`{m}_within.run.json`) opens as the list of its fits, the count fit first; `--group C3` opens the one within a cell module |
+| `cluster-view` (`modules`, `blocks`) | View a `cluster` fit from its run record `{m}_blockmodel.run.json`, or from its input directory (it never fits: run `cluster` first): its gene modules against its cell modules, each module's sites, the genes you pin side by side, and a gene's full pileup, one track per cell module; GO terms beside the gene modules on demand; `--html` (Ctrl+E in the browser) writes it as one self-contained page to share, `--json` and `--overview` print its levels, `--figure` draws a paper figure, `--screen` the browser's screen (with `--each-fit`, `--each-group` or `--each-module`, one each). A `--within` record (`{m}_within.run.json`) opens as the list of its fits, the count fit first; `--group C3` opens the one within a cell module |
 | **Inspection & reference** ||
 | `pwm`                     | Build a position weight matrix around genomic sites |
 | `pileup` (`inspect`)      | Browse a gene's sites, or print an ASCII pileup, or draw the browser's figure (a WT/MUT `--track` pair mirrored over the gene model) |
@@ -218,18 +218,25 @@ The server tells the agent how to work when it connects (the MCP `instructions`)
 ```text
 faba turns coordinate-sorted BAM alignments into per-cell feature matrices: gene counts, read depth, A-to-I editing, DART-seq m6A, alternative polyadenylation and SNP genotypes. Row names are {gene_key}/{modality}/{detail}.
 
-Producers write every candidate and apply no p-value cutoff. qc is where cells, features and sites are cut, and it writes a new directory.
+The steps, in order:
+1. docs lists the method write-ups; with `query`, it prints the sections named (a topic such as profiling, a command such as qc, or a section number).
+2. Producers write every candidate, with no p-value cutoff, each into a new directory: count, atoi, dartseq, apa, depth and snp one modality each; run the pipeline (SNP, then count, A-to-I, m6A, APA) at once. dartseq needs control BAMs; without them, run skips m6A.
+3. qc cuts cells, features and sites into a new directory; the input is never changed. Try thresholds first with its `dry_run`, which writes nothing and returns what the cell QC keeps and what each threshold removes. qc_view reads back a cut already made: the same counts at the thresholds it applied.
+4. cluster fits cells by their own reads (a blockmodel of cell and gene modules, by variational inference), in two rounds: first with `modality` count (gene counts; it writes count_blockmodel.run.json), then with `within` naming that record and `modality` m6a or atoi, a fit within each cell module ({m}_within.run.json). cluster_view reads a fit back: JSON levels (an overview by default), figures, the browser's screen or a page.
+5. pileup (one gene's or region's sites), metagene (where sites sit over all genes) and pwm (bases around the sites) read a directory's sites: a table, and a figure as an image.
 
-1. docs lists the method write-ups. With `query` it prints the sections named (a topic such as profiling, a command such as qc, or a section number).
-2. count, atoi, dartseq, apa, depth and snp each write one modality. run writes the pipeline (SNP, then count, A-to-I, m6A, APA) into one directory. dartseq needs control BAMs; without them, run skips m6A.
-3. qc filters a directory into a new one, with the site thresholds given. It does not edit the input. With `dry_run` it writes nothing and returns what the cell QC keeps and what each threshold removes: try thresholds that way first. qc_view reads back a qc output: the same counts at the thresholds it applied, its dropped sites with its kept, and with `plots` or `html` its figures and page.
-4. pileup, metagene and pwm read a directory's sites. metagene and pwm return their table and its figure as an image. site_plot draws a directory's site statistics as paper panels (histograms, pairs, marginals), thresholds optional, and returns them as images. pileup returns a binned table for a gene or region (and, with `figure`, the browser's figure as SVG, as an image too). cluster_view shows a cluster fit level by level, from its run record ({m}_blockmodel.run.json) or the directory holding its tables, each level as JSON rows: by default an overview (the ELBO verdict, the modules' sizes, each gene module's top genes), then the modules grid, a gene module, a gene, the cell modules, the batches, the trace, the settings, and GO terms only with `go`; with `plots`, several figures as images.
-5. cluster fits cells by their own site reads (a blockmodel of cell and gene modules, by variational inference) and writes its tables to `out`. In two rounds: first `modality` count, cell modules by gene counts (it writes count_blockmodel.run.json); then, with `within` naming that record, m6a or atoi within each of its cell modules. The second round writes {m}_within.run.json, which cluster_view opens: the list of its fits, and with `group` the fit within one cell module.
-6. When the user wants to arrange a figure by eye: view_open (qc_view or cluster_view) returns an `attach` line such as `faba attach faba-qc-view-1`; give it to the user to run in their terminal. When they say they are done, view_state reads what they chose and view_export draws that figure. view_list lists the live views.
+Which figure tool:
+- site_plot: paper panels (histograms, pairs, marginals) of a directory's site statistics at any thresholds, no cut.
+- qc with `plots`: the same panels and the qc view's figures, at a cut being made (or a `dry_run`); qc_view with `plots`: those of a cut already made.
+- qc_view with `figure`: the one panel a saved view state arranges, with no live view.
+- cluster_view with `figure` or `plots`: paper figures of a fit (the modules grid, the trace, the batches); with `screen`: the browser's screen as drawn (the grid, the sites or GO beside it, the pinned genes), and with `each_fit`, `each_group` or `each_module` one per fit, group or module.
+- view_export: what the user arranged by eye in a live view.
 
-The producers (count, depth, atoi, dartseq, apa, snp, run, qc, cluster) take `background`: on large BAMs set it, and the call returns a job id at once.
+When the user wants to arrange a figure by eye: view_open (qc_view or cluster_view; pileup, metagene and pwm open for looking only) returns an `attach` line such as `faba attach faba-qc-view-1`; give it to the user to run in their terminal. They detach with Ctrl+] when done (q ends the view, and then nothing can be read). view_state reads what they chose (and with `set` changes it), view_export draws that figure and returns `replay`, the batch command that draws it again. view_list lists the live views.
 
-Every write goes to `out`, which must not exist. Leave `out` out and the output goes in today's results folder, named after the input and the tool. Paths resolve against the server's working directory. Every flag of a tool's command is an argument of the tool, typed, named after the flag (`--min-coverage` is `min_coverage`), but those naming the output or opening a view; `options` remains for anything else, as `faba <command> --help` lists it, and a flag given both ways is refused. Results give the paths written and what the run recorded (`results`: a fit's ELBO verdict, its cluster sizes). docs gives this server's `version`. A call is refused when the faba it would run is another version than the server's, or is the server's own file rebuilt since it started: the server then needs a restart or a reconnect.
+The producers (count, depth, atoi, dartseq, apa, snp, run, qc, cluster) take `background`: on large BAMs set it, and the call returns a `job` id at once; follow it with job_wait or job_status.
+
+Every write goes to `out`, which must not exist: no tool replaces a file or a directory (when one exists, ask the user for another path). Leave `out` out and the output goes in today's results folder, named after the input and the tool. Paths resolve against the server's working directory. Every flag of a tool's command is an argument of the tool, typed, named after the flag (`--min-coverage` is `min_coverage`), but those naming the output or opening a view; `options` remains for anything else, as `faba <command> --help` lists it, and a flag given both ways is refused. A write returns the paths `written` and what the run recorded (`results`: a fit's ELBO verdict, its cluster sizes). docs gives this server's `version`. A call is refused when the faba it would run is another version than the server's, or is the server's own file rebuilt since it started: the server then needs a restart or a reconnect.
 ```
 
 legume-mcp adds where the records are and the background jobs below. The project's notebook (open with a plan: the question, the data, how the result will be checked) is the `legume` server's, not faba's.
@@ -242,8 +249,8 @@ legume-mcp adds where the records are and the background jobs below. The project
 | `qc` | filters a directory into a new one; with `plots`, returns its figures and site panels as images |
 | `qc_view` | reads back what a `qc` run kept and dropped: its threshold table, and its figures and page when asked |
 | `cluster` | fits cells by their own site reads, by gene counts (`modality` count), or by site reads within a count fit's cell modules (`within`); writes its tables to a new directory |
-| `pileup`, `metagene`, `pwm` | read a directory's sites; `metagene` and `pwm` return their figure as an image, `pileup` with `figure` |
-| `cluster_view` | reads a fit as JSON levels, the overview when none is named; GO terms only with `go`; several figures per call with `plots` |
+| `pileup`, `metagene`, `pwm` | read a directory's sites; `metagene` and `pwm` return their figure as an image, `pileup` with `figure` (the browser's figure of a gene, or several with `genes`, `row`, `grid`) |
+| `cluster_view` | reads a fit as JSON levels, the overview when none is named; GO terms only with `go`; paper figures with `figure` or `plots`; the browser's screen with `screen` (one per fit, group or module with `each_fit`, `each_group`, `each_module`) |
 | `site_plot` | draws a directory's site statistics as paper panels into a new directory, returned as images |
 | `view_open`, `view_list` | put a view in front of the user as a detached session they attach to with the returned `attach` line (`open_window` also tries a Terminal window on macOS, giving up after a few seconds with a note), and list the live ones |
 | `view_state`, `view_export` | read what the user arranged in a live view (or arrange it, with `set`), and draw the figure its `s` saves from that, its state kept beside it (`{out}.view.json`, which `qc-view --view-state` and `cluster-view --screen --state` read back); qc_view and cluster_view |
@@ -576,8 +583,8 @@ faba pileup out/ -q GENE1 --batch-process --gtf genes.gtf --bam s1_wt_rep1.bam s
 
 ## Methods
 
-The method write-ups are **compiled into the binary** — `include_str!`, not files read at
-runtime — so they travel with a `cargo install`ed `faba` or one copied to a cluster with no
+The method write-ups are **compiled into the binary** (`include_str!`, not files read at
+runtime), so they travel with a `cargo install`ed `faba` or one copied to a cluster with no
 checkout beside it, and the build fails if one of them goes missing.
 
 ```sh
@@ -586,7 +593,7 @@ faba docs profiling      # BAM -> per-cell features: m6A, A-to-I, APA, counts, S
 ```
 
 The same files live in [`docs/`](docs/), which also carries the design notes for work that is
-planned but **not implemented** (kept separate on purpose — reading a plan as though it described
+planned but **not implemented** (kept separate on purpose: reading a plan as though it described
 the code is how people end up debugging things that were never built).
 
 ### Examples
@@ -599,7 +606,7 @@ faba count sample.bam -g genes.gff -o out/
 faba atoi sample.bam -g genes.gff -f genome.fa -o out/
 
 # DART-seq m6A: signal (WT APOBEC1-YTH) vs catalytically-dead control (YTHmut).
-# A control is REQUIRED — m6A can't be told apart from genomic C/T variation
+# A control is REQUIRED: m6A can't be told apart from genomic C/T variation
 # without it (--mut / --control / --background are accepted aliases).
 faba dartseq wt.bam --control-bam ctrl.bam -g genes.gff -f genome.fa -o out/
 

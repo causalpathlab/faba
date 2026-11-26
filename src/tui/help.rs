@@ -22,6 +22,15 @@ pub fn keys(pairs: &[(&str, &str)]) -> KeyList {
         .collect()
 }
 
+/// `keys` with `s` (a figure view's save key) saying `what` it saves.
+pub fn say_save(keys: &mut [(&str, &'static str)], what: &'static str) {
+    for (k, does) in keys.iter_mut() {
+        if *k == "s" {
+            *does = what;
+        }
+    }
+}
+
 /// Whether `key` is `?` as typed, with Shift or nothing else held.
 pub fn is_help(key: &KeyEvent) -> bool {
     key.code == KeyCode::Char('?') && (key.modifiers - KeyModifiers::SHIFT).is_empty()

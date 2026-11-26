@@ -135,7 +135,7 @@ pub struct GeneCountArgs {
         help = "UMI BAM tag (for read dedup)",
         long_help = "BAM tag holding the corrected UMI.\n\
                      Counts collapse to one per (cell, gene, UMI)\n\
-                     — matching Cell Ranger's molecule counting.\n\
+                     as Cell Ranger counts molecules.\n\
                      Standard 10x tag is \"UB\".\n\
                      Reads without this tag are counted individually."
     )]

@@ -178,7 +178,10 @@ impl ModulesView<'_> {
                 return [
                     &[
                         ("↑/↓ k/j", "scroll the cell modules"),
-                        ("B", "batch filter"),
+                        (
+                            "B",
+                            "show every cell module, the shared, or the batch-specific",
+                        ),
                         ("b", "close the batches"),
                     ][..],
                     &close,
@@ -199,6 +202,7 @@ impl ModulesView<'_> {
                     ("PgUp/PgDn", "a page of sites"),
                     ("Home/End", "first/last site"),
                     ("Space", "pin the site's gene"),
+                    ("Ctrl-drag", "a site row onto the genes pane pins its gene"),
                 ]);
                 let pinned = self.pin_of(self.site).filter(|p| self.pins.contains(p));
                 if pinned.is_some() {
@@ -219,7 +223,11 @@ impl ModulesView<'_> {
                     keys.extend([
                         ("←/→ h/l n/N", "previous/next site"),
                         ("Del/Backspace", "unpin the gene"),
-                        ("Enter", "open the gene"),
+                        (
+                            "Ctrl-drag",
+                            "a pinned gene along the strip moves it, off it unpins",
+                        ),
+                        ("Enter", "open the gene in the pileup"),
                     ]);
                 }
                 keys.push(("Esc", "back"));
@@ -232,7 +240,7 @@ impl ModulesView<'_> {
         if self.pane != Pane::Genes {
             keys.push(("v", "bars, %, z or Hinton (squares sized by |z|)"));
             if self.looks[self.pane.index()] == Look::Percent {
-                keys.push(("y", "% scale"));
+                keys.push(("y", "% heatmap scale: sqrt, linear, log10"));
             }
         }
         if self.col_fit < self.shown.len() {
@@ -240,7 +248,7 @@ impl ModulesView<'_> {
         }
         keys.extend([
             ("/", "find a gene"),
-            ("t", "trace"),
+            ("t", "the fit's ELBO trace"),
             ("s", "save the screen as a figure (PDF)"),
         ]);
         if self.report.is_some() {
@@ -248,7 +256,13 @@ impl ModulesView<'_> {
         }
         // Without them, the keys say why there are none.
         keys.extend(match self.m.batches {
-            Some(_) => &[("b", "batches"), ("B", "batch filter")][..],
+            Some(_) => &[
+                ("b", "how the cell modules spread over the batches"),
+                (
+                    "B",
+                    "show every cell module, the shared, or the batch-specific",
+                ),
+            ][..],
             None => &[("b/B", "batches: the cells are of one batch")],
         });
         keys.extend(match self.go_ask {
@@ -261,7 +275,21 @@ impl ModulesView<'_> {
             ][..],
             None => &[("a/G", "GO: none for this view")],
         });
-        keys.extend([("q", "quit"), ("?", "these keys")]);
+        keys.extend([
+            (
+                "click",
+                "focus what it lands on; Shift+wheel scrolls the cell modules",
+            ),
+            ("q", "quit"),
+            ("?", "these keys"),
+        ]);
+        // What the marks drawn mean, under the keys.
+        keys.extend([
+            ("", "bars: methylated (or edited) reads rise in orange, unmethylated hang below in light gray (text colour in text mode)"),
+            ("", "% heatmap: black low to white high; z: red above the row, blue below"),
+            ("", "a box's size: its reads; Hinton: a square's size, its |z|"),
+            ("", "• a pinned gene's site; Δ a gene module's shift range; ▲ the site in focus"),
+        ]);
         keys
     }
 

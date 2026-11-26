@@ -512,6 +512,7 @@ impl crate::tui::View for List<'_> {
             (crate::tui::APPLY_KEYS, "open the fit"),
             ("q", "quit"),
             ("?", "these keys"),
+            ("", "a dim line has no fit to open"),
         ]))
     }
 }

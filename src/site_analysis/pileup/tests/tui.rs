@@ -1037,6 +1037,42 @@ fn the_keys_listed_are_the_keys_bound() {
     });
 }
 
+/// The `?` list ends with what the marks drawn mean: the mirrored row,
+/// the difference row and the reads in front of their total only where
+/// they are drawn; and `s` says what it saves.
+#[test]
+fn the_keys_say_what_the_marks_mean() {
+    use crate::tui::View;
+    let m = positions();
+    let half: Vec<(i64, f64)> = m.iter().map(|&(p, v)| (p, v * 2.0)).collect();
+    let mut a = Track::single("wt", "sum", &m, false).with_total(&half);
+    a.mirror_with_next = true;
+    let b = Track::single("mut", "sum", &half, false).with_total(&half);
+    let mut v = PileupView::new("GENE1", "chr1", vec![a, b], EXTENT);
+    let said = |v: &PileupView| -> Vec<String> {
+        let list = v.help().expect("not typing");
+        list.into_iter()
+            .map(|(k, what)| format!("{k} {what}"))
+            .collect()
+    };
+    let has = |list: &[String], start: &str| list.iter().any(|l| l.starts_with(start));
+    let list = said(&v);
+    assert!(has(&list, "▲ the cursor's bar"), "{list:?}");
+    assert!(has(&list, "↕ mirrored row"), "{list:?}");
+    assert!(has(&list, "± wt vs mut: up where wt's"), "{list:?}");
+    assert!(has(&list, "s save the window as a figure"), "{list:?}");
+    assert!(
+        !has(&list, "█ "),
+        "only both channels draw one in front: {list:?}"
+    );
+    v.show = Show::Both;
+    v.difference = false;
+    v.set_mirror(false);
+    let list = said(&v);
+    assert!(has(&list, "█ lit: methylated reads"), "{list:?}");
+    assert!(!has(&list, "± ") && !has(&list, "↕ "), "{list:?}");
+}
+
 /// The README's picture of the browser: made-up reads at sites over a
 /// two-gene stretch, three batches (two samples mirrored, a control), the
 /// gene models under them. Written where `FABA_SCREENSHOTS_DIR` names.

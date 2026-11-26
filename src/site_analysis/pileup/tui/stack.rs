@@ -191,7 +191,7 @@ impl crate::tui::View for StackView<'_> {
         let v = &self.views[self.focus];
         let mut keys = vec![
             ("Tab/Shift+Tab", "next/previous gene takes the keys"),
-            ("click", "the gene clicked takes them"),
+            ("click", "that gene takes them and its cursor; drag pans"),
             ("|", "genes one under another, side by side, a grid"),
             ("←/→ h/l", "previous/next bar"),
             ("PgUp/PgDn", "half a view left/right"),
@@ -201,22 +201,25 @@ impl crate::tui::View for StackView<'_> {
             ("0", "it whole, or its sites"),
             ("Z", "zoom every gene in"),
             ("W", "every gene whole, or each at its sites"),
-            ("y", "y scale"),
+            ("y", "y scale: linear, log10, sqrt"),
             ("Y", "lock y to the tallest gene, or unlock"),
         ];
         keys.extend(
-            v.optional_keys(v.rows_hidden())
+            v.optional_help(v.rows_hidden())
                 .into_iter()
                 .filter(|&(k, _)| k != "m/M"),
         );
         self.controls.help_keys(&mut keys);
+        crate::tui::help::say_save(&mut keys, "save each gene, and all as laid out (.pdf)");
         keys.extend([
             ("/ m/M", "search, modality: one gene only"),
             ("g/Esc", "gene list"),
             ("q", "quit"),
             ("?", "these keys"),
         ]);
-        Some(crate::tui::keys(&keys))
+        let mut list = crate::tui::keys(&keys);
+        list.extend(v.legend());
+        Some(list)
     }
 }
 

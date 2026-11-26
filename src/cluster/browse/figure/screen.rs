@@ -74,7 +74,7 @@ pub enum Region {
     All,
     /// The gene modules against the cell modules.
     Grid,
-    /// What is right of the grid (see [`Beside`]).
+    /// What is right of the grid (--side).
     Side,
     /// The pinned genes.
     Genes,

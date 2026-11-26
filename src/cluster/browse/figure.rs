@@ -475,8 +475,8 @@ pub enum Look {
     /// That standardized across the cell modules, within each gene module.
     Z,
     /// That z as a Hinton diagram: a square per block, its area by |z|
-    /// against the largest, coloured as the browser's Hinton look (full
-    /// red above the row's mean, blue below).
+    /// against the largest, coloured as the browser's Hinton look (red
+    /// above the row's mean, blue below, deeper as |z| grows).
     Hinton,
     /// Its reads as the browser's mirror bars: converted rising above a
     /// zero line, unconverted hanging below, every block on one scale;

@@ -197,12 +197,16 @@ impl<T> View for Fitting<'_, T> {
     fn help(&self) -> Option<crate::tui::KeyList> {
         self.pending.out().is_none().then(|| {
             crate::tui::keys(&[
-                ("q/Esc", "cancel the fit"),
+                ("q/Esc", "cancel the fit, nothing written"),
                 (
                     "Ctrl+C",
                     "stop the restarts early, what they reached written",
                 ),
                 ("?", "these keys"),
+                (
+                    "",
+                    "a bar: the k-means start up to │, then the epochs; ░ still to run",
+                ),
             ])
         })
     }

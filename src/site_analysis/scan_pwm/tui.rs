@@ -505,11 +505,23 @@ impl crate::tui::View for PwmView {
             ("Home", "first position"),
             ("End", "last position"),
             ("0", "the site"),
-            ("v b", "bits or frequency"),
+            ("v b", "letter height: bits or frequency"),
         ];
         self.controls.help_keys(&mut keys);
+        crate::tui::help::say_save(&mut keys, "save the logo as a figure (.pdf)");
         keys.extend([("q", "quit"), ("?", "these keys")]);
-        Some(crate::tui::keys(&keys))
+        let mut list = crate::tui::keys(&keys);
+        list.extend([
+            (
+                "▲".into(),
+                "the cursor's position, read out below; lit 0: the site".into(),
+            ),
+            (
+                "█".into(),
+                "bases stacked, tallest on top, in logo colours".into(),
+            ),
+        ]);
+        Some(list)
     }
 }
 

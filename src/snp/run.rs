@@ -81,7 +81,7 @@ pub struct SnpArgs {
         required = true,
         help = "Output directory",
         long_help = "Output directory for SNP genotyping results. Created if needed. Outputs:\n\
-                     - snp_sites.parquet: the CALL SET —\n\
+                     - snp_sites.parquet: the CALL SET:\n\
                      every genotyped site with allele counts, genotype and GQ\n\
                      - {batch}_baf: per-cell ALLELE FREQUENCY matrix (10x mode),\n\
                      rows `{chr}:{pos}/baf/{alt|depth}`,\n\
