@@ -736,3 +736,52 @@ fn the_figures_flags_are_the_browsers_state() {
     // Without --bins the printed pileup keeps its 80, the figure the browser's bars.
     assert_eq!(figure_args(&[]).unwrap().num_bins, None);
 }
+
+/// A gene whose sites have only converted rows (every read at them
+/// converted, so no unconverted row was written) still has a total where
+/// the matrix has an unconverted channel: its converted reads, so it is
+/// drawn as read counts, not as a bare sum. A read without totals asked
+/// has none.
+#[test]
+fn a_gene_with_converted_rows_only_has_a_total() {
+    use crate::common::{backend_meta, ToBackend, TripletsRowsCols};
+    use data_beans::aux::feature_rows::{feature_row, M6A};
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp
+        .path()
+        .join("one_m6a_site.zarr")
+        .to_string_lossy()
+        .into_owned();
+    let row = |gene: &str, pos: i64, ch| feature_row(gene, M6A, ch, Some(&format!("chr1:{pos}")));
+    let triplets = TripletsRowsCols {
+        // GENE1 both channels at 100; GENE2 converted only at 300.
+        triplets: vec![(0, 0, 2.0), (1, 0, 5.0), (2, 0, 3.0), (2, 1, 4.0)],
+        rows: vec![
+            row("ENSG1_GENE1", 100, METHYLATED),
+            row("ENSG1_GENE1", 100, UNMETHYLATED),
+            row("ENSG2_GENE2", 300, METHYLATED),
+        ],
+        cols: vec!["c1".into(), "c2".into()],
+    };
+    drop(
+        triplets
+            .to_backend(&path, &backend_meta("dartseq", "x"))
+            .unwrap(),
+    );
+    let files: [Box<str>; 1] = [path.into()];
+    let selector = Selector::build(&["GENE2".into()], &[]).unwrap();
+    let read = |with_total| {
+        read::read_matrix_positions_grouped(
+            &files,
+            &selector,
+            &PileupSignal::Sum,
+            None,
+            &[],
+            with_total,
+            None,
+        )
+        .unwrap()
+    };
+    assert_eq!(read(true).total, Some(vec![(300, 7.0)]));
+    assert_eq!(read(false).total, None);
+}

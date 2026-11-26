@@ -282,6 +282,21 @@ pub struct ArmLook {
     pub y: YScales,
     pub marginal: CountScale,
     pub count: CountScale,
+    /// The kept squares' colours from the fewest sites to the most, and
+    /// the kept marginal bars' (its last); none for the palette's own.
+    pub ramp: Option<Ramp>,
+    /// The thresholds' dashed lines and box; none for their own colours.
+    pub threshold: Option<Rgb>,
+    /// What a 2D panel's marginals count as kept.
+    pub kept_by: KeptBy,
+}
+
+impl ArmLook {
+    /// The thresholds' lines' colour as `#rrggbb`: the one asked, else
+    /// `own`.
+    pub fn threshold_ink(&self, own: &str) -> String {
+        self.threshold.map_or(own.to_string(), crate::figure::hex)
+    }
 }
 
 impl Default for ArmLook {
@@ -297,8 +312,128 @@ impl Default for ArmLook {
             marginal: CountScale::Log1p,
             // A square's shade as it always was.
             count: CountScale::Log1p,
+            ramp: None,
+            threshold: None,
+            kept_by: KeptBy::All,
         }
     }
+}
+
+/// A colour's parts.
+pub type Rgb = (u8, u8, u8);
+
+/// `#rgb`, `#rrggbb`, or a name (white, black, gray or grey, red, blue,
+/// green, orange, purple, yellow).
+pub fn colour(s: &str) -> anyhow::Result<Rgb> {
+    let s = s.trim();
+    // Hex digits only: no sign `from_str_radix` would take, and no
+    // character a byte slice could cut through.
+    let hex = |h: &str| {
+        (h.bytes().all(|b| b.is_ascii_hexdigit())).then(|| u8::from_str_radix(h, 16).ok())?
+    };
+    // A byte slice below cuts only plain text.
+    if !s.is_ascii() {
+        anyhow::bail!("colour {s}: give #rrggbb, #rgb, or a name");
+    }
+    let parsed = match s.to_ascii_lowercase().as_str() {
+        "white" => Some((255, 255, 255)),
+        "black" => Some((0, 0, 0)),
+        "gray" | "grey" => Some((128, 128, 128)),
+        "red" => Some((214, 39, 40)),
+        "blue" => Some((31, 119, 180)),
+        "green" => Some((44, 160, 44)),
+        "orange" => Some((255, 127, 14)),
+        "purple" => Some((148, 103, 189)),
+        "yellow" => Some((255, 221, 0)),
+        h if h.len() == 7 && h.starts_with('#') => (hex(&h[1..3]))
+            .zip(hex(&h[3..5]))
+            .zip(hex(&h[5..7]))
+            .map(|((r, g), b)| (r, g, b)),
+        h if h.len() == 4 && h.starts_with('#') => {
+            let one = |i: usize| hex(&h[i..i + 1]).map(|v| v * 17);
+            (one(1))
+                .zip(one(2))
+                .zip(one(3))
+                .map(|((r, g), b)| (r, g, b))
+        }
+        _ => None,
+    };
+    parsed.ok_or_else(|| {
+        anyhow::anyhow!("colour {s}: give #rrggbb, #rgb, or white, black, gray, red, blue, green, orange, purple, yellow")
+    })
+}
+
+/// A colour ramp, its stops evenly spread from 0 to 1 (`--ramp`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Ramp {
+    stops: [Rgb; Ramp::MOST],
+    n: usize,
+}
+
+impl Ramp {
+    const MOST: usize = 9;
+
+    /// The named ramps, each from its fewest's colour to its most's.
+    pub const NAMES: [&'static str; 5] = ["grays", "reds", "blues", "ylgnbu", "viridis"];
+
+    fn named(name: &str) -> Option<&'static [&'static str]> {
+        Some(match name {
+            "grays" | "greys" => &["#f0f0f0", "#bdbdbd", "#737373", "#252525"],
+            "reds" => &["#fee0d2", "#fc9272", "#de2d26", "#a50f15"],
+            "blues" => &["#deebf7", "#9ecae1", "#3182bd", "#08519c"],
+            "ylgnbu" => &["#ffffcc", "#a1dab4", "#41b6c4", "#2c7fb8", "#253494"],
+            "viridis" => &["#440154", "#3b528b", "#21918c", "#5ec962", "#fde725"],
+            _ => return None,
+        })
+    }
+
+    /// A ramp's name (see [`Ramp::NAMES`]), or its colours from the fewest
+    /// sites' to the most's, two to nine, comma-separated (see [`colour`]).
+    pub fn parse(s: &str) -> anyhow::Result<Self> {
+        let given: Vec<&str> = match Self::named(&s.trim().to_ascii_lowercase()) {
+            Some(named) => named.to_vec(),
+            None => s.split(',').collect(),
+        };
+        anyhow::ensure!(
+            (2..=Self::MOST).contains(&given.len()),
+            "--ramp {s}: give two to nine colours, LOW,...,HIGH, or a name: {}",
+            Self::NAMES.join(", ")
+        );
+        let mut stops = [(0, 0, 0); Self::MOST];
+        for (k, c) in given.iter().enumerate() {
+            stops[k] = colour(c).map_err(|e| anyhow::anyhow!("--ramp {s}: {e}"))?;
+        }
+        Ok(Self {
+            stops,
+            n: given.len(),
+        })
+    }
+
+    /// Its colour at `t`, 0 the fewest's and 1 the most's.
+    pub fn at(&self, t: f64) -> Rgb {
+        let t = t.clamp(0.0, 1.0) * (self.n - 1) as f64;
+        let k = (t.floor() as usize).min(self.n - 2);
+        let wide = |(r, g, b): Rgb| (r as f64, g as f64, b as f64);
+        let (a, b) = (wide(self.stops[k]), wide(self.stops[k + 1]));
+        crate::figure::mixed(a, b, t - k as f64)
+    }
+
+    /// The most's colour: the kept marginal bars'.
+    pub fn high(&self) -> Rgb {
+        self.stops[self.n - 1]
+    }
+}
+
+/// What a 2D panel's marginals count as kept (`--marginal-kept`).
+#[derive(clap::ValueEnum, Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum KeptBy {
+    /// Passing every threshold, as the squares are kept.
+    #[default]
+    All,
+    /// Passing the thresholds on the panel's own two axes: the bars split
+    /// at the box's edges.
+    Panel,
 }
 
 /// `p` in two significant figures, as a p-value reads: 1, 0.2, 0.043,

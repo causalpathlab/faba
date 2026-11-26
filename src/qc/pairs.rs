@@ -91,12 +91,25 @@ impl<'a> Sites<'a> {
 
     /// Axis `a`'s values on the signal arm along its line, as the view
     /// style's 2D panels place them: its own reads where it has a value on
-    /// each arm (see [`arms::wt`]), else its column's.
+    /// each arm (see [`arms::wt`]), else its column's. The coverage is its
+    /// column's either way, WT + MUT reads, as its threshold reads it, so
+    /// the cut drawn on it is where sites are cut.
     pub fn wt_values(&self, a: Axis) -> &'a [f32] {
         match self.arm_column(a) {
-            Some(arm) => &arm.wt,
-            None => &self.column(a).values,
+            Some(arm) if a != Axis::Coverage => &arm.wt,
+            _ => &self.column(a).values,
         }
+    }
+
+    /// Axis `a`'s values on the control arm along its line, as the 2D
+    /// panels place them; the coverage, as [`Sites::wt_values`], WT + MUT
+    /// reads; none where it has no value there.
+    pub fn mutant_values(&self, a: Axis) -> Option<&'a [f32]> {
+        let arm = self.arm_column(a)?;
+        Some(match a {
+            Axis::Coverage => &self.column(a).values,
+            _ => &arm.mutant,
+        })
     }
 
     /// Axis `a`'s ruler as the view style's 2D panels read it: over its
@@ -482,6 +495,10 @@ pub struct Grid {
     /// Sites in the box kept, and removed by a threshold not drawn here.
     pub in_kept: usize,
     pub in_removed: usize,
+    /// The signal arm per square cut by a drawn threshold (whatever the
+    /// others say): the rest pass both, the marginals' split with
+    /// `--marginal-kept panel`.
+    pub cut_here: Vec<u32>,
 }
 
 /// The panel of axes `x` and `y` over `s` at the thresholds `f`, binned in
@@ -507,39 +524,42 @@ pub fn grid(s: &Sites, (x, y): (Axis, Axis), f: &SiteFilterArgs, bins: usize) ->
     let (sx, sy) = (along(xr), along(yr));
     let drawn = x.bits() | y.bits();
     let n = bins * bins;
-    // Per chunk: kept and removed per square, then the box's two counts.
-    let (kept, removed, in_kept, in_removed) = (0..s.len())
+    // Per chunk: kept and removed per square, the box's two counts, and
+    // those cut by a drawn threshold per square.
+    type Acc = (Vec<u32>, Vec<u32>, usize, usize, Vec<u32>);
+    let zero = || -> Acc {
+        let v = || vec![0u32; n];
+        (v(), v(), 0, 0, v())
+    };
+    let (kept, removed, in_kept, in_removed, cut_here) = (0..s.len())
         .into_par_iter()
         .with_min_len(1 << 15)
-        .fold(
-            || (vec![0u32; n], vec![0u32; n], 0usize, 0usize),
-            |mut acc, i| {
-                let (vx, vy) = (cx[i], cy[i]);
-                if vx.is_nan() || vy.is_nan() {
-                    return acc;
-                }
-                let m = s.fails[i];
-                let at = sy(vy) * bins + sx(vx);
-                if m == 0 {
-                    acc.0[at] += 1;
-                    acc.2 += 1;
-                } else {
-                    acc.1[at] += 1;
-                    acc.3 += usize::from(m & drawn == 0);
-                }
-                acc
-            },
-        )
-        .reduce(
-            || (vec![0u32; n], vec![0u32; n], 0, 0),
-            |mut a, b| {
-                a.0.iter_mut().zip(&b.0).for_each(|(p, q)| *p += q);
-                a.1.iter_mut().zip(&b.1).for_each(|(p, q)| *p += q);
-                (a.0, a.1, a.2 + b.2, a.3 + b.3)
-            },
-        );
+        .fold(zero, |mut acc: Acc, i| {
+            let (vx, vy) = (cx[i], cy[i]);
+            if vx.is_nan() || vy.is_nan() {
+                return acc;
+            }
+            let (m, at) = (s.fails[i], sy(vy) * bins + sx(vx));
+            let here = m & drawn != 0;
+            if m == 0 {
+                acc.0[at] += 1;
+                acc.2 += 1;
+            } else {
+                acc.1[at] += 1;
+                acc.3 += usize::from(!here);
+            }
+            acc.4[at] += u32::from(here);
+            acc
+        })
+        .reduce(zero, |mut a, b| {
+            let add = |p: &mut Vec<u32>, q: &[u32]| p.iter_mut().zip(q).for_each(|(p, q)| *p += q);
+            add(&mut a.0, &b.0);
+            add(&mut a.1, &b.1);
+            add(&mut a.4, &b.4);
+            (a.0, a.1, a.2 + b.2, a.3 + b.3, a.4)
+        });
     // The control arm, where both axes have a value on it.
-    let mutant = match (s.arm_column(x), s.arm_column(y)) {
+    let mutant = match (s.mutant_values(x), s.mutant_values(y)) {
         (Some(ax), Some(ay)) => Some(
             (0..s.len())
                 .into_par_iter()
@@ -547,7 +567,7 @@ pub fn grid(s: &Sites, (x, y): (Axis, Axis), f: &SiteFilterArgs, bins: usize) ->
                 .fold(
                     || vec![0u32; n],
                     |mut acc, i| {
-                        let (vx, vy) = (ax.mutant[i], ay.mutant[i]);
+                        let (vx, vy) = (ax[i], ay[i]);
                         if !(vx.is_nan() || vy.is_nan()) {
                             acc[sy(vy) * bins + sx(vx)] += 1;
                         }
@@ -579,6 +599,7 @@ pub fn grid(s: &Sites, (x, y): (Axis, Axis), f: &SiteFilterArgs, bins: usize) ->
         ybox: (ylo.max(yr.0), yhi.min(yr.1)),
         in_kept,
         in_removed,
+        cut_here,
     }
 }
 
@@ -594,13 +615,6 @@ pub enum Tone {
 fn rgb_of(hex: &str) -> (u8, u8, u8) {
     let (r, g, b) = rgb(hex);
     (r as u8, g as u8, b as u8)
-}
-
-impl Tone {
-    /// As `#rrggbb`.
-    fn hex((r, g, b): (u8, u8, u8)) -> String {
-        format!("#{r:02x}{g:02x}{b:02x}")
-    }
 }
 
 /// How the view style draws a 2D panel beyond its squares: the arms (which
@@ -641,24 +655,20 @@ impl Grid {
         &self,
         at: usize,
         palette: crate::figure::style::Palette,
-        count: arms::CountScale,
+        (count, ramp): (arms::CountScale, Option<&arms::Ramp>),
     ) -> [Option<Tone>; 2] {
         let top = count.of(self.top() as f64);
-        // The signal arm's from well past the control's light gray, so the
-        // sparsest kept square still reads dark: in gray, from darker still,
-        // the kept ink being gray too.
-        let least = match palette {
-            crate::figure::style::Palette::Gray => GRAY_LEAST,
-            _ => 0.6,
-        };
-        let depth = |n: u32| least + (1.0 - least) * count.of(n as f64) / top;
+        let least = least_shade(palette);
+        let fraction = |n: u32| count.of(n as f64) / top;
         let white = (255.0, 255.0, 255.0);
         let (k, o) = (self.squares.kept[at], self.squares.other[at]);
         let wt = (k + o > 0).then(|| {
-            let d = depth(k + o);
+            let f = fraction(k + o);
             match k >= o {
-                true => Tone::Fill(mixed(white, rgb(palette.roles().kept), d)),
-                false => Tone::Outlined(mixed(white, rgb(arms::OUTLINE), d)),
+                true => Tone::Fill(kept_shade(f, palette, ramp)),
+                false => {
+                    Tone::Outlined(mixed(white, rgb(arms::OUTLINE), least + (1.0 - least) * f))
+                }
             }
         });
         let m = self.mutant.as_ref().map_or(0, |v| v[at]);
@@ -674,7 +684,7 @@ impl Grid {
         palette: crate::figure::style::Palette,
         (front, count): (Front, arms::CountScale),
     ) -> Option<Tone> {
-        let [wt, mutant] = self.tones(at, palette, count);
+        let [wt, mutant] = self.tones(at, palette, (count, None));
         match front {
             Front::Wt => wt.or(mutant),
             Front::Mut => mutant.or(wt),
@@ -683,7 +693,8 @@ impl Grid {
 
     /// The squares over `plot`, in the canvas' palette: the arm behind
     /// first, then the one in front over it.
-    fn draw_squares(&self, c: &mut Canvas, plot: &Plot, (front, count): (Front, arms::CountScale)) {
+    fn draw_squares(&self, c: &mut Canvas, plot: &Plot, look: &ArmLook) {
+        let (front, count) = (look.front, look.count);
         let palette = c.style().palette;
         let n = self.squares.bins;
         let (cw, ch) = (plot.pw / n as f64, plot.ph / n as f64);
@@ -694,7 +705,8 @@ impl Grid {
         for arm in order {
             for by in 0..n {
                 for bx in 0..n {
-                    let Some(tone) = self.tones(by * n + bx, palette, count)[arm] else {
+                    let shade = (count, look.ramp.as_ref());
+                    let Some(tone) = self.tones(by * n + bx, palette, shade)[arm] else {
                         continue;
                     };
                     let (x, y) = (
@@ -702,11 +714,17 @@ impl Grid {
                         plot.py + plot.ph - (by + 1) as f64 * ch,
                     );
                     match tone {
-                        Tone::Fill(rgb) => c.rect(x, y, cw + 0.05, ch + 0.05, &Tone::hex(rgb)),
+                        Tone::Fill(rgb) => {
+                            c.rect(x, y, cw + 0.05, ch + 0.05, &crate::figure::hex(rgb))
+                        }
                         Tone::Outlined(rgb) => {
                             let w = (0.12 * cw.min(ch)).clamp(0.15, 0.5);
                             let (x, y, sw, sh) = (x + w / 2.0, y + w / 2.0, cw - w, ch - w);
-                            c.outlined((x, y, sw, sh), arms::FILTERED_FILL, (&Tone::hex(rgb), w));
+                            c.outlined(
+                                (x, y, sw, sh),
+                                arms::FILTERED_FILL,
+                                (&crate::figure::hex(rgb), w),
+                            );
                         }
                     }
                 }
@@ -741,9 +759,10 @@ impl Grid {
         if !title.is_empty() {
             canvas.text(plot.px, y + 10.0, title, 10.0, Anchor::Start, INK);
         }
-        self.draw_squares(canvas, plot, (how.arms.front, how.arms.count));
-        self.marginals(canvas, &lay, (how.arms.front, how.arms.marginal));
+        self.draw_squares(canvas, plot, &how.arms);
+        self.marginals(canvas, &lay, &how.arms);
         // The box where both drawn thresholds pass.
+        let box_ink = how.arms.threshold_ink(INK);
         let (x0, y1) = plot.at(self.xbox.0, self.ybox.0);
         let (x1, y0) = plot.at(self.xbox.1, self.ybox.1);
         if x1 > x0 && y1 > y0 {
@@ -753,8 +772,12 @@ impl Grid {
                 (x1, y1, x0, y1),
                 (x0, y1, x0, y0),
             ] {
-                canvas.dashed(a, b, c, d, INK, 1.0);
+                canvas.dashed(a, b, c, d, &box_ink, 1.0);
             }
+        }
+        // The key over the squares and the box, where it covers them.
+        if how.arms.key {
+            self.count_key(canvas, &lay, &how.arms);
         }
         let p_axis = how.arms.p_axis;
         let ticks = |k: usize, a: Axis| -> Vec<(f64, String)> {
@@ -769,7 +792,8 @@ impl Grid {
         // reads said so, as the histograms say them.
         let own = |a: Axis, per_arm: bool| match a {
             Axis::Pvalue => p_axis.name(),
-            Axis::Coverage if per_arm => "reads per arm",
+            // Placed by WT + MUT reads, as its threshold reads them.
+            Axis::Coverage if per_arm => "reads (WT + MUT)",
             Axis::Converted if per_arm => "converted reads per arm",
             _ => a.name(),
         };
@@ -790,10 +814,14 @@ impl Grid {
     /// The marginals `lay` has room for: each column's sites above, each
     /// row's to the right, the signal arm's kept under its removed (white,
     /// outlined), the control arm's light gray behind (or in front).
-    fn marginals(&self, c: &mut Canvas, lay: &Framed, (front, scale): (Front, arms::CountScale)) {
-        let roles = c.style().palette.roles();
+    fn marginals(&self, c: &mut Canvas, lay: &Framed, look: &ArmLook) {
+        let (front, scale) = (look.front, look.marginal);
+        let kept_ink = match look.ramp {
+            Some(r) => crate::figure::hex(r.high()),
+            None => c.style().palette.roles().kept.to_string(),
+        };
         let n = self.squares.bins;
-        let (cols, rows) = self.margins();
+        let (cols, rows) = self.margins_by(look.kept_by);
         let (mcols, mrows) = self.mutant_margins();
         // Each marginal scaled to its busiest bar of either arm.
         let busiest = |wt: &[Margin], m: &[f64]| {
@@ -817,7 +845,7 @@ impl Grid {
             let (k, all) = (depth(kept, most), depth(kept + other, most));
             let draw_wt = |c: &mut Canvas| {
                 let (x, y, w, h) = place(0.0, k);
-                c.rect(x, y, w, h, roles.kept);
+                c.rect(x, y, w, h, &kept_ink);
                 // Too thin to show white inside its outline: none.
                 let (_, _, ow, oh) = place(k, all - k);
                 if ow.min(oh) > 2.0 * outline {
@@ -879,14 +907,83 @@ impl Grid {
         }
     }
 
+    /// The key to the kept squares' shades (`--key`): a bar from the
+    /// sparsest's colour up to the busiest's, its two counts beside it, in
+    /// the upper part of the corner between the marginals (the right
+    /// marginal's count is at the corner's foot), its counts' text made
+    /// smaller where the corner is small (to half the tick labels' at
+    /// least); else in the plot's top right corner over a white ground.
+    fn count_key(&self, c: &mut Canvas, lay: &Framed, look: &ArmLook) {
+        // An empty panel has no shades to key.
+        if self.squares.top == 0 {
+            return;
+        }
+        let palette = c.style().palette;
+        let plot = &lay.plot;
+        let busiest = self.top() as f64;
+        let top = crate::tui::ui::compact(busiest);
+        // The tick labels' size as written, the key's at most; less in a
+        // small corner, to a least that still reads.
+        let own = 0.85 * c.label_size(TICK_SIZE);
+        let least = 0.5 * own;
+        // The corner, less the right marginal's count at its foot.
+        let corner = match (lay.top, lay.right) {
+            (Some((_, ty, _, th)), Some((rx, _, rw, _))) => {
+                Some((rx, ty, rw, th - 1.6 * c.label_size(TICK_SIZE)))
+            }
+            _ => None,
+        };
+        // The size whose two counts fit `(w, h)` beside a bar: a line each,
+        // apart, and the wider count across what the bar leaves.
+        let fits = |(w, h): (f64, f64)| {
+            let across = (w * 0.68) / crate::figure::text_width(&top, 1.0).max(0.5);
+            own.min(h / 2.2).min(across)
+        };
+        let (x, y, w, h) = match corner.filter(|k| fits((k.2, k.3)) >= least) {
+            Some(k) => k,
+            None => {
+                let side = plot.pw.min(plot.ph);
+                let (w, h) = ((side * 0.25).max(3.0 * own), (side * 0.3).max(2.6 * own));
+                let at = (plot.px + plot.pw - w - 1.0, plot.py + 1.0, w, h);
+                c.rect(at.0, at.1, at.2, at.3, "#ffffff");
+                at
+            }
+        };
+        let size = fits((w, h)).max(least);
+        // The bar up the corner's left, its counts right of it.
+        let (bw, steps) = ((0.28 * w).min(0.6 * size), 24);
+        let step = h / steps as f64;
+        // From a one-site square's shade, as the squares take it, up.
+        let one = look.count.of(1.0) / look.count.of(busiest).max(1e-12);
+        for k in 0..steps {
+            let f = one + (1.0 - one) * (k as f64 + 0.5) / steps as f64;
+            let shade = kept_shade(f, palette, look.ramp.as_ref());
+            c.rect(
+                x,
+                y + h - (k + 1) as f64 * step,
+                bw,
+                step + 0.05,
+                &crate::figure::hex(shade),
+            );
+        }
+        let tx = x + bw + 0.3 * size;
+        c.text_exact(tx, y + 0.75 * size, &top, size, Anchor::Start, MUTED);
+        c.text_exact(tx, y + h, "1", size, Anchor::Start, MUTED);
+    }
+
     /// The signal arm's kept and removed per column (along x, what the top
     /// marginal draws) and per row (along y, the right one's); square `i`
     /// is in row `i / n`, column `i % n`.
-    pub fn margins(&self) -> (Vec<Margin>, Vec<Margin>) {
+    /// Kept as `by` says: by every threshold, or by the two drawn here.
+    pub fn margins_by(&self, by: arms::KeptBy) -> (Vec<Margin>, Vec<Margin>) {
         let n = self.squares.bins;
         let (mut cols, mut rows) = (vec![(0.0, 0.0); n], vec![(0.0, 0.0); n]);
-        let squares = self.squares.kept.iter().zip(&self.squares.other);
-        for (i, (&k, &o)) in squares.enumerate() {
+        let all = self.squares.kept.iter().zip(&self.squares.other);
+        let split = (all.zip(&self.cut_here)).map(|((&k, &o), &cut)| match by {
+            arms::KeptBy::All => (k, o),
+            arms::KeptBy::Panel => (k + o - cut, cut),
+        });
+        for (i, (k, o)) in split.enumerate() {
             for at in [&mut cols[i % n], &mut rows[i / n]] {
                 *at = (at.0 + k as f64, at.1 + o as f64);
             }
@@ -895,7 +992,7 @@ impl Grid {
     }
 
     /// The control arm's sites per column and per row, as
-    /// [`Grid::margins`] lays them out; none at all without it.
+    /// [`Grid::margins_by`] lays them out; none at all without it.
     pub fn mutant_margins(&self) -> (Vec<f64>, Vec<f64>) {
         let n = self.squares.bins;
         let (mut cols, mut rows) = (vec![0.0; n], vec![0.0; n]);
@@ -904,6 +1001,36 @@ impl Grid {
             rows[i / n] += m as f64;
         }
         (cols, rows)
+    }
+}
+
+/// Where on a `--ramp` the sparsest kept square's colour is.
+const RAMP_LEAST: f64 = 0.15;
+
+/// A kept square's colour at `f` of the busiest's count (on the count
+/// scale): along `ramp`, the sparsest a step in from its fewest's colour
+/// so it reads on white; else from white toward `palette`'s kept ink,
+/// from well past the control arm's light gray.
+fn kept_shade(
+    f: f64,
+    palette: crate::figure::style::Palette,
+    ramp: Option<&arms::Ramp>,
+) -> (u8, u8, u8) {
+    if let Some(r) = ramp {
+        return r.at(RAMP_LEAST + (1.0 - RAMP_LEAST) * f);
+    }
+    let least = least_shade(palette);
+    let white = (255.0, 255.0, 255.0);
+    mixed(white, rgb(palette.roles().kept), least + (1.0 - least) * f)
+}
+
+/// Where the signal arm's squares' shades start, of the way from white to
+/// their ink: well past the control's light gray, so the sparsest still
+/// reads dark; in gray, darker still, the kept ink being gray too.
+fn least_shade(palette: crate::figure::style::Palette) -> f64 {
+    match palette {
+        crate::figure::style::Palette::Gray => GRAY_LEAST,
+        _ => 0.6,
     }
 }
 

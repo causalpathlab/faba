@@ -49,8 +49,12 @@ pub fn rgb(hex: &str) -> (f64, f64, f64) {
 
 /// `a` to `b` at `t` (0 `a`, 1 `b`), as `#rrggbb`.
 pub fn mix(a: (f64, f64, f64), b: (f64, f64, f64), t: f64) -> String {
-    let (r, g, b2) = mixed(a, b, t);
-    format!("#{r:02x}{g:02x}{b2:02x}")
+    hex(mixed(a, b, t))
+}
+
+/// A colour's parts as `#rrggbb`.
+pub fn hex((r, g, b): (u8, u8, u8)) -> String {
+    format!("#{r:02x}{g:02x}{b:02x}")
 }
 
 /// [`mix`], as its parts.
@@ -204,6 +208,16 @@ impl Canvas {
 
     pub fn text(&mut self, x: f64, y: f64, s: &str, size: f64, anchor: Anchor, fill: &str) {
         let size = self.size(size);
+        self.text_at(x, y, s, &size, anchor, fill);
+    }
+
+    /// [`Canvas::text`] at `size` as it is, a uniform font or not: for a
+    /// label shrunk to fit a small room (see [`Canvas::bold_exact`]).
+    pub fn text_exact(&mut self, x: f64, y: f64, s: &str, size: f64, anchor: Anchor, fill: &str) {
+        self.text_at(x, y, s, &exact(size), anchor, fill);
+    }
+
+    fn text_at(&mut self, x: f64, y: f64, s: &str, size: &str, anchor: Anchor, fill: &str) {
         let _ = writeln!(
             self.body,
             r#"<text x="{x:.2}" y="{y:.2}" font-family="{FONT}" font-size="{size}" text-anchor="{}" fill="{fill}">{}</text>"#,
@@ -253,9 +267,7 @@ impl Canvas {
     /// [`Canvas::bold`] at `size` as it is, a uniform font or not: for a
     /// title shrunk to fit its room (see [`place_bold_title`]).
     pub fn bold_exact(&mut self, x: f64, y: f64, s: &str, size: f64, anchor: Anchor, fill: &str) {
-        let size = format!("{size:.2}");
-        let size = size.trim_end_matches('0').trim_end_matches('.');
-        self.bold_at(x, y, s, size, anchor, fill);
+        self.bold_at(x, y, s, &exact(size), anchor, fill);
     }
 
     fn bold_at(&mut self, x: f64, y: f64, s: &str, size: &str, anchor: Anchor, fill: &str) {
@@ -337,6 +349,12 @@ impl Canvas {
             ground = self.ground,
         )
     }
+}
+
+/// A size as written exactly: to a hundredth, no trailing zeros.
+fn exact(size: f64) -> String {
+    let size = format!("{size:.2}");
+    size.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
 /// Points per terminal cell in a figure saved from a view: a cell is about
@@ -759,8 +777,9 @@ impl Bars<'_> {
         (max, labels)
     }
 
-    /// Where its plot starts in a tight panel on `c`, laid out.
-    pub fn left(&self, c: &Canvas) -> f64 {
+    /// Where its plot starts in a tight panel on `c`, laid out (its
+    /// labels the same at any depth).
+    pub fn left(&self, c: &Canvas, _h: f64) -> f64 {
         let labels = self.y_axis().1;
         left_of(
             c,
@@ -868,8 +887,8 @@ fn y_title(c: &mut Canvas, s: &str, x: f64, (py, ph): (f64, f64)) {
 /// out: where its plot starts on a tight page, the position ticks it is
 /// given for that, and its drawing.
 pub trait Panel {
-    /// Where its plot starts in a tight panel on `c`, laid out.
-    fn left(&self, c: &Canvas) -> f64;
+    /// Where its plot starts in a tight panel `h` deep on `c`, laid out.
+    fn left(&self, c: &Canvas, h: f64) -> f64;
     /// Its position ticks, turned or flat.
     fn set_ticks(&mut self, ticks: Vec<(usize, String)>, rotated: bool);
     /// Drawn in the box `(x, y, w, h)`; the box its bars take.
@@ -879,8 +898,8 @@ pub trait Panel {
 macro_rules! panel {
     ($($t:ident),*) => {$(
         impl Panel for $t<'_> {
-            fn left(&self, c: &Canvas) -> f64 {
-                $t::left(self, c)
+            fn left(&self, c: &Canvas, h: f64) -> f64 {
+                $t::left(self, c, h)
             }
             fn set_ticks(&mut self, ticks: Vec<(usize, String)>, rotated: bool) {
                 self.ticks = ticks;
@@ -922,10 +941,10 @@ pub struct Diverging<'a> {
 }
 
 impl Diverging<'_> {
-    /// Where its plot starts in a tight panel on `c`, laid out.
-    pub fn left(&self, c: &Canvas) -> f64 {
+    /// Where its plot starts in a tight panel `h` deep on `c`, laid out.
+    pub fn left(&self, c: &Canvas, h: f64) -> f64 {
         let (up, down) = split_signed(self.values);
-        self.mirror(&up, &down).left(c)
+        self.mirror(&up, &down).left(c, h)
     }
 
     pub fn draw(&self, c: &mut Canvas, x: f64, y: f64, w: f64, h: f64) -> (f64, f64, f64, f64) {
@@ -965,20 +984,17 @@ struct Arm<'a> {
 impl Arm<'_> {
     /// Where the arm's `name` is written on the plot `(px, py, pw, ph)`:
     /// its anchor point and anchor, and whether it is clear of the bars.
-    /// Clear of the y labels' lines and of the bars: at the arm's outer
-    /// corner, at the left or else at the right, else nudged toward the
-    /// zero line; else anywhere across the arm, from its outer edge in.
-    /// Where nothing is clear of both, clear of the lines where it
-    /// overlaps the bars least; the left corner where nothing is clear of
-    /// the lines.
-    fn name_at(
-        &self,
-        c: &Canvas,
-        name: &str,
-        (px, py, pw, ph): (f64, f64, f64, f64),
-    ) -> (f64, f64, Anchor, bool) {
+    /// Always at the left, so every panel's names are in one place: at the
+    /// arm's outer corner, clear of the y labels' lines and of the bars,
+    /// else nudged toward the zero line; where nothing there is clear of
+    /// both, clear of the lines where it overlaps the bars least (drawn
+    /// over a halo); the corner where nothing is clear of the lines.
+    fn name_at(&self, c: &Canvas, name: &str, (px, py, ph): (f64, f64, f64)) -> (f64, bool) {
         let size = c.label_size(8.0);
-        let wide = text_width(name, size);
+        // Measured glyph by glyph: an arm's name is mostly capitals, which
+        // set wider than the average letter `text_width` reckons, and must
+        // not touch a bar it is said to be clear of.
+        let wide = set_width(name, size);
         let (above, below) = (0.75 * size, 0.25 * size);
         let zero = py + ph / 2.0;
         let corner = if self.upper { py + 9.0 } else { py + ph - 3.0 };
@@ -992,9 +1008,7 @@ impl Arm<'_> {
             true => corner + k as f64,
             false => corner - k as f64,
         });
-        let ends = [(px + 4.0, Anchor::Start), (px + pw - 2.0, Anchor::End)];
-        let across = (0..).map(|k| px + 4.0 + 2.0 * k as f64);
-        let across = across.take_while(|&l| l + wide <= px + pw - 2.0);
+        let left = px + NAME_INSET;
         let off_lines = |t: f64, b: f64| self.lines.iter().all(|&g| g <= t - 1.0 || g >= b + 1.0);
         // How far into the bars a name from `l` to `l + wide`, `t` to `b`,
         // runs: the most any under it, or one either side (a hairline bar
@@ -1014,32 +1028,26 @@ impl Arm<'_> {
                 })
                 .fold(0.0, f64::max)
         };
-        let starts: Vec<(f64, f64, Anchor)> = (baselines.clone())
-            .flat_map(|y| ends.map(|(x, a)| (x, y, a)))
-            .chain(baselines.flat_map(|y| across.clone().map(move |x| (x, y, Anchor::Start))))
-            .collect();
-        let mut least: Option<(f64, (f64, f64, Anchor))> = None;
-        for (x, y, anchor) in starts {
-            let l = match anchor {
-                Anchor::End => x - wide,
-                _ => x,
-            };
+        let mut least: Option<(f64, f64)> = None;
+        for y in baselines {
             let (t, b) = (y - above, y + below);
             if !off_lines(t, b) {
                 continue;
             }
-            let into = over(l, t, b);
+            let into = over(left, t, b);
             if into <= 0.0 {
-                return (x, y, anchor, true);
+                return (y, true);
             }
             if least.is_none_or(|m| into < m.0) {
-                least = Some((into, (x, y, anchor)));
+                least = Some((into, y));
             }
         }
-        let (x, y, anchor) = least.map_or((ends[0].0, corner, Anchor::Start), |m| m.1);
-        (x, y, anchor, false)
+        (least.map_or(corner, |m| m.1), false)
     }
 }
+
+/// How far in from the plot's left an arm's name starts, laid out.
+const NAME_INSET: f64 = 4.0;
 
 /// Height of an 8-point character's advance, roughly, for laying out
 /// turned labels.
@@ -1188,30 +1196,59 @@ impl Mirror<'_> {
         (max, labels, round)
     }
 
-    /// The labels its y axis writes, for the room they take: the zero's
-    /// and the round values where it has any (its own top's then goes
-    /// unwritten), else its own at the top, the zero line and the bottom.
-    fn all_labels<'b>(labels: &'b [String; 3], round: &'b [(f64, String)]) -> Vec<&'b str> {
-        match round.is_empty() {
-            true => labels.iter().map(String::as_str).collect(),
-            false => std::iter::once(labels[1].as_str())
-                .chain(round.iter().map(|r| r.1.as_str()))
-                .collect(),
-        }
+    /// Where its plot starts in a tight panel `h` deep on `c`, laid out:
+    /// past the labels it writes at that depth (see [`Mirror::written`]).
+    pub fn left(&self, c: &Canvas, h: f64) -> f64 {
+        let (written, _) = self.written(c, h);
+        let written: Vec<&str> = written.iter().map(String::as_str).collect();
+        left_of(c, &written, !self.y_title.is_empty())
     }
 
-    /// Where its plot starts in a tight panel on `c`, laid out.
-    pub fn left(&self, c: &Canvas) -> f64 {
-        let (_, labels, round) = self.y_axis(SQRT_SPREAD);
-        left_of(
-            c,
-            &Self::all_labels(&labels, &round),
-            !self.y_title.is_empty(),
-        )
+    /// The y labels it writes in a panel `h` deep, and the round values
+    /// among them (see [`Mirror::kept_round`]): its plot's depth does not
+    /// hang on their width, so they are chosen at that depth (the round
+    /// values each arm holds, else its own top, zero and bottom).
+    fn written(&self, c: &Canvas, h: f64) -> (Vec<String>, Vec<(f64, String)>) {
+        let titled = !self.y_title.is_empty();
+        let [_, _, top, bottom] = bar_margins(c, (&self.ticks, self.rotated), 0.0, titled);
+        let kept = self.kept_round(c, h - top - bottom);
+        let written = match kept.is_empty() {
+            true => self.y_axis(SQRT_SPREAD).1.to_vec(),
+            false => std::iter::once("0".to_string())
+                .chain(kept.iter().map(|k| k.1.clone()))
+                .collect(),
+        };
+        (written, kept)
+    }
+
+    /// The round values its y axis labels up each arm on a plot `ph`
+    /// deep, each a label's height and a little apart, from the top down
+    /// and none past the zero's (a square-root axis's chosen so, to stay
+    /// evenly spread).
+    fn kept_round(&self, c: &Canvas, ph: f64) -> Vec<(f64, String)> {
+        let apart = 1.3 * c.label_size(8.0) / (ph / 2.0);
+        let spread = match self.y_scale {
+            Scale::Sqrt => apart.max(SQRT_SPREAD),
+            _ => SQRT_SPREAD,
+        };
+        let round = self.y_axis(spread).2;
+        let mut kept: Vec<(f64, String)> = Vec::new();
+        for (share, label) in round.into_iter().rev() {
+            let last = kept.last().map_or(f64::INFINITY, |k| k.0);
+            if share <= last - apart && share >= apart {
+                kept.push((share, label));
+            }
+        }
+        kept
     }
 
     pub fn draw(&self, c: &mut Canvas, x: f64, y: f64, w: f64, h: f64) -> (f64, f64, f64, f64) {
-        let (max, labels, round) = self.y_axis(SQRT_SPREAD);
+        let (max, labels, _) = self.y_axis(SQRT_SPREAD);
+        // The left margin made for the labels written at the plot's depth
+        // (the same as the frame's: its margins' top and bottom do not hang
+        // on the labels), so none runs past the panel's edge.
+        let (written, kept) = self.written(c, h);
+        let written: Vec<&str> = written.iter().map(String::as_str).collect();
         let BarFrame {
             plot: (px, py, pw, ph),
             line,
@@ -1221,7 +1258,7 @@ impl Mirror<'_> {
             (x, y, w, h),
             (&self.ticks, self.rotated),
             (&self.title, &self.y_title),
-            &Self::all_labels(&labels, &round),
+            &written,
         );
         let front_tone = c.style().palette.roles().front;
         let n = self.up.values.len().max(self.down.values.len()).max(1);
@@ -1234,21 +1271,6 @@ impl Mirror<'_> {
                 scaled(self.y_scale, v) / max * ph / 2.0
             }
         };
-        // Round values each a label's height and a little apart, from the
-        // top down; none past the zero's. A square-root axis's are chosen
-        // so, to stay evenly spread.
-        let apart = 1.3 * c.label_size(8.0) / (ph / 2.0);
-        let round = match self.y_scale {
-            Scale::Sqrt => self.y_axis(apart.max(SQRT_SPREAD)).2,
-            _ => round,
-        };
-        let mut kept: Vec<(f64, &str)> = Vec::new();
-        for (share, label) in round.iter().rev() {
-            let last = kept.last().map_or(f64::INFINITY, |k| k.0);
-            if *share <= last - apart && *share >= apart {
-                kept.push((*share, label));
-            }
-        }
         // Where the y labels' lines run, the zero line's among them.
         let mut lines = vec![zero];
         match kept.is_empty() {
@@ -1264,7 +1286,7 @@ impl Mirror<'_> {
             }
             false => {
                 c.text(px - 5.0, zero + 3.0, "0", 8.0, Anchor::End, MUTED);
-                for (share, label) in kept {
+                for (share, label) in &kept {
                     for sign in [-1.0, 1.0] {
                         let gy = zero + sign * share * ph / 2.0;
                         c.line(px, gy, px + pw, gy, FAINT, 0.4);
@@ -1314,9 +1336,10 @@ impl Mirror<'_> {
                 bars: (bw, n),
                 reach: &reach,
             };
-            match arm.name_at(c, &half.name, plot) {
-                (nx, ny, anchor, true) => c.text(nx, ny, &half.name, 8.0, anchor, MUTED),
-                (nx, ny, anchor, false) => c.text_halo(nx, ny, &half.name, 8.0, anchor, MUTED),
+            let nx = plot.0 + NAME_INSET;
+            match arm.name_at(c, &half.name, (plot.0, plot.1, plot.3)) {
+                (ny, true) => c.text(nx, ny, &half.name, 8.0, Anchor::Start, MUTED),
+                (ny, false) => c.text_halo(nx, ny, &half.name, 8.0, Anchor::Start, MUTED),
             }
         }
         if let Some(p) = self.pointer {

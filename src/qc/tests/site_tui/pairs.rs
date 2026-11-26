@@ -79,7 +79,8 @@ fn the_marginals_sum_the_squares_columns_and_rows() {
     let f = SiteFilterArgs::default_values();
     let v = SiteView::new(&t, Some(cells(1500)), &f);
     let s = v.sites();
-    let margins = |x, y| pairs::grid(&s, (x, y), &f, pairs::BINS).margins();
+    let margins =
+        |x, y| pairs::grid(&s, (x, y), &f, pairs::BINS).margins_by(crate::qc::arms::KeptBy::All);
     let (cols, rows) = margins(Axis::Coverage, Axis::Pvalue);
     assert_eq!(cols, margins(Axis::Coverage, Axis::Fold).0);
     assert_eq!(cols, margins(Axis::Pvalue, Axis::Coverage).1);
@@ -376,7 +377,9 @@ fn the_qc_figures_on_one_page_share_one_label_size() {
 /// knob since its p-value draws WT on the p its threshold reads, MUT on
 /// its own, its count axis ends at a round count over its tallest bar and
 /// its ticks are as many as fit; the knob since its thresholds' words are
-/// placed by each character's width.
+/// placed by each character's width; the pairs since a coverage axis
+/// places each site by its WT + MUT reads, as the coverage's cut reads
+/// them.
 #[test]
 fn the_default_qc_figures_are_unchanged() {
     let t = table("m6a", 800);
@@ -402,7 +405,7 @@ fn the_default_qc_figures_are_unchanged() {
         shown,
         [
             11615018299291195097,
-            3768601236476313695,
+            4703989861956458958,
             1460898763073091392
         ]
     );

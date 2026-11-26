@@ -672,7 +672,8 @@ fn gray_kept_squares_read_darker_than_the_background() {
         let mut shades: Vec<(u32, f64)> = Vec::new();
         for at in 0..g.squares.kept.len() {
             let (k, o) = (g.squares.kept[at], g.squares.other[at]);
-            if let [Some(crate::qc::pairs::Tone::Fill(rgb)), _] = g.tones(at, Palette::Gray, scale)
+            if let [Some(crate::qc::pairs::Tone::Fill(rgb)), _] =
+                g.tones(at, Palette::Gray, (scale, None))
             {
                 assert!(
                     background - light(rgb) >= 50.0,
@@ -887,7 +888,7 @@ fn a_marginal_s_count_is_ticked_beside_it_at_the_panel_s_type() {
             .find(|(b, _)| b.1 > plot.py + plot.ph && b.0 >= plot.px && b.2 <= plot.px + plot.pw)
             .expect("an x tick");
         let tick_font = font(&x_tick.1);
-        let (cols, rows) = g.margins();
+        let (cols, rows) = g.margins_by(crate::qc::arms::KeptBy::All);
         let (mcols, mrows) = g.mutant_margins();
         let most = |wt: &[(f64, f64)], m: &[f64]| {
             (wt.iter().map(|(k, o)| k + o))

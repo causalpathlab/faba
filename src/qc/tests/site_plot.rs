@@ -748,3 +748,132 @@ fn cells_per_site_count_every_cell_with_a_converted_read() {
     assert_eq!(site_cells(&layout, &mut t, &at).unwrap(), None);
     assert_eq!(t.control_cells, None);
 }
+
+/// The view style's colours asked for: `--ramp` shades the kept squares
+/// from its first colour to its last and fills the kept marginal bars in
+/// its last; `--threshold-colour` draws the histograms' lines and the
+/// pair's box; `--key` adds the pair's key to its shades; a coverage axis
+/// reads WT + MUT reads, as its cut does.
+#[test]
+fn the_view_styles_colours_and_key_are_the_ones_asked() {
+    let t = many(500);
+    let n = cells(500);
+    let cut = Thresholds {
+        site_max_pv: Some(0.05),
+        site_min_coverage: Some(20),
+        ..Thresholds::default()
+    }
+    .cut();
+    let figures = |ramp: Option<&str>, line: Option<&str>, key: bool| {
+        let plan = PanelArgs {
+            style: PanelStyle::View,
+            ramp: ramp.map(String::from),
+            threshold_colour: line.map(String::from),
+            key,
+            ..args(&["pv"], &["pv:coverage"], &["top", "right"], &[])
+        }
+        .plan()
+        .unwrap();
+        let p = Panels::new(
+            &t,
+            Some(&n),
+            &cut,
+            &plan,
+            sheet(240.0, 240.0, None, true),
+            true,
+        );
+        p.unwrap().figures()
+    };
+    let plain = figures(None, None, false);
+    let asked = figures(Some("white,#123456"), Some("#abcdef"), true);
+    let (hist, pair) = (&asked[0].svg, &asked[1].svg);
+    assert!(
+        pair.contains(r##"fill="#123456""##),
+        "the kept marginal bars"
+    );
+    assert!(!plain[1].svg.contains("#123456"));
+    let dashed = |svg: &str, ink: &str| {
+        (svg.lines())
+            .any(|l| l.contains("stroke-dasharray") && l.contains(&format!(r#"stroke="{ink}""#)))
+    };
+    assert!(dashed(hist, "#abcdef") && dashed(pair, "#abcdef"));
+    assert!(!dashed(&plain[1].svg, "#abcdef"));
+    // The key's lowest count, a text of its own.
+    let ones = |svg: &str| {
+        crate::figure::labels(svg)
+            .iter()
+            .filter(|l| l.1 == "1")
+            .count()
+    };
+    assert!(ones(pair) > ones(&plain[1].svg), "no key");
+    let has = |svg: &str, s: &str| crate::figure::labels(svg).iter().any(|l| l.1 == s);
+    assert!(has(&plain[1].svg, "reads (WT + MUT)"));
+}
+
+/// `--marginal-kept panel` splits a pair's marginals by its own two
+/// thresholds alone: kept and removed add up to the same sites, and more
+/// are kept where another threshold removes some.
+#[test]
+fn the_marginals_split_by_the_panels_own_thresholds() {
+    use crate::qc::arms::KeptBy;
+    let t = many(500);
+    let f = Thresholds {
+        site_max_pv: Some(0.05),
+        site_min_coverage: Some(20),
+        site_min_converted: Some(10),
+        ..Thresholds::default()
+    }
+    .cut();
+    let n = cells(500);
+    let criteria: Vec<Criterion> = Criterion::ALL.to_vec();
+    let cache = crate::qc::pairs::Cache::new(Default::default(), 20);
+    let mut fails = Vec::new();
+    let sites = qc_sites(&t, &n, &criteria, &mut fails, &f.filter, &cache);
+    let axes = (Quantity::Pvalue, Quantity::Coverage);
+    let g = crate::qc::pairs::grid(&sites, axes, &f.filter, 20);
+    let sum = |m: &[(f64, f64)]| m.iter().fold((0.0, 0.0), |a, p| (a.0 + p.0, a.1 + p.1));
+    let (all, _) = g.margins_by(KeptBy::All);
+    let (panel, _) = g.margins_by(KeptBy::Panel);
+    let (a, p) = (sum(&all), sum(&panel));
+    assert_eq!(a.0 + a.1, p.0 + p.1);
+    assert!(p.0 > a.0, "{a:?} {p:?}");
+}
+
+/// Colours by `#rrggbb`, `#rgb` or name; ramps by their colours or a name,
+/// from the first colour at 0 to the last at 1; anything else refused.
+#[test]
+fn colours_and_ramps_are_read() {
+    use crate::qc::arms::{colour, Ramp};
+    assert_eq!(colour("#d62728").unwrap(), (0xd6, 0x27, 0x28));
+    assert_eq!(colour("#fff").unwrap(), (255, 255, 255));
+    assert_eq!(colour("Black").unwrap(), (0, 0, 0));
+    assert!(colour("#12345").is_err() && colour("teal-ish").is_err());
+    // A sign, or a character a byte slice would cut through: refused.
+    for bad in ["#+f+f+f", "#aé123", "#é1"] {
+        assert!(colour(bad).is_err(), "{bad}");
+    }
+    let r = Ramp::parse("white,#000000").unwrap();
+    assert_eq!(
+        (r.at(0.0), r.at(1.0), r.high()),
+        ((255, 255, 255), (0, 0, 0), (0, 0, 0))
+    );
+    assert_eq!(r.at(0.5), (128, 128, 128));
+    for name in Ramp::NAMES {
+        let named = Ramp::parse(name).unwrap();
+        assert_ne!(named.at(0.0), named.at(1.0), "{name}");
+    }
+    assert!(Ramp::parse("white").is_err() && Ramp::parse("white,nope").is_err());
+}
+
+/// Crowded tick labels are thinned to every second (or third, ...), from
+/// the first; ones that fit are all kept.
+#[test]
+fn crowded_tick_labels_are_thinned() {
+    use crate::qc::density::thinned;
+    let at = [0.0, 10.0, 20.0, 30.0, 40.0];
+    assert_eq!(thinned(&at, &[8.0; 5], 1.0), 1);
+    assert_eq!(thinned(&at, &[15.0; 5], 1.0), 2);
+    assert_eq!(thinned(&at, &[25.0; 5], 1.0), 3);
+    // Two that run into each other: the first alone.
+    assert_eq!(thinned(&[0.0, 10.0], &[25.0; 2], 1.0), 2);
+}

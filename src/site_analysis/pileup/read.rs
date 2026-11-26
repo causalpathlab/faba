@@ -219,17 +219,23 @@ struct FileRead {
     first_modality: Option<Box<str>>,
     totals: FxHashMap<i64, f64>,
     unconverted_rows: usize,
+    /// Whether the file has an unconverted channel at all, matched by
+    /// the selection or not: a gene whose sites have only converted rows
+    /// (every read converted) still has a total, its converted reads.
+    unconverted_channel: bool,
 }
 
 impl FileRead {
     /// Add `other`, a later file's share: per group and position the sums
     /// add, and the first file's modality stays.
-    fn merge(&mut self, other: FileRead) {
+    fn merge(&mut self, mut other: FileRead) {
+        other.unconverted_channel |= self.unconverted_channel;
         if self.matched == 0 && self.unconverted_rows == 0 && self.by_group.is_empty() {
             // Nothing yet: take it whole rather than copy it over.
             *self = other;
             return;
         }
+        self.unconverted_channel = other.unconverted_channel;
         for (grp, aggs) in other.by_group {
             let into = self.by_group.entry(grp).or_default();
             for (pos, agg) in aggs {
@@ -280,6 +286,8 @@ fn read_one_file(
                     continue;
                 }
             }
+            // Of the modalities read, whether selected or not.
+            part.unconverted_channel |= !is_converted;
             if selector.selects(gene_part, chr, pos) {
                 if is_converted {
                     part.first_modality.get_or_insert_with(|| modality.into());
@@ -398,7 +406,8 @@ pub(super) fn read_matrix_positions_grouped(
         matched: total_matched,
         first_modality,
         totals,
-        unconverted_rows,
+        unconverted_rows: _,
+        unconverted_channel,
     } = all;
 
     // The selection can span several genes (and chromosomes); rather than
@@ -438,8 +447,10 @@ pub(super) fn read_matrix_positions_grouped(
         })
         .collect();
 
-    // No unconverted rows (a matrix without that channel): no total.
-    let total = (unconverted_rows > 0).then(|| {
+    // A matrix without an unconverted channel: no total. One with it has
+    // a total even where the selection matched no unconverted row (every
+    // read at its sites converted): the converted reads.
+    let total = unconverted_channel.then(|| {
         let mut total: Vec<(i64, f64)> = totals.into_iter().collect();
         total.sort_unstable_by_key(|p| p.0);
         total
