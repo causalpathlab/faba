@@ -12,8 +12,10 @@
 //! names the browser shows (C3, M2, a gene's key or symbol), so a saved
 //! view or another tool can draw the same screen again.
 
+use super::RawDraw;
 use super::{grid, GridArgs, Ink, Look, Refused};
 use crate::cluster::browse::go::Table;
+use crate::cluster::browse::raw::{Raw, RawArgs, RawBands};
 use crate::cluster::browse::view::Pin;
 use crate::cluster::browse::Modules;
 use crate::figure::size::Page;
@@ -307,6 +309,47 @@ pub struct Ask<'a> {
     pub genes: GenesLook,
     pub title: &'a str,
     pub sheet: Sheet,
+    /// The reads under the fit, drawn in place of the grid (`--raw`).
+    pub raw: Option<(&'a Raw, &'a RawArgs)>,
+}
+
+/// The raw view's panel title, with `--raw`.
+fn raw_title(ask: &Ask) -> Option<String> {
+    let (raw, shown) = ask.raw?;
+    Some(format!(
+        "reads · {}",
+        super::raw::said(shown.value, raw.unit)
+    ))
+}
+
+/// The grid (or with `--raw` the reads under it) under `look` with
+/// `grid_args`, laid out for `sheet`, and where it put its rows; the raw
+/// view's modules on equal bands when `equal`, as gene tracks beside it
+/// need, and only laid out when `measure`.
+fn grid_placed(
+    m: &Modules,
+    (look, grid_args): (Look, &GridArgs),
+    ask: &Ask,
+    sheet: Sheet,
+    (equal, measure): (bool, bool),
+) -> Result<(String, grid::Placed), String> {
+    let at = (sheet.page, Ink::of(&sheet));
+    match ask.raw {
+        Some(_) if grid_args.go_labels.is_some() => Err(
+            "the raw view has no GO terms beside it: draw it with the sites or nothing beside"
+                .into(),
+        ),
+        Some((raw, shown)) => {
+            let how = RawDraw {
+                bands: if equal { RawBands::Equal } else { shown.bands },
+                measure,
+                ..RawDraw::of(raw, shown)
+            };
+            super::raw::placed(m, how, grid_args, look, "", at).map_err(|e| refused(e, sheet))
+        }
+        None => grid::placed(m, look, grid_args, ask.go, "", sheet.page, at.1)
+            .map_err(|e| refused(e, sheet)),
+    }
 }
 
 /// The screen's own size when no side is asked for, in points: about a
@@ -418,7 +461,8 @@ pub fn draw(m: &Modules, state: &Placed, ask: &Ask) -> Result<String, String> {
                     }
                 };
                 if let Some(area) = grid_area {
-                    let title = format!("gene modules · {}", preset.said());
+                    let title = raw_title(ask)
+                        .unwrap_or_else(|| format!("gene modules · {}", preset.said()));
                     let part = grid_region(
                         &mut c,
                         m,
@@ -459,7 +503,7 @@ pub fn draw(m: &Modules, state: &Placed, ask: &Ask) -> Result<String, String> {
                 parts.push(cropped(&svg, inner, go_x));
             }
             (_, _) => {
-                let title = preset.title(go_here);
+                let title = raw_title(ask).unwrap_or_else(|| preset.title(go_here));
                 let part = grid_region(
                     &mut c,
                     m,
@@ -519,7 +563,7 @@ fn transposed(
         go_labels: go_here.then_some(state.go_terms),
         ..ask.grid.clone()
     };
-    let title = Preset::of(state.look).title(go_here);
+    let title = raw_title(ask).unwrap_or_else(|| Preset::of(state.look).title(go_here));
     // The pins in the grid's columns' order, the genes beside it taking
     // what they want of the width, the grid at least a third.
     let order = rows(m, state.look);
@@ -536,18 +580,10 @@ fn transposed(
         false => super::genes::wanted(m, &pins, f, how) + 2.0 * f,
     };
     let mut area = (top.0, top.1, (top.2 - wanted).max(top.2 / 3.0), top.3);
-    let draw_grid = |inner: (f64, f64, f64, f64)| {
+    let draw_grid = |inner: (f64, f64, f64, f64), measure: bool| {
         let sheet = sub_sheet(ask.sheet, inner);
-        grid::placed(
-            m,
-            state.look,
-            &grid_args,
-            ask.go,
-            "",
-            sheet.page,
-            Ink::of(&sheet),
-        )
-        .map_err(|e| refused(e, sheet))
+        let how = (!pins.is_empty(), measure);
+        grid_placed(m, (state.look, &grid_args), ask, sheet, how)
     };
     let genes_area = |area: (f64, f64, f64, f64)| {
         let x = area.0 + area.2;
@@ -559,12 +595,12 @@ fn transposed(
     // their models or names over the first row would not fit over it.
     if !pins.is_empty() {
         let inner = inside(area, framed, f);
-        let (inner, placed) = match draw_grid(inner) {
+        let (inner, placed) = match draw_grid(inner, true) {
             Ok((_, placed)) => (inner, placed),
             Err(_) => {
                 area.2 = top.2;
                 let inner = inside(area, framed, f);
-                (inner, draw_grid(inner)?.1)
+                (inner, draw_grid(inner, true)?.1)
             }
         };
         area.2 = (placed.width + area.2 - inner.2).min(area.2);
@@ -576,7 +612,7 @@ fn transposed(
         }
     }
     let inner = frame(c, area, (&title, framed), f);
-    let (svg, placed) = draw_grid(inner)?;
+    let (svg, placed) = draw_grid(inner, false)?;
     if !pins.is_empty() {
         let genes_area = genes_area(area);
         let n = pins.len();
@@ -741,8 +777,7 @@ fn grid_region(
 ) -> Result<String, String> {
     let inner = frame(c, area, title, ink.f);
     let sheet = sub_sheet(ask.sheet, inner);
-    let (svg, _) = grid::placed(m, look, grid_args, ask.go, "", sheet.page, Ink::of(&sheet))
-        .map_err(|e| refused(e, sheet))?;
+    let (svg, _) = grid_placed(m, (look, grid_args), ask, sheet, (false, false))?;
     Ok(nested(&svg, inner))
 }
 

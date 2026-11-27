@@ -251,6 +251,10 @@ impl ModulesView<'_> {
         if self.col_fit < self.shown.len() {
             keys.push(("[ ]", "scroll the cell modules"));
         }
+        keys.push((
+            "r",
+            "the reads under the fit, cell by cell (image terminals)",
+        ));
         keys.extend([
             ("/", "find a gene"),
             ("t", "the fit's ELBO trace"),

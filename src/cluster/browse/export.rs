@@ -224,7 +224,8 @@ pub(super) fn run(args: &ModulesArgs, inputs: &[Box<str>]) -> anyhow::Result<()>
                 paths,
             });
         }
-        loaded.push(m);
+        let raw = args.raw.raw.then(|| super::raw_of(&m, &dir, &args.raw));
+        loaded.push((m, raw.transpose()?));
     }
     for path in jobs.iter().flat_map(|j| &j.paths) {
         anyhow::ensure!(
@@ -236,7 +237,7 @@ pub(super) fn run(args: &ModulesArgs, inputs: &[Box<str>]) -> anyhow::Result<()>
     let mut drawn = Vec::with_capacity(jobs.len());
     let mut models_of: FxHashMap<Option<Box<str>>, Vec<GeneModel>> = FxHashMap::default();
     for job in &jobs {
-        let (fit, m) = (&fits[job.fit], &loaded[job.fit]);
+        let (fit, (m, raw)) = (&fits[job.fit], &loaded[job.fit]);
         let placed = job.state.place(m)?;
         let gtf = crate::run_record::explicit_or_recorded(
             args.gtf.as_deref(),
@@ -272,6 +273,7 @@ pub(super) fn run(args: &ModulesArgs, inputs: &[Box<str>]) -> anyhow::Result<()>
             genes: s.genes,
             title: &title,
             sheet,
+            raw: raw.as_ref().map(|r| (r, &args.raw)),
         };
         let svg = screen::draw(m, &placed, &ask)
             .map_err(anyhow::Error::msg)

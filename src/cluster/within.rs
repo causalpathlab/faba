@@ -161,7 +161,7 @@ type ByBatch = FxHashMap<Box<str>, ByBarcode>;
 
 /// Whether batch `long` is batch `short` named with its folder
 /// (`runs/a/b1` for `b1`, or for `a/b1`).
-fn qualifies(long: &str, short: &str) -> bool {
+pub(in crate::cluster) fn qualifies(long: &str, short: &str) -> bool {
     (long.strip_suffix(short)).is_some_and(|folder| folder.ends_with('/'))
 }
 
@@ -451,9 +451,12 @@ pub(super) fn run(args: &ClusterArgs) -> anyhow::Result<Option<String>> {
         Err(e) => return failed(record, e),
     };
     let title = format!("reading the sites to fit within {}", count.record.display());
-    let (_, all) = super::watched(args, &title, false, |p| {
-        read::read_inputs(&args::inputs(args)?, p)
-    });
+    let inputs = match args::inputs(args) {
+        Ok(inputs) => inputs,
+        Err(e) => return failed(record, e),
+    };
+    let read_from = super::recorded_inputs(&inputs);
+    let (_, all) = super::watched(args, &title, false, |p| read::read_inputs(&inputs, p));
     let all = match all {
         Ok(all) => all,
         Err(e) => return failed(record, e),
@@ -541,6 +544,7 @@ pub(super) fn run(args: &ClusterArgs) -> anyhow::Result<Option<String>> {
         let (progress, out) = super::watched(args, &title, false, |p| {
             let mut record = start(&sub);
             record.set_result("within_group", &about);
+            record.set_result("inputs", &read_from);
             super::recorded(
                 record,
                 |record| super::site_fit(args, &sub, record, p, data),

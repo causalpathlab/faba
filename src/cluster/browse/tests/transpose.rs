@@ -19,6 +19,7 @@ fn screen_of(m: &Modules, state: &State, grid: &GridArgs, genes: GenesLook) -> S
         genes,
         title: "a fit",
         sheet: Sheet::OWN,
+        raw: None,
     };
     screen::draw(m, &placed, &ask).unwrap()
 }

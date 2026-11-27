@@ -22,6 +22,7 @@ fn drawn_screen(m: &Modules, state: &State, region: Region) -> Result<String, St
         genes: Default::default(),
         title: "a fit",
         sheet: Sheet::OWN,
+        raw: None,
     };
     screen::draw(m, &placed, &ask)
 }
@@ -228,6 +229,7 @@ fn the_pins_keep_their_order_and_the_plot_alone_has_no_titles() {
         genes: Default::default(),
         title: "a fit",
         sheet,
+        raw: None,
     };
     let svg = screen::draw(&m, &placed, &ask).unwrap();
     assert!(!svg.contains("genes · ") && !svg.contains("a fit"));
@@ -257,6 +259,7 @@ fn the_pinned_genes_are_the_browsers_mirror_bars() {
             genes: Default::default(),
             title: "a fit",
             sheet,
+            raw: None,
         };
         screen::draw(&m, &placed, &ask).unwrap()
     };
@@ -322,6 +325,7 @@ fn a_go_row_with_no_term_is_blank_unless_go_none() {
             genes: Default::default(),
             title: "a fit",
             sheet: Sheet::OWN,
+            raw: None,
         };
         screen::draw(&m, &placed, &ask).unwrap()
     };

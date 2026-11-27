@@ -187,6 +187,12 @@ cluster_view pin_top type="integer" minimum=0.0
 cluster_view plot type="string" enum=["batches","modules","trace"]
 cluster_view plots type="array" items="string" enum=["batches","modules","trace"] minItems=1.0
 cluster_view preset type="string" enum=["blocks","diagonal"]
+cluster_view raw type="boolean"
+cluster_view raw_bands type="string" enum=["equal","size"]
+cluster_view raw_data type="array" items="string"
+cluster_view raw_min_reads type="integer" minimum=0.0
+cluster_view raw_unit type="string" enum=["gene","site"]
+cluster_view raw_value type="string" enum=["fraction","log1p","methylated"]
 cluster_view read_bars type="array" items="string" enum=["bottom","left","top"]
 cluster_view region type="string" enum=["all","genes","grid","side"]
 cluster_view screen type="string"

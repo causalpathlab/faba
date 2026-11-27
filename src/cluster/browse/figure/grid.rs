@@ -103,6 +103,17 @@ fn margins(m: &Modules, rows: &[usize]) -> (Margin, Margin) {
     (genes, cells)
 }
 
+/// Gene module `g`'s name on the grid: `M5 (420 genes)`, or with
+/// `--short-module-names` `M5 (420)`.
+pub(super) fn module_name(m: &Modules, g: usize, grid: &GridArgs) -> String {
+    let unit = if grid.short_module_names {
+        ""
+    } else {
+        " genes"
+    };
+    format!("M{} ({}{unit})", g + 1, m.gene_sizes[g])
+}
+
 /// `s`'s width in `f`-point GO text.
 pub(in crate::cluster::browse) fn go_width(s: &str, f: f64) -> f64 {
     crate::figure::set_width(s, f)
@@ -338,16 +349,7 @@ pub(super) fn placed(
     // Transposed, the cell modules are the rows and the gene modules the
     // columns: every block, name, margin and label goes to the other axis.
     let tr = grid.transpose;
-    let names: Vec<String> = (rows.iter())
-        .map(|&g| {
-            let unit = if grid.short_module_names {
-                ""
-            } else {
-                " genes"
-            };
-            format!("M{} ({}{unit})", g + 1, m.gene_sizes[g])
-        })
-        .collect();
+    let names: Vec<String> = rows.iter().map(|&g| module_name(m, g, grid)).collect();
     let cell_names: Vec<String> = (m.columns.iter()).map(|&c| format!("C{}", c + 1)).collect();
     let (cols, n) = (m.columns.len(), rows.len());
     // The grid's columns and rows as drawn.
@@ -825,20 +827,15 @@ pub(super) fn placed(
             let rw = said.max(6.0 * f).min(right - x0);
             // Lightened as the blocks are under the bars.
             let shade = if bars.is_some() { UNDER_BARS } else { 1.0 };
-            let steps = 24;
-            for k in 0..steps {
-                let v = low + (shade_top - low) * (k as f64 + 0.5) / steps as f64;
-                let colour = match look {
+            let key_fill = |along: f64| {
+                let v = low + (shade_top - low) * along;
+                match look {
                     Look::Hinton => square_fill(v * shade).0,
                     _ => ink.fill(v * shade, shade_top, diverging).0,
-                };
-                let step = rw / steps as f64;
-                c.rect(x0 + step * k as f64, ky, step + 0.3, 0.7 * f, &colour);
-            }
-            let ty = ky + 1.7 * f;
-            c.text(x0, ty, &ends[0], f, Anchor::Start, MUTED);
-            c.text(x0 + rw / 2.0, ty, &ends[1], f, Anchor::Middle, MUTED);
-            c.text(x0 + rw, ty, &ends[2], f, Anchor::End, MUTED);
+                }
+            };
+            let ends = [ends[0].as_str(), ends[1].as_str(), ends[2].as_str()];
+            super::key_strip(c, (x0, ky, rw), f, 24, key_fill, ends);
             if !refs.is_empty() {
                 let sides: Vec<f64> = (refs.iter())
                     .map(|v| (cell - 2.0) * (v / top.max(1e-12)).sqrt())
@@ -891,36 +888,22 @@ pub(super) fn placed(
         }
         // The scale: a column of steps from the top value down to its other
         // end, labelled at both ends and the middle, right of the GO terms.
-        let (sx, sy, sh, steps) = (right + beside + f, head, cell * down as f64, 40);
-        for k in 0..steps {
-            let v = shade_top - (shade_top - low) * (k as f64 + 0.5) / steps as f64;
-            let y = sy + sh * k as f64 / steps as f64;
-            c.rect(
-                sx,
-                y,
-                f * 1.2,
-                sh / steps as f64 + 0.5,
-                &match look {
-                    Look::Hinton => square_fill(v).0,
-                    _ => ink.fill(v, shade_top, diverging).0,
-                },
-            );
-        }
+        let scale_fill = |along: f64| {
+            let v = shade_top - (shade_top - low) * along;
+            match look {
+                Look::Hinton => square_fill(v).0,
+                _ => ink.fill(v, shade_top, diverging).0,
+            }
+        };
         let mid = (shade_top + low) / 2.0;
-        for (v, y) in [
-            (shade_top, sy + f * 0.4),
-            (mid, sy + sh / 2.0 + f * 0.35),
-            (low, sy + sh),
-        ] {
-            c.text(
-                sx + f * 1.6,
-                y,
-                &end(v, format!("{v:.2}")),
-                f * 0.9,
-                Anchor::Start,
-                MUTED,
-            );
-        }
+        let said = [
+            end(shade_top, format!("{shade_top:.2}")),
+            end(mid, format!("{mid:.2}")),
+            end(low, format!("{low:.2}")),
+        ];
+        let at = (right + beside + f, head, cell * down as f64);
+        let said = [said[0].as_str(), said[1].as_str(), said[2].as_str()];
+        super::scale_column(c, at, f, scale_fill, said);
         c.text(label, h - f, &what, f, Anchor::Start, MUTED);
     });
     Ok((drawn, placed))
@@ -928,14 +911,13 @@ pub(super) fn placed(
 
 /// The `q` quantile (in (0, 1]) of `values`, of their sizes when
 /// `diverging`: the least that `q` of them are no more than.
-fn quantile(values: &[f64], q: f64, diverging: bool) -> f64 {
+pub(super) fn quantile(values: &[f64], q: f64, diverging: bool) -> f64 {
     let mut v: Vec<f64> = (values.iter())
         .map(|&v| if diverging { v.abs() } else { v })
         .collect();
     if v.is_empty() {
         return 0.0;
     }
-    v.sort_by(f64::total_cmp);
     let at = ((q * v.len() as f64).ceil() as usize).clamp(1, v.len()) - 1;
-    v[at]
+    *v.select_nth_unstable_by(at, f64::total_cmp).1
 }

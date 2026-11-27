@@ -396,7 +396,7 @@ pub(super) fn recorded(args: &ClusterArgs) -> settings::Recorded {
 
 /// The matrices to read: each with its batch and whether it is fitted; and
 /// the modality asked for.
-pub(super) fn inputs(args: &ClusterArgs) -> anyhow::Result<Vec<read::Input>> {
+pub(in crate::cluster) fn inputs(args: &ClusterArgs) -> anyhow::Result<Vec<read::Input>> {
     let mut out = Vec::new();
     let fits = |path: &str| {
         args.fit

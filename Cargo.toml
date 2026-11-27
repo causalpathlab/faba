@@ -62,10 +62,12 @@ legume-tui = { version = "0.5", features = ["browse", "form", "hist", "save", "v
 legume-mcp = { version = "0.7", optional = true }
 ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
 crossterm = { version = "0.29", default-features = false, features = ["osc52"] }
-# Figures: one SVG per view, converted to PDF and PNG.
+# Figures: one SVG per view, converted to PDF and PNG; raster layers
+# (the cluster view's raw heatmap) embedded in them as PNG.
 usvg = "0.45"
-resvg = { version = "0.45", default-features = false, features = ["text", "system-fonts", "memmap-fonts"] }
-svg2pdf = { version = "0.13", default-features = false, features = ["text"] }
+resvg = { version = "0.45", default-features = false, features = ["text", "system-fonts", "memmap-fonts", "raster-images"] }
+svg2pdf = { version = "0.13", default-features = false, features = ["text", "image"] }
+base64 = "0.22"
 # Figures drawn as images in terminals that support an image protocol
 # (kitty, iTerm2, sixel); others keep the text plots.
 ratatui-image = { version = "11.1", default-features = false, features = ["crossterm"] }
