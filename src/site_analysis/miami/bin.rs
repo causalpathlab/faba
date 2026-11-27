@@ -7,12 +7,18 @@
 //! `bin_positions_with_extent` in `pileup.rs`), lifted here so both the
 //! ASCII path and the figure share one definition.
 
-/// A fixed binning grid over an inclusive genomic extent.
+use crate::figure::{scaled, unscaled};
+use crate::tui::ui::Scale;
+
+/// A fixed binning grid over an inclusive genomic extent: equal columns
+/// of the bases from `min_pos`, or of their square root or log10(1 + bp)
+/// (`x_scale`), so the left end is spread and the right end pressed.
 #[derive(Clone, Copy, Debug)]
 pub struct BinEdges {
     pub min_pos: i64,
     pub max_pos: i64,
     pub num_bins: usize,
+    pub x_scale: Scale,
 }
 
 impl BinEdges {
@@ -21,7 +27,35 @@ impl BinEdges {
             min_pos,
             max_pos,
             num_bins: num_bins.max(1),
+            x_scale: Scale::Linear,
         }
+    }
+
+    /// The same edges on `x_scale`: the bases from the left end on it.
+    pub fn on(self, x_scale: Scale) -> Self {
+        Self { x_scale, ..self }
+    }
+
+    /// Whether its columns are equal in bases.
+    pub fn is_linear(&self) -> bool {
+        self.x_scale == Scale::Linear
+    }
+
+    /// How far across `pos` falls, 0 at `min_pos` and 1 at `max_pos`, on
+    /// its scale; clamped to the extent.
+    pub fn frac(&self, pos: i64) -> f64 {
+        let rel = (pos - self.min_pos).clamp(0, self.span() as i64) as f64;
+        scaled(self.x_scale, rel) / scaled(self.x_scale, self.span() as f64)
+    }
+
+    /// The first position at least `frac` of the way across (see
+    /// [`BinEdges::frac`]): a column's first base, as [`BinEdges::col_of`]
+    /// bins it.
+    pub fn pos_at(&self, frac: f64) -> i64 {
+        let top = scaled(self.x_scale, self.span() as f64);
+        let rel = unscaled(self.x_scale, frac.clamp(0.0, 1.0) * top);
+        // Within a rounding error of a whole base, that base.
+        self.min_pos + (rel - 1e-9).ceil().max(0.0) as i64
     }
 
     /// Genomic span in bp (at least 1, so a degenerate single-position
@@ -35,14 +69,23 @@ impl BinEdges {
     /// land in column 0; `max_pos` lands in the last column.
     #[inline]
     pub fn col_of(&self, pos: i64) -> usize {
+        if !self.is_linear() {
+            let col = (self.frac(pos) * self.num_bins as f64) as usize;
+            return col.min(self.num_bins - 1);
+        }
         let rel = (pos - self.min_pos).max(0) as u64;
         (rel * self.num_bins as u64 / self.span()).min(self.num_bins as u64 - 1) as usize
     }
 
-    /// Genomic range `[start, stop)` of column `col`.
+    /// Genomic range `[start, stop)` of column `col`: on a sqrt or log x, a
+    /// column at the spread left end narrower than a base holds none
+    /// (`start == stop`).
     pub fn col_range(&self, col: usize) -> (i64, i64) {
         let (span, n) = (self.span() as i64, self.num_bins as i64);
-        let at = |i: i64| self.min_pos + i * span / n;
+        let at = |i: i64| match self.is_linear() {
+            true => self.min_pos + i * span / n,
+            false => self.pos_at(i as f64 / n as f64),
+        };
         (at(col as i64), at(col as i64 + 1))
     }
 
@@ -70,8 +113,7 @@ impl BinEdges {
     /// they align horizontally.
     #[inline]
     pub fn x_px(&self, pos: i64, x_left: f32, plot_w: f32) -> f32 {
-        let frac = (pos - self.min_pos) as f32 / self.span() as f32;
-        x_left + frac.clamp(0.0, 1.0) * plot_w
+        x_left + self.frac(pos) as f32 * plot_w
     }
 }
 

@@ -187,12 +187,28 @@ pub fn draw_gene_body(
     let (x0, x1) = (x_of(g.lo), x_of(g.hi));
     let exon_h = band_h * EXON_SHARE;
 
-    // Intron line (gene footprint), then strand chevrons along it, each
-    // thinning with the band so a small model is not drawn coarse.
+    // Intron line (gene footprint), then the exons on it.
     let stroke = (band_h * 0.06).clamp(0.25, 0.8);
     c.line(x0, y_mid, x1, y_mid, INTRON, stroke);
+    let top = y_mid - exon_h / 2.0;
+    let mut drawn = Vec::new();
+    for &(es, ee) in &g.exons {
+        if ee <= edges.min_pos || es > edges.max_pos {
+            continue;
+        }
+        let (ex0, ex1) = (x_of(es), x_of(ee));
+        c.rect(ex0, top, (ex1 - ex0).max(0.8), exon_h, EXON);
+        drawn.push((ex0, ex1));
+    }
+    // Strand chevrons over them, evenly spaced across the drawing (on a
+    // sqrt or log x as on a linear one), each thinning with the band so a
+    // small model is not drawn coarse; white over an exon, so a gene of
+    // one block, or of short introns, still shows its strand.
     let step = band_h * 2.5;
     let head = exon_h * 0.35;
+    // Exons and chevrons both run left to right: one pass over each.
+    drawn.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut exon = 0;
     let mut x = x0 + step * 0.5;
     while x < x1 - 1.0 {
         let (tip, base) = if g.forward {
@@ -200,18 +216,14 @@ pub fn draw_gene_body(
         } else {
             (x - head, x + head)
         };
-        let chevron = [(base, y_mid - head), (tip, y_mid), (base, y_mid + head)];
-        c.polyline(&chevron, INTRON, stroke * 0.8);
-        x += step;
-    }
-
-    let top = y_mid - exon_h / 2.0;
-    for &(es, ee) in &g.exons {
-        if ee <= edges.min_pos || es > edges.max_pos {
-            continue;
+        while exon < drawn.len() && drawn[exon].1 < x + head {
+            exon += 1;
         }
-        let (ex0, ex1) = (x_of(es), x_of(ee));
-        c.rect(ex0, top, (ex1 - ex0).max(0.8), exon_h, EXON);
+        let on_exon = drawn.get(exon).is_some_and(|&(a, _)| a <= x - head);
+        let ink = if on_exon { "#ffffff" } else { INTRON };
+        let chevron = [(base, y_mid - head), (tip, y_mid), (base, y_mid + head)];
+        c.polyline(&chevron, ink, stroke * 0.8);
+        x += step;
     }
     // A gene running past the window is cut there: a break mark, two
     // short slashes across its line, says so at that end.

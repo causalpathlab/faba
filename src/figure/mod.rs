@@ -494,7 +494,7 @@ pub(crate) fn round_y_ticks(scale: Scale, max: f64, spread: f64) -> Vec<(f64, St
 }
 
 /// The least share of a square-root axis between its top two labels.
-const SQRT_SPREAD: f64 = 0.17;
+pub(crate) const SQRT_SPREAD: f64 = 0.17;
 
 /// The counts a square-root axis up to `top` labels: the multiples of a
 /// round step (1, 1.5, 2, 2.5 or 5 times a power of ten, whole), the least
@@ -513,6 +513,26 @@ fn even_counts(top: f64, spread: f64) -> Vec<f64> {
         }
     }
     Vec::new()
+}
+
+/// The round values a y axis on `scale` up to `max` (scaled) labels on a
+/// stretch `depth` deep (a plot, or a mirror's arm), each with its share of
+/// it: a label's height and a little apart, from the top down and none at
+/// zero's (a square-root axis's chosen so, to stay evenly spread).
+fn kept_round(c: &Canvas, scale: Scale, max: f64, depth: f64) -> Vec<(f64, String)> {
+    let apart = 1.3 * c.label_size(8.0) / depth;
+    let spread = match scale {
+        Scale::Sqrt => apart.max(SQRT_SPREAD),
+        _ => SQRT_SPREAD,
+    };
+    let mut kept: Vec<(f64, String)> = Vec::new();
+    for (share, label) in round_y_ticks(scale, max, spread).into_iter().rev() {
+        let last = kept.last().map_or(f64::INFINITY, |k| k.0);
+        if share <= last - apart && share >= apart {
+            kept.push((share, label));
+        }
+    }
+    kept
 }
 
 /// A round count as an axis says it: `20`, `500`, `1k`, `2.5k`, `1M`.
@@ -777,19 +797,38 @@ impl Bars<'_> {
         (max, labels)
     }
 
-    /// Where its plot starts in a tight panel on `c`, laid out (its
-    /// labels the same at any depth).
-    pub fn left(&self, c: &Canvas, _h: f64) -> f64 {
-        let labels = self.y_axis().1;
-        left_of(
-            c,
-            &labels.each_ref().map(String::as_str),
-            !self.y_title.is_empty(),
-        )
+    /// Where its plot starts in a tight panel `h` deep on `c`, laid out:
+    /// past the labels it writes at that depth (see [`Bars::written`]).
+    pub fn left(&self, c: &Canvas, h: f64) -> f64 {
+        let written = self.written(c, h);
+        let labels: Vec<&str> = written.iter().map(|w| w.1.as_str()).collect();
+        left_of(c, &labels, !self.y_title.is_empty())
+    }
+
+    /// The y labels it writes in a panel `h` deep, each with its share of
+    /// the plot's depth: on a square-root or log axis the round values that
+    /// stand apart there (see [`kept_round`]) over zero; else zero, half
+    /// and full scale.
+    fn written(&self, c: &Canvas, h: f64) -> Vec<(f64, String)> {
+        let (max, labels) = self.y_axis();
+        let titled = !self.y_title.is_empty();
+        let [_, _, top, bottom] = bar_margins(c, (&self.ticks, self.rotated), 0.0, titled);
+        let kept = match self.y_scale {
+            Scale::Linear => Vec::new(),
+            scale => kept_round(c, scale, max, h - top - bottom),
+        };
+        match kept.is_empty() {
+            true => [0.0, 0.5, 1.0].into_iter().zip(labels).collect(),
+            false => std::iter::once((0.0, "0".to_string()))
+                .chain(kept)
+                .collect(),
+        }
     }
 
     pub fn draw(&self, c: &mut Canvas, x: f64, y: f64, w: f64, h: f64) -> (f64, f64, f64, f64) {
-        let (max, labels) = self.y_axis();
+        let (max, _) = self.y_axis();
+        let written = self.written(c, h);
+        let labels: Vec<&str> = written.iter().map(|w| w.1.as_str()).collect();
         let BarFrame {
             plot: (px, py, pw, ph),
             dropped,
@@ -799,7 +838,7 @@ impl Bars<'_> {
             (x, y, w, h),
             (&self.ticks, self.rotated),
             (&self.title, &self.y_title),
-            &labels.each_ref().map(String::as_str),
+            &labels,
         );
         let n = self.values.len().max(1);
         let bw = pw / n as f64;
@@ -811,8 +850,9 @@ impl Bars<'_> {
             }
         };
 
-        // y gridlines and labels at 0, half and full scale.
-        for (f, label) in [0.0, 0.5, 1.0].into_iter().zip(&labels) {
+        // y gridlines and labels where they were chosen.
+        for (f, label) in &written {
+            let f = *f;
             let gy = py + ph - f * ph;
             if f > 0.0 {
                 c.line(px, gy, px + pw, gy, FAINT, 0.4);
@@ -1170,10 +1210,9 @@ pub struct Mirror<'a> {
 }
 
 impl Mirror<'_> {
-    /// The y axis: its top (scaled), its labels at the top, the zero line
-    /// and the bottom, and the round values it may label up each arm, a
-    /// square-root one's `spread` of an arm apart.
-    fn y_axis(&self, spread: f64) -> (f64, [String; 3], Vec<(f64, String)>) {
+    /// The y axis: its top (scaled) and its labels at the top, the zero
+    /// line and the bottom.
+    fn y_axis(&self) -> (f64, [String; 3]) {
         let all = self.up.values.iter().chain(self.down.values);
         let tallest = all.map(|&v| scaled(self.y_scale, v)).fold(0.0, f64::max);
         let max = self
@@ -1185,15 +1224,7 @@ impl Mirror<'_> {
             "" => own.clone(),
             l => l.to_string(),
         });
-        // A square-root or log axis of its own labels round values up each
-        // arm, as many as stand apart; else its top and zero.
-        let own_labels = self.y_labels.iter().all(String::is_empty);
-        let round = match self.y_scale {
-            Scale::Linear => Vec::new(),
-            _ if !own_labels => Vec::new(),
-            scale => round_y_ticks(scale, max, spread),
-        };
-        (max, labels, round)
+        (max, labels)
     }
 
     /// Where its plot starts in a tight panel `h` deep on `c`, laid out:
@@ -1213,7 +1244,7 @@ impl Mirror<'_> {
         let [_, _, top, bottom] = bar_margins(c, (&self.ticks, self.rotated), 0.0, titled);
         let kept = self.kept_round(c, h - top - bottom);
         let written = match kept.is_empty() {
-            true => self.y_axis(SQRT_SPREAD).1.to_vec(),
+            true => self.y_axis().1.to_vec(),
             false => std::iter::once("0".to_string())
                 .chain(kept.iter().map(|k| k.1.clone()))
                 .collect(),
@@ -1226,24 +1257,18 @@ impl Mirror<'_> {
     /// and none past the zero's (a square-root axis's chosen so, to stay
     /// evenly spread).
     fn kept_round(&self, c: &Canvas, ph: f64) -> Vec<(f64, String)> {
-        let apart = 1.3 * c.label_size(8.0) / (ph / 2.0);
-        let spread = match self.y_scale {
-            Scale::Sqrt => apart.max(SQRT_SPREAD),
-            _ => SQRT_SPREAD,
-        };
-        let round = self.y_axis(spread).2;
-        let mut kept: Vec<(f64, String)> = Vec::new();
-        for (share, label) in round.into_iter().rev() {
-            let last = kept.last().map_or(f64::INFINITY, |k| k.0);
-            if share <= last - apart && share >= apart {
-                kept.push((share, label));
-            }
+        // A square-root or log axis of its own labels; else its top and
+        // zero.
+        let own_labels = self.y_labels.iter().all(String::is_empty);
+        match self.y_scale {
+            Scale::Linear => Vec::new(),
+            _ if !own_labels => Vec::new(),
+            scale => kept_round(c, scale, self.y_axis().0, ph / 2.0),
         }
-        kept
     }
 
     pub fn draw(&self, c: &mut Canvas, x: f64, y: f64, w: f64, h: f64) -> (f64, f64, f64, f64) {
-        let (max, labels, _) = self.y_axis(SQRT_SPREAD);
+        let (max, labels) = self.y_axis();
         // The left margin made for the labels written at the plot's depth
         // (the same as the frame's: its margins' top and bottom do not hang
         // on the labels), so none runs past the panel's edge.

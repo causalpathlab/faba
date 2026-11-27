@@ -86,6 +86,7 @@ pub enum Beside {
 /// track) as they are, their square root, or `log10(1 + reads)`, each
 /// track's peak filling a side (the "all" track's its own, the cell
 /// modules' one shared): the pileup's.
+pub use crate::site_analysis::pileup::tui::Window;
 pub use crate::site_analysis::pileup::YScale;
 
 /// Where a pinned gene's model goes: over its tracks (its name under
@@ -122,6 +123,38 @@ pub struct GenesLook {
         help = "Leave the pinned genes' track labels (each track's name and cells, left of the genes) out on --screen"
     )]
     pub no_track_labels: bool,
+
+    #[arg(
+        long = "two-line-names",
+        requires = "screen",
+        help = "Name each pinned gene on --screen in two lines, its symbol over its module (\"HOXA10-AS\" / \"M2\"), so a long symbol is not cut to fit beside its module"
+    )]
+    pub two_line_names: bool,
+
+    #[arg(
+        long = "genes-window",
+        value_enum,
+        requires = "screen",
+        help = "What each pinned gene's strip spans on --screen: gene (its model, TSS to TES, as the browser has it; the default but beside a transposed grid) or sites (at its sites, padded by --genes-pad; the default beside a transposed grid, where the genes are drawn equally wide), as faba pileup's --window"
+    )]
+    pub window: Option<Window>,
+
+    #[arg(
+        long = "genes-pad",
+        value_name = "BP",
+        requires = "screen",
+        help = "Bases either side of a pinned gene's sites where its strip is at them (--genes-window sites), from the first to the last; by default centred on them, their span and a quarter of it either side, 1 kb at least, within the gene (as faba pileup's --pad)"
+    )]
+    pub pad: Option<u32>,
+
+    #[arg(
+        long = "genes-xscale",
+        value_enum,
+        default_value = "linear",
+        requires = "screen",
+        help = "The pinned genes' strips' x scale on --screen: linear, sqrt or log10 (of 1 + bases) of the distance from the strip's left-most base, the left end spread and the right pressed, the models drawn on it too (as faba pileup's --xscale)"
+    )]
+    pub x_scale: YScale,
 }
 
 /// Which of the screen's regions a figure draws.
@@ -621,7 +654,7 @@ fn transposed_columns(m: &Modules, state: &Placed) -> f64 {
     let grid = 8.0 + 6.0 * m.gene_roles as f64 + 2.0;
     let genes = match state.pins.is_empty() {
         true => 0.0,
-        false => 12.0 + super::genes::one_row(&super::genes::widths(m, &state.pins)),
+        false => 12.0 + super::genes::one_row(&super::genes::beside(m, &state.pins)),
     };
     grid + genes
 }

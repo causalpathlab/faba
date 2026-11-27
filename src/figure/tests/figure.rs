@@ -502,7 +502,7 @@ fn the_default_figures_are_unchanged() {
     }
     .draw(&mut c, 0.0, 0.0, 300.0, 200.0);
     let shown = [fingerprint(&panel()), fingerprint(&c.finish())];
-    assert_eq!(shown, [3060415989485868728, 16840006330901660691]);
+    assert_eq!(shown, [3619455872292144420, 16840006330901660691]);
 }
 
 /// A title too long for its room drops its closing parenthetical, then
@@ -519,4 +519,38 @@ fn a_long_title_is_shortened_to_fit() {
     assert_eq!(at(s, w("TITLE1: TITLE2")), "TITLE1");
     let cut = at("TITLE1TITLE2TITLE3", w("TITLE1TI"));
     assert!(cut.ends_with('…') && w(&cut) <= w("TITLE1TI"), "{cut}");
+}
+
+/// A bar panel on a square-root axis is ticked at round counts, evenly
+/// spread, not at its top and a quarter of it.
+#[test]
+fn a_sqrt_bar_panel_ticks_round_counts() {
+    let values = [0.0, 3_990.0, 1_200.0];
+    let mut c = Canvas::new(200.0, 160.0);
+    Bars {
+        rotated: false,
+        values: &values,
+        front: None,
+        accent: &|_| false,
+        colour: &|_| BAR,
+        y_scale: Scale::Sqrt,
+        y_max: None,
+        ticks: Vec::new(),
+        pointer: None,
+        marks: Vec::new(),
+        dividers: Vec::new(),
+        title: String::new(),
+        x_title: String::new(),
+        y_title: "reads".into(),
+    }
+    .draw(&mut c, 0.0, 0.0, 200.0, 160.0);
+    let svg = c.finish();
+    assert!(
+        svg.contains(">3k</text>") && svg.contains(">1.5k</text>"),
+        "{svg}"
+    );
+    assert!(
+        !svg.contains(">998</text>") && !svg.contains(">4.0k</text>"),
+        "{svg}"
+    );
 }

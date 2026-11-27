@@ -321,17 +321,17 @@ impl PileupView<'_> {
         }
         let symbol = self.symbol();
         let window = format!(
-            "{}:{}-{}, {} bp per bar",
+            "{}:{}-{}, {}",
             self.chr,
             fmt_thousands(lo),
             fmt_thousands(hi),
-            self.bin_width()
+            self.per_bar()
         );
         // The window, but for the bars' width alone on a panel, or where
         // the window does not fit across.
         let narrow = figure::text_width(&window, c.label_size(9.0)) > across - 4.0;
         let under = match style.panel_only || narrow {
-            true => format!("{} bp per bar", self.bin_width()),
+            true => self.per_bar(),
             false => window,
         };
         if style.tight {
@@ -398,9 +398,15 @@ impl PileupView<'_> {
         f: impl FnOnce(&mut dyn Panel, &mut Canvas) -> R,
     ) -> Option<R> {
         // A tight page names the chromosome and the ticks' unit.
-        let x_title = match c.style().tight {
-            true => format!("{} (Mb)", self.chr),
-            false => format!("{} position", self.chr),
+        // On a sqrt or log x scale, the bases from the window's left end.
+        let x_title = match (self.edges().is_linear(), c.style().tight) {
+            (true, true) => format!("{} (Mb)", self.chr),
+            (true, false) => format!("{} position", self.chr),
+            (false, _) => format!(
+                "bp from {} ({})",
+                fmt_thousands(self.window.0),
+                self.edges().x_scale.name()
+            ),
         };
         let roles = c.style().palette.roles();
         let (bar, front) = (roles.bar, roles.front);
@@ -507,9 +513,31 @@ impl PileupView<'_> {
         }
     }
 
-    /// About five labelled genomic ticks across the window.
+    /// About five labelled genomic ticks across the window (on a sqrt or
+    /// log x scale, at round distances from its left end).
     fn tick_list(&self) -> Vec<(usize, String)> {
-        self.ticks_every(self.columns / 5)
+        match self.edges().is_linear() {
+            true => self.ticks_every(self.columns / 5),
+            false => self.distance_ticks(5),
+        }
+    }
+
+    /// At most `n` ticks on a sqrt or log x scale: the left end (0) and
+    /// round distances from it, evenly spread on that scale (as a y axis
+    /// on it is ticked), the farthest kept.
+    fn distance_ticks(&self, n: usize) -> Vec<(usize, String)> {
+        let edges = self.edges();
+        let top = figure::scaled(edges.x_scale, edges.span() as f64);
+        let round = figure::round_y_ticks(edges.x_scale, top, figure::SQRT_SPREAD);
+        let far = round.len().saturating_sub(n.saturating_sub(1));
+        let at = |share: f64| ((share * self.columns as f64) as usize).min(self.columns.max(1) - 1);
+        std::iter::once((0, "0".to_string()))
+            .chain(
+                round[far..]
+                    .iter()
+                    .map(|(share, l)| (at(*share), l.clone())),
+            )
+            .collect()
     }
 
     /// The ticks on `c` for a row `w` across whose plot starts `left` in,
@@ -563,6 +591,9 @@ impl PileupView<'_> {
     /// positions, each labelled in Mb with just the decimals that tell
     /// them apart: a step of 1, 2 or 5 times a power of ten bases.
     pub(super) fn mb_ticks(&self, n: usize) -> Vec<(usize, String)> {
+        if !self.edges().is_linear() {
+            return self.distance_ticks(n);
+        }
         let (lo, hi) = self.window;
         let n = n as i64;
         let count = |step: i64| hi.div_euclid(step) - (lo + step - 1).div_euclid(step) + 1;

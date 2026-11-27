@@ -454,6 +454,14 @@ pub struct PileupArgs {
     yscale: YScale,
 
     #[arg(
+        long = "xscale",
+        value_enum,
+        default_value = "linear",
+        help = "The bars' x scale, in the figure and as the browser opens: linear (equal bases a bar), sqrt or log10 (of 1 + bases) of the distance from the window's left-most base, so the left end spreads and the right end presses; the gene models drawn on it too, the ticks at round distances from the left; with --window gene the whole gene stays in; `x` steps it in the browser"
+    )]
+    pub(crate) xscale: YScale,
+
+    #[arg(
         long = "difference",
         default_value_t = false,
         help = "Draw the row comparing the first two tracks (WT vs MUT) in the figure, as the browser does until `D` hides it"
@@ -1059,6 +1067,7 @@ fn interactive(base: &PileupArgs, source: Source, first: Option<Loaded>) -> anyh
     // How the bars are drawn carries from one gene to the next.
     let mut settings = tui::Settings {
         y_scale: Some(base.yscale.into()),
+        x_scale: Some(base.xscale.into()),
         pad: base.pad.map(i64::from),
         ..tui::Settings::default()
     };

@@ -517,6 +517,38 @@ fn write_figure(m: &Modules, args: &ModulesArgs, dir: &Path, prefix: &str) -> an
     Ok(())
 }
 
+/// Every GO test of `m`'s gene modules, as `shown` asks GO, written to
+/// `path` (a new file; see [`go::every`]); the path printed, but beside
+/// JSON.
+fn write_go_table(m: &Modules, shown: &text::Shown, path: &str) -> anyhow::Result<()> {
+    use std::io::Write;
+    let ask = shown.go_ask();
+    let source = ask.source(m).map_err(anyhow::Error::msg)?;
+    // Made new, never replacing a file; taken away again when the table
+    // cannot be written whole.
+    let file = (std::fs::OpenOptions::new().write(true).create_new(true))
+        .open(path)
+        .with_context(|| format!("{path}: name a new --go-table"))?;
+    let mut out = std::io::BufWriter::new(file);
+    let written = go::every(
+        &m.gene_main,
+        m.gene_roles,
+        &source,
+        ask.min_weight,
+        &mut out,
+    )
+    .and_then(|()| Ok(out.flush()?));
+    if written.is_err() {
+        let _ = std::fs::remove_file(path);
+    }
+    written?;
+    // Printed JSON stays JSON alone.
+    if !shown.json {
+        println!("{path}");
+    }
+    Ok(())
+}
+
 /// One fit, shown as `args` ask: its page written, its levels printed, or
 /// browsed; gene models from `gtf`.
 fn show(
@@ -527,6 +559,14 @@ fn show(
     // Shared with the thread that writes the report on Ctrl+E.
     let mut modules = Modules::load(&dir, &modality, record)?;
     modules.regroup(&args.batch_groups()?)?;
+    // Every GO test written, before the figure or any level asked for
+    // with it.
+    if let Some(path) = &args.shown.go_table {
+        write_go_table(&modules, &args.shown, path)?;
+        if args.figure.is_none() && !args.shown.any() && !args.shown.json {
+            return Ok(());
+        }
+    }
     if let Some(prefix) = &args.figure {
         return write_figure(&modules, args, &dir, prefix);
     }

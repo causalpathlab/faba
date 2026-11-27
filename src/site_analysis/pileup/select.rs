@@ -240,3 +240,35 @@ pub(super) fn summarize_chr(matched_chrs: &[Box<str>]) -> Box<str> {
         _ => "*".into(),
     }
 }
+
+/// The least a window at the sites spans when no pad is asked for.
+pub(crate) const LEAST_SITES_WINDOW: i64 = 1_000;
+
+/// A window at sites from `lo` to `hi`: from the first to the last and
+/// `pad` either side, else centred on them, their span and a quarter of
+/// it either side, [`LEAST_SITES_WINDOW`] at least; `columns` bases at
+/// least (a base a bar), within `extent`.
+pub(crate) fn window_at_sites(
+    (lo, hi): (i64, i64),
+    pad: Option<i64>,
+    (flo, fhi): (i64, i64),
+    columns: usize,
+) -> (i64, i64) {
+    let (mut lo, mut hi) = match pad {
+        Some(pad) => (lo - pad.max(0), hi + pad.max(0)),
+        None => {
+            let span = hi - lo;
+            let w = (span + 2 * (span / 4)).max(LEAST_SITES_WINDOW);
+            let start = lo + span / 2 - w / 2;
+            (start, start + w)
+        }
+    };
+    let least = columns.max(1) as i64;
+    if hi - lo < least {
+        let mid = lo + (hi - lo) / 2;
+        (lo, hi) = (mid - least / 2, mid - least / 2 + least);
+    }
+    let w = (hi - lo).min(fhi - flo);
+    let lo = lo.clamp(flo, fhi - w);
+    (lo, lo + w)
+}

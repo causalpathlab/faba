@@ -113,6 +113,9 @@ pub struct PileupView<'a> {
     /// Bars per track in the last frame (one per chart column).
     columns: usize,
     y_scale: Scale,
+    /// The bars' x scale: the bases from the window's left end, or their
+    /// square root or log10(1 + bp), the left end spread (`x` steps it).
+    x_scale: Scale,
     controls: Controls,
     /// The `/` search being typed.
     search: LineInput,
@@ -184,6 +187,7 @@ pub struct PileupView<'a> {
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Settings {
     pub y_scale: Option<Scale>,
+    pub x_scale: Option<Scale>,
     pub show: Option<Show>,
     pub mirror: Option<bool>,
     pub measure: Option<Measure>,
@@ -225,6 +229,7 @@ impl<'a> PileupView<'a> {
             window: (lo, hi),
             columns: 80,
             y_scale: Scale::Linear,
+            x_scale: Scale::Linear,
             controls: Controls::new(&format!("pileup_{title}")),
             search: LineInput::new(128),
             status: None,
@@ -267,6 +272,7 @@ impl<'a> PileupView<'a> {
     pub fn apply(&mut self, s: &Settings) {
         let before = self.settings();
         self.y_scale = s.y_scale.unwrap_or(self.y_scale);
+        self.x_scale = s.x_scale.unwrap_or(self.x_scale);
         self.show = s.show.unwrap_or(self.show);
         self.set_mirror(s.mirror.unwrap_or(self.mirror));
         if let (Some(c), Some(measure)) = (&mut self.contrast, s.measure) {
@@ -300,6 +306,7 @@ impl<'a> PileupView<'a> {
     pub fn settings(&self) -> Settings {
         Settings {
             y_scale: Some(self.y_scale),
+            x_scale: Some(self.x_scale),
             show: Some(self.show),
             mirror: Some(self.mirror),
             measure: self.contrast.map(|c| c.measure),
@@ -406,6 +413,10 @@ impl crate::tui::View for PileupView<'_> {
             ("-", "zoom out; past the gene, its flanks too"),
             ("0", "the whole gene, or its sites"),
             ("y", "y scale: linear, log10, sqrt"),
+            (
+                "x",
+                "x scale: linear, log10, sqrt of the bases from the left",
+            ),
             ("Y", "lock y for the genes after, or unlock"),
         ];
         keys.extend(self.optional_help(self.rows_hidden()));
@@ -496,6 +507,10 @@ impl Screen for PileupView<'_> {
             KeyCode::Char('-') => self.zoom_out(),
             KeyCode::Char('0') => self.whole_or_sites(),
             KeyCode::Char('y') => self.y_scale = self.y_scale.next(),
+            KeyCode::Char('x') => {
+                self.x_scale = self.x_scale.next();
+                self.plots.iter_mut().for_each(PlotImage::invalidate);
+            }
             // Keep this y-axis maximum for every gene opened after, so they
             // compare; again, back to each its own.
             KeyCode::Char('Y') => {
