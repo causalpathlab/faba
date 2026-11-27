@@ -270,6 +270,13 @@ pub struct GridArgs {
     pub transpose: bool,
 
     #[arg(
+        long = "short-module-names",
+        requires = "drawn",
+        help = "Name the gene modules on the grid by their genes' count alone, \"M5 (420)\", not \"M5 (420 genes)\""
+    )]
+    pub short_module_names: bool,
+
+    #[arg(
         long = "go-side",
         value_enum,
         requires = "transpose",
@@ -307,6 +314,7 @@ impl Default for GridArgs {
             block_bars: false,
             cap: None,
             transpose: false,
+            short_module_names: false,
             go_side: None,
             ranges: false,
         }

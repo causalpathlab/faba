@@ -10,17 +10,20 @@
 //! The model can go under the tracks instead (the name then over them),
 //! the "all" track and the tracks' labels can be left out, and beside a
 //! transposed grid the genes are one row, each cell module's track on
-//! its grid row (see [`Aligned`]).
+//! its grid row (see [`Aligned`]), every gene as wide as the widest and
+//! drawn at its sites (`--genes-pad`).
 
 use super::screen::{GenesLook, ModelAt, YScale};
 use super::{width, Ink, BLOCK_UP, BLOCK_UP_GRAY, MIRROR_LEAST, MIRROR_OFF};
 use crate::cluster::browse::data::bounds;
-use crate::cluster::browse::view::{columns, pack, peak, segment_width, Pin};
+use crate::cluster::browse::view::{columns_on, pack, peak, segment_width, Pin};
 use crate::cluster::browse::{Count, Modules};
 use crate::figure::{Anchor, Canvas, FAINT, INK, MUTED};
 use crate::site_analysis::miami::bin::BinEdges;
 use crate::site_analysis::miami::genemodel::{draw_gene_model, GeneModel};
-use crate::site_analysis::pileup::query_symbol;
+use crate::site_analysis::pileup::tui::Window;
+use crate::site_analysis::pileup::{query_symbol, window_at_sites};
+use crate::tui::ui::Scale;
 use rustc_hash::FxHashMap;
 
 /// A terminal column's width, in font sizes: the segments are as many
@@ -30,6 +33,16 @@ const COLUMN: f64 = 0.6;
 /// The model's band and the names' line, in font sizes.
 const MODEL: f64 = 1.6;
 const NAME: f64 = 1.5;
+/// A line of a name, in font sizes: a second line takes this more.
+const LINE: f64 = 1.1;
+
+/// The room the names take, in font sizes: one line, or two.
+fn name_room(look: GenesLook) -> f64 {
+    match look.two_line_names {
+        true => NAME + LINE,
+        false => NAME,
+    }
+}
 
 /// How the genes are drawn: their bars' scale, the look asked for, and
 /// for a transposed screen the grid's rows they share (see [`Aligned`]).
@@ -65,7 +78,7 @@ pub(super) struct Aligned {
 /// their tracks' labels (unless `how` leaves them out).
 pub(super) fn wanted(m: &Modules, pins: &[Pin], f: f64, how: How) -> f64 {
     let tracks = tracks(m, how.look);
-    label_width(m, &tracks, f, how.look) + one_row(&widths(m, pins)) * COLUMN * f
+    label_width(m, &tracks, f, how.look) + one_row(&beside(m, pins)) * COLUMN * f
 }
 
 /// How far over a transposed grid's first row the genes beside it reach:
@@ -76,16 +89,23 @@ pub(super) fn over(look: GenesLook, models: bool, f: f64, pitch: f64) -> f64 {
     let above = match (look.model_at, models) {
         (ModelAt::Top, true) => MODEL * f,
         (ModelAt::Top, false) => 0.0,
-        (ModelAt::Bottom, _) => NAME * f,
+        (ModelAt::Bottom, _) => name_room(look) * f,
     };
     all + above
 }
 
 /// Each pin's segment's width, in the browser's columns.
-pub(super) fn widths(m: &Modules, pins: &[Pin]) -> Vec<u16> {
+fn widths(m: &Modules, pins: &[Pin]) -> Vec<u16> {
     (pins.iter())
         .map(|p| segment_width(m.genes(p.role)[p.gene].len()))
         .collect()
+}
+
+/// Each pin's segment's width beside a transposed grid, in the browser's
+/// columns: every one the widest's, so each has room for its name.
+pub(super) fn beside(m: &Modules, pins: &[Pin]) -> Vec<u16> {
+    let widest = widths(m, pins).into_iter().max().unwrap_or(0);
+    vec![widest; pins.len()]
 }
 
 /// The columns segments `widths` wide take in one row, a divider between
@@ -144,7 +164,12 @@ pub(super) fn draw(
     let f = ink.f;
     let tracks = tracks(m, how.look);
     let label_w = label_width(m, &tracks, f, how.look);
-    let widths = widths(m, pins);
+    // Beside a transposed grid every gene as wide as the widest, so each
+    // has room for its name and its sites; else as the browser has them.
+    let widths = match how.aligned {
+        Some(_) => beside(m, pins),
+        None => widths(m, pins),
+    };
     let model_h = if models.is_empty() { 0.0 } else { MODEL * f };
     let top_model = how.look.model_at == ModelAt::Top;
     // The rows of genes, and the columns' width: packed as the browser
@@ -167,8 +192,9 @@ pub(super) fn draw(
             Some(a) => (a.top - a.pitch * (n - m.columns.len() as f64), a.pitch),
             None => {
                 let top = y + row_h * k as f64;
-                let track_h = ((row_h - model_h - NAME * f) / n).max(1.0);
-                let over = if top_model { model_h } else { NAME * f };
+                let names = name_room(how.look) * f;
+                let track_h = ((row_h - model_h - names) / n).max(1.0);
+                let over = if top_model { model_h } else { names };
                 (top + over, track_h)
             }
         };
@@ -220,28 +246,68 @@ pub(super) fn draw(
                 x: at,
                 col,
                 cols: widths[p],
+                x_scale: how.look.x_scale.into(),
             };
             let gene = m.gene_of(pins[p].role, m.genes(pins[p].role)[pins[p].gene].start);
-            if let Some(model) = models.get(gene) {
-                seg.model(c, model, (b.model_y, model_h), f);
+            let model = models.get(gene);
+            let extent = extent(m, pins[p], model, how);
+            if let Some(model) = model {
+                seg.model(c, model, extent, (b.model_y, model_h), f);
             }
             let reads = (b.tracks_top, b.track_h, how.scale, !how.look.no_all);
-            seg.tracks(c, m, pins[p], reads, up, models.get(gene));
+            seg.tracks(c, m, pins[p], reads, up, extent);
             // The name kept to its gene's width, lest it run into the next:
             // the symbol shortened, its module kept, a letter clear of the
-            // next (a symbol's capitals set wider than the estimate).
-            let module = format!(" M{}", pins[p].role + 1);
-            let room = col * f64::from(widths[p]) - crate::figure::text_width(&module, f) - f;
-            let symbol = crate::figure::fit_text(&query_symbol(gene), room, f);
-            c.text(
-                at,
-                b.name_y,
-                &format!("{symbol}{module}"),
-                f,
-                Anchor::Start,
-                INK,
-            );
+            // next (a symbol's capitals set wider than the estimate); in
+            // two lines, the symbol over its module, the whole width its.
+            let module = format!("M{}", pins[p].role + 1);
+            let wide = col * f64::from(widths[p]) - f;
+            let lines = match how.look.two_line_names {
+                true => {
+                    let symbol = crate::figure::fit_text(&query_symbol(gene), wide, f);
+                    vec![symbol, module]
+                }
+                false => {
+                    let room = wide - crate::figure::text_width(&format!(" {module}"), f);
+                    let symbol = crate::figure::fit_text(&query_symbol(gene), room, f);
+                    vec![format!("{symbol} {module}")]
+                }
+            };
+            // Under the tracks the first line at the names' baseline; over
+            // them the last.
+            let first = match top_model {
+                true => b.name_y,
+                false => b.name_y - LINE * f * (lines.len() - 1) as f64,
+            };
+            for (k, line) in lines.iter().enumerate() {
+                let y = first + LINE * f * k as f64;
+                c.text(at, y, line, f, Anchor::Start, INK);
+            }
             at += col * f64::from(widths[p]);
+        }
+    }
+}
+
+/// The positions a pin's segment spans, as `how` asks: the whole gene
+/// (its model's, else its sites') or at its sites (see
+/// [`window_at_sites`], padded as asked) within the model; by default at
+/// its sites beside a transposed grid, else the whole gene.
+fn extent(m: &Modules, pin: Pin, model: Option<&GeneModel>, how: How) -> (i64, i64) {
+    let span = m.genes(pin.role)[pin.gene].clone();
+    let pos = m.members[pin.role][span]
+        .iter()
+        .map(|s| m.sites[s.site].pos);
+    let sites = bounds(pos);
+    let gene = model.map_or(sites, |g| (g.lo, g.hi - 1));
+    let window = (how.look.window).unwrap_or(match how.aligned {
+        Some(_) => Window::Sites,
+        None => Window::Gene,
+    });
+    match window {
+        Window::Gene => gene,
+        Window::Sites => {
+            let pad = how.look.pad.map(i64::from);
+            window_at_sites(sites, pad, (gene.0.min(sites.0), gene.1.max(sites.1)), 1)
         }
     }
 }
@@ -252,6 +318,8 @@ struct Segment {
     x: f64,
     col: f64,
     cols: u16,
+    /// The positions' scale across it, from its left end.
+    x_scale: Scale,
 }
 
 impl Segment {
@@ -265,9 +333,16 @@ impl Segment {
 
     /// The gene's model across the segment, in the pileup figure's own
     /// drawing, its symbol left to the name under the tracks.
-    fn model(&self, c: &mut Canvas, g: &GeneModel, (top, model_h): (f64, f64), f: f64) {
+    fn model(
+        &self,
+        c: &mut Canvas,
+        g: &GeneModel,
+        (lo, hi): (i64, i64),
+        (top, model_h): (f64, f64),
+        f: f64,
+    ) {
         let (x0, w) = self.span();
-        let edges = BinEdges::new(g.lo, g.hi - 1, usize::from(self.cols));
+        let edges = BinEdges::new(lo, hi, usize::from(self.cols)).on(self.x_scale);
         let blank = GeneModel {
             symbol: "".into(),
             ..g.clone()
@@ -286,18 +361,15 @@ impl Segment {
         pin: Pin,
         (top, track_h, scale, all): (f64, f64, YScale, bool),
         up: &str,
-        model: Option<&GeneModel>,
+        extent: (i64, i64),
     ) {
         let span = m.genes(pin.role)[pin.gene].clone();
         let members = &m.members[pin.role][span];
         let pos: Vec<i64> = members.iter().map(|s| m.sites[s.site].pos).collect();
-        let extent = match model {
-            Some(g) => (g.lo, g.hi - 1),
-            None => bounds(pos.iter().copied()),
-        };
+        let on = BinEdges::new(extent.0, extent.1, 1).on(self.x_scale);
         let n = 1 + m.columns.len();
         let mut cols = vec![vec![Count::default(); n]; usize::from(self.cols)];
-        for (member, col) in members.iter().zip(columns(&pos, extent, self.cols)) {
+        for (member, col) in members.iter().zip(columns_on(&pos, &on, self.cols)) {
             for (t, &r) in member.reads.iter().enumerate() {
                 cols[usize::from(col)][0].add(r);
                 cols[usize::from(col)][t + 1].add(r);

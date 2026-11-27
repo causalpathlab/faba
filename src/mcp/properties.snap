@@ -152,6 +152,9 @@ cluster_view format type="array" items="string" enum=["pdf","png","svg"]
 cluster_view gaf type="string"
 cluster_view gene type="string"
 cluster_view gene_model type="string" enum=["bottom","top"]
+cluster_view genes_pad type="integer" minimum=0.0
+cluster_view genes_window type="string" enum=["gene","sites"]
+cluster_view genes_xscale type="string" enum=["linear","log10","sqrt"]
 cluster_view genes_yscale type="string" enum=["linear","log10","sqrt"]
 cluster_view gmt type="string"
 cluster_view go type="boolean"
@@ -160,8 +163,9 @@ cluster_view go_min_weight type="number" minimum=0.0 maximum=1.0
 cluster_view go_none type="boolean"
 cluster_view go_q type="number" exclusiveMinimum=0.0 maximum=1.0
 cluster_view go_side type="string" enum=["bottom","top"]
-cluster_view grid_cap type="number"
+cluster_view go_table type="string"
 cluster_view grid type="boolean"
+cluster_view grid_cap type="number"
 cluster_view group type="string"
 cluster_view gtf type="string"
 cluster_view height type="number" minimum=0.75
@@ -187,11 +191,13 @@ cluster_view read_bars type="array" items="string" enum=["bottom","left","top"]
 cluster_view region type="string" enum=["all","genes","grid","side"]
 cluster_view screen type="string"
 cluster_view settings type="boolean"
+cluster_view short_module_names type="boolean"
 cluster_view side type="string" enum=["go","none","sites"]
 cluster_view size_bars type="array" items="string" enum=["bottom","left","top"]
 cluster_view state type="string"
 cluster_view trace type="boolean"
 cluster_view transpose type="boolean"
+cluster_view two_line_names type="boolean"
 cluster_view values type="boolean"
 cluster_view width type="number" minimum=1.0
 cluster_view xlab type="string"
@@ -355,6 +361,7 @@ pileup top_modality type="array" items="string"
 pileup track type="array" items="string"
 pileup width type="number" minimum=1.0
 pileup window type="string" enum=["gene","sites"]
+pileup xscale type="string" enum=["linear","log10","sqrt"]
 pileup yscale type="string" enum=["linear","log10","sqrt"]
 pwm data type="array" items="string" minItems=1.0
 pwm figure type="boolean"
@@ -390,6 +397,7 @@ qc html type="string"
 qc input type="string"
 qc key type="boolean"
 qc key_at type="string" enum=["alone","inside","right","top"]
+qc marginal_kept type="string" enum=["all","panel"]
 qc marginal_scale type="string" enum=["linear","log1p","sqrt"]
 qc marginal_size type="number"
 qc marginals type="array" items="string"
@@ -404,6 +412,7 @@ qc panel_only type="boolean"
 qc plots type="boolean"
 qc qc_mads type="number" exclusiveMinimum=0.0
 qc qc_min_cell_nnz type="integer" minimum=0.0
+qc ramp type="string"
 qc row_nnz_cutoff type="integer" minimum=0.0
 qc scale type="array" items="string"
 qc show_histogram type="boolean"
@@ -416,13 +425,14 @@ qc site_min_edit_ratio type="number"
 qc site_min_fold type="number"
 qc site_min_log_odds type="number"
 qc style type="string" enum=["panel","view"]
+qc threshold_colour type="string"
 qc width type="number" minimum=1.0
 qc xlab type="array" items="string"
 qc ylab type="array" items="string"
 qc yscale type="array" items="string"
 qc_view bins type="integer" minimum=0.0
-qc_view figure type="string"
 qc_view count_scale type="string" enum=["linear","log1p","sqrt"]
+qc_view figure type="string"
 qc_view font_size type="number"
 qc_view format type="array" items="string" enum=["pdf","png","svg"]
 qc_view front type="string" enum=["mut","wt"]
@@ -434,6 +444,7 @@ qc_view html type="string"
 qc_view input type="string"
 qc_view key type="boolean"
 qc_view key_at type="string" enum=["alone","inside","right","top"]
+qc_view marginal_kept type="string" enum=["all","panel"]
 qc_view marginal_scale type="string" enum=["linear","log1p","sqrt"]
 qc_view marginal_size type="number"
 qc_view marginals type="array" items="string"
@@ -444,8 +455,10 @@ qc_view pairs type="array" items="string"
 qc_view palette type="string" enum=["colour","gray"]
 qc_view panel_only type="boolean"
 qc_view plots type="boolean"
+qc_view ramp type="string"
 qc_view scale type="array" items="string"
 qc_view style type="string" enum=["panel","view"]
+qc_view threshold_colour type="string"
 qc_view view_state type="string"
 qc_view width type="number" minimum=1.0
 qc_view xlab type="array" items="string"
@@ -526,6 +539,7 @@ site_plot hist type="array" items="string"
 site_plot input type="string"
 site_plot key type="boolean"
 site_plot key_at type="string" enum=["alone","inside","right","top"]
+site_plot marginal_kept type="string" enum=["all","panel"]
 site_plot marginal_scale type="string" enum=["linear","log1p","sqrt"]
 site_plot marginal_size type="number"
 site_plot marginals type="array" items="string"
@@ -536,6 +550,7 @@ site_plot p_axis type="string" enum=["neglog10","p"]
 site_plot pairs type="array" items="string"
 site_plot palette type="string" enum=["colour","gray"]
 site_plot panel_only type="boolean"
+site_plot ramp type="string"
 site_plot scale type="array" items="string"
 site_plot site_max_edit_ratio type="number"
 site_plot site_max_pv type="number"
@@ -546,6 +561,7 @@ site_plot site_min_edit_ratio type="number"
 site_plot site_min_fold type="number"
 site_plot site_min_log_odds type="number"
 site_plot style type="string" enum=["panel","view"]
+site_plot threshold_colour type="string"
 site_plot width type="number" minimum=1.0
 site_plot xlab type="array" items="string"
 site_plot ylab type="array" items="string"
@@ -592,12 +608,3 @@ view_open session type="string"
 view_open view type="string" enum=["cluster_view","metagene","pileup","pwm","qc_view"]
 view_state session type="string"
 view_state set type="object"
-qc marginal_kept type="string" enum=["all","panel"]
-qc ramp type="string"
-qc threshold_colour type="string"
-qc_view marginal_kept type="string" enum=["all","panel"]
-qc_view ramp type="string"
-qc_view threshold_colour type="string"
-site_plot marginal_kept type="string" enum=["all","panel"]
-site_plot ramp type="string"
-site_plot threshold_colour type="string"

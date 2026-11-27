@@ -339,7 +339,14 @@ pub(super) fn placed(
     // columns: every block, name, margin and label goes to the other axis.
     let tr = grid.transpose;
     let names: Vec<String> = (rows.iter())
-        .map(|&g| format!("M{} ({} genes)", g + 1, m.gene_sizes[g]))
+        .map(|&g| {
+            let unit = if grid.short_module_names {
+                ""
+            } else {
+                " genes"
+            };
+            format!("M{} ({}{unit})", g + 1, m.gene_sizes[g])
+        })
         .collect();
     let cell_names: Vec<String> = (m.columns.iter()).map(|&c| format!("C{}", c + 1)).collect();
     let (cols, n) = (m.columns.len(), rows.len());

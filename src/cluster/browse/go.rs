@@ -331,27 +331,37 @@ pub fn table(m: &Modules, source: &Source, min_weight: f64, q: f64) -> anyhow::R
     terms(&m.gene_main, m.gene_roles, source, min_weight, q)
 }
 
-/// [`table`] of the genes `genes` (key, main role, its weight) over
-/// `roles` gene roles.
-pub fn terms(
+/// Every (gene module, term) tested, before any cut: what was read, the
+/// terms of a size tested (each its id and rows), each module's genes in
+/// the universe (before the weight cut, and its rows after), each test
+/// (module, term, overlap, ln p) and its BH q over them all, and the
+/// universe's size.
+struct Tested<'a> {
+    tested: Vec<(&'a str, Vec<usize>)>,
+    modules: Vec<(usize, Vec<usize>)>,
+    all: Vec<(usize, usize, usize, f64)>,
+    q: Vec<f64>,
+    big_n: usize,
+}
+
+/// The tests of `genes`' (key, main role, its weight) `roles` gene roles
+/// against `loaded`'s terms (see [`Tested`]), a gene in its main module
+/// at a weight of at least `min_weight`.
+fn tested<'a>(
     genes: &[(Box<str>, usize, f32)],
     roles: usize,
     source: &Source,
+    loaded: &'a Loaded,
     min_weight: f64,
-    cutoff: f64,
-) -> anyhow::Result<Table> {
-    let Loaded {
-        sets,
-        rows,
-        namespaces: ns,
-    } = read(source, genes)?;
+) -> anyhow::Result<Tested<'a>> {
+    let Loaded { sets, rows, .. } = loaded;
     // Each term's rows; the universe: every row some term has.
-    let mut term_rows: Vec<(&Box<str>, Vec<usize>)> = (sets.term_genes.iter())
+    let mut term_rows: Vec<(&str, Vec<usize>)> = (sets.term_genes.iter())
         .map(|(t, g)| {
             let mut r: Vec<usize> = g.iter().filter_map(|g| rows.get(g).copied()).collect();
             r.sort_unstable();
             r.dedup();
-            (t, r)
+            (&**t, r)
         })
         .filter(|(_, r)| !r.is_empty())
         .collect();
@@ -369,8 +379,8 @@ pub fn terms(
         source.said(),
         genes.len()
     );
-    let tested: Vec<&(&Box<str>, Vec<usize>)> = term_rows
-        .iter()
+    let tested: Vec<(&str, Vec<usize>)> = term_rows
+        .into_iter()
         .filter(|(_, r)| SIZES.contains(&r.len()))
         .collect();
     // Every module's genes in the universe, before and after the cut.
@@ -403,69 +413,138 @@ pub fn terms(
         }
     }
     let q = bh(&all.iter().map(|x| x.3).collect::<Vec<_>>());
-    let mut out: Vec<ModuleTerms> = (modules.iter())
+    Ok(Tested {
+        tested,
+        modules,
+        all,
+        q,
+        big_n,
+    })
+}
+
+/// [`table`] of the genes `genes` (key, main role, its weight) over
+/// `roles` gene roles.
+pub fn terms(
+    genes: &[(Box<str>, usize, f32)],
+    roles: usize,
+    source: &Source,
+    min_weight: f64,
+    cutoff: f64,
+) -> anyhow::Result<Table> {
+    let loaded = read(source, genes)?;
+    let tests = tested(genes, roles, source, &loaded, min_weight)?;
+    let mut out: Vec<ModuleTerms> = (tests.modules.iter())
         .map(|(all, members)| ModuleTerms {
             all: *all,
             n: members.len(),
             hits: Vec::new(),
         })
         .collect();
+    let all = &tests.all;
     let mut order: Vec<usize> = (0..all.len())
-        .filter(|&i| q[i] <= cutoff && all[i].2 >= 2)
+        .filter(|&i| tests.q[i] <= cutoff && all[i].2 >= 2)
         .collect();
     order.sort_by(|&a, &b| all[a].3.total_cmp(&all[b].3).then(all[a].1.cmp(&all[b].1)));
     // Each module's terms by p, a term whose overlap one listed has left out.
     let mut seen: Vec<Vec<Vec<usize>>> = vec![Vec::new(); roles];
     for i in order {
-        let (g, t, k, ln_p) = all[i];
-        let (id, r) = tested[t];
-        let module = &mut out[g];
-        if module.hits.len() >= TOP {
+        let g = all[i].0;
+        if out[g].hits.len() >= TOP {
             continue;
         }
+        let mut hit = tests.hit(genes, &loaded, i);
+        if seen[g].contains(&hit.overlap) {
+            continue;
+        }
+        hit.genes.truncate(5);
+        seen[g].push(hit.overlap.clone());
+        out[g].hits.push(hit);
+    }
+    Ok(Table {
+        source: source.said(),
+        genes: genes.len(),
+        universe: tests.big_n,
+        min_weight,
+        q: cutoff,
+        modules: out,
+    })
+}
+
+impl Tested<'_> {
+    /// Test `i` as a [`Hit`]: its counts, odds, p and q, and every gene of
+    /// its overlap, the module's strongest first.
+    fn hit(&self, genes: &[(Box<str>, usize, f32)], loaded: &Loaded, i: usize) -> Hit {
+        let (g, t, k, ln_p) = self.all[i];
+        let (id, r) = &self.tested[t];
         // The overlap: both lists ascend.
-        let members = &modules[g].1;
+        let members = &self.modules[g].1;
         let overlap: Vec<usize> = (r.iter().copied())
             .filter(|x| members.binary_search(x).is_ok())
             .collect();
-        if seen[g].contains(&overlap) {
-            continue;
-        }
-        let (n, big_k) = (module.n, r.len());
+        let (n, big_k, big_n) = (members.len(), r.len(), self.big_n);
         let [a, b, c, d] = cells(k, n, big_k, big_n).map(|x| x as f64);
         let mut strongest = overlap.clone();
         strongest.sort_by(|&x, &y| genes[y].2.total_cmp(&genes[x].2).then(x.cmp(&y)));
-        module.hits.push(Hit {
+        Hit {
             id: id.to_string(),
-            name: sets
-                .names
-                .get(*id)
-                .map_or_else(|| id.to_string(), |n| n.to_string()),
-            namespace: ns.get(*id).copied().unwrap_or(""),
+            name: (loaded.sets.names.get(*id)).map_or_else(|| id.to_string(), |n| n.to_string()),
+            namespace: loaded.namespaces.get(*id).copied().unwrap_or(""),
             k,
             n,
             big_k,
             big_n,
             odds: (a + 0.5) * (d + 0.5) / ((b + 0.5) * (c + 0.5)),
             ln_p,
-            q: q[i],
-            genes: strongest
-                .iter()
-                .take(5)
+            q: self.q[i],
+            genes: (strongest.iter())
                 .map(|&r| symbol(&genes[r].0).to_string())
                 .collect(),
-            overlap: overlap.clone(),
-        });
-        seen[g].push(overlap);
+            overlap,
+        }
     }
-    Ok(Table {
-        source: source.said(),
-        genes: genes.len(),
-        universe: big_n,
-        min_weight,
-        q: cutoff,
-        modules: out,
-    })
+}
+
+/// Every test of the gene modules of `genes` (key, main role, its weight;
+/// `roles` of them) against `source`'s terms, written to `out` as
+/// tab-separated lines under a header: one per (gene module, term of a
+/// size tested), every module of [`LEAST_MODULE`] genes or more, by module
+/// then term; each with its counts, odds, p and the q of the same BH over
+/// them all as [`table`]'s, and every gene of the overlap (the module's
+/// strongest first), a term named as `--go` names it. A module's genes
+/// those whose main role it is at a weight of at least `min_weight`.
+pub fn every(
+    genes: &[(Box<str>, usize, f32)],
+    roles: usize,
+    source: &Source,
+    min_weight: f64,
+    out: &mut impl std::io::Write,
+) -> anyhow::Result<()> {
+    let loaded = read(source, genes)?;
+    let tests = tested(genes, roles, source, &loaded, min_weight)?;
+    writeln!(
+        out,
+        "module\tid\tname\tnamespace\tk\tn\tK\tN\todds\tp\tq\tgenes"
+    )?;
+    for i in 0..tests.all.len() {
+        let h = tests.hit(genes, &loaded, i);
+        writeln!(
+            out,
+            "M{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.4}\t{:.4e}\t{:.4e}\t{}",
+            tests.all[i].0 + 1,
+            h.id,
+            h.named().replace(['\t', '\n'], " "),
+            h.namespace,
+            h.k,
+            h.n,
+            h.big_k,
+            h.big_n,
+            h.odds,
+            h.ln_p.exp(),
+            h.q,
+            h.genes.join(","),
+        )?;
+    }
+    Ok(())
 }
 
 /// The 2 x 2 table of a module of `n` genes against a term of `big_k`, `k`

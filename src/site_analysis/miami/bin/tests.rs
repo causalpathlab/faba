@@ -39,3 +39,40 @@ fn robust_max_ignores_zeros() {
     let m = robust_max([1.0, 2.0, 3.0, 4.0].into_iter());
     assert!(m >= 3.0);
 }
+
+/// On a sqrt x the left end is spread: the first tenth of the columns
+/// holds the first hundredth of the bases, and a column's range maps back
+/// to that column.
+#[test]
+fn a_sqrt_x_spreads_the_left_end() {
+    let e = BinEdges::new(1_000, 11_000, 10).on(Scale::Sqrt);
+    assert_eq!(e.col_of(1_000), 0);
+    assert_eq!(e.col_of(1_099), 0);
+    assert_eq!(e.col_of(1_101), 1);
+    assert_eq!(e.col_of(11_000), 9);
+    for col in 0..10 {
+        let (start, stop) = e.col_range(col);
+        assert_eq!(e.col_of(start + (stop - start) / 2), col);
+    }
+    assert!((e.x_px(3_500, 0.0, 100.0) - 50.0).abs() < 1e-3);
+    // Linear as it was.
+    assert_eq!(BinEdges::new(1_000, 11_000, 10).col_of(1_101), 0);
+}
+
+/// On a log x over a short window the left columns are narrower than a
+/// base: those hold none, and every other column's first base is binned
+/// in it.
+#[test]
+fn a_log_xs_columns_start_where_they_are_binned() {
+    let e = BinEdges::new(0, 1_000, 80).on(Scale::Log);
+    let mut held = 0;
+    for col in 0..80 {
+        let (start, stop) = e.col_range(col);
+        assert!(stop >= start, "{col}: {start}..{stop}");
+        if stop > start {
+            held += 1;
+            assert_eq!(e.col_of(start), col, "{col}: {start}..{stop}");
+        }
+    }
+    assert!(held < 80 && held > 40, "{held}");
+}

@@ -7,6 +7,7 @@ use super::bars::{mirror, peak};
 use super::{ModulesView, Pane, Spot};
 use crate::cluster::browse::data::bounds;
 use crate::cluster::browse::Count;
+use crate::site_analysis::miami::bin::BinEdges;
 use crate::site_analysis::miami::genemodel::GeneModel;
 use crate::site_analysis::pileup::query_symbol;
 use crate::site_analysis::pileup::tui::draw_gene_line;
@@ -173,7 +174,11 @@ impl ModulesView<'_> {
         let mut cols = vec![vec![Count::default(); tracks]; w as usize];
         let mut first: Vec<Option<usize>> = vec![None; w as usize];
         let mut pointer = None;
-        for (j, (member, col)) in members.iter().zip(columns(&pos, extent, w)).enumerate() {
+        for (j, (member, col)) in members
+            .iter()
+            .zip(columns_on(&pos, &BinEdges::new(extent.0, extent.1, 1), w))
+            .enumerate()
+        {
             let col = col as usize;
             for (t, &r) in member.reads.iter().enumerate() {
                 cols[col][0].add(r);
@@ -253,20 +258,26 @@ pub fn segment_width(sites: usize) -> u16 {
     (2 * sites + 2).clamp(10, 32) as u16
 }
 
-/// Each position's column within a segment `width` wide over `extent`.
-pub fn columns(pos: &[i64], extent: (i64, i64), width: u16) -> Vec<u16> {
-    pos.iter().map(|&p| column(p, extent, width)).collect()
+/// Each position's column within a segment `width` wide over `edges`'
+/// extent, on its x scale: the inner columns span it, positions outside it
+/// clipped to its ends.
+pub fn columns_on(pos: &[i64], edges: &BinEdges, width: u16) -> Vec<u16> {
+    pos.iter().map(|&p| column_on(p, edges, width)).collect()
 }
 
-/// Position `p`'s column within a segment `width` wide over `extent`: the
-/// inner columns span it, positions outside it clipped to its ends.
+/// Position `p`'s column within a segment `width` wide over `extent`.
 fn column(p: i64, (lo, hi): (i64, i64), width: u16) -> u16 {
-    if hi <= lo {
+    column_on(p, &BinEdges::new(lo, hi, 1), width)
+}
+
+/// Position `p`'s column within a segment `width` wide over `edges`, as
+/// [`columns_on`] places it.
+fn column_on(p: i64, edges: &BinEdges, width: u16) -> u16 {
+    if edges.max_pos <= edges.min_pos {
         return width / 2;
     }
     let last = width.saturating_sub(2).max(1);
-    let t = (p - lo) as f64 / (hi - lo) as f64;
-    1 + (t.clamp(0.0, 1.0) * (last - 1) as f64).round() as u16
+    1 + (edges.frac(p) * (last - 1) as f64).round() as u16
 }
 
 /// Segments `widths` wide packed into rows `room` columns wide, in order,

@@ -110,6 +110,7 @@ impl PileupArgs {
     pub(super) fn figure_settings(&self) -> tui::Settings {
         tui::Settings {
             y_scale: Some(self.yscale.into()),
+            x_scale: Some(self.xscale.into()),
             show: Some(crate::site_analysis::show::Show::Both),
             mirror: Some(true),
             difference: Some(self.difference),
@@ -226,6 +227,11 @@ pub(super) fn run_miami_figure(
         );
     }
 
+    // The Miami figure's axis is in bases.
+    anyhow::ensure!(
+        args.xscale == YScale::Linear,
+        "--xscale is for the pileup figure; the Miami figure (--bam or --cell-membership) is drawn on a linear x"
+    );
     let edges = BinEdges::new(lo, hi, args.num_bins.unwrap_or(80));
 
     // Region chromosome: prefer the matrix chr (same origin as the BAM),

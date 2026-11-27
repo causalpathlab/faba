@@ -3,7 +3,8 @@
 
 use super::{BinEdges, Exit, PileupView, MAX_SPAN};
 use crate::figure::term::PlotImage;
-use crate::site_analysis::pileup::{parse_query, Query};
+use crate::site_analysis::pileup::{parse_query, window_at_sites, Query};
+use crate::tui::ui::Scale;
 use genomic_data::coordinates::chr_eq;
 
 /// What a figure's window spans.
@@ -25,19 +26,6 @@ impl Window {
     }
 }
 
-/// The least a window at the sites spans when no pad is asked for.
-pub(super) const LEAST_SITES_WINDOW: i64 = 1_000;
-
-/// A window at sites from `lo` to `hi` when no pad is asked for: centred
-/// on them, their span and a quarter of it either side, but
-/// [`LEAST_SITES_WINDOW`] at least.
-fn around(lo: i64, hi: i64) -> (i64, i64) {
-    let span = hi - lo;
-    let w = (span + 2 * (span / 4)).max(LEAST_SITES_WINDOW);
-    let start = lo + span / 2 - w / 2;
-    (start, start + w)
-}
-
 impl PileupView<'_> {
     /// The first and last site of any track (a read or its total), when
     /// there are any.
@@ -57,22 +45,10 @@ impl PileupView<'_> {
     /// either side, else around them (see [`around`]); within the extent,
     /// a base a bar at least; the whole extent when there are none.
     pub(super) fn sites_window(&self) -> (i64, i64) {
-        let Some((lo, hi)) = self.sites_span() else {
-            return self.extent;
-        };
-        let (mut lo, mut hi) = match self.pad {
-            Some(pad) => (lo - pad.max(0), hi + pad.max(0)),
-            None => around(lo, hi),
-        };
-        let least = self.columns.max(1) as i64;
-        if hi - lo < least {
-            let mid = lo + (hi - lo) / 2;
-            (lo, hi) = (mid - least / 2, mid - least / 2 + least);
+        match self.sites_span() {
+            Some(sites) => window_at_sites(sites, self.pad, self.extent, self.columns),
+            None => self.extent,
         }
-        let (flo, fhi) = self.extent;
-        let w = (hi - lo).min(fhi - flo);
-        let lo = lo.clamp(flo, fhi - w);
-        (lo, lo + w)
     }
 
     /// The window `w` asks for: the whole gene or its sites; the cursor
@@ -104,7 +80,16 @@ impl PileupView<'_> {
     }
 
     pub(super) fn edges(&self) -> BinEdges {
-        BinEdges::new(self.window.0, self.window.1, self.columns)
+        BinEdges::new(self.window.0, self.window.1, self.columns).on(self.x_scale)
+    }
+
+    /// What a bar spans, said: its bases ("120 bp per bar"), or on a sqrt
+    /// or log x scale that scale ("x: sqrt of bp from the left").
+    pub(super) fn per_bar(&self) -> String {
+        match self.x_scale {
+            Scale::Linear => format!("{} bp per bar", self.bin_width()),
+            scale => format!("x: {} of bp from the left", scale.name()),
+        }
     }
 
     /// Bases per bar at the current zoom.
@@ -169,7 +154,27 @@ impl PileupView<'_> {
 
     pub(super) fn move_cursor(&mut self, bars: i64) {
         let (lo, hi) = self.extent;
-        self.cursor = (self.cursor + bars * self.bin_width()).clamp(lo, hi);
+        // On a sqrt or log x scale the bars differ in bases: to the bar
+        // that many over, while the cursor is in the window.
+        let edges = self.edges();
+        let (wlo, whi) = self.window;
+        let step = match edges.is_linear() || !(wlo..=whi).contains(&self.cursor) {
+            true => bars * self.bin_width(),
+            false => {
+                // The next bar that way holding a base (one narrower than a
+                // base, at the spread left end, holds none).
+                let from = edges.col_of(self.cursor) as i64;
+                let held = (bars.abs()..).map(|k| from + bars.signum() * k);
+                let next = (held.take_while(|&c| (0..self.columns as i64).contains(&c)))
+                    .map(|c| edges.col_range(c as usize))
+                    .find(|&(start, stop)| stop > start);
+                match next {
+                    Some((start, stop)) => start + (stop - start - 1) / 2 - self.cursor,
+                    None => bars * self.bin_width(),
+                }
+            }
+        };
+        self.cursor = (self.cursor + step).clamp(lo, hi);
         self.follow_cursor();
     }
 

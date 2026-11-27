@@ -65,11 +65,11 @@ impl PileupView<'_> {
             None => String::new(),
         };
         let extra = format!(
-            "{}:{}-{}{which}  {} bp/bar · y {}{}{key} · {}{}",
+            "{}:{}-{}{which}  {} · y {}{}{key} · {}{}",
             self.chr,
             fmt_thousands(lo),
             fmt_thousands(hi),
-            self.bin_width(),
+            self.per_bar(),
             self.y_scale.name(),
             match self.y_lock {
                 Some(max) => format!(" ≤ {max:.0} locked"),
@@ -183,6 +183,7 @@ impl PileupView<'_> {
         }
         keys.extend([
             ("y", "scale"),
+            ("x", "x scale"),
             (
                 "Y",
                 if self.y_lock.is_some() {

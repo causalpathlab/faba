@@ -117,6 +117,15 @@ pub struct Shown {
     pub go_q: f64,
 
     #[arg(
+        long = "go-table",
+        value_name = "FILE",
+        value_hint = clap::ValueHint::FilePath,
+        conflicts_with = "html",
+        help = "Write every GO term (or --gmt set) tested against every gene module to FILE (a new TSV), whatever its q: a line per (module, term), every module of 5 genes or more and every term of 5 to 500 annotated genes, with k, n, K, N, odds, p, the q of the same BH over them all as --go's, and every gene of the overlap; for a heatmap of terms across the modules"
+    )]
+    pub go_table: Option<String>,
+
+    #[arg(
         long = "batches",
         conflicts_with = "html",
         help = "Print how each cell module spreads over the batches: shared, one condition's, or batch-specific"

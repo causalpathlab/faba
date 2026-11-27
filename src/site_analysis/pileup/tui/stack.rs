@@ -150,6 +150,7 @@ impl<'a> StackView<'a> {
             ("0", "whole/sites"),
             ("Z/W", "zoom all/all whole or sites"),
             ("y", "scale"),
+            ("x", "x scale"),
             (
                 "Y",
                 if v.y_lock.is_some() {
@@ -202,6 +203,10 @@ impl crate::tui::View for StackView<'_> {
             ("Z", "zoom every gene in"),
             ("W", "every gene whole, or each at its sites"),
             ("y", "y scale: linear, log10, sqrt"),
+            (
+                "x",
+                "x scale: linear, log10, sqrt of the bases from the left",
+            ),
             ("Y", "lock y to the tallest gene, or unlock"),
         ];
         keys.extend(

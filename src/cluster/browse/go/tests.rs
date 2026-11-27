@@ -212,3 +212,28 @@ fn representative_terms_leave_out_a_set_mostly_within_one_picked() {
     assert_eq!(ids(&m0.representative(1)), ["SET1_PARENT"]);
     assert_eq!(ids(&m0.representative(10)), ["SET1_PARENT", "SET3_BESIDE"]);
 }
+
+/// The full table has a line for every module and every set of a size
+/// tested, whatever its q, each q the same as the listed terms'.
+#[test]
+fn the_full_table_has_every_module_and_set_with_the_listed_q() {
+    let tmp = tempfile::tempdir().unwrap();
+    let source = Source::Gmt(gmt(tmp.path()));
+    let mut out = Vec::new();
+    every(&genes(), 2, &source, 0.5, &mut out).unwrap();
+    let out = String::from_utf8(out).unwrap();
+    let lines: Vec<&str> = out.lines().collect();
+    assert!(lines[0].starts_with("module\tid\tname"), "{lines:?}");
+    let t = terms(&genes(), 2, &source, 0.5, DEFAULT_Q).unwrap();
+    let up = &t.of(0).unwrap().hits[0];
+    let row = (lines.iter())
+        .find(|l| l.starts_with("M1\tUP\t"))
+        .expect("module 1's UP");
+    let cells: Vec<&str> = row.split('\t').collect();
+    assert_eq!(cells[4..8], ["12", "17", "14", "32"]);
+    assert_eq!(cells[10], format!("{:.4e}", up.q));
+    assert_eq!(cells[11].split(',').count(), 12);
+    // Both modules, each with every set tested: as many lines each.
+    let of = |m: &str| lines.iter().filter(|l| l.starts_with(m)).count();
+    assert!(of("M1\t") > 1 && of("M1\t") == of("M2\t"), "{lines:?}");
+}

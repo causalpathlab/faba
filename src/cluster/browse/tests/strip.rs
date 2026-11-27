@@ -1,6 +1,12 @@
 //! The strip's layout: sites along a gene and pinned genes in rows.
 
-use crate::cluster::browse::view::{columns, pack, segment_width};
+use crate::cluster::browse::view::{columns_on, pack, segment_width};
+use crate::site_analysis::miami::bin::BinEdges;
+
+/// Positions' columns in a segment `width` wide over `(lo, hi)`, linear.
+fn columns(pos: &[i64], (lo, hi): (i64, i64), width: u16) -> Vec<u16> {
+    columns_on(pos, &BinEdges::new(lo, hi, 1), width)
+}
 
 #[test]
 fn a_gene_spreads_its_sites_over_its_extent() {

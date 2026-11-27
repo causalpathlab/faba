@@ -51,7 +51,7 @@ pub use grid::Stretch;
 #[cfg(test)]
 pub use grid::{box_size, square};
 pub use grid::{Look, Ramp};
-pub use strip::{columns, pack, segment_width};
+pub use strip::{columns_on, pack, segment_width};
 
 use find::{Entry, Find};
 use grid::{Kept, CELL};
