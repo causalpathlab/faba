@@ -16,6 +16,8 @@ use super::Modules;
 
 mod genes;
 mod grid;
+mod raw;
+pub use raw::RawDraw;
 pub mod screen;
 mod sites;
 use crate::figure::size::{self, Page};
@@ -144,6 +146,50 @@ fn least(sheet: Sheet, mut need: Page, one: impl Fn(Sheet) -> Result<String, Ref
 /// The width of `s` in `f`-point text, about.
 fn width(s: &str, f: f64) -> f64 {
     s.chars().count() as f64 * f * 0.56
+}
+
+/// A colour key across from `(x, y)`, `w` wide: `steps` steps, each of
+/// `fill` at its middle's share of the way from the key's low end, and
+/// `said` (low, middle, top) under its ends and middle.
+fn key_strip(
+    c: &mut Canvas,
+    (x, y, w): (f64, f64, f64),
+    f: f64,
+    steps: usize,
+    fill: impl Fn(f64) -> String,
+    said: [&str; 3],
+) {
+    let step = w / steps as f64;
+    for k in 0..steps {
+        let along = (k as f64 + 0.5) / steps as f64;
+        c.rect(x + step * k as f64, y, step + 0.3, 0.7 * f, &fill(along));
+    }
+    let ty = y + 1.7 * f;
+    c.text(x, ty, said[0], f, Anchor::Start, MUTED);
+    c.text(x + w / 2.0, ty, said[1], f, Anchor::Middle, MUTED);
+    c.text(x + w, ty, said[2], f, Anchor::End, MUTED);
+}
+
+/// A colour scale down from `(x, y)`, `h` tall: 40 steps, each of `fill`
+/// at its middle's share of the way down, and `said` (top, middle, low)
+/// right of it.
+fn scale_column(
+    c: &mut Canvas,
+    (x, y, h): (f64, f64, f64),
+    f: f64,
+    fill: impl Fn(f64) -> String,
+    said: [&str; 3],
+) {
+    let steps = 40;
+    for k in 0..steps {
+        let along = (k as f64 + 0.5) / steps as f64;
+        let top = y + h * k as f64 / steps as f64;
+        c.rect(x, top, f * 1.2, h / steps as f64 + 0.5, &fill(along));
+    }
+    let at = [y + f * 0.4, y + h / 2.0 + f * 0.35, y + h];
+    for (said, at) in said.into_iter().zip(at) {
+        c.text(x + f * 1.6, at, said, f * 0.9, Anchor::Start, MUTED);
+    }
 }
 
 /// The figure's title at its top left, in `f + 1`-point text, shortened
@@ -432,6 +478,22 @@ pub fn draw_with(
 ) -> Result<String, String> {
     drawn(sheet, |sheet| {
         grid::heatmap(m, look, grid, go, title, sheet.page, Ink::of(&sheet))
+    })
+}
+
+/// The reads under `m` as `how` asks, in the modules grid's layout under
+/// `look` with `grid`'s transposing and names (see [`raw::placed`]).
+pub fn draw_raw(
+    m: &Modules,
+    how: RawDraw,
+    look: Look,
+    grid: &GridArgs,
+    title: &str,
+    sheet: Sheet,
+) -> Result<String, String> {
+    drawn(sheet, |sheet| {
+        let at = (sheet.page, Ink::of(&sheet));
+        raw::placed(m, how, grid, look, title, at).map(|(s, _)| s)
     })
 }
 

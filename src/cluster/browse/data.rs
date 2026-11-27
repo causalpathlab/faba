@@ -603,6 +603,22 @@ fn runs(range: Range<usize>, same: impl Fn(usize, usize) -> bool) -> Vec<Range<u
     out
 }
 
+/// The fitted rows of `cells` (`{modality}_cell_roles` in `dir`, of `k`
+/// cell roles), as the modules' sizes count them (see
+/// [`posterior_sizes`]).
+pub(super) fn fitted_rows(
+    dir: &Path,
+    modality: &str,
+    cells: &arrow::record_batch::RecordBatch,
+    k: usize,
+) -> anyhow::Result<Vec<usize>> {
+    let listed = || {
+        let path = dir.join(format!("{modality}_block_cells.parquet"));
+        read_record_batch(&path).map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))
+    };
+    Ok(posterior_sizes(cells, listed, k)?.2)
+}
+
 /// The first and last of `positions`, `(0, 0)` when there are none.
 pub(super) fn bounds(positions: impl Iterator<Item = i64> + Clone) -> (i64, i64) {
     (

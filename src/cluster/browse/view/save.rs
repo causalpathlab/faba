@@ -66,6 +66,7 @@ impl ModulesView<'_> {
             genes: Default::default(),
             title: self.figure_title.as_deref().unwrap_or(&self.title),
             sheet,
+            raw: self.raw_shown(),
         };
         screen::draw(self.m, &placed, &ask)
     }

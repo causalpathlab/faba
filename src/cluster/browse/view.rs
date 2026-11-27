@@ -40,6 +40,7 @@ mod input;
 mod list;
 mod live;
 mod pins;
+mod raw;
 mod save;
 mod strip;
 mod trace;
@@ -219,6 +220,8 @@ pub struct ModulesView<'a> {
     /// `s`: the save prompt, and the area the last frame drew on, the
     /// size a saved screen takes.
     pub(super) controls: crate::figure::Controls,
+    /// `r`: the reads under the fit in the modules pane.
+    raw: raw::RawView,
     area: Rect,
     done: bool,
 }
@@ -273,7 +276,8 @@ impl<'a> ModulesView<'a> {
             go_w: 0,
             go_no_room: false,
             go_terms: None,
-            controls: crate::figure::Controls::new("cluster_screen"),
+            controls: crate::figure::Controls::new("cluster_screen").detect(),
+            raw: raw::RawView::default(),
             area: Rect::default(),
             done: false,
         };
@@ -457,7 +461,8 @@ impl Screen for ModulesView<'_> {
         self.take_genes();
         let wrote = self.take_written();
         let go = self.take_go();
-        (waiting && self.pending.is_none()) || wrote || go
+        let raw = self.take_raw();
+        (waiting && self.pending.is_none()) || wrote || go || raw
     }
 
     fn takes_mouse(&self) -> bool {
@@ -473,6 +478,7 @@ impl Screen for ModulesView<'_> {
     }
 
     fn render(&mut self, frame: &mut Frame) {
+        self.controls.refresh();
         self.hits.clear();
         let area = frame.area();
         self.area = area;
@@ -542,8 +548,13 @@ impl Screen for ModulesView<'_> {
         crate::figure::logo::draw_mini_logo(frame.buffer_mut(), corner, reserve);
 
         let inner = self.panels(frame, [modules, sites, genes]);
+        // The raw view in the modules pane, as an image; the grid where
+        // none could be made.
+        let raw = self.draw_raw(frame, inner[0]);
         let buf = frame.buffer_mut();
-        self.draw_modules(buf, inner[0]);
+        if !raw {
+            self.draw_modules(buf, inner[0]);
+        }
         self.draw_sites(buf, inner[1]);
         self.draw_genes(buf, inner[2]);
         frame.render_widget(Paragraph::new(self.stats_line(stats.width)), stats);

@@ -170,6 +170,20 @@ pub fn run_cluster(args: &ClusterArgs) -> anyhow::Result<Option<String>> {
     }
 }
 
+/// The matrices a fit read, as its record keeps them for reading them
+/// again (the raw view): each one's path, made absolute, and the batch
+/// its cells were named in.
+fn recorded_inputs(inputs: &[read::Input]) -> serde_json::Value {
+    (inputs.iter())
+        .map(|i| {
+            serde_json::json!({
+                "path": crate::run_record::absolute(&i.path),
+                "batch": &*i.batch,
+            })
+        })
+        .collect()
+}
+
 /// [`run_cluster`] of `args`, their inputs named, the restarts counting
 /// their steps on `progress`; the modality fitted. Cancelled, it writes nothing,
 /// not even its record.
@@ -240,7 +254,9 @@ fn cluster(
     if args.is_count() {
         return run::count::count_fit(args, dir, record, progress);
     }
-    let all = read::read_inputs(&inputs(args)?, progress)?;
+    let inputs = inputs(args)?;
+    record.set_result("inputs", &recorded_inputs(&inputs));
+    let all = read::read_inputs(&inputs, progress)?;
     site_fit(args, dir, record, progress, all)
 }
 

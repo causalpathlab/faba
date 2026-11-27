@@ -373,6 +373,7 @@ impl Nested {
                 &Arc::new(modules),
                 models.clone().flatten(),
                 go.clone(),
+                &Default::default(),
             )?;
         }
     }

@@ -192,6 +192,21 @@ impl Canvas {
         );
     }
 
+    /// A raster image, `png` stretched over `(x, y, w, h)`, each pixel a
+    /// sharp-edged block (no smoothing between pixels); empty ones skipped,
+    /// as [`Self::rect`] skips them.
+    pub fn image(&mut self, (x, y, w, h): (f64, f64, f64, f64), png: &[u8]) {
+        use base64::Engine;
+        if !(w >= 0.005 && h >= 0.005 && w.is_finite() && h.is_finite()) {
+            return;
+        }
+        let data = base64::engine::general_purpose::STANDARD.encode(png);
+        let _ = writeln!(
+            self.body,
+            r#"<image x="{x:.2}" y="{y:.2}" width="{w:.2}" height="{h:.2}" preserveAspectRatio="none" image-rendering="optimizeSpeed" style="image-rendering:pixelated" href="data:image/png;base64,{data}"/>"#
+        );
+    }
+
     pub fn line(&mut self, x1: f64, y1: f64, x2: f64, y2: f64, stroke: &str, width: f64) {
         let _ = writeln!(
             self.body,

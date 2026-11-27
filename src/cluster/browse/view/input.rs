@@ -185,6 +185,7 @@ impl ModulesView<'_> {
             KeyCode::Char('a') => self.toggle_go_column(),
             KeyCode::Char('G') => self.open_go(),
             KeyCode::Char('B') => self.next_filter(),
+            KeyCode::Char('r') => self.toggle_raw(),
             KeyCode::Char('/') => self.open_find(),
             KeyCode::Tab => self.pane = self.pane.cycled(1),
             KeyCode::BackTab => self.pane = self.pane.cycled(PANES.len() - 1),

@@ -27,6 +27,7 @@ mod gene;
 mod go;
 mod json;
 mod order;
+mod raw;
 mod report;
 mod text;
 mod view;
@@ -169,6 +170,10 @@ pub struct ModulesArgs {
     /// The modules grid's margins, GO terms, key and values.
     #[command(flatten)]
     pub grid: figure::GridArgs,
+
+    /// The reads under the fit, in place of the grid (`--raw`).
+    #[command(flatten)]
+    pub raw: raw::RawArgs,
 
     /// The browser's screen as a figure, of one fit or many.
     #[command(flatten)]
@@ -504,6 +509,11 @@ fn write_figure(m: &Modules, args: &ModulesArgs, dir: &Path, prefix: &str) -> an
         look: args.style,
     };
     let drawn = match args.plot {
+        figure::Plot::Modules if args.raw.raw => {
+            let raw = raw_of(m, dir, &args.raw)?;
+            let how = figure::RawDraw::of(&raw, &args.raw);
+            figure::draw_raw(m, how, args.look, &args.grid, &title, sheet)
+        }
         figure::Plot::Modules => {
             let go = figure::go_table(m, args.grid.go_labels, &args.shown.go_ask())?;
             figure::draw_with(m, args.look, &args.grid, go.as_ref(), &title, sheet)
@@ -515,6 +525,11 @@ fn write_figure(m: &Modules, args: &ModulesArgs, dir: &Path, prefix: &str) -> an
         println!("{path}");
     }
     Ok(())
+}
+
+/// The reads under the fit `m` (its tables in `dir`) as `asked`.
+fn raw_of(m: &Modules, dir: &Path, asked: &raw::RawArgs) -> anyhow::Result<raw::Raw> {
+    raw::Plan::of(m, asked.unit)?.read(dir, &asked.data)
 }
 
 /// Every GO test of `m`'s gene modules, as `shown` asks GO, written to
@@ -587,7 +602,7 @@ fn show(
         return Ok(());
     }
     let models = start_gene_models(or_asked(gtf)?.as_deref());
-    browse(&dir, &modules, models, args.shown.go_ask())
+    browse(&dir, &modules, models, args.shown.go_ask(), &args.raw)
 }
 
 /// What `faba cluster-view` would open, as [`opens`] tells it.
@@ -758,10 +773,12 @@ fn browse(
     modules: &std::sync::Arc<Modules>,
     models: Option<SharedModels>,
     go: go::Ask,
+    raw: &raw::RawArgs,
 ) -> anyhow::Result<()> {
     let mut view = opened_view(dir, modules)
         .with_genes(models.clone())
         .with_go(go)
+        .with_raw(dir.to_path_buf(), raw.clone())
         .with_report(
             dir.join(format!("{}_cluster_view.html", modules.modality)),
             modules.clone(),
