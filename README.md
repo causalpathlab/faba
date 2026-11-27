@@ -86,7 +86,7 @@ cargo install --git https://github.com/causalpathlab/faba
 Pin to a specific tag or branch if you need a reproducible build:
 
 ```sh
-cargo install --git https://github.com/causalpathlab/faba --tag v0.20.20
+cargo install --git https://github.com/causalpathlab/faba --tag v0.20.21
 cargo install --git https://github.com/causalpathlab/faba --branch main
 ```
 
