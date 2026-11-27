@@ -168,7 +168,7 @@ impl<'a> ModulesView<'a> {
             return false;
         };
         let how = RawDraw {
-            per_point: per_point(&picker),
+            per_point: Some(per_point(&picker)),
             ..RawDraw::of(raw, args)
         };
         image.render(frame, area, &picker, |w, h| {

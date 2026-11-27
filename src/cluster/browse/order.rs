@@ -45,7 +45,7 @@ pub fn diagonal(z: &[Vec<Option<f64>>]) -> (Vec<usize>, Vec<usize>) {
 }
 
 /// Each score's rank, ties by index, so the order settles.
-fn rank(score: Vec<f64>) -> Vec<usize> {
+pub(super) fn rank(score: Vec<f64>) -> Vec<usize> {
     let mut by: Vec<usize> = (0..score.len()).collect();
     by.sort_by(|&a, &b| score[a].total_cmp(&score[b]).then(a.cmp(&b)));
     order(&by)
