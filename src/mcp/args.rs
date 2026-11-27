@@ -438,7 +438,21 @@ mod tests {
                     .unwrap_or_default()
             };
             for g in generated(&tool) {
-                let value = sample(&spec.input_schema["properties"][g.key.as_str()]);
+                let mut value = sample(&spec.input_schema["properties"][g.key.as_str()]);
+                // Text its own parser refuses (a colour): a word it takes.
+                let arg = (sub.get_arguments())
+                    .find(|a| a.get_long().is_some_and(|l| g.flag == format!("--{l}")));
+                if let (Some(arg), Some(text)) = (arg, value.as_str()) {
+                    let parser = arg.get_value_parser().clone();
+                    let one = clap::Command::new("t")
+                        .arg(clap::Arg::new("v").long("v").value_parser(parser));
+                    let takes = |w: &str| one.clone().try_get_matches_from(["t", "--v", w]).is_ok();
+                    if !takes(text) {
+                        if let Some(w) = ["black", "1"].into_iter().find(|w| takes(w)) {
+                            value = json!(w);
+                        }
+                    }
+                }
                 let a = Arguments(json!({ g.key.as_str(): value }));
                 let words =
                     typed_flags(&tool, &a).unwrap_or_else(|e| panic!("{tool} {}: {e}", g.key));

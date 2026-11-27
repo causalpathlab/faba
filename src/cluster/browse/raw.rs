@@ -9,6 +9,7 @@ use super::Modules;
 use crate::cluster::args::ClusterArgs;
 use crate::cluster::read;
 use crate::common::{column, read_record_batch};
+use crate::qc::arms::Rgb;
 use anyhow::Context;
 use arrow::array::{Array, Float32Array, Int32Array, StringArray};
 use rustc_hash::FxHashMap;
@@ -45,16 +46,44 @@ pub enum RawValue {
     Log1p,
 }
 
+/// How a raw view's block orders its cells and features, which are
+/// exchangeable within it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum, serde::Serialize)]
+pub enum RawSort {
+    /// Each by its dots in the block (its pairs at `--raw-threshold` or
+    /// above), most first.
+    #[default]
+    Value,
+    /// Each by its reads in the block, most first.
+    Reads,
+    /// Cells by membership, strongest first; features in their module's
+    /// order; a cell on one row across its band.
+    None,
+}
+
 /// How the raw view's modules share the plot.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum, serde::Serialize)]
 pub enum RawBands {
     /// Every module as wide (and as tall) as the grid's blocks.
-    #[default]
     Equal,
-    /// Each module as its cells (or features) are many: the data's own
-    /// proportions.
+    /// Each module as its cells (or features) are many, within
+    /// `--raw-band-min` and `--raw-band-max` of an equal band.
+    #[default]
     Size,
 }
+
+/// A band sized by its module's size is no less than the first and no
+/// more than the second of an equal band, unless `--raw-band-min` and
+/// `--raw-band-max` say.
+const BAND_CAP: (f64, f64) = (0.5, 2.0);
+
+/// A dot's side in points, unless `--raw-dot` says.
+const DOT: f64 = 1.0;
+
+/// A pair is a dot at this beta or above, unless `--raw-threshold` says,
+/// with this many converted reads, unless `--raw-min-methylated` says.
+const THRESHOLD: f64 = 0.5;
+const MIN_METHYLATED: u32 = 2;
 
 /// A pixel under this many reads is blank, unless `--raw-min-reads` says.
 const MIN_READS: u32 = 3;
@@ -64,7 +93,7 @@ const MIN_READS: u32 = 3;
 pub struct RawArgs {
     #[arg(
         long = "raw",
-        help = "Draw the reads under the fit in place of the modules grid (--figure, --screen; in the browser, r on an image terminal): the grid's layout, each block a heatmap of its cells (by membership, strongest first) against its genes (or sites, --raw-unit), rasterised, its modules' names and lines drawn over it"
+        help = "Draw the reads under the fit in place of the modules grid (--figure, --screen; in the browser, r on an image terminal): the grid's layout, each block its cells against its genes (or sites, --raw-unit), rasterised: solid dots where a cell's reads at a gene are methylated (--raw-threshold), sorted by them in each block (--raw-sort), or shades (--raw-ramp); its modules' names and lines drawn over it"
     )]
     pub raw: bool,
 
@@ -94,12 +123,79 @@ pub struct RawArgs {
     pub min_reads: u32,
 
     #[arg(
+        long = "raw-threshold",
+        default_value_t = THRESHOLD,
+        value_parser = beta,
+        value_name = "BETA",
+        help = "A cell and feature pair is a dot where its beta (converted of all reads) is at least BETA, as 0.5 for half methylated, with --raw-min-methylated converted reads; a drawn dot is solid where a pair under it is one, else white: no shades, which small dots do not show"
+    )]
+    pub threshold: f64,
+
+    #[arg(
+        long = "raw-min-methylated",
+        value_name = "N",
+        default_value_t = MIN_METHYLATED,
+        help = "A cell and feature pair is a dot only with N converted reads at least, besides its beta at --raw-threshold"
+    )]
+    pub min_methylated: u32,
+
+    #[arg(
+        long = "raw-dot",
+        value_name = "POINTS",
+        default_value_t = DOT,
+        value_parser = positive,
+        help = "A raw view's dot, its side in points, the same across and down: each dot pools the cells and features under it, fewer and larger dots as it grows"
+    )]
+    pub dot: f64,
+
+    #[arg(
+        long = "raw-ramp",
+        help = "Colour a raw view's pixels on a ramp from light to dark by their value, its top the 99th percentile (or --grid-cap's), instead of dots at --raw-threshold"
+    )]
+    pub ramp: bool,
+
+    #[arg(
+        long = "raw-colour",
+        visible_alias = "raw-color",
+        value_name = "COLOUR",
+        value_parser = dot_colour,
+        help = "A raw view's dots' colour, #rrggbb, #rgb or a name (white, black, gray, red, blue, green, orange, purple, yellow), e.g. black or #d62728; with --raw-ramp, the ramp's dark end, from a tint of it (default: dark blue, or near-black with --palette gray)"
+    )]
+    pub colour: Option<Rgb>,
+
+    #[arg(
+        long = "raw-sort",
+        value_enum,
+        default_value_t,
+        help = "How each raw view block orders its cells and features, exchangeable within it: by their dots in the block (cell and feature pairs at --raw-threshold or above, with --raw-min-reads), most first, by their reads there, or none (cells by membership, features in their module's order, a cell then on one row across its band)"
+    )]
+    pub sort: RawSort,
+
+    #[arg(
         long = "raw-bands",
         value_enum,
         default_value_t,
-        help = "How the raw view's modules share the plot: equal (the grid's blocks), or size (each module as its cells or features are many, the data's own proportions; the screen's gene tracks then stay on equal rows beside it)"
+        help = "How the raw view's modules share the plot: size (each module as its cells or features are many, the data's own proportions, within --raw-band-min and --raw-band-max of an equal band), or equal (the grid's blocks); beside pinned genes on a screen they are equal, the genes' tracks on equal rows"
     )]
     pub bands: RawBands,
+
+    #[arg(
+        long = "raw-band-min",
+        value_name = "TIMES",
+        default_value_t = BAND_CAP.0,
+        value_parser = positive,
+        help = "With --raw-bands size, each band no less than TIMES an equal band (at most 1), so that a small module stays readable"
+    )]
+    pub band_min: f64,
+
+    #[arg(
+        long = "raw-band-max",
+        value_name = "TIMES",
+        default_value_t = BAND_CAP.1,
+        value_parser = positive,
+        help = "With --raw-bands size, each band no more than TIMES an equal band (at least 1), so that a large module does not crowd the rest"
+    )]
+    pub band_max: f64,
 
     #[arg(
         long = "raw-data",
@@ -110,6 +206,14 @@ pub struct RawArgs {
     pub data: Vec<Box<str>>,
 }
 
+impl RawArgs {
+    /// The least and the most a band sized by its module is, of an equal
+    /// band: never more than one, never less.
+    pub fn band_cap(&self) -> (f64, f64) {
+        (self.band_min.min(1.0), self.band_max.max(1.0))
+    }
+}
+
 impl Default for RawArgs {
     fn default() -> Self {
         Self {
@@ -117,9 +221,45 @@ impl Default for RawArgs {
             unit: RawUnit::Gene,
             value: RawValue::Fraction,
             min_reads: MIN_READS,
-            bands: RawBands::Equal,
+            threshold: THRESHOLD,
+            min_methylated: MIN_METHYLATED,
+            dot: DOT,
+            ramp: false,
+            colour: None,
+            sort: RawSort::Value,
+            bands: RawBands::Size,
+            band_min: BAND_CAP.0,
+            band_max: BAND_CAP.1,
             data: Vec::new(),
         }
+    }
+}
+
+/// A colour, as `--raw-colour` names it.
+fn dot_colour(s: &str) -> Result<Rgb, String> {
+    crate::qc::arms::colour(s).map_err(|e| e.to_string())
+}
+
+/// A beta, 0 to 1.
+fn beta(s: &str) -> Result<f64, String> {
+    ranged(
+        s,
+        |v| (0.0..=1.0).contains(&v),
+        "a beta from 0 to 1, as 0.5 for half methylated",
+    )
+}
+
+/// A number above 0.
+fn positive(s: &str) -> Result<f64, String> {
+    ranged(s, |v| v > 0.0 && v.is_finite(), "a number above 0")
+}
+
+/// `s` as a number `ok` takes, else what to give, `said`.
+fn ranged(s: &str, ok: impl Fn(f64) -> bool, said: &str) -> Result<f64, String> {
+    match s.trim().parse::<f64>() {
+        Ok(v) if ok(v) => Ok(v),
+        Ok(_) => Err(format!("give {said}")),
+        Err(e) => Err(format!("{s}: {e}")),
     }
 }
 
@@ -145,9 +285,39 @@ pub struct Pooled {
     pub on: f64,
     pub total: f64,
     pub pairs: f64,
+    pub dots: f64,
 }
 
 impl Pooled {
+    /// Whether it is drawn as a dot: a pair under it is one.
+    pub fn dot(self) -> bool {
+        self.dots > 0.0
+    }
+
+    /// One pair's reads, and whether it is a dot as `shown` says.
+    fn pair(on: u32, total: u32, shown: &RawArgs) -> Self {
+        let mut p = Pooled {
+            on: on as f64,
+            total: total as f64,
+            pairs: 1.0,
+            ..Pooled::default()
+        };
+        // With the least reads, a dot at the threshold's beta and the
+        // least methylated reads.
+        if let Some(beta) = p.value(RawValue::Fraction, shown.min_reads) {
+            let dot = beta >= shown.threshold && on >= shown.min_methylated;
+            p.dots = f64::from(u8::from(dot));
+        }
+        p
+    }
+
+    /// `other`'s reads and dots added.
+    fn add(&mut self, other: Pooled) {
+        self.on += other.on;
+        self.total += other.total;
+        self.dots += other.dots;
+    }
+
     /// Its value under `value`; none under `min_reads` reads (one at
     /// least).
     pub fn value(self, value: RawValue, min_reads: u32) -> Option<f64> {
@@ -184,10 +354,17 @@ impl Raw {
     /// The tile of cell role `c` against gene role `g`, at most `rows`
     /// pixels for its cells and `cols` for its features (none fewer than
     /// one, none more than it has): each pixel pooling the cells and the
-    /// features it covers.
-    pub fn tile(&self, c: usize, g: usize, (rows, cols): (usize, usize)) -> Tile {
+    /// features it covers, both in the order `shown` sorts them by.
+    pub fn tile(&self, c: usize, g: usize, (rows, cols): (usize, usize), shown: &RawArgs) -> Tile {
         let (n, k) = (self.cells[c].len(), self.features(g));
         let (rows, cols) = (rows.clamp(1, n.max(1)), cols.clamp(1, k.max(1)));
+        let (from, to) = (self.starts[g], self.starts[g + 1]);
+        // Each cell's reads in the block: role `g`'s, one run, as a
+        // cell's reads are by feature.
+        let block: Vec<&[(u32, u32, u32)]> = (self.cells[c].iter())
+            .map(|r| &r[r.partition_point(|e| e.0 < from)..r.partition_point(|e| e.0 < to)])
+            .collect();
+        let (cell_at, feature_at) = self.places(&block, (from, k), shown);
         let mut pixels = vec![Pooled::default(); rows * cols];
         // Each pixel's pairs: the cells of its row by the features of its
         // column, as an even split puts them.
@@ -201,18 +378,46 @@ impl Raw {
                 pixels[r * cols + q].pairs = (nc * nf) as f64;
             }
         }
-        let (from, to) = (self.starts[g], self.starts[g + 1]);
-        for (i, reads) in self.cells[c].iter().enumerate() {
-            let r = share(i, n, rows);
-            // A cell's reads are by feature: role `g`'s are one run.
-            let run = reads.partition_point(|e| e.0 < from)..reads.partition_point(|e| e.0 < to);
-            for &(f, on, total) in &reads[run] {
-                let p = &mut pixels[r * cols + share((f - from) as usize, k, cols)];
-                p.on += on as f64;
-                p.total += total as f64;
+        for (i, reads) in block.iter().enumerate() {
+            let r = share(cell_at[i], n, rows);
+            for &(f, on, total) in reads.iter() {
+                let q = share(feature_at[(f - from) as usize], k, cols);
+                pixels[r * cols + q].add(Pooled::pair(on, total, shown));
             }
         }
         Tile { rows, cols, pixels }
+    }
+
+    /// Each of a block's cells' and features' place in it, as `shown`
+    /// sorts them: as they are (`none`), by their dots in the block
+    /// (`value`), or by their reads there (`reads`), most first, a tie as
+    /// they are.
+    fn places(
+        &self,
+        block: &[&[(u32, u32, u32)]],
+        (from, k): (u32, usize),
+        shown: &RawArgs,
+    ) -> (Vec<usize>, Vec<usize>) {
+        let n = block.len();
+        if shown.sort == RawSort::None {
+            return ((0..n).collect(), (0..k).collect());
+        }
+        let mut cells = vec![Pooled::default(); n];
+        let mut features = vec![Pooled::default(); k];
+        for (i, reads) in block.iter().enumerate() {
+            for &(f, on, total) in reads.iter() {
+                let p = Pooled::pair(on, total, shown);
+                cells[i].add(p);
+                features[(f - from) as usize].add(p);
+            }
+        }
+        let key = |p: &Pooled| match shown.sort {
+            RawSort::Reads => p.total,
+            _ => p.dots,
+        };
+        // Most first; a tie as they are.
+        let places = |sums: &[Pooled]| super::order::rank(sums.iter().map(|p| -key(p)).collect());
+        (places(&cells), places(&features))
     }
 }
 

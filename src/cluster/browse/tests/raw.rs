@@ -21,9 +21,52 @@ fn raw() -> Raw {
     }
 }
 
+/// The raw view's options, each block's cells and features as they are.
+fn as_they_are() -> RawArgs {
+    RawArgs {
+        sort: RawSort::None,
+        ..RawArgs::default()
+    }
+}
+
+#[test]
+fn a_block_sorted_by_value_puts_the_cells_and_features_with_most_dots_first() {
+    let shown = RawArgs {
+        min_reads: 1,
+        ..RawArgs::default()
+    };
+    let t = raw().tile(0, 0, (10, 10), &shown);
+    let at = |r: usize, q: usize| t.pixels[r * t.cols + q];
+    // Dots at half methylated: the second cell's first feature (2 of 2)
+    // and the third's second (3 of 3). Cells: the second and the third (a
+    // dot each, a tie kept as they were), then the first (1 of 4, none);
+    // features: a dot each, as they were.
+    let row = |r: usize| {
+        (0..t.cols)
+            .map(|q| (at(r, q).on, at(r, q).total))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(row(0), vec![(2.0, 2.0), (0.0, 3.0)]);
+    assert_eq!(row(1), vec![(0.0, 0.0), (3.0, 3.0)]);
+    assert_eq!(row(2), vec![(1.0, 4.0), (0.0, 0.0)]);
+    let dots: Vec<bool> = t.pixels.iter().map(|p| p.dot()).collect();
+    assert_eq!(dots, vec![true, false, false, true, false, false]);
+}
+
+#[test]
+fn a_block_sorted_by_reads_puts_its_most_read_cells_first() {
+    let shown = RawArgs {
+        sort: RawSort::Reads,
+        ..RawArgs::default()
+    };
+    let t = raw().tile(0, 0, (10, 1), &shown);
+    let totals: Vec<f64> = t.pixels.iter().map(|p| p.total).collect();
+    assert_eq!(totals, vec![5.0, 4.0, 3.0]);
+}
+
 #[test]
 fn a_tile_has_a_pixel_for_each_cell_and_feature_when_there_is_room() {
-    let t = raw().tile(0, 0, (10, 10));
+    let t = raw().tile(0, 0, (10, 10), &as_they_are());
     assert_eq!((t.rows, t.cols), (3, 2));
     let at = |r: usize, q: usize| t.pixels[r * t.cols + q];
     assert_eq!(
@@ -39,7 +82,7 @@ fn a_tile_has_a_pixel_for_each_cell_and_feature_when_there_is_room() {
 
 #[test]
 fn a_small_tile_pools_the_cells_and_features_it_covers() {
-    let t = raw().tile(0, 0, (1, 1));
+    let t = raw().tile(0, 0, (1, 1), &as_they_are());
     assert_eq!((t.rows, t.cols), (1, 1));
     let p = t.pixels[0];
     assert_eq!((p.on, p.total, p.pairs), (6.0, 12.0, 6.0));
@@ -54,6 +97,7 @@ fn a_pixel_under_the_least_reads_is_blank() {
         on: 1.0,
         total: 2.0,
         pairs: 1.0,
+        ..Pooled::default()
     };
     assert_eq!(p.value(RawValue::Fraction, 3), None);
     assert_eq!(p.value(RawValue::Fraction, 2), Some(0.5));
@@ -127,4 +171,16 @@ fn a_record_without_its_inputs_listed_says_to_name_them() {
     };
     let e = e.to_string();
     assert!(e.contains("--raw-data"), "{e}");
+}
+
+#[test]
+fn the_threshold_is_a_beta_and_the_colour_a_colour() {
+    assert!(cluster_raw(&["--raw-threshold", "50"]).is_err());
+    assert_eq!(
+        cluster_raw(&["--raw-threshold", "0.3"]).unwrap().threshold,
+        0.3
+    );
+    assert!(cluster_raw(&["--raw-colour", "x1"]).is_err());
+    let red = cluster_raw(&["--raw-color", "#ff0000"]).unwrap();
+    assert_eq!(red.colour, Some((255, 0, 0)));
 }
