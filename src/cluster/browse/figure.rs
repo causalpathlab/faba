@@ -150,14 +150,14 @@ fn width(s: &str, f: f64) -> f64 {
 
 /// A colour key across from `(x, y)`, `w` wide: `steps` steps, each of
 /// `fill` at its middle's share of the way from the key's low end, and
-/// `said` (low, middle, top) under its ends and middle.
+/// `said` (low, middle, top) under its ends and middle, in `ink`.
 fn key_strip(
     c: &mut Canvas,
     (x, y, w): (f64, f64, f64),
     f: f64,
     steps: usize,
     fill: impl Fn(f64) -> String,
-    said: [&str; 3],
+    (said, ink): ([&str; 3], &str),
 ) {
     let step = w / steps as f64;
     for k in 0..steps {
@@ -165,20 +165,20 @@ fn key_strip(
         c.rect(x + step * k as f64, y, step + 0.3, 0.7 * f, &fill(along));
     }
     let ty = y + 1.7 * f;
-    c.text(x, ty, said[0], f, Anchor::Start, MUTED);
-    c.text(x + w / 2.0, ty, said[1], f, Anchor::Middle, MUTED);
-    c.text(x + w, ty, said[2], f, Anchor::End, MUTED);
+    c.text(x, ty, said[0], f, Anchor::Start, ink);
+    c.text(x + w / 2.0, ty, said[1], f, Anchor::Middle, ink);
+    c.text(x + w, ty, said[2], f, Anchor::End, ink);
 }
 
 /// A colour scale down from `(x, y)`, `h` tall: 40 steps, each of `fill`
 /// at its middle's share of the way down, and `said` (top, middle, low)
-/// right of it.
+/// right of it, in `ink`.
 fn scale_column(
     c: &mut Canvas,
     (x, y, h): (f64, f64, f64),
     f: f64,
     fill: impl Fn(f64) -> String,
-    said: [&str; 3],
+    (said, ink): ([&str; 3], &str),
 ) {
     let steps = 40;
     for k in 0..steps {
@@ -188,7 +188,7 @@ fn scale_column(
     }
     let at = [y + f * 0.4, y + h / 2.0 + f * 0.35, y + h];
     for (said, at) in said.into_iter().zip(at) {
-        c.text(x + f * 1.6, at, said, f * 0.9, Anchor::Start, MUTED);
+        c.text(x + f * 1.6, at, said, f * 0.9, Anchor::Start, ink);
     }
 }
 

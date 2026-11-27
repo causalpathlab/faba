@@ -33,3 +33,24 @@ fn size_bands_follow_the_sizes_within_their_cap() {
     assert!(w[0] <= 50.0 + 1e-6, "{w:?}");
     assert!((w.iter().sum::<f64>() - 100.0).abs() < 1e-4, "{w:?}");
 }
+
+#[test]
+fn crowded_names_are_spread_apart_within_the_length() {
+    // Apart already: as they are.
+    assert_eq!(
+        spread(&[5.0, 20.0, 40.0], 10.0, 50.0),
+        vec![5.0, 20.0, 40.0]
+    );
+    // Two near each other: the second pushed on.
+    assert_eq!(spread(&[5.0, 8.0, 40.0], 10.0, 50.0), vec![5.0, 15.0, 40.0]);
+    // Pushed past the end: back from it.
+    assert_eq!(
+        spread(&[30.0, 45.0, 48.0], 10.0, 50.0),
+        vec![30.0, 40.0, 50.0]
+    );
+}
+
+#[test]
+fn names_too_many_for_the_length_are_spread_evenly_within_it() {
+    assert_eq!(spread(&[1.0, 2.0, 3.0], 10.0, 15.0), vec![2.5, 7.5, 12.5]);
+}

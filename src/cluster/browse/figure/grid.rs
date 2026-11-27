@@ -835,7 +835,7 @@ pub(super) fn placed(
                 }
             };
             let ends = [ends[0].as_str(), ends[1].as_str(), ends[2].as_str()];
-            super::key_strip(c, (x0, ky, rw), f, 24, key_fill, ends);
+            super::key_strip(c, (x0, ky, rw), f, 24, key_fill, (ends, MUTED));
             if !refs.is_empty() {
                 let sides: Vec<f64> = (refs.iter())
                     .map(|v| (cell - 2.0) * (v / top.max(1e-12)).sqrt())
@@ -903,7 +903,7 @@ pub(super) fn placed(
         ];
         let at = (right + beside + f, head, cell * down as f64);
         let said = [said[0].as_str(), said[1].as_str(), said[2].as_str()];
-        super::scale_column(c, at, f, scale_fill, said);
+        super::scale_column(c, at, f, scale_fill, (said, MUTED));
         c.text(label, h - f, &what, f, Anchor::Start, MUTED);
     });
     Ok((drawn, placed))

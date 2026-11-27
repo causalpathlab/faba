@@ -130,6 +130,31 @@ fn bands(sizes: &[usize], length: f64, by: RawBands, cap: (f64, f64)) -> Vec<(f6
         .collect()
 }
 
+/// `at` (in order, from 0 to `length`) moved apart to `least` between
+/// each and the next, as little as they can be: pushed on where too near
+/// the one before, then back where the last is past the end; evenly
+/// spaced where the length cannot keep them `least` apart.
+fn spread(at: &[f64], least: f64, length: f64) -> Vec<f64> {
+    // Too many to keep `least` apart: evenly, the length theirs.
+    let n = at.len();
+    if n as f64 * least > length {
+        return (0..n)
+            .map(|i| length * (i as f64 + 0.5) / n as f64)
+            .collect();
+    }
+    let mut out = at.to_vec();
+    for i in 1..n {
+        out[i] = out[i].max(out[i - 1] + least);
+    }
+    if n > 0 && out[n - 1] > length {
+        out[n - 1] = length;
+        for i in (0..n - 1).rev() {
+            out[i] = out[i].min(out[i + 1] - least);
+        }
+    }
+    out
+}
+
 /// `pixels` (cells by features, row by row, `rows` by `cols`) as a PNG,
 /// features down and cells across unless `cells_down`; written fast, as
 /// its blocks of colour compress well anyway.
@@ -308,12 +333,19 @@ pub(super) fn placed(
         for &(x, _) in cols.iter().skip(1) {
             c.line(x0 + x, y0, x0 + x, y0 + ph, EDGE.0, EDGE.1);
         }
-        for (name, &(y, bh)) in row_names.iter().zip(&rows) {
-            let y = y0 + y + bh / 2.0 + f / 2.5;
-            c.text(x0 - 0.6 * f, y, name, f, Anchor::End, INK);
+        // Each name by its band's middle, spread apart where narrow bands
+        // would crowd them.
+        let middles = |b: &[(f64, f64)]| b.iter().map(|&(at, w)| at + w / 2.0).collect::<Vec<_>>();
+        let row_at = spread(&middles(&rows), 1.2 * f, ph);
+        for (name, y) in row_names.iter().zip(row_at) {
+            c.text(x0 - 0.6 * f, y0 + y + f / 2.5, name, f, Anchor::End, INK);
         }
-        for (name, &(x, bw)) in col_names.iter().zip(&cols) {
-            let x = x0 + x + bw / 2.0;
+        let col_at = match turned {
+            true => spread(&middles(&cols), 1.3 * f, pw),
+            false => middles(&cols),
+        };
+        for (name, x) in col_names.iter().zip(col_at) {
+            let x = x0 + x;
             match turned {
                 true => c.rotated(x + f / 2.5, y0 - 0.4 * f, name, f, Anchor::Start, INK),
                 false => c.text(x, y0 - 0.6 * f, name, f, Anchor::Middle, INK),
@@ -323,15 +355,15 @@ pub(super) fn placed(
             // Under the plot: a dot, and what it and white are.
             let ky = y0 + ph + 0.6 * f;
             c.rect(x0, ky, 0.7 * f, 0.7 * f, &hex(dot));
-            c.text(x0 + 1.1 * f, ky + 0.7 * f, &dots, f, Anchor::Start, MUTED);
+            c.text(x0 + 1.1 * f, ky + 0.7 * f, &dots, f, Anchor::Start, INK);
         } else if small_key {
             // Under the plot: the ramp, its ends and middle, and what
             // white is.
             let (ky, kw) = (y0 + ph + 0.6 * f, (pw / 2.0).max(6.0 * f).min(pw));
             let fill = |along: f64| hex(colour(shade_top * along, shade_top, ramp));
             let said = [ends[0].as_str(), ends[1].as_str(), ends[2].as_str()];
-            key_strip(c, (x0, ky, kw), f, 40, fill, said);
-            c.text(x0 + kw + f, ky + 0.7 * f, &blank, f, Anchor::Start, MUTED);
+            key_strip(c, (x0, ky, kw), f, 40, fill, (said, INK));
+            c.text(x0 + kw + f, ky + 0.7 * f, &blank, f, Anchor::Start, INK);
         }
         if ink.panel_only {
             return;
@@ -342,12 +374,12 @@ pub(super) fn placed(
             true => {
                 let fill = |along: f64| hex(colour(shade_top * (1.0 - along), shade_top, ramp));
                 let said = [ends[2].as_str(), ends[1].as_str(), ends[0].as_str()];
-                scale_column(c, (x0 + pw + f, y0, ph), f, fill, said);
+                scale_column(c, (x0 + pw + f, y0, ph), f, fill, (said, INK));
             }
             false => {
                 let (sx, said) = (x0 + pw + f, &beta);
                 c.rect(sx, y0, 1.2 * f, 1.2 * f, &hex(dot));
-                c.text(sx, y0 + 2.4 * f, said, 0.9 * f, Anchor::Start, MUTED);
+                c.text(sx, y0 + 2.4 * f, said, 0.9 * f, Anchor::Start, INK);
             }
         }
         let n: usize = cell_sizes.iter().sum();
